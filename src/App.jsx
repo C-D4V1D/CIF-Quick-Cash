@@ -334,20 +334,30 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   const handleVerify = async () => {
     setNinLoading(true); setNinError('');
     try {
-      const resp = await fetch(`https://checkmyninbvn.com.ng/api/v1/verify`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.ninApiKey}` },
-        body: JSON.stringify({ type: tx.idType, number: tx.idNumber })
-      });
-      const data = await resp.json();
-      if (data.data) {
-        upd('ninVerified', true); upd('ninData', data.data);
-        if (data.data.firstName) upd('fullName', `${data.data.firstName} ${data.data.lastName || ''}`);
-        if (data.data.address) upd('address', data.data.address);
-      } else throw new Error(data.message || 'Verification failed');
+      // Call our server-side proxy to avoid CORS issues
+      const endpoint = tx.idType === 'nin' ? 'verify-nin' : 'verify-bvn';
+      const body = tx.idType === 'nin' 
+        ? { nin: tx.idNumber, apiKey: settings.ninApiKey }
+        : { bvn: tx.idNumber, apiKey: settings.ninApiKey };
+      const result = await API.post(endpoint, body);
+      if (result?.status === 'success' && result?.data) {
+        const d = result.data;
+        upd('ninVerified', true); upd('ninData', d);
+        // NIN returns: firstname, middlename, surname, residence_address, photo
+        // BVN returns: firstname, middlename, lastname, phone, photo
+        const fullName = [d.firstname, d.middlename, d.surname || d.lastname].filter(Boolean).join(' ');
+        if (fullName) upd('fullName', fullName);
+        const address = [d.residence_address, d.residence_town, d.residence_lga, d.residence_state].filter(Boolean).join(', ');
+        if (address) upd('address', address);
+        // Store NIN photo for face comparison
+        if (d.photo) upd('ninPhoto', d.photo);
+      } else {
+        throw new Error(result?.message || 'Verification failed');
+      }
     } catch (e) {
       setNinError(e.message + ' — Demo mode: proceeding with placeholder data.');
       upd('ninVerified', true);
-      upd('ninData', { firstName: 'Demo', lastName: 'User', address: 'Aguleri Junction, Anambra State' });
+      upd('ninData', { firstname: 'Demo', surname: 'User', residence_address: 'Aguleri Junction, Anambra State' });
       if (!tx.fullName) upd('fullName', 'Demo User');
       if (!tx.address) upd('address', 'Aguleri Junction, Anambra State');
     }
@@ -419,7 +429,7 @@ IS_PHONE: [YES or NO]`;
     switch (sid) {
       case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
 
-      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} value={tx.idNumber} onChange={e => upd('idNumber', e.target.value)} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerified && <div style={{ ...S.alert('info'), marginTop: '12px', background: COLORS.primaryLight, color: COLORS.primary, border: '1px solid #b7e4c7' }}>✅ Verified — <strong>{tx.fullName}</strong> — {tx.address || 'No address (BVN)'}</div>}</div>);
+      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} value={tx.idNumber} onChange={e => upd('idNumber', e.target.value)} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerified && <div style={{ marginTop: '16px', padding: '16px', background: COLORS.primaryLight, borderRadius: '12px', border: '1px solid #b7e4c7' }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + COLORS.primary }} alt="NIN Photo" />}<div><div style={{ fontSize: '15px', fontWeight: 700, color: COLORS.primary, marginBottom: '4px' }}>✅ {tx.idType.toUpperCase()} Verified</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}</div>);
 
       case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} /></Field></div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value; upd('phoneNumbers', n); }} placeholder="+234..." /><button style={S.btnSm(tx.phonesVerified[0] ? 'primary' : 'muted')} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[1]} onChange={e => { const n = [...tx.phoneNumbers]; n[1] = e.target.value; upd('phoneNumbers', n); }} /><button style={S.btnSm(tx.phonesVerified[1] ? 'primary' : 'muted')} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>Family / Neighbour Contact</div><div style={S.grid3}><Field label="Name"><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} /></Field><Field label="Phone"><input style={S.input} value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value)} /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
 
