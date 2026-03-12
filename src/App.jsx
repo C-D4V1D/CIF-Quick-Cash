@@ -340,21 +340,35 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
         ? { nin: tx.idNumber, apiKey: settings.ninApiKey }
         : { bvn: tx.idNumber, apiKey: settings.ninApiKey };
       const result = await API.post(endpoint, body);
-      if (result?.status === 'success' && result?.data) {
-        const d = result.data;
+      
+      // Log to console so you can inspect the exact API response if needed
+      console.log('NIN/BVN API Response:', result);
+
+      // UPDATED LOGIC: Accepts 'success', true, or a 200 code
+      if ((result?.status === 'success' || result?.status === true || result?.status === 'true' || result?.code === 200) && (result?.data || result?.response)) {
+        
+        // Handle deeply nested data if the API buries it
+        const d = result.data?.firstname ? result.data : (result.data?.data || result.data || result.response);
+        
         upd('ninVerified', true); upd('ninData', d);
+        
         // NIN returns: firstname, middlename, surname, residence_address, photo
         // BVN returns: firstname, middlename, lastname, phone, photo
         const fullName = [d.firstname, d.middlename, d.surname || d.lastname].filter(Boolean).join(' ');
         if (fullName) upd('fullName', fullName);
+        
         const address = [d.residence_address, d.residence_town, d.residence_lga, d.residence_state].filter(Boolean).join(', ');
         if (address) upd('address', address);
-        // Store NIN photo for face comparison
+        
+        // Store photo
         if (d.photo) upd('ninPhoto', d.photo);
+        else if (d.base64Image) upd('ninPhoto', `data:image/jpeg;base64,${d.base64Image}`);
+        
       } else {
-        throw new Error(result?.message || 'Verification failed');
+        throw new Error(result?.message || 'Verification failed - check console for details');
       }
     } catch (e) {
+      console.error(e);
       setNinError(e.message + ' — Demo mode: proceeding with placeholder data.');
       upd('ninVerified', true);
       upd('ninData', { firstname: 'Demo', surname: 'User', residence_address: 'Aguleri Junction, Anambra State' });
