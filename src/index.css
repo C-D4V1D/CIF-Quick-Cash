@@ -64,6 +64,11 @@ body {
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+
+  @media (max-width: 768px) {
+    border-inline: none;
+    width: 100%;
+  }
 }
 
 h1,
