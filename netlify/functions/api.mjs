@@ -135,6 +135,31 @@ export default async (req) => {
     }
 
     // ============================================================
+    // NIN/BVN VERIFICATION PROXY: POST /api/verify-nin, /api/verify-bvn
+    // Proxies through server to avoid browser CORS restrictions
+    // ============================================================
+    if (path === 'verify-nin' && method === 'POST') {
+      const { nin, apiKey } = await req.json();
+      const resp = await fetch('https://checkmyninbvn.com.ng/api/nin-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        body: JSON.stringify({ nin, consent: true })
+      });
+      const data = await resp.json();
+      return json(data);
+    }
+    if (path === 'verify-bvn' && method === 'POST') {
+      const { bvn, apiKey } = await req.json();
+      const resp = await fetch('https://checkmyninbvn.com.ng/api/bvn-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        body: JSON.stringify({ bvn, consent: true })
+      });
+      const data = await resp.json();
+      return json(data);
+    }
+
+    // ============================================================
     // HEALTH CHECK: GET /api/health
     // ============================================================
     if (path === 'health' || path === '') {
