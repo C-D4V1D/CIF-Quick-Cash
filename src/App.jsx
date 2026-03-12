@@ -1,5 +1,16 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 
+// --- MOBILE DETECTION HOOK ---
+const useMobile = () => {
+  const [mobile, setMobile] = useState(typeof window !== 'undefined' && window.innerWidth < 768);
+  useEffect(() => {
+    const fn = () => setMobile(window.innerWidth < 768);
+    window.addEventListener('resize', fn);
+    return () => window.removeEventListener('resize', fn);
+  }, []);
+  return mobile;
+};
+
 // ============================================================
 // CHRIST-IN-FABIAN QUICK CASH — PRODUCTION CRM
 // Connected to Neon PostgreSQL via Netlify Functions
@@ -147,14 +158,14 @@ const COLORS = {
 const S = {
   app: { fontFamily: "'DM Sans', 'Nunito', sans-serif", background: COLORS.bg, minHeight: '100vh', color: COLORS.text, fontSize: '14px', lineHeight: 1.6 },
   loginWrap: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: `linear-gradient(135deg, ${COLORS.primaryDark} 0%, ${COLORS.primary} 50%, #2d7a3e 100%)`, padding: '20px' },
-  loginCard: { background: COLORS.card, borderRadius: '16px', padding: '40px', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' },
+  loginCard: { background: COLORS.card, borderRadius: '16px', padding: 'clamp(24px, 6vw, 40px)', width: '100%', maxWidth: '400px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' },
   loginTitle: { fontSize: '22px', fontWeight: 800, color: COLORS.primary, textAlign: 'center', marginBottom: '4px', letterSpacing: '-0.5px' },
   loginSub: { fontSize: '13px', color: COLORS.textMuted, textAlign: 'center', marginBottom: '28px' },
   topBar: { background: COLORS.primary, color: '#fff', padding: '0 24px', height: '56px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(0,0,0,0.15)' },
   sidebar: { width: '220px', background: '#fff', borderRight: `1px solid ${COLORS.border}`, padding: '16px 0', flexShrink: 0, overflowY: 'auto' },
   sideItem: (active) => ({ padding: '10px 20px', cursor: 'pointer', fontSize: '13.5px', fontWeight: active ? 700 : 500, color: active ? COLORS.primary : COLORS.text, background: active ? COLORS.primaryLight : 'transparent', borderLeft: active ? `3px solid ${COLORS.primary}` : '3px solid transparent', transition: 'all 0.15s', display: 'flex', alignItems: 'center', gap: '10px' }),
   mainContent: { flex: 1, padding: '24px', overflowY: 'auto', maxHeight: 'calc(100vh - 56px)' },
-  card: { background: COLORS.card, borderRadius: '12px', padding: '24px', border: `1px solid ${COLORS.border}`, marginBottom: '20px' },
+  card: { background: COLORS.card, borderRadius: '12px', padding: '24px', border: `1px solid ${COLORS.border}`, marginBottom: '20px', overflowX: 'auto' },
   cardTitle: { fontSize: '17px', fontWeight: 700, marginBottom: '16px', color: COLORS.primaryDark, display: 'flex', alignItems: 'center', gap: '8px' },
   label: { fontSize: '12.5px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px', display: 'block', textTransform: 'uppercase', letterSpacing: '0.5px' },
   input: { width: '100%', padding: '10px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none', boxSizing: 'border-box', background: '#fff', transition: 'border-color 0.2s' },
@@ -166,9 +177,9 @@ const S = {
   th: { textAlign: 'left', padding: '10px 12px', fontWeight: 700, fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.5px', color: COLORS.textMuted, borderBottom: `2px solid ${COLORS.border}`, background: COLORS.bg },
   td: { padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'middle' },
   badge: (color) => ({ display: 'inline-block', padding: '3px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 700, color: '#fff', background: color }),
-  grid2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' },
-  grid3: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' },
-  grid4: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' },
+  grid2: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' },
+  grid3: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' },
+  grid4: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '16px' },
   stat: { background: COLORS.card, borderRadius: '12px', padding: '20px', border: `1px solid ${COLORS.border}` },
   statValue: { fontSize: '24px', fontWeight: 800, color: COLORS.primary },
   statLabel: { fontSize: '12px', color: COLORS.textMuted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' },
@@ -177,6 +188,9 @@ const S = {
   photoImg: { width: '100%', height: '100%', objectFit: 'cover' },
   alert: (type) => ({ padding: '12px 16px', borderRadius: '8px', marginBottom: '16px', fontSize: '13px', background: type === 'danger' ? COLORS.dangerLight : type === 'warning' ? COLORS.warningLight : COLORS.primaryLight, color: type === 'danger' ? COLORS.danger : type === 'warning' ? COLORS.warning : COLORS.primary, border: `1px solid ${type === 'danger' ? '#f5c6cb' : type === 'warning' ? '#fde2b3' : '#b7e4c7'}`, fontWeight: 500 }),
   body: { display: 'flex', height: 'calc(100vh - 56px)' },
+  mobileOverlay: { position: 'fixed', inset: 0, zIndex: 200 },
+  mobileSidebar: { position: 'absolute', top: 0, left: 0, bottom: 0, width: '260px', background: '#fff', overflowY: 'auto', zIndex: 201, boxShadow: '4px 0 20px rgba(0,0,0,0.2)' },
+  hamburger: { background: 'none', border: 'none', color: '#fff', fontSize: '22px', cursor: 'pointer', padding: '4px 6px', lineHeight: 1, display: 'flex', alignItems: 'center' },
 };
 
 // ============================================================
@@ -224,13 +238,14 @@ function Field({ label, required, children, style: st }) {
 }
 
 function Modal({ open, onClose, title, children, wide }) {
+  const isMobile = useMobile();
   if (!open) return null;
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}>
-      <div style={{ background: '#fff', borderRadius: '16px', width: '100%', maxWidth: wide ? '900px' : '600px', maxHeight: '85vh', overflow: 'auto', padding: '28px' }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: isMobile ? 'flex-end' : 'center', justifyContent: 'center', zIndex: 1000, padding: isMobile ? '0' : '12px' }}>
+      <div style={{ background: '#fff', borderRadius: isMobile ? '16px 16px 0 0' : '16px', width: '100%', maxWidth: wide ? '900px' : '600px', maxHeight: isMobile ? '92vh' : '88vh', overflow: 'auto', padding: isMobile ? '20px 16px' : '28px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h3 style={{ fontSize: '18px', fontWeight: 700, margin: 0, color: COLORS.primaryDark }}>{title}</h3>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', color: COLORS.textMuted }}>✕</button>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', color: COLORS.textMuted, padding: '4px 8px' }}>✕</button>
         </div>
         {children}
       </div>
@@ -318,6 +333,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   const [ninError, setNinError] = useState('');
   const saveTimer = useRef(null);
 
+  const isMobile = useMobile();
   const upd = (field, val) => setTx(prev => ({ ...prev, [field]: val }));
   const updNested = (parent, field, val) => setTx(prev => ({ ...prev, [parent]: { ...prev[parent], [field]: val } }));
 
@@ -480,8 +496,8 @@ IS_PHONE: [YES or NO]`;
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
-        {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={S.wizStep(i === step, i < step)} onClick={() => i < step && setStep(i)}>{s.icon} {s.label}</div>))}
+      <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
+        {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
       <div style={S.card}>{renderStep()}</div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px' }}>
@@ -506,7 +522,7 @@ function RepaymentModal({ tx, settings, onClose, onSave }) {
   const [confirmed, setConfirmed] = useState(false);
   return (
     <div>
-      <div style={{ ...S.card, background: COLORS.bg }}><div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}><div><span style={S.statLabel}>Customer</span><br /><strong>{tx.fullName}</strong></div><div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div><div><span style={S.statLabel}>Advance</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(tx.cashAdvance)}</strong></div><div><span style={S.statLabel}>Days</span><br /><strong style={{ fontSize: '18px' }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div></div></div>
+      <div style={{ ...S.card, background: COLORS.bg }}><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}><div><span style={S.statLabel}>Customer</span><br /><strong>{tx.fullName}</strong></div><div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div><div><span style={S.statLabel}>Advance</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(tx.cashAdvance)}</strong></div><div><span style={S.statLabel}>Days</span><br /><strong style={{ fontSize: '18px' }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div></div></div>
       <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Total Due</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Customer paid {fmtMoney(totalDue)} and item returned</span></label>
       <div style={{ display: 'flex', gap: '12px' }}><button style={S.btn('primary')} disabled={!confirmed} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: new Date().toISOString().split('T')[0], daysCharged: days, totalFees, itemReturned: true })}>✅ Confirm</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
@@ -557,6 +573,8 @@ export default function App() {
   const [showAddUser, setShowAddUser] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [dbStatus, setDbStatus] = useState('checking');
+  const isMobile = useMobile();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Load all data from database
   const loadData = async () => {
@@ -615,8 +633,11 @@ export default function App() {
 
   if (editingTx !== null) return (
     <div style={S.app}>
-      <div style={S.topBar}><div style={{ fontWeight: 700 }}>💰 CFC Quick Cash — New Transaction</div><button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); setPage('transactions'); }}>✕ Exit</button></div>
-      <div style={{ padding: '20px', maxWidth: '900px', margin: '0 auto' }}>
+      <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
+        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CFC Quick Cash — New Transaction'}</div>
+        <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); setPage('transactions'); }}>✕ {isMobile ? '' : 'Exit'}</button>
+      </div>
+      <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
         <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); setPage('transactions'); }} onCancel={() => { setEditingTx(null); setPage('transactions'); }} />
       </div>
     </div>
@@ -682,7 +703,7 @@ export default function App() {
       case 'newTx': setEditingTx('new'); return null;
 
       case 'transactions': return (<div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📋 All Transactions</h2><input style={{ ...S.input, width: '300px' }} placeholder="🔍 Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, margin: 0 }}>📋 All Transactions</h2><input style={{ ...S.input, flex: '1 1 180px', maxWidth: '300px' }} placeholder="🔍 Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
         <div style={S.card}><TxTable items={searchQuery ? filteredTxs : transactions} /></div>
       </div>);
 
@@ -723,21 +744,97 @@ export default function App() {
 
   const UsrModal = () => { const [usr, setUsr] = useState({ name: '', username: '', password: '', role: 'staff' }); return <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User"><div style={S.grid2}><Field label="Name"><input style={S.input} value={usr.name} onChange={e => setUsr({ ...usr, name: e.target.value })} /></Field><Field label="Username"><input style={S.input} value={usr.username} onChange={e => setUsr({ ...usr, username: e.target.value })} /></Field><Field label="Password"><input style={S.input} value={usr.password} onChange={e => setUsr({ ...usr, password: e.target.value })} /></Field><Field label="Role"><select style={S.select} value={usr.role} onChange={e => setUsr({ ...usr, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field></div><button style={S.btn('primary')} onClick={async () => { await API.post('users', { ...usr, id: `u-${Date.now()}` }); loadData(); setShowAddUser(false); }}>Add</button></Modal>; };
 
+  const navAction = (item) => {
+    setSidebarOpen(false);
+    if (item.id === 'newTx') setEditingTx('new');
+    else { setPage(item.id); setViewingTx(null); }
+  };
+
   return (
     <div style={S.app}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-      <div style={S.topBar}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}><span style={{ fontSize: '20px' }}>💰</span><span style={{ fontWeight: 800, letterSpacing: '-0.3px' }}>CFC QUICK CASH</span></div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}><span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span><span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}</span><button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={() => setCurrentUser(null)}>Logout</button></div>
+
+      {/* Top Bar */}
+      <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {isMobile && <button style={S.hamburger} onClick={() => setSidebarOpen(o => !o)} aria-label="Menu">☰</button>}
+          <span style={{ fontSize: '20px' }}>💰</span>
+          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CFC QUICK CASH</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
+          {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
+          <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}</span>
+          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={() => setCurrentUser(null)}>{isMobile ? '✕' : 'Logout'}</button>
+        </div>
       </div>
-      <div style={S.body}>
-        <div style={S.sidebar}>{navItems.map(item => (<div key={item.id} style={S.sideItem(page === item.id)} onClick={() => { if (item.id === 'newTx') setEditingTx('new'); else { setPage(item.id); setViewingTx(null); } }}><span>{item.icon}</span> {item.label}</div>))}</div>
-        <div style={S.mainContent}>{renderPage()}</div>
+
+      {/* Mobile Sidebar Overlay */}
+      {isMobile && sidebarOpen && (
+        <div style={S.mobileOverlay}>
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)' }} onClick={() => setSidebarOpen(false)} />
+          <div style={S.mobileSidebar}>
+            <div style={{ padding: '16px 20px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div><div style={{ fontWeight: 800, color: COLORS.primaryDark, fontSize: '15px' }}>Menu</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>👤 {currentUser.name}</div></div>
+              <button onClick={() => setSidebarOpen(false)} style={{ background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', color: COLORS.textMuted }}>✕</button>
+            </div>
+            {navItems.map(item => (
+              <div key={item.id} style={S.sideItem(page === item.id)} onClick={() => navAction(item)}>
+                <span>{item.icon}</span> {item.label}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Main Layout */}
+      <div style={{ ...S.body, flexDirection: 'row', height: isMobile ? 'auto' : 'calc(100vh - 56px)' }}>
+        {/* Desktop Sidebar */}
+        {!isMobile && (
+          <div style={S.sidebar}>
+            {navItems.map(item => (
+              <div key={item.id} style={S.sideItem(page === item.id)} onClick={() => navAction(item)}>
+                <span>{item.icon}</span> {item.label}
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ ...S.mainContent, padding: isMobile ? '16px' : '24px', maxHeight: isMobile ? 'none' : 'calc(100vh - 56px)', paddingBottom: isMobile ? '80px' : '24px' }}>
+          {renderPage()}
+        </div>
       </div>
+
+      {/* Mobile Bottom Navigation */}
+      {isMobile && (
+        <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: '#fff', borderTop: `2px solid ${COLORS.border}`, display: 'flex', zIndex: 100, boxShadow: '0 -2px 12px rgba(0,0,0,0.1)' }}>
+          {navItems.slice(0, 4).map(item => (
+            <div key={item.id} onClick={() => navAction(item)}
+              style={{ flex: 1, padding: '8px 4px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', cursor: 'pointer', background: page === item.id ? COLORS.primaryLight : 'transparent', borderTop: page === item.id ? `2px solid ${COLORS.primary}` : '2px solid transparent', marginTop: '-2px' }}>
+              <span style={{ fontSize: '20px' }}>{item.icon}</span>
+              <span style={{ fontSize: '10px', fontWeight: 600, color: page === item.id ? COLORS.primary : COLORS.textMuted, lineHeight: 1 }}>{item.label.split(' ')[0]}</span>
+            </div>
+          ))}
+          <div onClick={() => setSidebarOpen(o => !o)}
+            style={{ flex: 1, padding: '8px 4px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', cursor: 'pointer' }}>
+            <span style={{ fontSize: '20px' }}>⋯</span>
+            <span style={{ fontSize: '10px', fontWeight: 600, color: COLORS.textMuted, lineHeight: 1 }}>More</span>
+          </div>
+        </div>
+      )}
+
       <ExpModal /><CapModal /><DecModal /><UsrModal />
       <Modal open={!!repayingTx} onClose={() => setRepayingTx(null)} title="Record Repayment">{repayingTx && <RepaymentModal tx={repayingTx} settings={settings} onClose={() => setRepayingTx(null)} onSave={async (tx) => { await saveTx(tx); setRepayingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!sellingTx} onClose={() => setSellingTx(null)} title="Record Sale" wide>{sellingTx && <SaleModal tx={sellingTx} settings={settings} onClose={() => setSellingTx(null)} onSave={async (tx) => { await saveTx(tx); setSellingTx(null); loadData(); }} />}</Modal>
-      <style>{`input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}`}</style>
+      <style>{`
+        input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}
+        ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}
+        @media (max-width: 768px) {
+          table { min-width: 480px; }
+          .wiz-steps::-webkit-scrollbar { display: none; }
+        }
+        * { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+        input, select, textarea, button { font-size: 16px; }
+        @media (min-width: 769px) { input, select, textarea { font-size: 14px; } }
+      `}</style>
     </div>
   );
 }
