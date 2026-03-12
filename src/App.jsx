@@ -357,34 +357,36 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
         : { bvn: tx.idNumber, apiKey: settings.ninApiKey };
       const result = await API.post(endpoint, body);
       
-      // Log to console so you can inspect the exact API response if needed
       console.log('NIN/BVN API Response:', result);
 
       if ((result?.status === 'success' || result?.status === true || result?.status === 'true' || result?.code === 200) && (result?.data || result?.response)) {
         
         // Handle deeply nested data if the API buries it
-        const d = result.data?.firstname ? result.data : (result.data?.data || result.data || result.response);
+        const d = (result.data?.firstname || result.data?.firstName) ? result.data : (result.data?.data || result.data || result.response);
         
         upd('ninVerified', true); upd('ninData', d);
         
-        // Set Full Name
-        const fullName = [d.firstname, d.middlename, d.surname || d.lastname].filter(Boolean).join(' ');
+        // Smart Name Extractor: handles both lowercase (NIN) and camelCase (BVN)
+        const first = d.firstname || d.firstName;
+        const middle = d.middlename || d.middleName;
+        const last = d.surname || d.lastname || d.lastName;
+        const fullName = [first, middle, last].filter(Boolean).join(' ');
+        
         if (fullName) upd('fullName', fullName);
         
-        // Set Address
+        // Smart Address Extractor
         const address = [d.residence_address, d.residence_town, d.residence_lga, d.residence_state].filter(Boolean).join(', ');
         if (address) upd('address', address);
 
-        // Set Phone Number directly into Phone 1
-        const phone = d.telephoneno || d.phone || d.phoneNumber || d.mobile;
+        // Smart Phone Extractor
+        const phone = d.telephoneno || d.phone || d.phoneNumber || d.phoneNumber1 || d.mobile;
         if (phone) {
           upd('phoneNumbers', [phone, tx.phoneNumbers[1]]);
         }
         
-        // Fix Photo: Web browsers require the "data:image/jpeg;base64," prefix to render the image
-        let rawPhoto = d.photo || d.base64Image || d.picture;
+        // Fix Photo formatting
+        let rawPhoto = d.photo || d.base64Image || d.picture || d.image;
         if (rawPhoto) {
-          // If the API didn't include the prefix, we add it automatically
           if (!rawPhoto.startsWith('data:image')) {
             rawPhoto = `data:image/jpeg;base64,${rawPhoto}`;
           }
@@ -392,11 +394,13 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
         }
         
       } else {
-        throw new Error(result?.message || 'Verification failed - check console for details');
+        throw new Error(result?.message || result?.detail || 'Verification failed - check console for details');
       }
     } catch (e) {
       console.error(e);
-      setNinError(e.message + ' — Demo mode: proceeding with placeholder data.');
+      // Safely extract the error message to avoid the "undefined" glitch
+      const errorMessage = e?.message || String(e) || 'Unknown error occurred';
+      setNinError(errorMessage + ' — Demo mode: proceeding with placeholder data.');
       upd('ninVerified', true);
       upd('ninData', { firstname: 'Demo', surname: 'User', residence_address: 'Aguleri Junction, Anambra State' });
       if (!tx.fullName) upd('fullName', 'Demo User');
