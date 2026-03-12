@@ -330,7 +330,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     return () => clearTimeout(saveTimer.current);
   }, [tx, step]);
 
-  // NIN/BVN Verification
+ // NIN/BVN Verification
   const handleVerify = async () => {
     setNinLoading(true); setNinError('');
     try {
@@ -344,7 +344,6 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
       // Log to console so you can inspect the exact API response if needed
       console.log('NIN/BVN API Response:', result);
 
-      // UPDATED LOGIC: Accepts 'success', true, or a 200 code
       if ((result?.status === 'success' || result?.status === true || result?.status === 'true' || result?.code === 200) && (result?.data || result?.response)) {
         
         // Handle deeply nested data if the API buries it
@@ -352,17 +351,29 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
         
         upd('ninVerified', true); upd('ninData', d);
         
-        // NIN returns: firstname, middlename, surname, residence_address, photo
-        // BVN returns: firstname, middlename, lastname, phone, photo
+        // Set Full Name
         const fullName = [d.firstname, d.middlename, d.surname || d.lastname].filter(Boolean).join(' ');
         if (fullName) upd('fullName', fullName);
         
+        // Set Address
         const address = [d.residence_address, d.residence_town, d.residence_lga, d.residence_state].filter(Boolean).join(', ');
         if (address) upd('address', address);
+
+        // Set Phone Number directly into Phone 1
+        const phone = d.telephoneno || d.phone || d.phoneNumber || d.mobile;
+        if (phone) {
+          upd('phoneNumbers', [phone, tx.phoneNumbers[1]]);
+        }
         
-        // Store photo
-        if (d.photo) upd('ninPhoto', d.photo);
-        else if (d.base64Image) upd('ninPhoto', `data:image/jpeg;base64,${d.base64Image}`);
+        // Fix Photo: Web browsers require the "data:image/jpeg;base64," prefix to render the image
+        let rawPhoto = d.photo || d.base64Image || d.picture;
+        if (rawPhoto) {
+          // If the API didn't include the prefix, we add it automatically
+          if (!rawPhoto.startsWith('data:image')) {
+            rawPhoto = `data:image/jpeg;base64,${rawPhoto}`;
+          }
+          upd('ninPhoto', rawPhoto);
+        }
         
       } else {
         throw new Error(result?.message || 'Verification failed - check console for details');
