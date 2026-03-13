@@ -20,7 +20,7 @@ const useMobile = () => {
 const API = {
   async get(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`, { cache: 'no-store' });
+      const r = await fetch(`/api/${endpoint}`, { cache: 'no-store', credentials: 'include' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`GET /api/${endpoint}:`, e); return null; }
@@ -30,7 +30,8 @@ const API = {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
+        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -41,7 +42,8 @@ const API = {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
+        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -49,7 +51,7 @@ const API = {
   },
   async del(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`, { method: 'DELETE' });
+      const r = await fetch(`/api/${endpoint}`, { method: 'DELETE', credentials: 'include' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`DELETE /api/${endpoint}:`, e); return null; }
@@ -287,7 +289,7 @@ function LoginScreen({ onLogin }) {
     setError('');
     const result = await API.post('login', { username, password });
     if (result?.error) { setError(result.error); setLoading(false); return; }
-    if (result?.id) { onLogin(result); }
+    if (result?.user?.id) { onLogin(result.user); }
     else { setError('Invalid username or password'); }
     setLoading(false);
   };
@@ -590,6 +592,7 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 // ============================================================
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [page, setPage] = useState('dashboard');
   const [transactions, setTransactions] = useState([]);
   const [drafts, setDrafts] = useState([]);
@@ -612,6 +615,15 @@ export default function App() {
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
+
+  useEffect(() => {
+    const restoreSession = async () => {
+      const me = await API.get('me');
+      if (me?.id) setCurrentUser(me);
+      setAuthLoading(false);
+    };
+    restoreSession();
+  }, []);
 
   // Load critical data first using a bundled bootstrap endpoint.
   const loadData = async () => {
@@ -670,6 +682,8 @@ export default function App() {
     const q = searchQuery.toLowerCase();
     return transactions.filter(t => t.ref?.toLowerCase().includes(q) || t.fullName?.toLowerCase().includes(q) || t.phoneNumbers?.some(p => p?.includes(q)) || t.imei?.includes(q) || t.aiBrand?.toLowerCase().includes(q));
   }, [transactions, searchQuery]);
+
+  if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
 
   if (!currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); }} />;
 
@@ -860,7 +874,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
           <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}</span>
-          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={() => setCurrentUser(null)}>{isMobile ? '✕' : 'Logout'}</button>
+          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
         </div>
       </div>
 
