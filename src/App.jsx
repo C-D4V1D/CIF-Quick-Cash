@@ -63,7 +63,7 @@ const API = {
 // --- LOCAL CACHE (instant page load) ---
 const readCache = (k) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null; } catch { return null; } };
 const writeCache = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
-const clearAuthCache = () => { try { localStorage.removeItem('cfc_user'); localStorage.removeItem('cfc_critical'); } catch {} };
+const clearAuthCache = () => { try { localStorage.removeItem('cfc_user'); localStorage.removeItem('cfc_critical'); localStorage.removeItem('cfc_transactions'); } catch {} };
 
 // --- UTILITY FUNCTIONS ---
 const genRef = () => {
@@ -1043,14 +1043,15 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
   const [publicScreen, setPublicScreen] = useState(() => getPublicScreenFromPath(window.location.pathname)); // 'landing' | 'portal' | 'login'
   const [page, setPage] = useState('dashboard');
-  const [transactions, setTransactions] = useState(() => readCache('cfc_critical')?.transactions || []);
-  const [drafts, setDrafts] = useState(() => readCache('cfc_critical')?.drafts || []);
+  const [transactions, setTransactions] = useState(() => readCache('cfc_transactions')?.transactions || []);
+  const [drafts, setDrafts] = useState(() => readCache('cfc_transactions')?.drafts || []);
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
   const [users, setUsers] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [capital, setCapital] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
+  const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
   const [viewingTx, setViewingTx] = useState(null);
   const [repayingTx, setRepayingTx] = useState(null);
@@ -1106,24 +1107,34 @@ export default function App() {
     restoreSession();
   }, []);
 
-  // Load critical data first using a bundled bootstrap endpoint.
+  // Load critical data first, then hydrate heavy lists in the background.
   const loadData = async () => {
-    // Only show the full-screen loader if we have no cached data to display
-    const hasCached = !!readCache('cfc_critical');
-    if (!hasCached) setLoading(true);
+    const criticalCache = readCache('cfc_critical');
+    const listCache = readCache('cfc_transactions');
+
+    // Only show a full-screen loader if we cannot render the shell from cache.
+    if (!criticalCache) setLoading(true);
+    if (!listCache) setListLoading(true);
 
     const critical = await API.get('bootstrap?scope=critical');
     if (critical) {
       setSettings({ ...DEFAULT_SETTINGS, ...(critical.settings || {}) });
-      setTransactions(critical.transactions || []);
-      setDrafts(critical.drafts || []);
       setDbStatus('connected');
-      writeCache('cfc_critical', { settings: critical.settings, transactions: critical.transactions, drafts: critical.drafts });
+      writeCache('cfc_critical', { settings: critical.settings, summary: critical.summary || {} });
     } else {
       setDbStatus('error');
     }
 
     setLoading(false);
+
+    // Load large list datasets in the background so navigation/header remain interactive.
+    const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');
+    if (lists) {
+      setTransactions(lists.transactions || []);
+      setDrafts(lists.drafts || []);
+      writeCache('cfc_transactions', { transactions: lists.transactions || [], drafts: lists.drafts || [], pagination: lists.pagination || null });
+    }
+    setListLoading(false);
 
     // Load secondary datasets in one background request.
     const role = currentUser?.role || '';
@@ -1170,13 +1181,13 @@ export default function App() {
 
   if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
 
+  if (loading && currentUser) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>💰</div><div style={{ fontWeight: 700 }}>Loading essentials...</div></div></div>;
+
   if (!currentUser) {
     if (publicScreen === 'portal') return <CustomerPortal settings={settings} onBack={() => navigatePublic('landing')} />;
     if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); setPublicScreen('landing'); window.history.replaceState({}, '', '/'); }} />;
     return <LandingPage settings={settings} onCheckLoan={() => navigatePublic('portal')} onStaffLogin={() => navigatePublic('login')} />;
   }
-
-  if (loading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>💰</div><div style={{ fontWeight: 700 }}>Loading from database...</div></div></div>;
 
   if (editingTx !== null) return (
     <div style={S.app}>
@@ -1280,12 +1291,13 @@ export default function App() {
 
   // Main page renderer
   const renderPage = () => {
+    const listLoadingNotice = listLoading ? (<div style={{ ...S.alert('info'), marginBottom: '16px' }}>⏳ Transactions and drafts are still loading in the background...</div>) : null;
     if (viewingTx) return <TxDetail tx={viewingTx} />;
 
     const TxTable = ({ items, showActions = true }) => (<table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th><th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{items.map(tx => (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td><td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && daysBetween(tx.dateGiven) > (tx.loanDays || 30) + 3)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}</div></td>}</tr>))}{items.length === 0 && <tr><td style={S.td} colSpan={7}>No records.</td></tr>}</tbody></table>);
 
     switch (page) {
-      case 'dashboard': return (<div>
+      case 'dashboard': return (<div>{listLoadingNotice}
         <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📊 Dashboard</h2>
         <div style={S.grid4}>
           <div style={S.stat}><div style={S.statLabel}>Available Lending Capital</div><div style={S.statValue}>{fmtMoney(availableLendingCapital)}</div></div>
@@ -1301,22 +1313,23 @@ export default function App() {
 
       case 'newTx': setEditingTx('new'); return null;
 
-      case 'transactions': return (<div>
+      case 'transactions': return (<div>{listLoadingNotice}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, margin: 0 }}>📋 All Transactions</h2><input style={{ ...S.input, flex: '1 1 180px', maxWidth: '300px' }} placeholder="🔍 Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
         <div style={S.card}><TxTable items={searchQuery ? filteredTxs : transactions} /></div>
       </div>);
 
-      case 'active': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⏳ Active Loans</h2><div style={S.card}><TxTable items={activeTxs.sort((a, b) => new Date(a.deadlineDate) - new Date(b.deadlineDate))} /></div></div>);
+      case 'active': return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⏳ Active Loans</h2><div style={S.card}><TxTable items={activeTxs.sort((a, b) => new Date(a.deadlineDate) - new Date(b.deadlineDate))} /></div></div>);
 
       case 'deadlines': {
+        
         const AlertGroup = ({ title, items, color, icon }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color }}>{icon} {title} ({items.length})</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button><button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button></div></div>))}</div>);
         const readyToSell = activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3);
         const inGrace = activeTxs.filter(t => { const d = daysBetween(t.dateGiven); return d > (t.loanDays || 30) && d <= (t.loanDays || 30) + 3; });
         const upcoming7 = activeTxs.filter(t => { const l = (t.loanDays || 30) - daysBetween(t.dateGiven); return l <= 7 && l > 0; });
-        return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
+        return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
       }
 
-      case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} /></div></div>); }
+      case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} /></div></div>); }
 
       case 'reports': { const fabianComp = Math.floor(netProfit * 0.10); const stakeholderProfit = netProfit - fabianComp; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📈 Monthly Report</h2><div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div><div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(totalExpenses)}</div></div><div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: netProfit > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(netProfit)}</div></div></div><div style={S.grid2}><div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(fabianComp)}</div></div><div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(stakeholderProfit)}</div></div></div><div style={S.card}><div style={S.cardTitle}>Distribution</div>{capital.map(c => { const pct = totalCapital > 0 ? (c.amount / totalCapital * 100) : 0; return (<div key={c.name + c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><span><strong>{c.name}</strong> — {fmtMoney(c.amount)} ({pct.toFixed(1)}%)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(Math.floor(stakeholderProfit * pct / 100))}</strong></div>); })}{capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}</div></div>); }
 
