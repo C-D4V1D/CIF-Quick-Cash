@@ -34,6 +34,39 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // BOOTSTRAP: GET /api/bootstrap?scope=critical|secondary&role=admin
+    // ============================================================
+    if (path === 'bootstrap' && method === 'GET') {
+      const scope = url.searchParams.get('scope') || 'critical';
+      const role = url.searchParams.get('role') || '';
+
+      if (scope === 'secondary') {
+        const [expenses, capital, declined, users] = await Promise.all([
+          sql`SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC`,
+          sql`SELECT id, name, amount, date, method FROM capital ORDER BY date`,
+          sql`SELECT id, date, item, reason FROM declined_log ORDER BY date DESC`,
+          role === 'admin'
+            ? sql`SELECT id, username, role, name, created_at FROM users ORDER BY created_at`
+            : Promise.resolve([])
+        ]);
+
+        return json({ expenses, capital, declined, users });
+      }
+
+      const [settingsRows, transactionRows, draftRows] = await Promise.all([
+        sql`SELECT value FROM settings WHERE key = 'config'`,
+        sql`SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC`,
+        sql`SELECT ref, data FROM drafts ORDER BY updated_at DESC`
+      ]);
+
+      return json({
+        settings: settingsRows.length > 0 ? settingsRows[0].value : {},
+        transactions: transactionRows.map((r) => ({ ...r.data, ref: r.ref, status: r.status })),
+        drafts: draftRows.map((r) => ({ ...r.data, ref: r.ref }))
+      });
+    }
+
+    // ============================================================
     // USERS: GET, POST, DELETE /api/users
     // ============================================================
     if (path === 'users' && method === 'GET') {
@@ -111,7 +144,7 @@ export async function onRequest(context) {
     }
     if (path === 'expenses' && method === 'POST') {
       const { date, category, description, amount } = await request.json();
-      await sql`INSERT INTO expenses (date, category, description, amount) VALUES (${date}, ${category}, ${description}, amount)`;
+      await sql`INSERT INTO expenses (date, category, description, amount) VALUES (${date}, ${category}, ${description}, ${amount})`;
       return json({ success: true });
     }
 

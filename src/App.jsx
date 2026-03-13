@@ -613,38 +613,34 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
 
-  // Load critical data first for faster post-login render.
+  // Load critical data first using a bundled bootstrap endpoint.
   const loadData = async () => {
     setLoading(true);
-    const [s, txs, drs] = await Promise.all([
-      API.get('settings'), API.get('transactions'), API.get('drafts')
-    ]);
-    if (s) setSettings({ ...DEFAULT_SETTINGS, ...s });
-    if (txs) setTransactions(txs);
-    if (drs) setDrafts(drs);
 
-    setDbStatus(s !== null ? 'connected' : 'error');
+    const critical = await API.get('bootstrap?scope=critical');
+    if (critical) {
+      setSettings({ ...DEFAULT_SETTINGS, ...(critical.settings || {}) });
+      setTransactions(critical.transactions || []);
+      setDrafts(critical.drafts || []);
+      setDbStatus('connected');
+    } else {
+      setDbStatus('error');
+    }
+
     setLoading(false);
 
-    // Load secondary datasets in background (doesn't block app shell).
-    const [e, c, d, u] = await Promise.all([
-      API.get('expenses'),
-      API.get('capital'),
-      API.get('declined'),
-      currentUser?.role === 'admin' ? API.get('users') : Promise.resolve(null)
-    ]);
-    if (e) setExpenses(e);
-    if (c) setCapital(c);
-    if (d) setDeclinedLog(d);
-    if (u) setUsers(u);
+    // Load secondary datasets in one background request.
+    const role = currentUser?.role || '';
+    const secondary = await API.get(`bootstrap?scope=secondary&role=${encodeURIComponent(role)}`);
+    if (secondary) {
+      setExpenses(secondary.expenses || []);
+      setCapital(secondary.capital || []);
+      setDeclinedLog(secondary.declined || []);
+      setUsers(secondary.users || []);
+    }
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
-
-  // Check database health on mount
-  useEffect(() => {
-    API.get('health').then(r => setDbStatus(r?.database === 'connected' ? 'connected' : 'error'));
-  }, []);
 
   // Save helpers
   const saveSettings = async (s) => { setSettings(s); await API.put('settings', s); };
