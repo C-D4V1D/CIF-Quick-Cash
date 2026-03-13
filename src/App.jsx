@@ -20,7 +20,7 @@ const useMobile = () => {
 const API = {
   async get(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`);
+      const r = await fetch(`/api/${endpoint}`, { cache: 'no-store' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`GET /api/${endpoint}:`, e); return null; }
@@ -276,6 +276,11 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Warm up database while user enters credentials.
+  useEffect(() => {
+    API.get('health');
+  }, []);
 
   const handleLogin = async () => {
     setLoading(true);
@@ -608,22 +613,30 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
 
-  // Load all data from database
+  // Load critical data first for faster post-login render.
   const loadData = async () => {
     setLoading(true);
-    const [s, txs, drs, e, c, d, u] = await Promise.all([
-      API.get('settings'), API.get('transactions'), API.get('drafts'),
-      API.get('expenses'), API.get('capital'), API.get('declined'), API.get('users')
+    const [s, txs, drs] = await Promise.all([
+      API.get('settings'), API.get('transactions'), API.get('drafts')
     ]);
     if (s) setSettings({ ...DEFAULT_SETTINGS, ...s });
     if (txs) setTransactions(txs);
     if (drs) setDrafts(drs);
+
+    setDbStatus(s !== null ? 'connected' : 'error');
+    setLoading(false);
+
+    // Load secondary datasets in background (doesn't block app shell).
+    const [e, c, d, u] = await Promise.all([
+      API.get('expenses'),
+      API.get('capital'),
+      API.get('declined'),
+      currentUser?.role === 'admin' ? API.get('users') : Promise.resolve(null)
+    ]);
     if (e) setExpenses(e);
     if (c) setCapital(c);
     if (d) setDeclinedLog(d);
     if (u) setUsers(u);
-    setDbStatus(s !== null ? 'connected' : 'error');
-    setLoading(false);
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);

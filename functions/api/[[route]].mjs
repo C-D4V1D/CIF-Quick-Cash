@@ -1,9 +1,9 @@
 import { neon } from '@neondatabase/serverless';
 
 // Helper: JSON response
-const json = (data, status = 200) => new Response(JSON.stringify(data), {
+const json = (data, status = 200, extraHeaders = {}) => new Response(JSON.stringify(data), {
   status,
-  headers: { 'Content-Type': 'application/json' }
+  headers: { 'Content-Type': 'application/json', ...extraHeaders }
 });
 
 const error = (msg, status = 400) => json({ error: msg }, status);
@@ -169,8 +169,12 @@ export async function onRequest(context) {
     // HEALTH CHECK: GET /api/health
     // ============================================================
     if (path === 'health' || path === '') {
-      const rows = await sql`SELECT NOW() as time`;
-      return json({ status: 'ok', time: rows[0].time, database: 'connected' });
+      await sql`SELECT 1`;
+      return json(
+        { status: 'ok', database: 'connected' },
+        200,
+        { 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+      );
     }
 
     return error('Not found', 404);
