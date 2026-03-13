@@ -136,6 +136,19 @@ const DEFAULT_SETTINGS = {
   shopMapsUrl: '',
 };
 
+const PUBLIC_ROUTE_BY_SCREEN = {
+  landing: '/',
+  portal: '/checkloanstatus',
+  login: '/login'
+};
+
+const getPublicScreenFromPath = (path) => {
+  const normalized = (path || '/').replace(/\/+$/, '') || '/';
+  if (normalized === '/login') return 'login';
+  if (normalized === '/checkloanstatus') return 'portal';
+  return 'landing';
+};
+
 // ============================================================
 // GEMINI AI INTEGRATION
 // ============================================================
@@ -1028,7 +1041,7 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
   const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
-  const [publicScreen, setPublicScreen] = useState('landing'); // 'landing' | 'portal' | 'login'
+  const [publicScreen, setPublicScreen] = useState(() => getPublicScreenFromPath(window.location.pathname)); // 'landing' | 'portal' | 'login'
   const [page, setPage] = useState('dashboard');
   const [transactions, setTransactions] = useState(() => readCache('cfc_critical')?.transactions || []);
   const [drafts, setDrafts] = useState(() => readCache('cfc_critical')?.drafts || []);
@@ -1051,6 +1064,25 @@ export default function App() {
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      if (!currentUser) {
+        setPublicScreen(getPublicScreenFromPath(window.location.pathname));
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentUser]);
+
+  const navigatePublic = (screen) => {
+    const path = PUBLIC_ROUTE_BY_SCREEN[screen] || '/';
+    if (window.location.pathname !== path) {
+      window.history.pushState({ publicScreen: screen }, '', path);
+    }
+    setPublicScreen(screen);
+  };
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -1138,9 +1170,9 @@ export default function App() {
   if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
 
   if (!currentUser) {
-    if (publicScreen === 'portal') return <CustomerPortal settings={settings} onBack={() => setPublicScreen('landing')} />;
-    if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); setPublicScreen('landing'); }} />;
-    return <LandingPage settings={settings} onCheckLoan={() => setPublicScreen('portal')} onStaffLogin={() => setPublicScreen('login')} />;
+    if (publicScreen === 'portal') return <CustomerPortal settings={settings} onBack={() => navigatePublic('landing')} />;
+    if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); setPublicScreen('landing'); window.history.replaceState({}, '', '/'); }} />;
+    return <LandingPage settings={settings} onCheckLoan={() => navigatePublic('portal')} onStaffLogin={() => navigatePublic('login')} />;
   }
 
   if (loading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>💰</div><div style={{ fontWeight: 700 }}>Loading from database...</div></div></div>;
