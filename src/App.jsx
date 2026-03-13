@@ -67,7 +67,7 @@ const genRef = () => {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(-2);
   const rand = String(Math.floor(Math.random() * 999) + 1).padStart(3, '0');
-  return `CFC-${dd}${mm}${yy}-${rand}`;
+  return `CIF-${dd}${mm}${yy}-${rand}`;
 };
 
 const daysBetween = (dateStr) => {
@@ -754,7 +754,7 @@ export default function App() {
   if (editingTx !== null) return (
     <div style={S.app}>
       <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
-        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CFC Quick Cash — New Transaction'}</div>
+        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</div>
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); setPage('dashboard'); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
@@ -931,7 +931,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isMobile && <button style={S.hamburger} onClick={() => setSidebarOpen(o => !o)} aria-label="Menu">☰</button>}
           <span style={{ fontSize: '20px' }}>💰</span>
-          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CFC QUICK CASH</span>
+          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CIF QUICK CASH</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
