@@ -1,13 +1,19 @@
 import { neon } from '@neondatabase/serverless';
 
-const SESSION_COOKIE = 'cfc_session';
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
+// Session cookie names — short-lived (session) vs long-lived (remember me)
+const SESSION_COOKIE_SHORT = 'cfc_session_short';
+const SESSION_COOKIE_LONG = 'cfc_session_long';
+const REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-// Helper: JSON response
-const json = (data, status = 200, extraHeaders = {}) => new Response(JSON.stringify(data), {
-  status,
-  headers: { 'Content-Type': 'application/json', ...extraHeaders }
-});
+// Helper: JSON response — uses Headers so multiple Set-Cookie values work correctly
+const json = (data, status = 200, extraHeaders = {}) => {
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  Object.entries(extraHeaders).forEach(([key, value]) => {
+    if (Array.isArray(value)) value.forEach((v) => headers.append(key, v));
+    else headers.set(key, value);
+  });
+  return new Response(JSON.stringify(data), { status, headers });
+};
 
 const error = (msg, status = 400) => json({ error: msg }, status);
 
@@ -22,14 +28,26 @@ const parseCookies = (cookieHeader = '') => Object.fromEntries(
     })
 );
 
-const buildSessionCookie = (token, requestUrl) => {
-  const secureFlag = requestUrl.protocol === 'https:' ? '; Secure' : '';
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${secureFlag}`;
+const buildSessionCookie = (name, value, maxAge) => {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Secure'
+  ];
+  if (typeof maxAge === 'number') parts.push(`Max-Age=${maxAge}`);
+  return parts.join('; ');
 };
 
-const clearSessionCookie = (requestUrl) => {
-  const secureFlag = requestUrl.protocol === 'https:' ? '; Secure' : '';
-  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`;
+const clearSessionCookie = (name) => `${name}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`;
+
+// Read user from either cookie (long-lived takes priority)
+const getSessionUser = (request) => {
+  const cookies = parseCookies(request.headers.get('Cookie') || '');
+  const raw = cookies[SESSION_COOKIE_LONG] || cookies[SESSION_COOKIE_SHORT];
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
 };
 
 export async function onRequest(context) {
@@ -38,69 +56,38 @@ export async function onRequest(context) {
   const path = url.pathname.replace('/api/', '').replace('/api', '');
   const method = request.method;
 
-  // Ensure the database connection string exists in Cloudflare settings
   if (!env.DATABASE_URL) {
     return error('Database connection string missing in Cloudflare Environment Variables', 500);
   }
 
-  // Connect to Neon Database
   const sql = neon(env.DATABASE_URL);
-
-  const ensureSessionTable = async () => {
-    await sql`
-      CREATE TABLE IF NOT EXISTS sessions (
-        token TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `;
-  };
-
-  const getSessionUser = async () => {
-    await ensureSessionTable();
-    const cookies = parseCookies(request.headers.get('Cookie') || '');
-    const token = cookies[SESSION_COOKIE];
-    if (!token) return null;
-
-    const rows = await sql`
-      SELECT u.id, u.username, u.role, u.name
-      FROM sessions s
-      JOIN users u ON u.id = s.user_id
-      WHERE s.token = ${token} AND s.expires_at > NOW()
-      LIMIT 1
-    `;
-    return rows[0] || null;
-  };
 
   try {
     // ============================================================
     // AUTH: POST /api/login
     // ============================================================
     if (path === 'login' && method === 'POST') {
-      const { username, password } = await request.json();
+      const { username, password, rememberMe } = await request.json();
       const rows = await sql`SELECT id, username, role, name FROM users WHERE username = ${username} AND password = ${password}`;
       if (rows.length === 0) return error('Invalid username or password', 401);
-      await ensureSessionTable();
 
       const user = rows[0];
-      const token = `${crypto.randomUUID()}-${crypto.randomUUID()}`;
+      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, name: user.name, issuedAt: Date.now() });
+      const activeCookie = rememberMe
+        ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
+        : buildSessionCookie(SESSION_COOKIE_SHORT, sessionPayload);
+      const staleCookie = rememberMe
+        ? clearSessionCookie(SESSION_COOKIE_SHORT)
+        : clearSessionCookie(SESSION_COOKIE_LONG);
 
-      await sql`DELETE FROM sessions WHERE user_id = ${user.id}`;
-      await sql`INSERT INTO sessions (token, user_id, expires_at) VALUES (${token}, ${user.id}, NOW() + INTERVAL '7 days')`;
-
-      return json(
-        { user },
-        200,
-        { 'Set-Cookie': buildSessionCookie(token, url) }
-      );
+      return json({ user }, 200, { 'Set-Cookie': [activeCookie, staleCookie] });
     }
 
     // ============================================================
     // AUTH: GET /api/me
     // ============================================================
     if (path === 'me' && method === 'GET') {
-      const user = await getSessionUser();
+      const user = getSessionUser(request);
       if (!user) return error('Not authenticated', 401);
       return json(user);
     }
@@ -109,13 +96,11 @@ export async function onRequest(context) {
     // AUTH: POST /api/logout
     // ============================================================
     if (path === 'logout' && method === 'POST') {
-      await ensureSessionTable();
-      const cookies = parseCookies(request.headers.get('Cookie') || '');
-      const token = cookies[SESSION_COOKIE];
-      if (token) {
-        await sql`DELETE FROM sessions WHERE token = ${token}`;
-      }
-      return json({ success: true }, 200, { 'Set-Cookie': clearSessionCookie(url) });
+      return json(
+        { success: true },
+        200,
+        { 'Set-Cookie': [clearSessionCookie(SESSION_COOKIE_SHORT), clearSessionCookie(SESSION_COOKIE_LONG)] }
+      );
     }
 
     // ============================================================
@@ -301,4 +286,4 @@ export async function onRequest(context) {
     console.error('API Error:', e);
     return error(e.message || 'Internal server error', 500);
   }
-      }
+}
