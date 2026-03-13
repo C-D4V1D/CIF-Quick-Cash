@@ -20,7 +20,7 @@ const useMobile = () => {
 const API = {
   async get(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`, { cache: 'no-store' });
+      const r = await fetch(`/api/${endpoint}`, { cache: 'no-store', credentials: 'same-origin' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`GET /api/${endpoint}:`, e); return null; }
@@ -29,6 +29,7 @@ const API = {
     try {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
@@ -40,6 +41,7 @@ const API = {
     try {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'PUT',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
@@ -49,7 +51,7 @@ const API = {
   },
   async del(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`, { method: 'DELETE' });
+      const r = await fetch(`/api/${endpoint}`, { method: 'DELETE', credentials: 'same-origin' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`DELETE /api/${endpoint}:`, e); return null; }
@@ -274,6 +276,7 @@ function Modal({ open, onClose, title, children, wide }) {
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -285,7 +288,7 @@ function LoginScreen({ onLogin }) {
   const handleLogin = async () => {
     setLoading(true);
     setError('');
-    const result = await API.post('login', { username, password });
+    const result = await API.post('login', { username, password, rememberMe });
     if (result?.error) { setError(result.error); setLoading(false); return; }
     if (result?.id) { onLogin(result); }
     else { setError('Invalid username or password'); }
@@ -302,6 +305,15 @@ function LoginScreen({ onLogin }) {
         {error && <div style={S.alert('danger')}>{error}</div>}
         <Field label="Username"><input style={S.input} value={username} onChange={e => { setUsername(e.target.value); setError(''); }} placeholder="Enter username" /></Field>
         <Field label="Password"><input style={S.input} type="password" value={password} onChange={e => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" onKeyDown={e => e.key === 'Enter' && handleLogin()} /></Field>
+        <div style={{ marginTop: '-4px', marginBottom: '14px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: COLORS.text }}>
+            <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
+            Remember me on this device
+          </label>
+          <div style={{ fontSize: '11.5px', color: COLORS.textMuted, marginTop: '4px', lineHeight: 1.4 }}>
+            Keeps you signed in for up to 30 days. Leave unchecked on shared computers.
+          </div>
+        </div>
         <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center', marginTop: '8px', padding: '12px', opacity: loading ? 0.6 : 1 }} onClick={handleLogin} disabled={loading}>
           {loading ? '⏳ Signing in...' : 'Sign In →'}
         </button>
@@ -860,7 +872,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
           <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}</span>
-          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={() => setCurrentUser(null)}>{isMobile ? '✕' : 'Logout'}</button>
+          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
         </div>
       </div>
 

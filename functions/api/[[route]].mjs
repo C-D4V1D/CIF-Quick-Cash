@@ -1,12 +1,34 @@
 import { neon } from '@neondatabase/serverless';
 
 // Helper: JSON response
-const json = (data, status = 200, extraHeaders = {}) => new Response(JSON.stringify(data), {
-  status,
-  headers: { 'Content-Type': 'application/json', ...extraHeaders }
-});
+const json = (data, status = 200, extraHeaders = {}) => {
+  const headers = new Headers({ 'Content-Type': 'application/json' });
+  Object.entries(extraHeaders).forEach(([key, value]) => {
+    if (Array.isArray(value)) value.forEach((v) => headers.append(key, v));
+    else headers.set(key, value);
+  });
+  return new Response(JSON.stringify(data), { status, headers });
+};
 
 const error = (msg, status = 400) => json({ error: msg }, status);
+
+const SESSION_COOKIE_SHORT = 'cfc_session_short';
+const SESSION_COOKIE_LONG = 'cfc_session_long';
+const REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+
+const buildSessionCookie = (name, value, maxAge) => {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Secure'
+  ];
+  if (typeof maxAge === 'number') parts.push(`Max-Age=${maxAge}`);
+  return parts.join('; ');
+};
+
+const clearSessionCookie = (name) => `${name}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`;
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -27,10 +49,32 @@ export async function onRequest(context) {
     // AUTH: POST /api/login
     // ============================================================
     if (path === 'login' && method === 'POST') {
-      const { username, password } = await request.json();
+      const { username, password, rememberMe } = await request.json();
       const rows = await sql`SELECT id, username, role, name FROM users WHERE username = ${username} AND password = ${password}`;
       if (rows.length === 0) return error('Invalid username or password', 401);
-      return json(rows[0]);
+
+      const user = rows[0];
+      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, name: user.name, issuedAt: Date.now() });
+      const activeCookie = rememberMe
+        ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
+        : buildSessionCookie(SESSION_COOKIE_SHORT, sessionPayload);
+      const staleCookie = rememberMe
+        ? clearSessionCookie(SESSION_COOKIE_SHORT)
+        : clearSessionCookie(SESSION_COOKIE_LONG);
+
+      return json(user, 200, { 'Set-Cookie': [activeCookie, staleCookie] });
+    }
+
+
+    // ============================================================
+    // AUTH: POST /api/logout
+    // ============================================================
+    if (path === 'logout' && method === 'POST') {
+      return json(
+        { success: true },
+        200,
+        { 'Set-Cookie': [clearSessionCookie(SESSION_COOKIE_SHORT), clearSessionCookie(SESSION_COOKIE_LONG)] }
+      );
     }
 
     // ============================================================
