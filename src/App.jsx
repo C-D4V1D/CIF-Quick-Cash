@@ -60,6 +60,11 @@ const API = {
   }
 };
 
+// --- LOCAL CACHE (instant page load) ---
+const readCache = (k) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null; } catch { return null; } };
+const writeCache = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+const clearAuthCache = () => { try { localStorage.removeItem('cfc_user'); localStorage.removeItem('cfc_critical'); } catch {} };
+
 // --- UTILITY FUNCTIONS ---
 const genRef = () => {
   const d = new Date();
@@ -1021,18 +1026,18 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 // MAIN APPLICATION
 // ============================================================
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
+  const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
   const [publicScreen, setPublicScreen] = useState('landing'); // 'landing' | 'portal' | 'login'
   const [page, setPage] = useState('dashboard');
-  const [transactions, setTransactions] = useState([]);
-  const [drafts, setDrafts] = useState([]);
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [transactions, setTransactions] = useState(() => readCache('cfc_critical')?.transactions || []);
+  const [drafts, setDrafts] = useState(() => readCache('cfc_critical')?.drafts || []);
+  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
   const [users, setUsers] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [capital, setCapital] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
   const [editingTx, setEditingTx] = useState(null);
   const [viewingTx, setViewingTx] = useState(null);
   const [repayingTx, setRepayingTx] = useState(null);
@@ -1049,19 +1054,31 @@ export default function App() {
 
   useEffect(() => {
     const restoreSession = async () => {
-      // Load public settings for landing page before auth check
-      const pubData = await API.get('bootstrap?scope=critical');
-      if (pubData?.settings) setSettings({ ...DEFAULT_SETTINGS, ...pubData.settings });
       const me = await API.get('me');
-      if (me?.id) setCurrentUser(me);
+      if (me?.id) {
+        writeCache('cfc_user', me);
+        setCurrentUser(me);
+      } else {
+        // Session invalid or expired — clear cache so next load starts fresh
+        clearAuthCache();
+        setCurrentUser(null);
+      }
       setAuthLoading(false);
+      // If not logged in, load public settings in background for landing page
+      if (!me?.id) {
+        API.get('bootstrap?scope=critical').then(pubData => {
+          if (pubData?.settings) setSettings({ ...DEFAULT_SETTINGS, ...pubData.settings });
+        }).catch(() => {});
+      }
     };
     restoreSession();
   }, []);
 
   // Load critical data first using a bundled bootstrap endpoint.
   const loadData = async () => {
-    setLoading(true);
+    // Only show the full-screen loader if we have no cached data to display
+    const hasCached = !!readCache('cfc_critical');
+    if (!hasCached) setLoading(true);
 
     const critical = await API.get('bootstrap?scope=critical');
     if (critical) {
@@ -1069,6 +1086,7 @@ export default function App() {
       setTransactions(critical.transactions || []);
       setDrafts(critical.drafts || []);
       setDbStatus('connected');
+      writeCache('cfc_critical', { settings: critical.settings, transactions: critical.transactions, drafts: critical.drafts });
     } else {
       setDbStatus('error');
     }
@@ -1121,7 +1139,7 @@ export default function App() {
 
   if (!currentUser) {
     if (publicScreen === 'portal') return <CustomerPortal settings={settings} onBack={() => setPublicScreen('landing')} />;
-    if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { setCurrentUser(u); setPublicScreen('landing'); }} />;
+    if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); setPublicScreen('landing'); }} />;
     return <LandingPage settings={settings} onCheckLoan={() => setPublicScreen('portal')} onStaffLogin={() => setPublicScreen('login')} />;
   }
 
@@ -1312,7 +1330,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
           <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}</span>
-          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
+          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); clearAuthCache(); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
         </div>
       </div>
 
