@@ -1,9 +1,11 @@
 import { neon } from '@neondatabase/serverless';
 
-const SESSION_COOKIE = 'cfc_session';
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
+// Session cookie names — short-lived (session) vs long-lived (remember me)
+const SESSION_COOKIE_SHORT = 'cfc_session_short';
+const SESSION_COOKIE_LONG = 'cfc_session_long';
+const REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-// Helper: JSON response
+// Helper: JSON response — uses Headers so multiple Set-Cookie values work correctly
 const json = (data, status = 200, extraHeaders = {}) => {
   const headers = new Headers({ 'Content-Type': 'application/json' });
   Object.entries(extraHeaders).forEach(([key, value]) => {
@@ -15,9 +17,16 @@ const json = (data, status = 200, extraHeaders = {}) => {
 
 const error = (msg, status = 400) => json({ error: msg }, status);
 
-const SESSION_COOKIE_SHORT = 'cfc_session_short';
-const SESSION_COOKIE_LONG = 'cfc_session_long';
-const REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+const parseCookies = (cookieHeader = '') => Object.fromEntries(
+  cookieHeader
+    .split(';')
+    .map((cookie) => cookie.trim())
+    .filter(Boolean)
+    .map((cookie) => {
+      const [name, ...rest] = cookie.split('=');
+      return [name, decodeURIComponent(rest.join('='))];
+    })
+);
 
 const buildSessionCookie = (name, value, maxAge) => {
   const parts = [
@@ -32,25 +41,13 @@ const buildSessionCookie = (name, value, maxAge) => {
 };
 
 const clearSessionCookie = (name) => `${name}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`;
-const parseCookies = (cookieHeader = '') => Object.fromEntries(
-  cookieHeader
-    .split(';')
-    .map((cookie) => cookie.trim())
-    .filter(Boolean)
-    .map((cookie) => {
-      const [name, ...rest] = cookie.split('=');
-      return [name, decodeURIComponent(rest.join('='))];
-    })
-);
 
-const buildSessionCookie = (token, requestUrl) => {
-  const secureFlag = requestUrl.protocol === 'https:' ? '; Secure' : '';
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${secureFlag}`;
-};
-
-const clearSessionCookie = (requestUrl) => {
-  const secureFlag = requestUrl.protocol === 'https:' ? '; Secure' : '';
-  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`;
+// Read user from either cookie (long-lived takes priority)
+const getSessionUser = (request) => {
+  const cookies = parseCookies(request.headers.get('Cookie') || '');
+  const raw = cookies[SESSION_COOKIE_LONG] || cookies[SESSION_COOKIE_SHORT];
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
 };
 
 export async function onRequest(context) {
@@ -59,40 +56,11 @@ export async function onRequest(context) {
   const path = url.pathname.replace('/api/', '').replace('/api', '');
   const method = request.method;
 
-  // Ensure the database connection string exists in Cloudflare settings
   if (!env.DATABASE_URL) {
     return error('Database connection string missing in Cloudflare Environment Variables', 500);
   }
 
-  // Connect to Neon Database
   const sql = neon(env.DATABASE_URL);
-
-  const ensureSessionTable = async () => {
-    await sql`
-      CREATE TABLE IF NOT EXISTS sessions (
-        token TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `;
-  };
-
-  const getSessionUser = async () => {
-    await ensureSessionTable();
-    const cookies = parseCookies(request.headers.get('Cookie') || '');
-    const token = cookies[SESSION_COOKIE];
-    if (!token) return null;
-
-    const rows = await sql`
-      SELECT u.id, u.username, u.role, u.name
-      FROM sessions s
-      JOIN users u ON u.id = s.user_id
-      WHERE s.token = ${token} AND s.expires_at > NOW()
-      LIMIT 1
-    `;
-    return rows[0] || null;
-  };
 
   try {
     // ============================================================
@@ -112,9 +80,17 @@ export async function onRequest(context) {
         ? clearSessionCookie(SESSION_COOKIE_SHORT)
         : clearSessionCookie(SESSION_COOKIE_LONG);
 
-      return json(user, 200, { 'Set-Cookie': [activeCookie, staleCookie] });
+      return json({ user }, 200, { 'Set-Cookie': [activeCookie, staleCookie] });
     }
 
+    // ============================================================
+    // AUTH: GET /api/me
+    // ============================================================
+    if (path === 'me' && method === 'GET') {
+      const user = getSessionUser(request);
+      if (!user) return error('Not authenticated', 401);
+      return json(user);
+    }
 
     // ============================================================
     // AUTH: POST /api/logout
@@ -310,4 +286,4 @@ export async function onRequest(context) {
     console.error('API Error:', e);
     return error(e.message || 'Internal server error', 500);
   }
-      }
+}
