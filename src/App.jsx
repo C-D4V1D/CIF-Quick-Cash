@@ -67,7 +67,7 @@ const genRef = () => {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(-2);
   const rand = String(Math.floor(Math.random() * 999) + 1).padStart(3, '0');
-  return `CFC-${dd}${mm}${yy}-${rand}`;
+  return `CIF-${dd}${mm}${yy}-${rand}`;
 };
 
 const daysBetween = (dateStr) => {
@@ -122,7 +122,13 @@ const DEFAULT_SETTINGS = {
   interestRate: 1, loanCapNoReceipt: 40, loanCapWithReceipt: 50,
   graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
   targetSellPct: 75, minSellBonus: 20, geminiApiKey: '', geminiModel: 'gemini-2.5-flash', ninApiKey: '',
-  itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other']
+  itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other'],
+  shopAddress: 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State',
+  shopPhone1: '08165491908',
+  shopPhone2: '09023540646',
+  shopWhatsApp: '2348165491908',
+  shopHours: 'Monday – Saturday, 8am – 6pm',
+  shopMapsUrl: '',
 };
 
 // ============================================================
@@ -267,6 +273,368 @@ function Modal({ open, onClose, title, children, wide }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', color: COLORS.textMuted, padding: '4px 8px' }}>✕</button>
         </div>
         {children}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// WHATSAPP BUTTON
+// ============================================================
+function WhatsAppButton({ whatsAppNumber, style: extraStyle }) {
+  const num = (whatsAppNumber || '2348165491908').replace(/\D/g, '');
+  const msg = encodeURIComponent('Hello, I need help with my loan at CIF Quick Cash');
+  const url = `https://wa.me/${num}?text=${msg}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: '10px',
+        background: '#25D366', color: '#fff', padding: '12px 20px',
+        borderRadius: '10px', textDecoration: 'none', fontWeight: 700,
+        fontSize: '15px', justifyContent: 'center', width: '100%',
+        boxSizing: 'border-box', ...extraStyle,
+      }}
+    >
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="#25D366"/>
+        <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.15"/>
+        <path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/>
+      </svg>
+      Chat with us on WhatsApp
+    </a>
+  );
+}
+
+// ============================================================
+// LANDING PAGE
+// ============================================================
+function LandingPage({ onCheckLoan, onStaffLogin, settings }) {
+  const s = settings || {};
+  const phone1 = s.shopPhone1 || '08165491908';
+  const phone2 = s.shopPhone2 || '09023540646';
+  const address = s.shopAddress || 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
+  const hours = s.shopHours || 'Monday – Saturday, 8am – 6pm';
+  const mapsUrl = s.shopMapsUrl || `https://www.google.com/search?q=${encodeURIComponent(address)}`;
+  const whatsApp = s.shopWhatsApp || '2348165491908';
+
+  const items = ['Phones', 'Laptops', 'Tablets', 'Speakers', 'Power Banks', 'Fans', 'TVs', 'Generators', 'Gas Cylinders'];
+  const features = [
+    { icon: '⚡', title: 'Get quick cash', desc: 'Bring your item and leave with cash in hand' },
+    { icon: '🔒', title: 'Item kept safe', desc: 'We store it securely until you return' },
+    { icon: '🔄', title: 'Buy it back', desc: 'Pay us back within 30 days and collect your item' },
+    { icon: '🏷', title: 'Fair prices', desc: 'We use current market value to price every item' },
+  ];
+  const steps = [
+    'Walk into our shop with your item',
+    'We check your ID — your NIN number (dial *346# on your phone)',
+    'We check the value of your item and tell you how much we can offer you',
+    'You agree, sign a simple form, and collect your cash',
+    { bold: 'Cash Advance', rest: ': come back within 30 days, pay us back, and take your item home' },
+    { bold: 'Outright Sale', rest: ': we pay you and the item is ours — no need to return' },
+  ];
+  const needs = [
+    'Your item (phone, TV, generator, etc.)',
+    'Your NIN number — dial *346# on your phone to find it',
+    'At least one active phone number',
+    'Original receipt if you have it — you get more cash with receipt',
+    'The item must belong to you',
+  ];
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#1a1a2e', minHeight: '100vh', color: '#fff', fontSize: '16px', lineHeight: 1.6 }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+      {/* Hero */}
+      <div style={{ background: '#1a5f2a', padding: '36px 20px 32px', textAlign: 'center' }}>
+        <div style={{ display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', marginBottom: '14px', color: '#e0f0e3' }}>
+          📍 Enugwu-Aguleri, Anambra
+        </div>
+        <div style={{ fontSize: '32px', marginBottom: '6px' }}>💰</div>
+        <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
+        <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
+          <button
+            onClick={onCheckLoan}
+            style={{ background: '#fff', color: '#1a5f2a', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px' }}
+          >
+            Check My Loan Status
+          </button>
+          <button
+            onClick={onStaffLogin}
+            style={{ background: 'transparent', color: '#fff', border: '2px solid #fff', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 600, cursor: 'pointer', minHeight: '52px' }}
+          >
+            Staff / Admin Login
+          </button>
+        </div>
+      </div>
+
+      {/* Our Two Services */}
+      <div style={{ background: '#111827', padding: '32px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Our two services</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+          <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '12px', padding: '16px' }}>
+            <div style={{ fontWeight: 800, color: '#4ade80', fontSize: '15px', marginBottom: '8px' }}>Cash Advance</div>
+            <div style={{ fontSize: '14px', color: '#a7f3d0', lineHeight: 1.5 }}>Leave your item with us, collect cash, and buy it back within 30 days</div>
+          </div>
+          <div style={{ background: '#3d2e00', border: '1.5px solid #c8a84e', borderRadius: '12px', padding: '16px' }}>
+            <div style={{ fontWeight: 800, color: '#fbbf24', fontSize: '15px', marginBottom: '8px' }}>Outright Sale</div>
+            <div style={{ fontSize: '14px', color: '#fde68a', lineHeight: 1.5 }}>Want to sell your item immediately? We buy it from you on the spot</div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          {features.map(f => (
+            <div key={f.title} style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', border: '1px solid #2a3447' }}>
+              <div style={{ fontSize: '22px', marginBottom: '6px' }}>{f.icon}</div>
+              <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>{f.title}</div>
+              <div style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.4 }}>{f.desc}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Items We Accept */}
+      <div style={{ background: '#0f172a', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>Items we accept</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+          {items.map(item => (
+            <div key={item} style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '8px', padding: '8px 6px', textAlign: 'center', fontSize: '13px', fontWeight: 500, color: '#d1d5db' }}>
+              {item}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* How It Works */}
+      <div style={{ background: '#111827', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>How it works — step by step</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {steps.map((step, i) => (
+            <div key={i} style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+              <div style={{ background: '#1a5f2a', color: '#fff', borderRadius: '50%', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>{i + 1}</div>
+              <div style={{ fontSize: '15px', color: '#e5e7eb', lineHeight: 1.5 }}>
+                {typeof step === 'string' ? step : <><strong style={{ color: '#fff' }}>{step.bold}</strong>{step.rest}</>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* What You Need to Bring */}
+      <div style={{ background: '#0f172a', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>What you need to bring</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {needs.map((n, i) => (
+            <div key={i} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+              <div style={{ color: '#4ade80', marginTop: '4px', flexShrink: 0 }}>●</div>
+              <div style={{ fontSize: '15px', color: '#d1d5db', lineHeight: 1.5 }}>{n}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Contact & Location */}
+      <div style={{ background: '#111827', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Find us</h2>
+        <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', marginBottom: '16px', border: '1px solid #2a3447' }}>
+          <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Address</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{address}</div></div>
+          <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Phone</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{phone1}{phone2 ? ` / ${phone2}` : ''}</div></div>
+          <div><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Hours</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{hours}</div></div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <WhatsAppButton whatsAppNumber={whatsApp} />
+          <a
+            href={mapsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '12px', borderRadius: '10px', textDecoration: 'none', fontWeight: 600, fontSize: '15px' }}
+          >
+            📍 Get Directions
+          </a>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ background: '#0a0f1a', padding: '20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
+        © 2026 Christ-in-Fabian Quick Cash. All rights reserved.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CUSTOMER PORTAL
+// ============================================================
+function CustomerPortal({ onBack, settings }) {
+  const [ref, setRef] = useState('');
+  const [result, setResult] = useState(null); // null | 'not_found' | tx object
+  const [searched, setSearched] = useState(false);
+
+  const s = settings || {};
+  const phone1 = s.shopPhone1 || '08165491908';
+  const whatsApp = s.shopWhatsApp || '2348165491908';
+
+  const handleCheck = async () => {
+    if (!ref.trim()) return;
+    const data = await API.get('transactions');
+    const found = Array.isArray(data) ? data.find(t => t.ref?.toUpperCase() === ref.trim().toUpperCase()) : null;
+    setResult(found || 'not_found');
+    setSearched(true);
+  };
+
+  const formatDateLong = (d) => {
+    if (!d) return '';
+    return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  };
+
+  const calcOwedToday = (tx) => {
+    if (!tx || tx.type === 'outright') return tx?.cashAdvance || 0;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const given = new Date(tx.dateGiven); given.setHours(0, 0, 0, 0);
+    const elapsed = Math.max(0, Math.floor((today - given) / 86400000));
+    return (tx.cashAdvance || 0) + elapsed * (tx.dailyFee || 0);
+  };
+
+  const getDaysInfo = (tx) => {
+    if (!tx.deadlineDate) return null;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const deadline = new Date(tx.deadlineDate); deadline.setHours(0, 0, 0, 0);
+    const diff = Math.ceil((deadline - today) / 86400000);
+    return diff;
+  };
+
+  const getStatusBadge = (tx) => {
+    if (tx.status === 'closed') return { label: 'Closed — Returned', color: '#10b981' };
+    if (tx.status === 'sold') return { label: 'Sold', color: '#6b7280' };
+    if (tx.type === 'outright') return { label: 'Outright Purchase', color: '#8b5cf6' };
+    const days = getDaysInfo(tx);
+    if (days === null) return { label: 'Active', color: '#10b981' };
+    const loanDays = tx.loanDays || 30;
+    const elapsed = daysBetween(tx.dateGiven);
+    if (elapsed > loanDays + 3) return { label: 'Overdue — Sell Pending', color: '#ef4444' };
+    if (elapsed > loanDays) return { label: 'Grace Period', color: '#8b5cf6' };
+    return { label: 'Active', color: '#10b981' };
+  };
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#0f172a', minHeight: '100vh', color: '#fff', fontSize: '16px', lineHeight: 1.6 }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ background: '#1a5f2a', padding: '24px 20px 20px' }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', fontSize: '15px', cursor: 'pointer', padding: '0 0 12px', fontWeight: 500 }}>← Back to Home</button>
+        <h1 style={{ fontSize: 'clamp(20px, 5vw, 28px)', fontWeight: 800, margin: '0 0 6px' }}>Check Your Loan Status</h1>
+        <p style={{ margin: 0, opacity: 0.85, fontSize: '15px' }}>Enter the reference number from your agreement form (e.g. CIF-130326-001)</p>
+      </div>
+
+      <div style={{ padding: '24px 20px', maxWidth: '500px', margin: '0 auto' }}>
+        {/* Search */}
+        {(!searched || result === 'not_found') && (
+          <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', marginBottom: '20px', border: '1px solid #2a3447' }}>
+            {result === 'not_found' && (
+              <div style={{ background: '#3d1515', border: '1px solid #ef4444', borderRadius: '8px', padding: '14px', marginBottom: '16px', color: '#fca5a5', fontSize: '14px' }}>
+                We could not find this reference number. Please check your agreement form and try again, or call us on {phone1}.
+              </div>
+            )}
+            <label style={{ display: 'block', fontWeight: 600, color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Reference Number</label>
+            <input
+              style={{ width: '100%', padding: '14px', borderRadius: '8px', border: '1.5px solid #2a3447', fontSize: '16px', background: '#111827', color: '#fff', boxSizing: 'border-box', marginBottom: '12px' }}
+              placeholder="e.g. CIF-130326-001"
+              value={ref}
+              onChange={e => { setRef(e.target.value); setSearched(false); }}
+              onKeyDown={e => e.key === 'Enter' && handleCheck()}
+            />
+            <button
+              onClick={handleCheck}
+              style={{ width: '100%', background: '#1a5f2a', color: '#fff', border: 'none', borderRadius: '8px', padding: '14px', fontSize: '16px', fontWeight: 700, cursor: 'pointer', minHeight: '50px' }}
+            >
+              Check My Loan
+            </button>
+            {result === 'not_found' && (
+              <div style={{ marginTop: '16px' }}>
+                <WhatsAppButton whatsAppNumber={whatsApp} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Result */}
+        {searched && result && result !== 'not_found' && (() => {
+          const tx = result;
+          const badge = getStatusBadge(tx);
+          const daysInfo = getDaysInfo(tx);
+          const owed = calcOwedToday(tx);
+          const isOverdue = daysInfo !== null && daysInfo < 0;
+          return (
+            <div>
+              <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', border: '1px solid #2a3447', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+                  <div>
+                    <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '2px' }}>Reference</div>
+                    <div style={{ fontWeight: 800, fontSize: '17px' }}>{tx.ref}</div>
+                  </div>
+                  <span style={{ background: badge.color, color: '#fff', borderRadius: '20px', padding: '4px 12px', fontSize: '12px', fontWeight: 700, flexShrink: 0, marginLeft: '8px' }}>{badge.label}</span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '14px' }}>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Customer</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{tx.fullName}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Item</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{[tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' ') || 'N/A'}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Cash Advance Given</div>
+                    <div style={{ fontWeight: 700, fontSize: '17px', color: '#4ade80' }}>{fmtMoney(tx.cashAdvance)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Daily Fee</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{fmtMoney(tx.dailyFee)} per day</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Date Given</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{formatDateLong(tx.dateGiven)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Return Deadline</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{formatDateLong(tx.deadlineDate)}</div>
+                  </div>
+                </div>
+
+                {daysInfo !== null && tx.status === 'active' && tx.type !== 'outright' && (
+                  <div style={{ background: isOverdue ? '#3d1515' : '#1a3d22', border: `1px solid ${isOverdue ? '#ef4444' : '#1a5f2a'}`, borderRadius: '8px', padding: '12px', marginBottom: '14px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '13px', color: isOverdue ? '#fca5a5' : '#a7f3d0' }}>{isOverdue ? `${Math.abs(daysInfo)} days overdue` : `${daysInfo} days remaining`}</div>
+                  </div>
+                )}
+
+                {tx.status === 'active' && tx.type !== 'outright' && (
+                  <div style={{ background: '#111827', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '4px' }}>Total owed today</div>
+                    <div style={{ fontSize: '26px', fontWeight: 800, color: isOverdue ? '#ef4444' : '#4ade80' }}>{fmtMoney(owed)}</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>Updated live based on today's date</div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '14px', color: '#d1d5db', border: '1px solid #2a3447' }}>
+                To pay back and collect your item, visit our shop or call <strong style={{ color: '#fff' }}>{phone1}</strong>
+              </div>
+
+              <WhatsAppButton whatsAppNumber={whatsApp} style={{ marginBottom: '14px' }} />
+
+              <button
+                onClick={() => { setResult(null); setSearched(false); setRef(''); }}
+                style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: '15px', cursor: 'pointer', padding: '8px 0', textDecoration: 'underline', display: 'block', textAlign: 'center', width: '100%' }}
+              >
+                ← Check another reference number
+              </button>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -655,6 +1023,7 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [publicScreen, setPublicScreen] = useState('landing'); // 'landing' | 'portal' | 'login'
   const [page, setPage] = useState('dashboard');
   const [transactions, setTransactions] = useState([]);
   const [drafts, setDrafts] = useState([]);
@@ -680,6 +1049,9 @@ export default function App() {
 
   useEffect(() => {
     const restoreSession = async () => {
+      // Load public settings for landing page before auth check
+      const pubData = await API.get('bootstrap?scope=critical');
+      if (pubData?.settings) setSettings({ ...DEFAULT_SETTINGS, ...pubData.settings });
       const me = await API.get('me');
       if (me?.id) setCurrentUser(me);
       setAuthLoading(false);
@@ -747,14 +1119,18 @@ export default function App() {
 
   if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
 
-  if (!currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); }} />;
+  if (!currentUser) {
+    if (publicScreen === 'portal') return <CustomerPortal settings={settings} onBack={() => setPublicScreen('landing')} />;
+    if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { setCurrentUser(u); setPublicScreen('landing'); }} />;
+    return <LandingPage settings={settings} onCheckLoan={() => setPublicScreen('portal')} onStaffLogin={() => setPublicScreen('login')} />;
+  }
 
   if (loading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>💰</div><div style={{ fontWeight: 700 }}>Loading from database...</div></div></div>;
 
   if (editingTx !== null) return (
     <div style={S.app}>
       <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
-        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CFC Quick Cash — New Transaction'}</div>
+        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</div>
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); setPage('dashboard'); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
@@ -899,7 +1275,7 @@ export default function App() {
 
       case 'declined': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Item</th><th style={S.th}>Reason</th></tr></thead><tbody>{declinedLog.map((d, i) => (<tr key={i}><td style={S.td}>{fmtDate(d.date)}</td><td style={S.td}>{d.item}</td><td style={S.td}>{d.reason}</td></tr>))}{declinedLog.length === 0 && <tr><td style={S.td} colSpan={3}>None.</td></tr>}</tbody></table></div></div>);
 
-      case 'settings': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div></div>);
+      case 'settings': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div></div>);
 
       case 'users': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => (<tr key={u.id}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}>{u.id !== 'admin' && <button style={S.btnSm('danger')} onClick={async () => { await API.del(`users/${u.id}`); loadData(); }}>Remove</button>}</td></tr>))}</tbody></table></div></div>);
 
@@ -931,7 +1307,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isMobile && <button style={S.hamburger} onClick={() => setSidebarOpen(o => !o)} aria-label="Menu">☰</button>}
           <span style={{ fontSize: '20px' }}>💰</span>
-          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CFC QUICK CASH</span>
+          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CIF QUICK CASH</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
