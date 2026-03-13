@@ -20,7 +20,7 @@ const useMobile = () => {
 const API = {
   async get(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`);
+      const r = await fetch(`/api/${endpoint}`, { cache: 'no-store' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`GET /api/${endpoint}:`, e); return null; }
@@ -276,6 +276,11 @@ function LoginScreen({ onLogin }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Warm up database while user enters credentials.
+  useEffect(() => {
+    API.get('health');
+  }, []);
 
   const handleLogin = async () => {
     setLoading(true);
@@ -608,30 +613,34 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
 
-  // Load all data from database
+  // Load critical data first using a bundled bootstrap endpoint.
   const loadData = async () => {
     setLoading(true);
-    const [s, txs, drs, e, c, d, u] = await Promise.all([
-      API.get('settings'), API.get('transactions'), API.get('drafts'),
-      API.get('expenses'), API.get('capital'), API.get('declined'), API.get('users')
-    ]);
-    if (s) setSettings({ ...DEFAULT_SETTINGS, ...s });
-    if (txs) setTransactions(txs);
-    if (drs) setDrafts(drs);
-    if (e) setExpenses(e);
-    if (c) setCapital(c);
-    if (d) setDeclinedLog(d);
-    if (u) setUsers(u);
-    setDbStatus(s !== null ? 'connected' : 'error');
+
+    const critical = await API.get('bootstrap?scope=critical');
+    if (critical) {
+      setSettings({ ...DEFAULT_SETTINGS, ...(critical.settings || {}) });
+      setTransactions(critical.transactions || []);
+      setDrafts(critical.drafts || []);
+      setDbStatus('connected');
+    } else {
+      setDbStatus('error');
+    }
+
     setLoading(false);
+
+    // Load secondary datasets in one background request.
+    const role = currentUser?.role || '';
+    const secondary = await API.get(`bootstrap?scope=secondary&role=${encodeURIComponent(role)}`);
+    if (secondary) {
+      setExpenses(secondary.expenses || []);
+      setCapital(secondary.capital || []);
+      setDeclinedLog(secondary.declined || []);
+      setUsers(secondary.users || []);
+    }
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
-
-  // Check database health on mount
-  useEffect(() => {
-    API.get('health').then(r => setDbStatus(r?.database === 'connected' ? 'connected' : 'error'));
-  }, []);
 
   // Save helpers
   const saveSettings = async (s) => { setSettings(s); await API.put('settings', s); };

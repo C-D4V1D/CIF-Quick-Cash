@@ -1,9 +1,9 @@
 import { neon } from '@neondatabase/serverless';
 
 // Helper: JSON response
-const json = (data, status = 200) => new Response(JSON.stringify(data), {
+const json = (data, status = 200, extraHeaders = {}) => new Response(JSON.stringify(data), {
   status,
-  headers: { 'Content-Type': 'application/json' }
+  headers: { 'Content-Type': 'application/json', ...extraHeaders }
 });
 
 const error = (msg, status = 400) => json({ error: msg }, status);
@@ -31,6 +31,39 @@ export async function onRequest(context) {
       const rows = await sql`SELECT id, username, role, name FROM users WHERE username = ${username} AND password = ${password}`;
       if (rows.length === 0) return error('Invalid username or password', 401);
       return json(rows[0]);
+    }
+
+    // ============================================================
+    // BOOTSTRAP: GET /api/bootstrap?scope=critical|secondary&role=admin
+    // ============================================================
+    if (path === 'bootstrap' && method === 'GET') {
+      const scope = url.searchParams.get('scope') || 'critical';
+      const role = url.searchParams.get('role') || '';
+
+      if (scope === 'secondary') {
+        const [expenses, capital, declined, users] = await Promise.all([
+          sql`SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC`,
+          sql`SELECT id, name, amount, date, method FROM capital ORDER BY date`,
+          sql`SELECT id, date, item, reason FROM declined_log ORDER BY date DESC`,
+          role === 'admin'
+            ? sql`SELECT id, username, role, name, created_at FROM users ORDER BY created_at`
+            : Promise.resolve([])
+        ]);
+
+        return json({ expenses, capital, declined, users });
+      }
+
+      const [settingsRows, transactionRows, draftRows] = await Promise.all([
+        sql`SELECT value FROM settings WHERE key = 'config'`,
+        sql`SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC`,
+        sql`SELECT ref, data FROM drafts ORDER BY updated_at DESC`
+      ]);
+
+      return json({
+        settings: settingsRows.length > 0 ? settingsRows[0].value : {},
+        transactions: transactionRows.map((r) => ({ ...r.data, ref: r.ref, status: r.status })),
+        drafts: draftRows.map((r) => ({ ...r.data, ref: r.ref }))
+      });
     }
 
     // ============================================================
@@ -111,7 +144,7 @@ export async function onRequest(context) {
     }
     if (path === 'expenses' && method === 'POST') {
       const { date, category, description, amount } = await request.json();
-      await sql`INSERT INTO expenses (date, category, description, amount) VALUES (${date}, ${category}, ${description}, amount)`;
+      await sql`INSERT INTO expenses (date, category, description, amount) VALUES (${date}, ${category}, ${description}, ${amount})`;
       return json({ success: true });
     }
 
@@ -169,8 +202,12 @@ export async function onRequest(context) {
     // HEALTH CHECK: GET /api/health
     // ============================================================
     if (path === 'health' || path === '') {
-      const rows = await sql`SELECT NOW() as time`;
-      return json({ status: 'ok', time: rows[0].time, database: 'connected' });
+      await sql`SELECT 1`;
+      return json(
+        { status: 'ok', database: 'connected' },
+        200,
+        { 'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0' }
+      );
     }
 
     return error('Not found', 404);
