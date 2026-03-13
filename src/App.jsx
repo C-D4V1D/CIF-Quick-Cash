@@ -606,6 +606,7 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState('checking');
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [zoomedPhoto, setZoomedPhoto] = useState(null);
 
   // Load all data from database
   const loadData = async () => {
@@ -707,9 +708,60 @@ export default function App() {
     {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px' }}>Repaid: {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
     {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.accentLight, borderRadius: '8px' }}>Sold: {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} — Profit: {fmtMoney(tx.salePrice - tx.cashAdvance)}</div>}
     </div>
-    <div style={S.card}><div style={S.cardTitle}>📸 Photos</div><div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>{[tx.photoCustomerHolding, tx.photoCustomerID, tx.itemPhotos?.front, tx.itemPhotos?.back, tx.photoSigning, tx.photoSealedPkg].filter(Boolean).map((p, i) => <img key={i} src={p} style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover' }} />)}</div></div>
+    <div style={S.card}>
+      <div style={S.cardTitle}>📸 Photos</div>
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        {[tx.photoCustomerHolding, tx.photoCustomerID, tx.itemPhotos?.front, tx.itemPhotos?.back, tx.photoSigning, tx.photoSealedPkg]
+          .filter(Boolean)
+          .map((p, i) => (
+            <button
+              key={i}
+              onClick={() => setZoomedPhoto(p)}
+              style={{
+                border: 'none',
+                padding: 0,
+                background: 'transparent',
+                cursor: 'zoom-in',
+                borderRadius: '8px',
+                overflow: 'hidden'
+              }}
+              title="Tap to view full image"
+            >
+              <img src={p} alt={`Transaction photo ${i + 1}`} style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }} />
+            </button>
+          ))}
+      </div>
+      <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
+    </div>
     <button style={S.btn('outline')} onClick={() => setViewingTx(null)}>← Back</button>
   </div>);
+
+  const PhotoViewer = () => {
+    if (!zoomedPhoto) return null;
+    return (
+      <div
+        onClick={() => setZoomedPhoto(null)}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.85)',
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '24px'
+        }}
+      >
+        <div onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', textAlign: 'center' }}>
+          <img src={zoomedPhoto} alt="Zoomed transaction" style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px' }} />
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+            <a href={zoomedPhoto} download={`transaction-photo-${Date.now()}.jpg`} style={{ ...S.btn('primary'), textDecoration: 'none' }}>⬇ Download</a>
+            <button style={S.btn('outline')} onClick={() => setZoomedPhoto(null)}>✕ Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // Main page renderer
   const renderPage = () => {
@@ -831,6 +883,7 @@ export default function App() {
         )}
         <div style={{ ...S.mainContent, padding: isMobile ? '16px' : '24px', maxHeight: isMobile ? 'none' : 'calc(100vh - 56px)', paddingBottom: isMobile ? '80px' : '24px' }}>
           {renderPage()}
+          <PhotoViewer />
         </div>
       </div>
 
