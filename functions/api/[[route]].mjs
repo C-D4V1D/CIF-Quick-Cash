@@ -104,7 +104,7 @@ export async function onRequest(context) {
     }
 
     // ============================================================
-    // BOOTSTRAP: GET /api/bootstrap?scope=critical|secondary&role=admin
+    // BOOTSTRAP: GET /api/bootstrap?scope=critical|transactions|secondary&role=admin
     // ============================================================
     if (path === 'bootstrap' && method === 'GET') {
       const scope = url.searchParams.get('scope') || 'critical';
@@ -123,16 +123,51 @@ export async function onRequest(context) {
         return json({ expenses, capital, declined, users });
       }
 
-      const [settingsRows, transactionRows, draftRows] = await Promise.all([
+      if (scope === 'transactions') {
+        const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '100', 10) || 100));
+        const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
+
+        const [transactionRows, draftRows, transactionCountRows, draftCountRows] = await Promise.all([
+          sql`SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+          sql`SELECT ref, data, updated_at FROM drafts ORDER BY updated_at DESC LIMIT ${limit} OFFSET ${offset}`,
+          sql`SELECT COUNT(*)::int AS total FROM transactions`,
+          sql`SELECT COUNT(*)::int AS total FROM drafts`
+        ]);
+
+        const totalTransactions = transactionCountRows[0]?.total || 0;
+        const totalDrafts = draftCountRows[0]?.total || 0;
+        const hasMore = offset + limit < Math.max(totalTransactions, totalDrafts);
+
+        return json({
+          transactions: transactionRows.map((r) => ({ ...r.data, ref: r.ref, status: r.status })),
+          drafts: draftRows.map((r) => ({ ...r.data, ref: r.ref })),
+          pagination: {
+            limit,
+            offset,
+            nextOffset: hasMore ? offset + limit : null,
+            hasMore,
+            totalTransactions,
+            totalDrafts
+          }
+        });
+      }
+
+      const [settingsRows, summaryRows] = await Promise.all([
         sql`SELECT value FROM settings WHERE key = 'config'`,
-        sql`SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC`,
-        sql`SELECT ref, data FROM drafts ORDER BY updated_at DESC`
+        sql`
+          SELECT
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE status = 'active')::int AS active,
+            COUNT(*) FILTER (WHERE status = 'closed')::int AS closed,
+            COUNT(*) FILTER (WHERE status = 'sold')::int AS sold,
+            COUNT(*) FILTER (WHERE status = 'for_sale')::int AS for_sale
+          FROM transactions
+        `
       ]);
 
       return json({
         settings: settingsRows.length > 0 ? settingsRows[0].value : {},
-        transactions: transactionRows.map((r) => ({ ...r.data, ref: r.ref, status: r.status })),
-        drafts: draftRows.map((r) => ({ ...r.data, ref: r.ref }))
+        summary: summaryRows[0] || { total: 0, active: 0, closed: 0, sold: 0, for_sale: 0 }
       });
     }
 
