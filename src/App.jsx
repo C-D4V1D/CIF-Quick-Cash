@@ -20,7 +20,7 @@ const useMobile = () => {
 const API = {
   async get(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`);
+      const r = await fetch(`/api/${endpoint}`, { cache: 'no-store', credentials: 'same-origin' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`GET /api/${endpoint}:`, e); return null; }
@@ -29,8 +29,10 @@ const API = {
     try {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
+        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -40,8 +42,10 @@ const API = {
     try {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'PUT',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
+        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -49,12 +53,17 @@ const API = {
   },
   async del(endpoint) {
     try {
-      const r = await fetch(`/api/${endpoint}`, { method: 'DELETE' });
+      const r = await fetch(`/api/${endpoint}`, { method: 'DELETE', credentials: 'same-origin' });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
     } catch (e) { console.error(`DELETE /api/${endpoint}:`, e); return null; }
   }
 };
+
+// --- LOCAL CACHE (instant page load) ---
+const readCache = (k) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null; } catch { return null; } };
+const writeCache = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+const clearAuthCache = () => { try { localStorage.removeItem('cfc_user'); localStorage.removeItem('cfc_critical'); } catch {} };
 
 // --- UTILITY FUNCTIONS ---
 const genRef = () => {
@@ -63,7 +72,7 @@ const genRef = () => {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const yy = String(d.getFullYear()).slice(-2);
   const rand = String(Math.floor(Math.random() * 999) + 1).padStart(3, '0');
-  return `CFC-${dd}${mm}${yy}-${rand}`;
+  return `CIF-${dd}${mm}${yy}-${rand}`;
 };
 
 const daysBetween = (dateStr) => {
@@ -118,7 +127,26 @@ const DEFAULT_SETTINGS = {
   interestRate: 1, loanCapNoReceipt: 40, loanCapWithReceipt: 50,
   graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
   targetSellPct: 75, minSellBonus: 20, geminiApiKey: '', geminiModel: 'gemini-2.5-flash', ninApiKey: '',
-  itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other']
+  itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other'],
+  shopAddress: 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State',
+  shopPhone1: '08165491908',
+  shopPhone2: '09023540646',
+  shopWhatsApp: '2348165491908',
+  shopHours: 'Monday – Saturday, 8am – 6pm',
+  shopMapsUrl: '',
+};
+
+const PUBLIC_ROUTE_BY_SCREEN = {
+  landing: '/',
+  portal: '/checkloanstatus',
+  login: '/login'
+};
+
+const getPublicScreenFromPath = (path) => {
+  const normalized = (path || '/').replace(/\/+$/, '') || '/';
+  if (normalized === '/login') return 'login';
+  if (normalized === '/checkloanstatus') return 'portal';
+  return 'landing';
 };
 
 // ============================================================
@@ -269,20 +297,388 @@ function Modal({ open, onClose, title, children, wide }) {
 }
 
 // ============================================================
+// WHATSAPP BUTTON
+// ============================================================
+function WhatsAppButton({ whatsAppNumber, style: extraStyle }) {
+  const num = (whatsAppNumber || '2348165491908').replace(/\D/g, '');
+  const msg = encodeURIComponent('Hello, I need help with my loan at CIF Quick Cash');
+  const url = `https://wa.me/${num}?text=${msg}`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: '10px',
+        background: '#25D366', color: '#fff', padding: '12px 20px',
+        borderRadius: '10px', textDecoration: 'none', fontWeight: 700,
+        fontSize: '15px', justifyContent: 'center', width: '100%',
+        boxSizing: 'border-box', ...extraStyle,
+      }}
+    >
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="#25D366"/>
+        <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.15"/>
+        <path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/>
+      </svg>
+      Chat with us on WhatsApp
+    </a>
+  );
+}
+
+// ============================================================
+// LANDING PAGE
+// ============================================================
+function LandingPage({ onCheckLoan, onStaffLogin, settings }) {
+  const s = settings || {};
+  const phone1 = s.shopPhone1 || '08165491908';
+  const phone2 = s.shopPhone2 || '09023540646';
+  const address = s.shopAddress || 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
+  const hours = s.shopHours || 'Monday – Saturday, 8am – 6pm';
+  const mapsUrl = s.shopMapsUrl || `https://www.google.com/search?q=${encodeURIComponent(address)}`;
+  const whatsApp = s.shopWhatsApp || '2348165491908';
+
+  const items = ['Phones', 'Laptops', 'Tablets', 'Speakers', 'Power Banks', 'Fans', 'TVs', 'Generators', 'Gas Cylinders'];
+  const features = [
+    { icon: '⚡', title: 'Get quick cash', desc: 'Bring your item and leave with cash in hand' },
+    { icon: '🔒', title: 'Item kept safe', desc: 'We store it securely until you return' },
+    { icon: '🔄', title: 'Buy it back', desc: 'Pay us back within 30 days and collect your item' },
+    { icon: '🏷', title: 'Fair prices', desc: 'We use current market value to price every item' },
+  ];
+  const steps = [
+    'Walk into our shop with your item',
+    'We check your ID — your NIN number (dial *346# on your phone)',
+    'We check the value of your item and tell you how much we can offer you',
+    'You agree, sign a simple form, and collect your cash',
+    { bold: 'Cash Advance', rest: ': come back within 30 days, pay us back, and take your item home' },
+    { bold: 'Outright Sale', rest: ': we pay you and the item is ours — no need to return' },
+  ];
+  const needs = [
+    'Your item (phone, TV, generator, etc.)',
+    'Your NIN number — dial *346# on your phone to find it',
+    'At least one active phone number',
+    'Original receipt if you have it — you get more cash with receipt',
+    'The item must belong to you',
+  ];
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#1a1a2e', minHeight: '100vh', color: '#fff', fontSize: '16px', lineHeight: 1.6 }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+      {/* Hero */}
+      <div style={{ background: '#1a5f2a', padding: '36px 20px 32px', textAlign: 'center' }}>
+        <div style={{ display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', marginBottom: '14px', color: '#e0f0e3' }}>
+          📍 Enugwu-Aguleri, Anambra
+        </div>
+        <div style={{ fontSize: '32px', marginBottom: '6px' }}>💰</div>
+        <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
+        <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
+          <button
+            onClick={onCheckLoan}
+            style={{ background: '#fff', color: '#1a5f2a', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px' }}
+          >
+            Check My Loan Status
+          </button>
+          <button
+            onClick={onStaffLogin}
+            style={{ background: 'transparent', color: '#fff', border: '2px solid #fff', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 600, cursor: 'pointer', minHeight: '52px' }}
+          >
+            Staff / Admin Login
+          </button>
+        </div>
+      </div>
+
+      {/* Our Two Services */}
+      <div style={{ background: '#111827', padding: '32px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Our two services</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+          <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '12px', padding: '16px' }}>
+            <div style={{ fontWeight: 800, color: '#4ade80', fontSize: '15px', marginBottom: '8px' }}>Cash Advance</div>
+            <div style={{ fontSize: '14px', color: '#a7f3d0', lineHeight: 1.5 }}>Leave your item with us, collect cash, and buy it back within 30 days</div>
+          </div>
+          <div style={{ background: '#3d2e00', border: '1.5px solid #c8a84e', borderRadius: '12px', padding: '16px' }}>
+            <div style={{ fontWeight: 800, color: '#fbbf24', fontSize: '15px', marginBottom: '8px' }}>Outright Sale</div>
+            <div style={{ fontSize: '14px', color: '#fde68a', lineHeight: 1.5 }}>Want to sell your item immediately? We buy it from you on the spot</div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          {features.map(f => (
+            <div key={f.title} style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', border: '1px solid #2a3447' }}>
+              <div style={{ fontSize: '22px', marginBottom: '6px' }}>{f.icon}</div>
+              <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>{f.title}</div>
+              <div style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.4 }}>{f.desc}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Items We Accept */}
+      <div style={{ background: '#0f172a', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>Items we accept</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+          {items.map(item => (
+            <div key={item} style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '8px', padding: '8px 6px', textAlign: 'center', fontSize: '13px', fontWeight: 500, color: '#d1d5db' }}>
+              {item}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* How It Works */}
+      <div style={{ background: '#111827', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>How it works — step by step</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {steps.map((step, i) => (
+            <div key={i} style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+              <div style={{ background: '#1a5f2a', color: '#fff', borderRadius: '50%', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>{i + 1}</div>
+              <div style={{ fontSize: '15px', color: '#e5e7eb', lineHeight: 1.5 }}>
+                {typeof step === 'string' ? step : <><strong style={{ color: '#fff' }}>{step.bold}</strong>{step.rest}</>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* What You Need to Bring */}
+      <div style={{ background: '#0f172a', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>What you need to bring</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {needs.map((n, i) => (
+            <div key={i} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+              <div style={{ color: '#4ade80', marginTop: '4px', flexShrink: 0 }}>●</div>
+              <div style={{ fontSize: '15px', color: '#d1d5db', lineHeight: 1.5 }}>{n}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Contact & Location */}
+      <div style={{ background: '#111827', padding: '28px 20px' }}>
+        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Find us</h2>
+        <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', marginBottom: '16px', border: '1px solid #2a3447' }}>
+          <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Address</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{address}</div></div>
+          <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Phone</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{phone1}{phone2 ? ` / ${phone2}` : ''}</div></div>
+          <div><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Hours</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{hours}</div></div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <WhatsAppButton whatsAppNumber={whatsApp} />
+          <a
+            href={mapsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '12px', borderRadius: '10px', textDecoration: 'none', fontWeight: 600, fontSize: '15px' }}
+          >
+            📍 Get Directions
+          </a>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ background: '#0a0f1a', padding: '20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
+        © 2026 Christ-in-Fabian Quick Cash. All rights reserved.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// CUSTOMER PORTAL
+// ============================================================
+function CustomerPortal({ onBack, settings }) {
+  const [ref, setRef] = useState('');
+  const [result, setResult] = useState(null); // null | 'not_found' | tx object
+  const [searched, setSearched] = useState(false);
+
+  const s = settings || {};
+  const phone1 = s.shopPhone1 || '08165491908';
+  const whatsApp = s.shopWhatsApp || '2348165491908';
+
+  const handleCheck = async () => {
+    if (!ref.trim()) return;
+    const data = await API.get('transactions');
+    const found = Array.isArray(data) ? data.find(t => t.ref?.toUpperCase() === ref.trim().toUpperCase()) : null;
+    setResult(found || 'not_found');
+    setSearched(true);
+  };
+
+  const formatDateLong = (d) => {
+    if (!d) return '';
+    return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  };
+
+  const calcOwedToday = (tx) => {
+    if (!tx || tx.type === 'outright') return tx?.cashAdvance || 0;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const given = new Date(tx.dateGiven); given.setHours(0, 0, 0, 0);
+    const elapsed = Math.max(0, Math.floor((today - given) / 86400000));
+    return (tx.cashAdvance || 0) + elapsed * (tx.dailyFee || 0);
+  };
+
+  const getDaysInfo = (tx) => {
+    if (!tx.deadlineDate) return null;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const deadline = new Date(tx.deadlineDate); deadline.setHours(0, 0, 0, 0);
+    const diff = Math.ceil((deadline - today) / 86400000);
+    return diff;
+  };
+
+  const getStatusBadge = (tx) => {
+    if (tx.status === 'closed') return { label: 'Closed — Returned', color: '#10b981' };
+    if (tx.status === 'sold') return { label: 'Sold', color: '#6b7280' };
+    if (tx.type === 'outright') return { label: 'Outright Purchase', color: '#8b5cf6' };
+    const days = getDaysInfo(tx);
+    if (days === null) return { label: 'Active', color: '#10b981' };
+    const loanDays = tx.loanDays || 30;
+    const elapsed = daysBetween(tx.dateGiven);
+    if (elapsed > loanDays + 3) return { label: 'Overdue — Sell Pending', color: '#ef4444' };
+    if (elapsed > loanDays) return { label: 'Grace Period', color: '#8b5cf6' };
+    return { label: 'Active', color: '#10b981' };
+  };
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#0f172a', minHeight: '100vh', color: '#fff', fontSize: '16px', lineHeight: 1.6 }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ background: '#1a5f2a', padding: '24px 20px 20px' }}>
+        <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', fontSize: '15px', cursor: 'pointer', padding: '0 0 12px', fontWeight: 500 }}>← Back to Home</button>
+        <h1 style={{ fontSize: 'clamp(20px, 5vw, 28px)', fontWeight: 800, margin: '0 0 6px' }}>Check Your Loan Status</h1>
+        <p style={{ margin: 0, opacity: 0.85, fontSize: '15px' }}>Enter the reference number from your agreement form (e.g. CIF-130326-001)</p>
+      </div>
+
+      <div style={{ padding: '24px 20px', maxWidth: '500px', margin: '0 auto' }}>
+        {/* Search */}
+        {(!searched || result === 'not_found') && (
+          <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', marginBottom: '20px', border: '1px solid #2a3447' }}>
+            {result === 'not_found' && (
+              <div style={{ background: '#3d1515', border: '1px solid #ef4444', borderRadius: '8px', padding: '14px', marginBottom: '16px', color: '#fca5a5', fontSize: '14px' }}>
+                We could not find this reference number. Please check your agreement form and try again, or call us on {phone1}.
+              </div>
+            )}
+            <label style={{ display: 'block', fontWeight: 600, color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Reference Number</label>
+            <input
+              style={{ width: '100%', padding: '14px', borderRadius: '8px', border: '1.5px solid #2a3447', fontSize: '16px', background: '#111827', color: '#fff', boxSizing: 'border-box', marginBottom: '12px' }}
+              placeholder="e.g. CIF-130326-001"
+              value={ref}
+              onChange={e => { setRef(e.target.value); setSearched(false); }}
+              onKeyDown={e => e.key === 'Enter' && handleCheck()}
+            />
+            <button
+              onClick={handleCheck}
+              style={{ width: '100%', background: '#1a5f2a', color: '#fff', border: 'none', borderRadius: '8px', padding: '14px', fontSize: '16px', fontWeight: 700, cursor: 'pointer', minHeight: '50px' }}
+            >
+              Check My Loan
+            </button>
+            {result === 'not_found' && (
+              <div style={{ marginTop: '16px' }}>
+                <WhatsAppButton whatsAppNumber={whatsApp} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Result */}
+        {searched && result && result !== 'not_found' && (() => {
+          const tx = result;
+          const badge = getStatusBadge(tx);
+          const daysInfo = getDaysInfo(tx);
+          const owed = calcOwedToday(tx);
+          const isOverdue = daysInfo !== null && daysInfo < 0;
+          return (
+            <div>
+              <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', border: '1px solid #2a3447', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
+                  <div>
+                    <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '2px' }}>Reference</div>
+                    <div style={{ fontWeight: 800, fontSize: '17px' }}>{tx.ref}</div>
+                  </div>
+                  <span style={{ background: badge.color, color: '#fff', borderRadius: '20px', padding: '4px 12px', fontSize: '12px', fontWeight: 700, flexShrink: 0, marginLeft: '8px' }}>{badge.label}</span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '14px' }}>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Customer</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{tx.fullName}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Item</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{[tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' ') || 'N/A'}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Cash Advance Given</div>
+                    <div style={{ fontWeight: 700, fontSize: '17px', color: '#4ade80' }}>{fmtMoney(tx.cashAdvance)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Daily Fee</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{fmtMoney(tx.dailyFee)} per day</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Date Given</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{formatDateLong(tx.dateGiven)}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Return Deadline</div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{formatDateLong(tx.deadlineDate)}</div>
+                  </div>
+                </div>
+
+                {daysInfo !== null && tx.status === 'active' && tx.type !== 'outright' && (
+                  <div style={{ background: isOverdue ? '#3d1515' : '#1a3d22', border: `1px solid ${isOverdue ? '#ef4444' : '#1a5f2a'}`, borderRadius: '8px', padding: '12px', marginBottom: '14px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '13px', color: isOverdue ? '#fca5a5' : '#a7f3d0' }}>{isOverdue ? `${Math.abs(daysInfo)} days overdue` : `${daysInfo} days remaining`}</div>
+                  </div>
+                )}
+
+                {tx.status === 'active' && tx.type !== 'outright' && (
+                  <div style={{ background: '#111827', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '4px' }}>Total owed today</div>
+                    <div style={{ fontSize: '26px', fontWeight: 800, color: isOverdue ? '#ef4444' : '#4ade80' }}>{fmtMoney(owed)}</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>Updated live based on today's date</div>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '14px', color: '#d1d5db', border: '1px solid #2a3447' }}>
+                To pay back and collect your item, visit our shop or call <strong style={{ color: '#fff' }}>{phone1}</strong>
+              </div>
+
+              <WhatsAppButton whatsAppNumber={whatsApp} style={{ marginBottom: '14px' }} />
+
+              <button
+                onClick={() => { setResult(null); setSearched(false); setRef(''); }}
+                style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: '15px', cursor: 'pointer', padding: '8px 0', textDecoration: 'underline', display: 'block', textAlign: 'center', width: '100%' }}
+              >
+                ← Check another reference number
+              </button>
+            </div>
+          );
+        })()}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // LOGIN SCREEN
 // ============================================================
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Warm up database while user enters credentials.
+  useEffect(() => {
+    API.get('health');
+  }, []);
 
   const handleLogin = async () => {
     setLoading(true);
     setError('');
-    const result = await API.post('login', { username, password });
+    const result = await API.post('login', { username, password, rememberMe });
     if (result?.error) { setError(result.error); setLoading(false); return; }
-    if (result?.id) { onLogin(result); }
+    if (result?.user?.id) { onLogin(result.user); }
     else { setError('Invalid username or password'); }
     setLoading(false);
   };
@@ -297,6 +693,15 @@ function LoginScreen({ onLogin }) {
         {error && <div style={S.alert('danger')}>{error}</div>}
         <Field label="Username"><input style={S.input} value={username} onChange={e => { setUsername(e.target.value); setError(''); }} placeholder="Enter username" /></Field>
         <Field label="Password"><input style={S.input} type="password" value={password} onChange={e => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" onKeyDown={e => e.key === 'Enter' && handleLogin()} /></Field>
+        <div style={{ marginTop: '-4px', marginBottom: '14px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: COLORS.text }}>
+            <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
+            Remember me on this device
+          </label>
+          <div style={{ fontSize: '11.5px', color: COLORS.textMuted, marginTop: '4px', lineHeight: 1.4 }}>
+            Keeps you signed in for up to 30 days. Leave unchecked on shared computers.
+          </div>
+        </div>
         <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center', marginTop: '8px', padding: '12px', opacity: loading ? 0.6 : 1 }} onClick={handleLogin} disabled={loading}>
           {loading ? '⏳ Signing in...' : 'Sign In →'}
         </button>
@@ -329,7 +734,7 @@ const EMPTY_TX = {
   photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null,
   itemPhotos: { front: null, back: null, left: null, right: null, corners: [], powerOn: null, aboutPage: null },
   aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiCondition: '', aiEstimatedValue: '', aiRawResponse: '', requiresIMEI: false,
-  imei: '', imeiChecked: false, imeiClean: false, serialNumber: '',
+  imei: '', imeiChecked: false, imeiClean: null, serialNumber: '',
   hasReceipt: false, receiptPhoto: null,
   screeningDuration: '', screeningPurchaseLocation: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
   estimatedValue: 0, loanCapPct: 40, cashAdvance: 0, dailyFee: 0, loanDays: 30,
@@ -476,16 +881,59 @@ IS_PHONE: [YES or NO]`;
     switch (WIZARD_STEPS[step]?.id) {
       case 'type': return true;
       case 'nin': return tx.ninVerified || tx.idNumber.length > 5;
-      case 'customer': return tx.fullName && tx.phoneNumbers[0] && tx.familyName && tx.familyPhone && (tx.phonesVerified[0] || tx.phonesVerified[1]);
+      case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.familyName && tx.familyPhone && (tx.phonesVerified[0] || tx.phonesVerified[1]));
       case 'custPhotos': return !!tx.photoCustomerHolding;
-      case 'itemPhotos': return !!(tx.itemPhotos.front || tx.itemPhotos.back);
+      case 'itemPhotos': return !!(tx.itemPhotos.front || tx.itemPhotos.back) && (!tx.hasReceipt || !!tx.receiptPhoto);
       case 'aiValuation': return !!(tx.aiItemType && tx.estimatedValue > 0);
-      case 'imeiSerial': return tx.requiresIMEI ? (tx.imei && tx.imeiChecked) : true;
+      case 'imeiSerial': return tx.requiresIMEI ? (tx.imei && tx.imeiChecked && tx.imeiClean !== null) : true;
       case 'screening': return true;
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
       case 'agreement': return !!tx.photoSigning;
       default: return true;
     }
+  };
+
+  const blockReasons = () => {
+    const issues = [];
+    switch (WIZARD_STEPS[step]?.id) {
+      case 'nin':
+        if (!(tx.ninVerified || tx.idNumber.length > 5)) issues.push('You must verify the customer\'s ID before proceeding.');
+        break;
+      case 'customer':
+        if (!tx.fullName) issues.push('Full name is required.');
+        if (!tx.address) issues.push('Address is required.');
+        if (!tx.phoneNumbers[0]) issues.push('Phone 1 is required.');
+        if (!tx.familyName) issues.push('Family contact name is required.');
+        if (!tx.familyPhone) issues.push('Family contact phone is required.');
+        if (!tx.phonesVerified[0] && !tx.phonesVerified[1]) issues.push('You must mark at least one phone number as called before proceeding.');
+        break;
+      case 'custPhotos':
+        if (!tx.photoCustomerHolding) issues.push('You must upload a photo of the customer holding the item before proceeding.');
+        break;
+      case 'itemPhotos':
+        if (!(tx.itemPhotos.front || tx.itemPhotos.back)) issues.push('You must upload at least one item photo (front or back) before proceeding.');
+        if (tx.hasReceipt && !tx.receiptPhoto) issues.push('You ticked that a receipt was provided — you must upload a photo of it before proceeding.');
+        break;
+      case 'aiValuation':
+        if (!(tx.aiItemType && tx.estimatedValue > 0)) issues.push('You must run AI Valuation and confirm the item type and value before proceeding.');
+        break;
+      case 'imeiSerial':
+        if (tx.requiresIMEI) {
+          if (!tx.imei) issues.push('You must enter the IMEI number before proceeding.');
+          if (!tx.imeiChecked) issues.push('You must tick the "Checked on imei.info" checkbox before proceeding.');
+          if (tx.imeiClean === null) issues.push('You must select Clean or Flagged after checking the IMEI before proceeding.');
+        }
+        break;
+      case 'offer':
+        if (!tx.cashAdvance) issues.push('You must enter the cash advance amount before proceeding.');
+        if (!tx.dateGiven) issues.push('You must set the date given before proceeding.');
+        break;
+      case 'agreement':
+        if (!tx.photoSigning) issues.push('You must upload a photo of the signed agreement before proceeding.');
+        break;
+      default: break;
+    }
+    return issues;
   };
 
   const handleComplete = async () => {
@@ -499,27 +947,27 @@ IS_PHONE: [YES or NO]`;
   const renderStep = () => {
     const sid = WIZARD_STEPS[step]?.id;
     switch (sid) {
-      case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
+      case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
 
-      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} value={tx.idNumber} onChange={e => upd('idNumber', e.target.value)} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerified && <div style={{ marginTop: '16px', padding: '16px', background: COLORS.primaryLight, borderRadius: '12px', border: '1px solid #b7e4c7' }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + COLORS.primary }} alt="NIN Photo" />}<div><div style={{ fontSize: '15px', fontWeight: 700, color: COLORS.primary, marginBottom: '4px' }}>✅ {tx.idType.toUpperCase()} Verified</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}</div>);
+      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} value={tx.idNumber} onChange={e => upd('idNumber', e.target.value)} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerified && <div style={{ marginTop: '16px', padding: '16px', background: COLORS.primaryLight, borderRadius: '12px', border: '1px solid #b7e4c7' }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + COLORS.primary }} alt="NIN Photo" />}<div><div style={{ fontSize: '15px', fontWeight: 700, color: COLORS.primary, marginBottom: '4px' }}>✅ {tx.idType.toUpperCase()} Verified</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}</div>);
 
-      case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} /></Field></div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value; upd('phoneNumbers', n); }} placeholder="+234..." /><button style={S.btnSm(tx.phonesVerified[0] ? 'primary' : 'muted')} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[1]} onChange={e => { const n = [...tx.phoneNumbers]; n[1] = e.target.value; upd('phoneNumbers', n); }} /><button style={S.btnSm(tx.phonesVerified[1] ? 'primary' : 'muted')} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>Family / Neighbour Contact</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} /></Field><Field label="Phone" required><input style={S.input} value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value)} /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
+      case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value; upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[1]} onChange={e => { const n = [...tx.phoneNumbers]; n[1] = e.target.value; upd('phoneNumbers', n); if (!e.target.value) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required><input style={S.input} value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value)} placeholder="e.g. 08099887766" /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
-      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div><div style={{ ...S.alert('info'), marginTop: '16px', background: COLORS.primaryLight, color: COLORS.primary, border: '1px solid #b7e4c7' }}>📌 <strong>Customer holding item</strong> is mandatory. Customer with ID card is optional if NIN photo clearly matched.</div></div>);
+      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div></div>);
 
-      case 'itemPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔍 Item Photos</h3><p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Take clear photos in good light. These will be sent to AI for valuation.</p><div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}><PhotoUpload label="Front" value={tx.itemPhotos.front} onChange={v => updNested('itemPhotos', 'front', v)} required size={110} /><PhotoUpload label="Back" value={tx.itemPhotos.back} onChange={v => updNested('itemPhotos', 'back', v)} required size={110} /><PhotoUpload label="Left Side" value={tx.itemPhotos.left} onChange={v => updNested('itemPhotos', 'left', v)} size={110} /><PhotoUpload label="Right Side" value={tx.itemPhotos.right} onChange={v => updNested('itemPhotos', 'right', v)} size={110} /><PhotoUpload label="Power On Screen" value={tx.itemPhotos.powerOn} onChange={v => updNested('itemPhotos', 'powerOn', v)} size={110} /><PhotoUpload label="About / Nameplate" value={tx.itemPhotos.aboutPage} onChange={v => updNested('itemPhotos', 'aboutPage', v)} size={110} /></div><Field label="Has Original Receipt?" style={{ marginTop: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}><input type="checkbox" checked={tx.hasReceipt} onChange={e => upd('hasReceipt', e.target.checked)} style={{ width: '18px', height: '18px' }} /><span>Yes — original purchase receipt provided</span></label></Field>{tx.hasReceipt && <PhotoUpload label="Receipt Photo" value={tx.receiptPhoto} onChange={v => upd('receiptPhoto', v)} size={140} />}</div>);
+      case 'itemPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔍 Item Photos</h3><div style={S.alert('info')}>📋 Take photos in <strong>good light near a window</strong>. Front and back are mandatory. Power the item on and take a screenshot of the home/startup screen.</div><div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}><PhotoUpload label="Front" value={tx.itemPhotos.front} onChange={v => updNested('itemPhotos', 'front', v)} required size={110} /><PhotoUpload label="Back" value={tx.itemPhotos.back} onChange={v => updNested('itemPhotos', 'back', v)} required size={110} /><PhotoUpload label="Left Side" value={tx.itemPhotos.left} onChange={v => updNested('itemPhotos', 'left', v)} size={110} /><PhotoUpload label="Right Side" value={tx.itemPhotos.right} onChange={v => updNested('itemPhotos', 'right', v)} size={110} /><PhotoUpload label="Power On Screen" value={tx.itemPhotos.powerOn} onChange={v => updNested('itemPhotos', 'powerOn', v)} size={110} /><PhotoUpload label="About / Nameplate" value={tx.itemPhotos.aboutPage} onChange={v => updNested('itemPhotos', 'aboutPage', v)} size={110} /></div><Field label="Has Original Receipt?" style={{ marginTop: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}><input type="checkbox" checked={tx.hasReceipt} onChange={e => upd('hasReceipt', e.target.checked)} style={{ width: '18px', height: '18px' }} /><span>Yes — original purchase receipt provided</span></label></Field>{tx.hasReceipt && <><PhotoUpload label="Receipt Photo" value={tx.receiptPhoto} onChange={v => upd('receiptPhoto', v)} required size={140} />{!tx.receiptPhoto && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ Receipt photo is required — you ticked that a receipt was provided.</div>}</>}</div>);
 
-      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} /></Field>{tx.requiresIMEI && <div style={S.alert('warning')}>📱 Phone detected — IMEI check required next.</div>}</div>);
+      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field>{tx.requiresIMEI && <div style={S.alert('warning')}>📱 Phone detected — IMEI check required next.</div>}</div>);
 
-      case 'imeiSerial': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔢 IMEI / Serial Number</h3>{tx.requiresIMEI ? (<><div style={S.alert('warning')}>📱 Dial *#06# on the phone to get IMEI.</div><Field label="IMEI Number" required><input style={S.input} value={tx.imei} onChange={e => upd('imei', e.target.value)} placeholder="15-digit IMEI" /></Field><div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}><input type="checkbox" checked={tx.imeiChecked} onChange={e => upd('imeiChecked', e.target.checked)} style={{ width: '18px', height: '18px' }} /><span style={{ fontSize: '13px' }}>Checked on imei.info</span></label><a href="https://www.imei.info/" target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: COLORS.primary }}>Open imei.info →</a></div>{tx.imeiChecked && <Field label="IMEI Status"><div style={{ display: 'flex', gap: '12px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}><input type="radio" checked={tx.imeiClean === true} onChange={() => upd('imeiClean', true)} /><span style={{ color: '#10b981', fontWeight: 600 }}>✓ Clean</span></label><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}><input type="radio" checked={tx.imeiClean === false && tx.imeiChecked} onChange={() => upd('imeiClean', false)} /><span style={{ color: COLORS.danger, fontWeight: 600 }}>✗ Flagged — DECLINE</span></label></div></Field>}{tx.imeiClean === false && tx.imeiChecked && <div style={S.alert('danger')}>🚫 IMEI flagged. <strong>DECLINE IMMEDIATELY.</strong></div>}</>) : (<><p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Not a phone. Enter serial number if available.</p><Field label="Serial Number"><input style={S.input} value={tx.serialNumber} onChange={e => upd('serialNumber', e.target.value)} placeholder="Check back panel" /></Field></>)}</div>);
+      case 'imeiSerial': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔢 IMEI / Serial Number</h3>{tx.requiresIMEI ? (<><div style={S.alert('info')}>📋 Dial <strong>*#06#</strong> on the phone to get the IMEI. Write it down, then open <strong>imei.info</strong> to check it is not stolen. You must tick the checkbox and select <strong>Clean or Flagged</strong> before proceeding.</div><div style={S.alert('warning')}>📱 This item was identified as a phone — IMEI check is required.</div><Field label="IMEI Number" required><input style={S.input} value={tx.imei} onChange={e => upd('imei', e.target.value)} placeholder="15-digit IMEI" /></Field><div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}><input type="checkbox" checked={tx.imeiChecked} onChange={e => { upd('imeiChecked', e.target.checked); if (!e.target.checked) upd('imeiClean', null); }} style={{ width: '18px', height: '18px' }} /><span style={{ fontSize: '13px' }}>Checked on imei.info</span></label><a href="https://www.imei.info/" target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: COLORS.primary }}>Open imei.info →</a></div>{tx.imeiChecked && <Field label="IMEI Status — select one *"><div style={{ display: 'flex', gap: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', padding: '10px 16px', borderRadius: '8px', border: `2px solid ${tx.imeiClean === true ? '#10b981' : COLORS.border}`, background: tx.imeiClean === true ? '#ecfdf5' : '#fff' }}><input type="radio" checked={tx.imeiClean === true} onChange={() => upd('imeiClean', true)} /><span style={{ color: '#10b981', fontWeight: 700 }}>✓ Clean</span></label><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', padding: '10px 16px', borderRadius: '8px', border: `2px solid ${tx.imeiClean === false ? COLORS.danger : COLORS.border}`, background: tx.imeiClean === false ? COLORS.dangerLight : '#fff' }}><input type="radio" checked={tx.imeiClean === false} onChange={() => upd('imeiClean', false)} /><span style={{ color: COLORS.danger, fontWeight: 700 }}>✗ Flagged — DECLINE</span></label></div></Field>}{tx.imeiChecked && tx.imeiClean === null && <div style={S.alert('warning')}>⚠ You must select Clean or Flagged to continue.</div>}{tx.imeiClean === false && tx.imeiChecked && <div style={S.alert('danger')}>🚫 IMEI flagged. <strong>DECLINE IMMEDIATELY.</strong></div>}</>) : (<><div style={S.alert('info')}>📋 Check the back panel or sticker for a serial number. If none is found, you may leave it blank and proceed.</div><Field label="Serial Number"><input style={S.input} value={tx.serialNumber} onChange={e => upd('serialNumber', e.target.value)} placeholder="Check back panel" /></Field></>)}</div>);
 
-      case 'screening': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>❓ Screening Questions</h3><Field label="How long have you had this item?"><input style={S.input} value={tx.screeningDuration} onChange={e => upd('screeningDuration', e.target.value)} /></Field><Field label="Where did you buy it?"><input style={S.input} value={tx.screeningPurchaseLocation} onChange={e => upd('screeningPurchaseLocation', e.target.value)} /></Field><Field label="Registered in your name?"><input style={S.input} value={tx.screeningRegistered} onChange={e => upd('screeningRegistered', e.target.value)} /></Field><Field label="Others using this item?"><input style={S.input} value={tx.screeningOthersUsing} onChange={e => upd('screeningOthersUsing', e.target.value)} /></Field><div style={{ marginTop: '12px', padding: '16px', background: COLORS.dangerLight, borderRadius: '8px', border: '1px solid #f5c6cb' }}><label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={tx.screeningRedFlag} onChange={e => upd('screeningRedFlag', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.danger }}>🚩 RED FLAG — Decline this customer</span></label></div><Field label="Notes" style={{ marginTop: '12px' }}><textarea style={S.textarea} value={tx.notes} onChange={e => upd('notes', e.target.value)} /></Field></div>);
+      case 'screening': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>❓ Screening Questions</h3><div style={S.alert('info')}>📋 Ask these questions calmly. Write down the answers <strong>exactly as the customer gives them</strong>. If anything feels wrong, tick the Red Flag box and do not proceed with the transaction.</div><Field label="How long have you had this item?"><input style={S.input} value={tx.screeningDuration} onChange={e => upd('screeningDuration', e.target.value)} placeholder="e.g. 2 years" /></Field><Field label="Where did you buy it?"><input style={S.input} value={tx.screeningPurchaseLocation} onChange={e => upd('screeningPurchaseLocation', e.target.value)} placeholder="e.g. Computer Village, Lagos" /></Field><Field label="Is this item registered in your name?"><input style={S.input} value={tx.screeningRegistered} onChange={e => upd('screeningRegistered', e.target.value)} placeholder="Yes / No / N/A" /></Field><Field label="Has anyone else used this item with you?"><input style={S.input} value={tx.screeningOthersUsing} onChange={e => upd('screeningOthersUsing', e.target.value)} placeholder="e.g. No, only me" /></Field><div style={{ marginTop: '12px', padding: '16px', background: COLORS.dangerLight, borderRadius: '8px', border: '1px solid #f5c6cb' }}><label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={tx.screeningRedFlag} onChange={e => upd('screeningRedFlag', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.danger }}>🚩 RED FLAG — Something feels wrong (decline this customer)</span></label></div><Field label="Notes / Observations" style={{ marginTop: '12px' }}><textarea style={S.textarea} value={tx.notes} onChange={e => upd('notes', e.target.value)} placeholder="Any additional notes about this customer or transaction..." /></Field></div>);
 
-      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || 30)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div></div>);
+      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || 30)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div></div>);
 
-      case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>Review details. Print both copies. Read every clause aloud.</div><div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}><div style={{ textAlign: 'center', marginBottom: '16px' }}><div style={{ fontSize: '16px', fontWeight: 800 }}>CHRIST-IN-FABIAN QUICK CASH</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>Cash Advance & Buy-Back Agreement — BUSINESS COPY</div><div style={{ fontSize: '13px', fontWeight: 700, marginTop: '4px' }}>Ref: {tx.ref}</div></div><div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px 12px', fontSize: '13px' }}><strong>Name:</strong><span>{tx.fullName}</span><strong>Address:</strong><span>{tx.address}</span><strong>ID:</strong><span>{tx.idType.toUpperCase()} — {tx.idNumber}</span><strong>Phone(s):</strong><span>{tx.phoneNumbers.filter(Boolean).join(', ')}</span><strong>Family:</strong><span>{tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}</span><strong>Item:</strong><span>{tx.aiItemType} / {tx.aiBrand} / {tx.aiModel}</span><strong>Condition:</strong><span>{tx.conditionDescription}</span>{tx.imei && <><strong>IMEI:</strong><span>{tx.imei}</span></>}<strong>Cash:</strong><span style={{ fontWeight: 700, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</span>{tx.type === 'advance' && <><strong>Date Given:</strong><span>{fmtDate(tx.dateGiven)}</span><strong>Deadline:</strong><span>{fmtDate(tx.deadlineDate)}</span><strong>Daily Fee:</strong><span>{fmtMoney(dailyFeeCalc)}/day</span></>}</div></div><button style={{ ...S.btn('accent'), marginTop: '16px' }} onClick={() => window.print()}>🖨 Print Agreement</button><div style={{ marginTop: '16px' }}><PhotoUpload label="Photo of Signing / Thumbprint" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} /></div></div>);
+      case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>Print</strong> to print both copies. Read every clause aloud to the customer. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div><div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}><div style={{ textAlign: 'center', marginBottom: '16px' }}><div style={{ fontSize: '16px', fontWeight: 800 }}>CHRIST-IN-FABIAN QUICK CASH</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>Cash Advance & Buy-Back Agreement — BUSINESS COPY</div><div style={{ fontSize: '13px', fontWeight: 700, marginTop: '4px' }}>Ref: {tx.ref}</div></div><div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px 12px', fontSize: '13px' }}><strong>Name:</strong><span>{tx.fullName}</span><strong>Address:</strong><span>{tx.address}</span><strong>ID:</strong><span>{tx.idType.toUpperCase()} — {tx.idNumber}</span><strong>Phone(s):</strong><span>{tx.phoneNumbers.filter(Boolean).join(', ')}</span><strong>Family:</strong><span>{tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}</span><strong>Item:</strong><span>{tx.aiItemType} / {tx.aiBrand} / {tx.aiModel}</span><strong>Condition:</strong><span>{tx.conditionDescription}</span>{tx.imei && <><strong>IMEI:</strong><span>{tx.imei}</span></>}<strong>Cash:</strong><span style={{ fontWeight: 700, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</span>{tx.type === 'advance' && <><strong>Date Given:</strong><span>{fmtDate(tx.dateGiven)}</span><strong>Deadline:</strong><span>{fmtDate(tx.deadlineDate)}</span><strong>Daily Fee:</strong><span>{fmtMoney(dailyFeeCalc)}/day</span></>}</div></div><button style={{ ...S.btn('accent'), marginTop: '16px' }} onClick={() => window.print()}>🖨 Print Agreement</button><div style={{ marginTop: '16px' }}><PhotoUpload label="Photo of Signing / Thumbprint" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} /></div></div>);
 
-      case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>✅ Finalize</h3>{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}<label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>₦{settings.serviceFee} service fee collected <span style={{ color: COLORS.danger }}>*</span></span></label><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: !tx.serviceFeeCollected ? 0.5 : 1 }} disabled={!tx.serviceFeeCollected} onClick={handleComplete}>{!tx.serviceFeeCollected ? '⚠ Tick Service Fee to Complete' : '✅ Complete Transaction — Save to Database'}</button></div>);
+      case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>✅ Finalize</h3><div style={S.alert('info')}>📋 Tick the service fee checkbox <strong>only after you have physically collected ₦{settings.serviceFee?.toLocaleString() || '1,000'}</strong> from the customer. Then count the cash advance in front of the customer, let them count it too, and click Complete.</div>{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}<label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>₦{settings.serviceFee} service fee collected <span style={{ color: COLORS.danger }}>*</span></span></label><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: !tx.serviceFeeCollected ? 0.5 : 1 }} disabled={!tx.serviceFeeCollected} onClick={handleComplete}>{!tx.serviceFeeCollected ? '⚠ Tick Service Fee to Complete' : '✅ Complete Transaction — Save to Database'}</button></div>);
 
       default: return <div>Unknown step</div>;
     }
@@ -531,12 +979,19 @@ IS_PHONE: [YES or NO]`;
         {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
       <div style={S.card}>{renderStep()}</div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px' }}>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
-          <button style={S.btn('muted')} onClick={onCancel}>Save Draft & Exit</button>
+      <div style={{ marginTop: '12px' }}>
+        {step < WIZARD_STEPS.length - 1 && !canProceed() && blockReasons().length > 0 && (
+          <div style={{ ...S.alert('danger'), marginBottom: '8px' }}>
+            {blockReasons().map((r, i) => <div key={i}>⛔ {r}</div>)}
+          </div>
+        )}
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
+            <button style={S.btn('muted')} onClick={onCancel}>Save Draft & Exit</button>
+          </div>
+          {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={() => setStep(step + 1)} disabled={!canProceed()}>Next Step →</button>}
         </div>
-        {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={() => setStep(step + 1)} disabled={!canProceed()}>Next Step →</button>}
       </div>
     </div>
   );
@@ -584,16 +1039,18 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 // MAIN APPLICATION
 // ============================================================
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
+  const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
+  const [publicScreen, setPublicScreen] = useState(() => getPublicScreenFromPath(window.location.pathname)); // 'landing' | 'portal' | 'login'
   const [page, setPage] = useState('dashboard');
-  const [transactions, setTransactions] = useState([]);
-  const [drafts, setDrafts] = useState([]);
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [transactions, setTransactions] = useState(() => readCache('cfc_critical')?.transactions || []);
+  const [drafts, setDrafts] = useState(() => readCache('cfc_critical')?.drafts || []);
+  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
   const [users, setUsers] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [capital, setCapital] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
   const [editingTx, setEditingTx] = useState(null);
   const [viewingTx, setViewingTx] = useState(null);
   const [repayingTx, setRepayingTx] = useState(null);
@@ -606,31 +1063,80 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState('checking');
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [zoomedPhoto, setZoomedPhoto] = useState(null);
 
-  // Load all data from database
+  useEffect(() => {
+    const handlePopState = () => {
+      if (!currentUser) {
+        setPublicScreen(getPublicScreenFromPath(window.location.pathname));
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentUser]);
+
+  const navigatePublic = (screen) => {
+    const path = PUBLIC_ROUTE_BY_SCREEN[screen] || '/';
+    if (window.location.pathname !== path) {
+      window.history.pushState({ publicScreen: screen }, '', path);
+    }
+    setPublicScreen(screen);
+  };
+
+  useEffect(() => {
+    const restoreSession = async () => {
+      const me = await API.get('me');
+      if (me?.id) {
+        writeCache('cfc_user', me);
+        setCurrentUser(me);
+      } else {
+        // Session invalid or expired — clear cache so next load starts fresh
+        clearAuthCache();
+        setCurrentUser(null);
+      }
+      setAuthLoading(false);
+      // If not logged in, load public settings in background for landing page
+      if (!me?.id) {
+        API.get('bootstrap?scope=critical').then(pubData => {
+          if (pubData?.settings) setSettings({ ...DEFAULT_SETTINGS, ...pubData.settings });
+        }).catch(() => {});
+      }
+    };
+    restoreSession();
+  }, []);
+
+  // Load critical data first using a bundled bootstrap endpoint.
   const loadData = async () => {
-    setLoading(true);
-    const [s, txs, drs, e, c, d, u] = await Promise.all([
-      API.get('settings'), API.get('transactions'), API.get('drafts'),
-      API.get('expenses'), API.get('capital'), API.get('declined'), API.get('users')
-    ]);
-    if (s) setSettings({ ...DEFAULT_SETTINGS, ...s });
-    if (txs) setTransactions(txs);
-    if (drs) setDrafts(drs);
-    if (e) setExpenses(e);
-    if (c) setCapital(c);
-    if (d) setDeclinedLog(d);
-    if (u) setUsers(u);
-    setDbStatus(s !== null ? 'connected' : 'error');
+    // Only show the full-screen loader if we have no cached data to display
+    const hasCached = !!readCache('cfc_critical');
+    if (!hasCached) setLoading(true);
+
+    const critical = await API.get('bootstrap?scope=critical');
+    if (critical) {
+      setSettings({ ...DEFAULT_SETTINGS, ...(critical.settings || {}) });
+      setTransactions(critical.transactions || []);
+      setDrafts(critical.drafts || []);
+      setDbStatus('connected');
+      writeCache('cfc_critical', { settings: critical.settings, transactions: critical.transactions, drafts: critical.drafts });
+    } else {
+      setDbStatus('error');
+    }
+
     setLoading(false);
+
+    // Load secondary datasets in one background request.
+    const role = currentUser?.role || '';
+    const secondary = await API.get(`bootstrap?scope=secondary&role=${encodeURIComponent(role)}`);
+    if (secondary) {
+      setExpenses(secondary.expenses || []);
+      setCapital(secondary.capital || []);
+      setDeclinedLog(secondary.declined || []);
+      setUsers(secondary.users || []);
+    }
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
-
-  // Check database health on mount
-  useEffect(() => {
-    API.get('health').then(r => setDbStatus(r?.database === 'connected' ? 'connected' : 'error'));
-  }, []);
 
   // Save helpers
   const saveSettings = async (s) => { setSettings(s); await API.put('settings', s); };
@@ -662,18 +1168,24 @@ export default function App() {
     return transactions.filter(t => t.ref?.toLowerCase().includes(q) || t.fullName?.toLowerCase().includes(q) || t.phoneNumbers?.some(p => p?.includes(q)) || t.imei?.includes(q) || t.aiBrand?.toLowerCase().includes(q));
   }, [transactions, searchQuery]);
 
-  if (!currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); }} />;
+  if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
+
+  if (!currentUser) {
+    if (publicScreen === 'portal') return <CustomerPortal settings={settings} onBack={() => navigatePublic('landing')} />;
+    if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); setPublicScreen('landing'); window.history.replaceState({}, '', '/'); }} />;
+    return <LandingPage settings={settings} onCheckLoan={() => navigatePublic('portal')} onStaffLogin={() => navigatePublic('login')} />;
+  }
 
   if (loading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>💰</div><div style={{ fontWeight: 700 }}>Loading from database...</div></div></div>;
 
   if (editingTx !== null) return (
     <div style={S.app}>
       <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
-        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CFC Quick Cash — New Transaction'}</div>
-        <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); setPage('transactions'); }}>✕ {isMobile ? '' : 'Exit'}</button>
+        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</div>
+        <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); setPage('dashboard'); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
-        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); setPage('transactions'); }} onCancel={() => { setEditingTx(null); setPage('transactions'); }} />
+        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); setPage('dashboard'); }} onCancel={() => { setEditingTx(null); setPage('dashboard'); }} />
       </div>
     </div>
   );
@@ -711,9 +1223,60 @@ export default function App() {
     {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px' }}>Repaid: {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
     {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.accentLight, borderRadius: '8px' }}>Sold: {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} — Profit: {fmtMoney(tx.salePrice - tx.cashAdvance)}</div>}
     </div>
-    <div style={S.card}><div style={S.cardTitle}>📸 Photos</div><div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>{[tx.photoCustomerHolding, tx.photoCustomerID, tx.itemPhotos?.front, tx.itemPhotos?.back, tx.photoSigning, tx.photoSealedPkg].filter(Boolean).map((p, i) => <img key={i} src={p} style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover' }} />)}</div></div>
+    <div style={S.card}>
+      <div style={S.cardTitle}>📸 Photos</div>
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        {[tx.photoCustomerHolding, tx.photoCustomerID, tx.itemPhotos?.front, tx.itemPhotos?.back, tx.photoSigning, tx.photoSealedPkg]
+          .filter(Boolean)
+          .map((p, i) => (
+            <button
+              key={i}
+              onClick={() => setZoomedPhoto(p)}
+              style={{
+                border: 'none',
+                padding: 0,
+                background: 'transparent',
+                cursor: 'zoom-in',
+                borderRadius: '8px',
+                overflow: 'hidden'
+              }}
+              title="Tap to view full image"
+            >
+              <img src={p} alt={`Transaction photo ${i + 1}`} style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }} />
+            </button>
+          ))}
+      </div>
+      <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
+    </div>
     <button style={S.btn('outline')} onClick={() => setViewingTx(null)}>← Back</button>
   </div>);
+
+  const PhotoViewer = () => {
+    if (!zoomedPhoto) return null;
+    return (
+      <div
+        onClick={() => setZoomedPhoto(null)}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0, 0, 0, 0.85)',
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '24px'
+        }}
+      >
+        <div onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', textAlign: 'center' }}>
+          <img src={zoomedPhoto} alt="Zoomed transaction" style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px' }} />
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+            <a href={zoomedPhoto} download={`transaction-photo-${Date.now()}.jpg`} style={{ ...S.btn('primary'), textDecoration: 'none' }}>⬇ Download</a>
+            <button style={S.btn('outline')} onClick={() => setZoomedPhoto(null)}>✕ Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // Main page renderer
   const renderPage = () => {
@@ -763,7 +1326,7 @@ export default function App() {
 
       case 'declined': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Item</th><th style={S.th}>Reason</th></tr></thead><tbody>{declinedLog.map((d, i) => (<tr key={i}><td style={S.td}>{fmtDate(d.date)}</td><td style={S.td}>{d.item}</td><td style={S.td}>{d.reason}</td></tr>))}{declinedLog.length === 0 && <tr><td style={S.td} colSpan={3}>None.</td></tr>}</tbody></table></div></div>);
 
-      case 'settings': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div></div>);
+      case 'settings': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div></div>);
 
       case 'users': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => (<tr key={u.id}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}>{u.id !== 'admin' && <button style={S.btnSm('danger')} onClick={async () => { await API.del(`users/${u.id}`); loadData(); }}>Remove</button>}</td></tr>))}</tbody></table></div></div>);
 
@@ -795,12 +1358,12 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isMobile && <button style={S.hamburger} onClick={() => setSidebarOpen(o => !o)} aria-label="Menu">☰</button>}
           <span style={{ fontSize: '20px' }}>💰</span>
-          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CFC QUICK CASH</span>
+          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CIF QUICK CASH</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
           <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}</span>
-          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={() => setCurrentUser(null)}>{isMobile ? '✕' : 'Logout'}</button>
+          <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); clearAuthCache(); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
         </div>
       </div>
 
@@ -836,6 +1399,7 @@ export default function App() {
         )}
         <div style={{ ...S.mainContent, padding: isMobile ? '16px' : '24px', maxHeight: isMobile ? 'none' : 'calc(100vh - 56px)', paddingBottom: isMobile ? '80px' : '24px' }}>
           {renderPage()}
+          <PhotoViewer />
         </div>
       </div>
 
