@@ -1152,6 +1152,7 @@ export default function App() {
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale');
   const pastDeadline = activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30));
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
   const totalServiceFees = transactions.filter(t => t.status !== 'declined').length * (settings.serviceFee || 1000);
@@ -1159,7 +1160,7 @@ export default function App() {
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
   const totalCapital = capital.reduce((s, c) => s + (c.amount || 0), 0);
-  const availableLendingCapital = totalCapital - totalCapitalOut + Math.min(netProfit, 0);
+  const availableLendingCapital = totalCapital - totalCapitalOut - totalCapitalInForSaleInventory + Math.min(netProfit, 0);
 
   const filteredTxs = useMemo(() => {
     if (!searchQuery) return transactions;
