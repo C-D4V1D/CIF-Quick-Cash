@@ -31,7 +31,8 @@ const API = {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
+        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -43,7 +44,8 @@ const API = {
         method: 'PUT',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
+        body: JSON.stringify(data),
+        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -290,7 +292,7 @@ function LoginScreen({ onLogin }) {
     setError('');
     const result = await API.post('login', { username, password, rememberMe });
     if (result?.error) { setError(result.error); setLoading(false); return; }
-    if (result?.id) { onLogin(result); }
+    if (result?.user?.id) { onLogin(result.user); }
     else { setError('Invalid username or password'); }
     setLoading(false);
   };
@@ -602,6 +604,7 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 // ============================================================
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [page, setPage] = useState('dashboard');
   const [transactions, setTransactions] = useState([]);
   const [drafts, setDrafts] = useState([]);
@@ -624,6 +627,15 @@ export default function App() {
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
+
+  useEffect(() => {
+    const restoreSession = async () => {
+      const me = await API.get('me');
+      if (me?.id) setCurrentUser(me);
+      setAuthLoading(false);
+    };
+    restoreSession();
+  }, []);
 
   // Load critical data first using a bundled bootstrap endpoint.
   const loadData = async () => {
@@ -682,6 +694,8 @@ export default function App() {
     const q = searchQuery.toLowerCase();
     return transactions.filter(t => t.ref?.toLowerCase().includes(q) || t.fullName?.toLowerCase().includes(q) || t.phoneNumbers?.some(p => p?.includes(q)) || t.imei?.includes(q) || t.aiBrand?.toLowerCase().includes(q));
   }, [transactions, searchQuery]);
+
+  if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
 
   if (!currentUser) return <LoginScreen onLogin={(u) => { setCurrentUser(u); }} />;
 

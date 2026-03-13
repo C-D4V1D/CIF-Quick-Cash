@@ -1,5 +1,8 @@
 import { neon } from '@neondatabase/serverless';
 
+const SESSION_COOKIE = 'cfc_session';
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
+
 // Helper: JSON response
 const json = (data, status = 200, extraHeaders = {}) => {
   const headers = new Headers({ 'Content-Type': 'application/json' });
@@ -29,6 +32,26 @@ const buildSessionCookie = (name, value, maxAge) => {
 };
 
 const clearSessionCookie = (name) => `${name}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`;
+const parseCookies = (cookieHeader = '') => Object.fromEntries(
+  cookieHeader
+    .split(';')
+    .map((cookie) => cookie.trim())
+    .filter(Boolean)
+    .map((cookie) => {
+      const [name, ...rest] = cookie.split('=');
+      return [name, decodeURIComponent(rest.join('='))];
+    })
+);
+
+const buildSessionCookie = (token, requestUrl) => {
+  const secureFlag = requestUrl.protocol === 'https:' ? '; Secure' : '';
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${secureFlag}`;
+};
+
+const clearSessionCookie = (requestUrl) => {
+  const secureFlag = requestUrl.protocol === 'https:' ? '; Secure' : '';
+  return `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`;
+};
 
 export async function onRequest(context) {
   const { request, env } = context;
@@ -43,6 +66,33 @@ export async function onRequest(context) {
 
   // Connect to Neon Database
   const sql = neon(env.DATABASE_URL);
+
+  const ensureSessionTable = async () => {
+    await sql`
+      CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `;
+  };
+
+  const getSessionUser = async () => {
+    await ensureSessionTable();
+    const cookies = parseCookies(request.headers.get('Cookie') || '');
+    const token = cookies[SESSION_COOKIE];
+    if (!token) return null;
+
+    const rows = await sql`
+      SELECT u.id, u.username, u.role, u.name
+      FROM sessions s
+      JOIN users u ON u.id = s.user_id
+      WHERE s.token = ${token} AND s.expires_at > NOW()
+      LIMIT 1
+    `;
+    return rows[0] || null;
+  };
 
   try {
     // ============================================================
