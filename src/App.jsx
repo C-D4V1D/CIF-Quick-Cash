@@ -668,15 +668,66 @@ function LoginScreen({ onLogin }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  const WARMUP_TIMEOUT_MS = 1800;
+  const ENABLE_LOGIN_TELEMETRY = true;
+
+  const warmupHealthCheck = async ({ timeoutMs = WARMUP_TIMEOUT_MS, source = 'unknown' } = {}) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const start = performance.now();
+
+    if (ENABLE_LOGIN_TELEMETRY) {
+      console.time(`[login] warmup (${source})`);
+    }
+
+    try {
+      const response = await fetch('/api/health', {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        signal: controller.signal,
+      });
+
+      return response.ok;
+    } catch (e) {
+      if (ENABLE_LOGIN_TELEMETRY) {
+        console.debug(`[login] warmup failed (${source}):`, e?.name || e);
+      }
+      return false;
+    } finally {
+      clearTimeout(timeoutId);
+      if (ENABLE_LOGIN_TELEMETRY) {
+        console.timeEnd(`[login] warmup (${source})`);
+        console.debug(`[login] warmup (${source}) duration=${Math.round(performance.now() - start)}ms`);
+      }
+    }
+  };
+
   // Warm up database while user enters credentials.
   useEffect(() => {
-    API.get('health');
+    warmupHealthCheck({ source: 'screen-load' });
   }, []);
 
   const handleLogin = async () => {
     setLoading(true);
     setError('');
+
+    const loginStart = performance.now();
+    if (ENABLE_LOGIN_TELEMETRY) {
+      console.time('[login] total');
+      console.time('[login] request');
+    }
+
+    // Opportunistic warmup: this should never block indefinitely.
+    await warmupHealthCheck({ source: 'pre-login' });
+
     const result = await API.post('login', { username, password, rememberMe });
+    if (ENABLE_LOGIN_TELEMETRY) {
+      console.timeEnd('[login] request');
+      console.timeEnd('[login] total');
+      console.debug(`[login] total duration=${Math.round(performance.now() - loginStart)}ms`);
+    }
+
     if (result?.error) { setError(result.error); setLoading(false); return; }
     if (result?.user?.id) { onLogin(result.user); }
     else { setError('Invalid username or password'); }
