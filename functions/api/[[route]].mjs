@@ -1,5 +1,3 @@
-import { neon } from '@neondatabase/serverless';
-
 // Session cookie names — short-lived (session) vs long-lived (remember me)
 const SESSION_COOKIE_SHORT = 'cfc_session_short';
 const SESSION_COOKIE_LONG = 'cfc_session_long';
@@ -56,11 +54,11 @@ export async function onRequest(context) {
   const path = url.pathname.replace('/api/', '').replace('/api', '');
   const method = request.method;
 
-  if (!env.DATABASE_URL) {
-    return error('Database connection string missing in Cloudflare Environment Variables', 500);
+  if (!env.DB) {
+    return error('D1 database binding missing — ensure DB is bound in wrangler.toml', 500);
   }
 
-  const sql = neon(env.DATABASE_URL);
+  const db = env.DB;
 
   try {
     // ============================================================
@@ -68,10 +66,12 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'login' && method === 'POST') {
       const { username, password, rememberMe } = await request.json();
-      const rows = await sql`SELECT id, username, role, name FROM users WHERE username = ${username} AND password = ${password}`;
-      if (rows.length === 0) return error('Invalid username or password', 401);
+      const user = await db
+        .prepare('SELECT id, username, role, name FROM users WHERE username = ? AND password = ?')
+        .bind(username, password)
+        .first();
+      if (!user) return error('Invalid username or password', 401);
 
-      const user = rows[0];
       const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, name: user.name, issuedAt: Date.now() });
       const activeCookie = rememberMe
         ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
@@ -111,36 +111,41 @@ export async function onRequest(context) {
       const role = url.searchParams.get('role') || '';
 
       if (scope === 'secondary') {
-        const [expenses, capital, declined, users] = await Promise.all([
-          sql`SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC`,
-          sql`SELECT id, name, amount, date, method FROM capital ORDER BY date`,
-          sql`SELECT id, date, item, reason FROM declined_log ORDER BY date DESC`,
+        const [expensesRes, capitalRes, declinedRes, usersRes] = await Promise.all([
+          db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all(),
+          db.prepare('SELECT id, name, amount, date, method FROM capital ORDER BY date').all(),
+          db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
-            ? sql`SELECT id, username, role, name, created_at FROM users ORDER BY created_at`
-            : Promise.resolve([])
+            ? db.prepare('SELECT id, username, role, name, created_at FROM users ORDER BY created_at').all()
+            : Promise.resolve({ results: [] })
         ]);
 
-        return json({ expenses, capital, declined, users });
+        return json({
+          expenses: expensesRes.results,
+          capital: capitalRes.results,
+          declined: declinedRes.results,
+          users: usersRes.results
+        });
       }
 
       if (scope === 'transactions') {
         const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '100', 10) || 100));
         const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
 
-        const [transactionRows, draftRows, transactionCountRows, draftCountRows] = await Promise.all([
-          sql`SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
-          sql`SELECT ref, data, updated_at FROM drafts ORDER BY updated_at DESC LIMIT ${limit} OFFSET ${offset}`,
-          sql`SELECT COUNT(*)::int AS total FROM transactions`,
-          sql`SELECT COUNT(*)::int AS total FROM drafts`
+        const [transactionsRes, draftsRes, txCountRow, draftCountRow] = await Promise.all([
+          db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
+          db.prepare('SELECT ref, data, updated_at FROM drafts ORDER BY updated_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
+          db.prepare('SELECT COUNT(*) AS total FROM transactions').first(),
+          db.prepare('SELECT COUNT(*) AS total FROM drafts').first()
         ]);
 
-        const totalTransactions = transactionCountRows[0]?.total || 0;
-        const totalDrafts = draftCountRows[0]?.total || 0;
+        const totalTransactions = txCountRow?.total || 0;
+        const totalDrafts = draftCountRow?.total || 0;
         const hasMore = offset + limit < Math.max(totalTransactions, totalDrafts);
 
         return json({
-          transactions: transactionRows.map((r) => ({ ...r.data, ref: r.ref, status: r.status })),
-          drafts: draftRows.map((r) => ({ ...r.data, ref: r.ref })),
+          transactions: transactionsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref, status: r.status })),
+          drafts: draftsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })),
           pagination: {
             limit,
             offset,
@@ -152,22 +157,23 @@ export async function onRequest(context) {
         });
       }
 
-      const [settingsRows, summaryRows] = await Promise.all([
-        sql`SELECT value FROM settings WHERE key = 'config'`,
-        sql`
+      // scope === 'critical'
+      const [settingsRow, summaryRow] = await Promise.all([
+        db.prepare("SELECT value FROM settings WHERE key = 'config'").first(),
+        db.prepare(`
           SELECT
-            COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE status = 'active')::int AS active,
-            COUNT(*) FILTER (WHERE status = 'closed')::int AS closed,
-            COUNT(*) FILTER (WHERE status = 'sold')::int AS sold,
-            COUNT(*) FILTER (WHERE status = 'for_sale')::int AS for_sale
+            COUNT(*) AS total,
+            SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+            SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed,
+            SUM(CASE WHEN status = 'sold' THEN 1 ELSE 0 END) AS sold,
+            SUM(CASE WHEN status = 'for_sale' THEN 1 ELSE 0 END) AS for_sale
           FROM transactions
-        `
+        `).first()
       ]);
 
       return json({
-        settings: settingsRows.length > 0 ? settingsRows[0].value : {},
-        summary: summaryRows[0] || { total: 0, active: 0, closed: 0, sold: 0, for_sale: 0 }
+        settings: settingsRow ? JSON.parse(settingsRow.value) : {},
+        summary: summaryRow || { total: 0, active: 0, closed: 0, sold: 0, for_sale: 0 }
       });
     }
 
@@ -175,18 +181,21 @@ export async function onRequest(context) {
     // USERS: GET, POST, DELETE /api/users
     // ============================================================
     if (path === 'users' && method === 'GET') {
-      const rows = await sql`SELECT id, username, role, name, created_at FROM users ORDER BY created_at`;
-      return json(rows);
+      const { results } = await db.prepare('SELECT id, username, role, name, created_at FROM users ORDER BY created_at').all();
+      return json(results);
     }
     if (path === 'users' && method === 'POST') {
       const { id, username, password, role, name } = await request.json();
-      await sql`INSERT INTO users (id, username, password, role, name) VALUES (${id}, ${username}, ${password}, ${role}, ${name})`;
+      await db
+        .prepare('INSERT INTO users (id, username, password, role, name) VALUES (?, ?, ?, ?, ?)')
+        .bind(id, username, password, role, name)
+        .run();
       return json({ success: true });
     }
     if (path.startsWith('users/') && method === 'DELETE') {
       const id = path.split('/')[1];
       if (id === 'admin') return error('Cannot delete admin user');
-      await sql`DELETE FROM users WHERE id = ${id}`;
+      await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
       return json({ success: true });
     }
 
@@ -194,12 +203,15 @@ export async function onRequest(context) {
     // SETTINGS: GET, PUT /api/settings
     // ============================================================
     if (path === 'settings' && method === 'GET') {
-      const rows = await sql`SELECT value FROM settings WHERE key = 'config'`;
-      return json(rows.length > 0 ? rows[0].value : {});
+      const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      return json(row ? JSON.parse(row.value) : {});
     }
     if (path === 'settings' && method === 'PUT') {
       const data = await request.json();
-      await sql`INSERT INTO settings (key, value, updated_at) VALUES ('config', ${JSON.stringify(data)}::jsonb, NOW()) ON CONFLICT (key) DO UPDATE SET value = ${JSON.stringify(data)}::jsonb, updated_at = NOW()`;
+      await db
+        .prepare("INSERT INTO settings (key, value, updated_at) VALUES ('config', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
+        .bind(JSON.stringify(data))
+        .run();
       return json({ success: true });
     }
 
@@ -207,18 +219,24 @@ export async function onRequest(context) {
     // TRANSACTIONS: GET, POST, PUT /api/transactions
     // ============================================================
     if (path === 'transactions' && method === 'GET') {
-      const rows = await sql`SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC`;
-      return json(rows.map(r => ({ ...r.data, ref: r.ref, status: r.status })));
+      const { results } = await db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC').all();
+      return json(results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref, status: r.status })));
     }
     if (path === 'transactions' && method === 'POST') {
       const tx = await request.json();
-      await sql`INSERT INTO transactions (ref, data, status, updated_at) VALUES (${tx.ref}, ${JSON.stringify(tx)}::jsonb, ${tx.status || 'active'}, NOW()) ON CONFLICT (ref) DO UPDATE SET data = ${JSON.stringify(tx)}::jsonb, status = ${tx.status || 'active'}, updated_at = NOW()`;
+      await db
+        .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, status = excluded.status, updated_at = datetime('now')")
+        .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
+        .run();
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'PUT') {
       const ref = decodeURIComponent(path.split('/')[1]);
       const tx = await request.json();
-      await sql`UPDATE transactions SET data = ${JSON.stringify(tx)}::jsonb, status = ${tx.status || 'active'}, updated_at = NOW() WHERE ref = ${ref}`;
+      await db
+        .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
+        .bind(JSON.stringify(tx), tx.status || 'active', ref)
+        .run();
       return json({ success: true });
     }
 
@@ -226,22 +244,25 @@ export async function onRequest(context) {
     // DRAFTS: GET, POST, DELETE /api/drafts
     // ============================================================
     if (path === 'drafts' && method === 'GET') {
-      const rows = await sql`SELECT ref, data FROM drafts ORDER BY updated_at DESC`;
-      return json(rows.map(r => ({ ...r.data, ref: r.ref })));
+      const { results } = await db.prepare('SELECT ref, data FROM drafts ORDER BY updated_at DESC').all();
+      return json(results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })));
     }
     if (path === 'drafts' && method === 'POST') {
       const draft = await request.json();
       const hasPassedIdentityStep = Number(draft?.wizardStep ?? 0) > 1 || Boolean(draft?.ninVerified) || Boolean(draft?.ninVerificationAttempted);
       if (!hasPassedIdentityStep) {
-        await sql`DELETE FROM drafts WHERE ref = ${draft.ref}`;
+        await db.prepare('DELETE FROM drafts WHERE ref = ?').bind(draft.ref).run();
         return json({ success: false, skipped: true, reason: 'Drafts before identity verification are not persisted.' });
       }
-      await sql`INSERT INTO drafts (ref, data, updated_at) VALUES (${draft.ref}, ${JSON.stringify(draft)}::jsonb, NOW()) ON CONFLICT (ref) DO UPDATE SET data = ${JSON.stringify(draft)}::jsonb, updated_at = NOW()`;
+      await db
+        .prepare("INSERT INTO drafts (ref, data, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, updated_at = datetime('now')")
+        .bind(draft.ref, JSON.stringify(draft))
+        .run();
       return json({ success: true });
     }
     if (path.startsWith('drafts/') && method === 'DELETE') {
       const ref = decodeURIComponent(path.split('/')[1]);
-      await sql`DELETE FROM drafts WHERE ref = ${ref}`;
+      await db.prepare('DELETE FROM drafts WHERE ref = ?').bind(ref).run();
       return json({ success: true });
     }
 
@@ -249,12 +270,15 @@ export async function onRequest(context) {
     // EXPENSES: GET, POST /api/expenses
     // ============================================================
     if (path === 'expenses' && method === 'GET') {
-      const rows = await sql`SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC`;
-      return json(rows);
+      const { results } = await db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all();
+      return json(results);
     }
     if (path === 'expenses' && method === 'POST') {
       const { date, category, description, amount } = await request.json();
-      await sql`INSERT INTO expenses (date, category, description, amount) VALUES (${date}, ${category}, ${description}, ${amount})`;
+      await db
+        .prepare('INSERT INTO expenses (date, category, description, amount) VALUES (?, ?, ?, ?)')
+        .bind(date, category, description, amount)
+        .run();
       return json({ success: true });
     }
 
@@ -262,12 +286,15 @@ export async function onRequest(context) {
     // CAPITAL: GET, POST /api/capital
     // ============================================================
     if (path === 'capital' && method === 'GET') {
-      const rows = await sql`SELECT id, name, amount, date, method FROM capital ORDER BY date`;
-      return json(rows);
+      const { results } = await db.prepare('SELECT id, name, amount, date, method FROM capital ORDER BY date').all();
+      return json(results);
     }
     if (path === 'capital' && method === 'POST') {
-      const { name, amount, date, method } = await request.json();
-      await sql`INSERT INTO capital (name, amount, date, method) VALUES (${name}, ${amount}, ${date}, ${method})`;
+      const { name, amount, date, method: capitalMethod } = await request.json();
+      await db
+        .prepare('INSERT INTO capital (name, amount, date, method) VALUES (?, ?, ?, ?)')
+        .bind(name, amount, date, capitalMethod)
+        .run();
       return json({ success: true });
     }
 
@@ -275,12 +302,15 @@ export async function onRequest(context) {
     // DECLINED LOG: GET, POST /api/declined
     // ============================================================
     if (path === 'declined' && method === 'GET') {
-      const rows = await sql`SELECT id, date, item, reason FROM declined_log ORDER BY date DESC`;
-      return json(rows);
+      const { results } = await db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all();
+      return json(results);
     }
     if (path === 'declined' && method === 'POST') {
       const { date, item, reason } = await request.json();
-      await sql`INSERT INTO declined_log (date, item, reason) VALUES (${date}, ${item}, ${reason})`;
+      await db
+        .prepare('INSERT INTO declined_log (date, item, reason) VALUES (?, ?, ?)')
+        .bind(date, item, reason)
+        .run();
       return json({ success: true });
     }
 
@@ -312,7 +342,7 @@ export async function onRequest(context) {
     // HEALTH CHECK: GET /api/health
     // ============================================================
     if (path === 'health' || path === '') {
-      await sql`SELECT 1`;
+      await db.prepare('SELECT 1').run();
       return json(
         { status: 'ok', database: 'connected' },
         200,
