@@ -855,15 +855,22 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   }, [maxLoanDays, tx.loanDays, tx.dateGiven]);
 
   // Auto-save draft every 3 seconds (debounced) after identity step has been passed.
+  // On unmount, flush any pending save immediately so exiting via ✕ never loses a draft.
+  const pendingDraftRef = useRef(null);
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const canPersistDraft = step > 1 || tx.ninVerified || tx.ninVerificationAttempted;
+    pendingDraftRef.current = canPersistDraft ? { ...tx, wizardStep: step } : null;
     saveTimer.current = setTimeout(() => {
       if (canPersistDraft) API.post('drafts', { ...tx, wizardStep: step });
       else API.del(`drafts/${encodeURIComponent(tx.ref)}`);
+      pendingDraftRef.current = null;
     }, 3000);
     return () => clearTimeout(saveTimer.current);
   }, [tx, step]);
+  useEffect(() => {
+    return () => { if (pendingDraftRef.current) API.post('drafts', pendingDraftRef.current); };
+  }, []);
 
   // Immediate (non-debounced) draft save — call before navigating away or advancing steps.
   const saveDraftNow = async (nextStep) => {
@@ -1330,7 +1337,7 @@ export default function App() {
     <div style={S.app}>
       <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
         <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</div>
-        <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); }}>✕ {isMobile ? '' : 'Exit'}</button>
+        <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
         <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
