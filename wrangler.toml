@@ -1,17 +1,11 @@
 name = "cifcash"
 pages_build_output_dir = "dist"
 
-# ── Cloudflare D1 (SQLite) ────────────────────────────────────────────────────
-# Replace database_name and database_id with your actual values from:
-#   Cloudflare Dashboard → Workers & Pages → D1
 [[d1_databases]]
-binding     = "DB"
-database_name = "YOUR_D1_DATABASE_NAME"
-database_id   = "YOUR_D1_DATABASE_ID"
+binding       = "DB"
+database_name = "cifcash-db"
+database_id   = "84f2f966-3cf2-43d5-b5bc-028435dcc419"
 
-# ── Cloudflare R2 (photo storage) ────────────────────────────────────────────
-# 1. Create the bucket:  wrangler r2 bucket create cifcash-photos
-# 2. Replace bucket_name below if you used a different name.
 [[r2_buckets]]
 binding     = "PHOTOS"
 bucket_name = "cifcash-photos"
