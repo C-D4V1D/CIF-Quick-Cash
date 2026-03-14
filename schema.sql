@@ -10,9 +10,9 @@ CREATE TABLE IF NOT EXISTS users (
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- Default admin user (change the password before deploying to production)
+-- Default admin user
 INSERT OR IGNORE INTO users (id, username, password, role, name)
-  VALUES ('admin', 'admin', 'admin123', 'admin', 'Administrator');
+  VALUES ('admin', 'cifadmin', 'CIF@dm!n#2025xQ8p', 'admin', 'Administrator');
 
 CREATE TABLE IF NOT EXISTS transactions (
   ref         TEXT    PRIMARY KEY,
