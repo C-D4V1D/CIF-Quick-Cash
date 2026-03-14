@@ -60,7 +60,60 @@ export async function onRequest(context) {
 
   const db = env.DB;
 
+  // Extract R2 keys from all photo fields in a draft/transaction data object.
+  const extractPhotoKeys = (data) => {
+    const keys = [];
+    const collect = (url) => {
+      if (typeof url === 'string' && url.startsWith('/api/photos/'))
+        keys.push(url.slice('/api/photos/'.length));
+    };
+    collect(data.ninPhoto);
+    collect(data.photoCustomerHolding);
+    collect(data.photoCustomerID);
+    collect(data.photoSigning);
+    collect(data.photoSealedPkg);
+    collect(data.imeiPhoto);
+    collect(data.serialNumberPhoto);
+    collect(data.receiptPhoto);
+    if (data.itemPhotos) {
+      ['front', 'back', 'left', 'right', 'powerOn', 'aboutPage'].forEach(k => collect(data.itemPhotos[k]));
+      (data.itemPhotos.corners || []).forEach(collect);
+    }
+    return keys;
+  };
+
   try {
+    // ============================================================
+    // PHOTOS: GET /api/photos/:key  (serve from R2 — no auth needed,
+    //         keys are random/unguessable)
+    // ============================================================
+    if (path.startsWith('photos/') && method === 'GET') {
+      if (!env.PHOTOS) return error('R2 bucket binding missing — add PHOTOS binding in wrangler.toml', 500);
+      const key = decodeURIComponent(path.slice('photos/'.length));
+      const object = await env.PHOTOS.get(key);
+      if (!object) return error('Photo not found', 404);
+      const headers = new Headers();
+      headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
+      headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      return new Response(object.body, { headers });
+    }
+
+    // ============================================================
+    // PHOTOS: POST /api/photos  (upload to R2, returns { url })
+    // ============================================================
+    if (path === 'photos' && method === 'POST') {
+      const user = getSessionUser(request);
+      if (!user) return error('Not authenticated', 401);
+      if (!env.PHOTOS) return error('R2 bucket binding missing — add PHOTOS binding in wrangler.toml', 500);
+      const { data, mimeType } = await request.json();
+      if (!data || !mimeType) return error('Missing data or mimeType');
+      const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+      const key = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      await env.PHOTOS.put(key, bytes, { httpMetadata: { contentType: mimeType } });
+      return json({ url: `/api/photos/${key}` });
+    }
+
     // ============================================================
     // AUTH: POST /api/login
     // ============================================================
@@ -262,6 +315,14 @@ export async function onRequest(context) {
     }
     if (path.startsWith('drafts/') && method === 'DELETE') {
       const ref = decodeURIComponent(path.split('/')[1]);
+      // Delete photos from R2 before removing the draft record
+      if (env.PHOTOS) {
+        const row = await db.prepare('SELECT data FROM drafts WHERE ref = ?').bind(ref).first();
+        if (row) {
+          const keys = extractPhotoKeys(JSON.parse(row.data));
+          if (keys.length > 0) await Promise.all(keys.map(k => env.PHOTOS.delete(k)));
+        }
+      }
       await db.prepare('DELETE FROM drafts WHERE ref = ?').bind(ref).run();
       return json({ success: true });
     }
