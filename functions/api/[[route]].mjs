@@ -62,6 +62,37 @@ export async function onRequest(context) {
 
   try {
     // ============================================================
+    // PHOTOS: GET /api/photos/:key  (serve from R2 — no auth needed,
+    //         keys are random/unguessable)
+    // ============================================================
+    if (path.startsWith('photos/') && method === 'GET') {
+      if (!env.PHOTOS) return error('R2 bucket binding missing — add PHOTOS binding in wrangler.toml', 500);
+      const key = decodeURIComponent(path.slice('photos/'.length));
+      const object = await env.PHOTOS.get(key);
+      if (!object) return error('Photo not found', 404);
+      const headers = new Headers();
+      headers.set('Content-Type', object.httpMetadata?.contentType || 'image/jpeg');
+      headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+      return new Response(object.body, { headers });
+    }
+
+    // ============================================================
+    // PHOTOS: POST /api/photos  (upload to R2, returns { url })
+    // ============================================================
+    if (path === 'photos' && method === 'POST') {
+      const user = getSessionUser(request);
+      if (!user) return error('Not authenticated', 401);
+      if (!env.PHOTOS) return error('R2 bucket binding missing — add PHOTOS binding in wrangler.toml', 500);
+      const { data, mimeType } = await request.json();
+      if (!data || !mimeType) return error('Missing data or mimeType');
+      const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+      const key = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      await env.PHOTOS.put(key, bytes, { httpMetadata: { contentType: mimeType } });
+      return json({ url: `/api/photos/${key}` });
+    }
+
+    // ============================================================
     // AUTH: POST /api/login
     // ============================================================
     if (path === 'login' && method === 'POST') {

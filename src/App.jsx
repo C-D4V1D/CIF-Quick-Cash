@@ -282,23 +282,55 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
   const cameraRef = useRef();
   const fileRef = useRef();
-  const handleFile = (e) => {
+  // Local base64 preview shown while the R2 upload is in flight.
+  // The parent tx state only ever receives the final /api/photos/ URL.
+  const [preview, setPreview] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    compressImageFile(file).then(onChange);
     e.target.value = '';
+    const base64 = await compressImageFile(file);
+    setPreview(base64); // instant local preview
+    setUploading(true);
+    try {
+      const mimeType = base64.split(';')[0].split(':')[1];
+      const data = base64.split(',')[1];
+      const result = await API.post('photos', { data, mimeType });
+      if (result?.url) {
+        onChange(result.url); // store only the URL in tx state
+        setPreview(null);
+      } else {
+        onChange(base64); // R2 not configured yet — fall back to base64
+        setPreview(null);
+      }
+    } catch {
+      onChange(base64); // network error — fall back to base64
+      setPreview(null);
+    } finally {
+      setUploading(false);
+    }
   };
+
+  const displaySrc = value || preview;
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ ...S.photoBox, width: size, height: size }} onClick={() => cameraRef.current?.click()}>
-        {value ? <img src={value} style={S.photoImg} alt={label} /> :
-          <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
+      <div style={{ ...S.photoBox, width: size, height: size }} onClick={() => !uploading && cameraRef.current?.click()}>
+        {displaySrc
+          ? <img src={displaySrc} style={S.photoImg} alt={label} />
+          : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
+        {uploading && (
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
+            <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>Uploading…</span>
+          </div>
+        )}
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('accent')} onClick={() => cameraRef.current?.click()}>📷 Camera</button>
-        <button type="button" style={S.btnSm('primary')} onClick={() => fileRef.current?.click()}>🖼 Gallery/File</button>
+        <button type="button" style={S.btnSm('accent')} onClick={() => !uploading && cameraRef.current?.click()} disabled={uploading}>📷 Camera</button>
+        <button type="button" style={S.btnSm('primary')} onClick={() => !uploading && fileRef.current?.click()} disabled={uploading}>🖼 Gallery/File</button>
       </div>
       <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
     </div>
