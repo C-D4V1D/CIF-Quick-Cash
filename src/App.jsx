@@ -30,10 +30,9 @@ const API = {
     try {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'POST',
-        credentials: 'same-origin',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
-        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -43,10 +42,9 @@ const API = {
     try {
       const r = await fetch(`/api/${endpoint}`, {
         method: 'PUT',
-        credentials: 'same-origin',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
-        credentials: 'include'
       });
       if (!r.ok) throw new Error(`API error: ${r.status}`);
       return await r.json();
@@ -63,8 +61,22 @@ const API = {
 
 // --- LOCAL CACHE (instant page load) ---
 const readCache = (k) => { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null; } catch { return null; } };
-const writeCache = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
-const clearAuthCache = () => { try { localStorage.removeItem('cfc_user'); localStorage.removeItem('cfc_critical'); localStorage.removeItem('cfc_transactions'); } catch {} };
+const writeCache = (k, v) => {
+  try {
+    localStorage.setItem(k, JSON.stringify(v));
+  } catch (error) {
+    console.debug('Failed to write cache', error);
+  }
+};
+const clearAuthCache = () => {
+  try {
+    localStorage.removeItem('cfc_user');
+    localStorage.removeItem('cfc_critical');
+    localStorage.removeItem('cfc_transactions');
+  } catch (error) {
+    console.debug('Failed to clear auth cache', error);
+  }
+};
 
 // --- UTILITY FUNCTIONS ---
 const genRef = () => {
