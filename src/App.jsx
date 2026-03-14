@@ -243,37 +243,49 @@ const S = {
 // ============================================================
 // REUSABLE COMPONENTS
 // ============================================================
+const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) => new Promise((resolve) => {
+  const img = new Image();
+  img.onload = () => {
+    let { width, height } = img;
+    if (width > maxDimension || height > maxDimension) {
+      if (width > height) {
+        height = Math.round((height * maxDimension) / width);
+        width = maxDimension;
+      } else {
+        width = Math.round((width * maxDimension) / height);
+        height = maxDimension;
+      }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+    resolve(canvas.toDataURL('image/jpeg', quality));
+    URL.revokeObjectURL(img.src);
+  };
+  img.src = URL.createObjectURL(file);
+});
+
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
-  const ref = useRef();
+  const cameraRef = useRef();
+  const fileRef = useRef();
   const handleFile = (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      // Compress large images
-      const canvas = document.createElement('canvas');
-      const img = new Image();
-      img.onload = () => {
-        const max = 800;
-        let w = img.width, h = img.height;
-        if (w > max) { h = h * max / w; w = max; }
-        if (h > max) { w = w * max / h; h = max; }
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        onChange(canvas.toDataURL('image/jpeg', 0.7));
-      };
-      img.src = URL.createObjectURL(file);
-    } else {
-      const reader = new FileReader();
-      reader.onload = (ev) => onChange(ev.target.result);
-      reader.readAsDataURL(file);
-    }
+    compressImageFile(file).then(onChange);
+    e.target.value = '';
   };
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ ...S.photoBox, width: size, height: size }} onClick={() => ref.current?.click()}>
+      <div style={{ ...S.photoBox, width: size, height: size }} onClick={() => cameraRef.current?.click()}>
         {value ? <img src={value} style={S.photoImg} alt={label} /> :
           <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
-        <input ref={ref} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
+        <button type="button" style={S.btnSm('accent')} onClick={() => cameraRef.current?.click()}>📷 Camera</button>
+        <button type="button" style={S.btnSm('primary')} onClick={() => fileRef.current?.click()}>🖼 Gallery/File</button>
       </div>
       <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
     </div>
@@ -668,6 +680,7 @@ function CustomerPortal({ onBack, settings }) {
 function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -747,7 +760,7 @@ function LoginScreen({ onLogin }) {
         <div style={S.loginSub}>Staff & Stakeholder Portal</div>
         {error && <div style={S.alert('danger')}>{error}</div>}
         <Field label="Username"><input style={S.input} value={username} onChange={e => { setUsername(e.target.value); setError(''); }} placeholder="Enter username" /></Field>
-        <Field label="Password"><input style={S.input} type="password" value={password} onChange={e => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" onKeyDown={e => e.key === 'Enter' && handleLogin()} /></Field>
+        <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPassword ? 'text' : 'password'} value={password} onChange={e => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" onKeyDown={e => e.key === 'Enter' && handleLogin()} /><button type="button" style={S.btnSm('outline')} onClick={() => setShowPassword(v => !v)}>{showPassword ? '🙈 Hide' : '👁 Show'}</button></div></Field>
         <div style={{ marginTop: '-4px', marginBottom: '14px' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: COLORS.text }}>
             <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
@@ -783,7 +796,7 @@ const WIZARD_STEPS = [
 ];
 
 const EMPTY_TX = {
-  type: 'advance', status: 'active', idType: 'nin', idNumber: '', ninVerified: false, ninData: null,
+  type: 'advance', status: 'active', idType: 'nin', idNumber: '', ninVerified: false, ninVerificationAttempted: false, ninVerificationStatus: 'not_attempted', ninData: null,
   fullName: '', address: '', phoneNumbers: ['', ''], phonesVerified: [false, false],
   familyName: '', familyPhone: '', familyRelation: '',
   photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null,
@@ -824,11 +837,13 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     }
   }, [maxLoanDays, tx.loanDays, tx.dateGiven]);
 
-  // Auto-save draft every 3 seconds (debounced)
+  // Auto-save draft every 3 seconds (debounced) after identity step has been passed.
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    const canPersistDraft = step > 1 || tx.ninVerified || tx.ninVerificationAttempted;
     saveTimer.current = setTimeout(() => {
-      API.post('drafts', { ...tx, wizardStep: step });
+      if (canPersistDraft) API.post('drafts', { ...tx, wizardStep: step });
+      else API.del(`drafts/${encodeURIComponent(tx.ref)}`);
     }, 3000);
     return () => clearTimeout(saveTimer.current);
   }, [tx, step]);
@@ -836,59 +851,46 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
  // NIN/BVN Verification
   const handleVerify = async () => {
     setNinLoading(true); setNinError('');
+    upd('ninVerificationAttempted', true);
     try {
-      // Call our server-side proxy to avoid CORS issues
       const endpoint = tx.idType === 'nin' ? 'verify-nin' : 'verify-bvn';
-      const body = tx.idType === 'nin' 
+      const body = tx.idType === 'nin'
         ? { nin: tx.idNumber, apiKey: settings.ninApiKey }
         : { bvn: tx.idNumber, apiKey: settings.ninApiKey };
       const result = await API.post(endpoint, body);
-      
-      console.log('NIN/BVN API Response:', result);
 
       if ((result?.status === 'success' || result?.status === true || result?.status === 'true' || result?.code === 200) && (result?.data || result?.response)) {
-        
-        // Handle deeply nested data if the API buries it
         const d = (result.data?.firstname || result.data?.firstName) ? result.data : (result.data?.data || result.data || result.response);
-        
-        upd('ninVerified', true); upd('ninData', d);
-        
-        // Smart Name Extractor: handles both lowercase (NIN) and camelCase (BVN)
+
+        upd('ninVerified', true);
+        upd('ninVerificationStatus', 'verified');
+        upd('ninData', d);
+
         const first = d.firstname || d.firstName;
         const middle = d.middlename || d.middleName;
         const last = d.surname || d.lastname || d.lastName;
         const fullName = [first, middle, last].filter(Boolean).join(' ');
-        
         if (fullName) upd('fullName', fullName);
-        
-        // Smart Address Extractor
+
         const address = [d.residence_address, d.residence_town, d.residence_lga, d.residence_state].filter(Boolean).join(', ');
         if (address) upd('address', address);
 
-        // Smart Phone Extractor
         const phone = d.telephoneno || d.phone || d.phoneNumber || d.phoneNumber1 || d.mobile;
-        if (phone) {
-          upd('phoneNumbers', [phone, tx.phoneNumbers[1]]);
-        }
-        
-        // Fix Photo formatting
+        if (phone) upd('phoneNumbers', [phone, tx.phoneNumbers[1]]);
+
         let rawPhoto = d.photo || d.base64Image || d.picture || d.image;
         if (rawPhoto) {
-          if (!rawPhoto.startsWith('data:image')) {
-            rawPhoto = `data:image/jpeg;base64,${rawPhoto}`;
-          }
+          if (!rawPhoto.startsWith('data:image')) rawPhoto = `data:image/jpeg;base64,${rawPhoto}`;
           upd('ninPhoto', rawPhoto);
         }
-        
       } else {
-        throw new Error(result?.message || result?.detail || 'Verification failed - check console for details');
+        throw new Error(result?.message || result?.detail || 'Verification failed');
       }
     } catch (e) {
-      console.error(e);
-      // Safely extract the error message to avoid the "undefined" glitch
       const errorMessage = e?.message || String(e) || 'Unknown error occurred';
-      setNinError(errorMessage + ' — Demo mode: proceeding with placeholder data.');
-      upd('ninVerified', true);
+      setNinError(`${errorMessage} — Proceeding with placeholder (demo) identity data.`);
+      upd('ninVerified', false);
+      upd('ninVerificationStatus', 'demo_placeholder');
       upd('ninData', { firstname: 'Demo', surname: 'User', residence_address: 'Aguleri Junction, Anambra State' });
       if (!tx.fullName) upd('fullName', 'Demo User');
       if (!tx.address) upd('address', 'Aguleri Junction, Anambra State');
@@ -935,7 +937,7 @@ IS_PHONE: [YES or NO]`;
   const canProceed = () => {
     switch (WIZARD_STEPS[step]?.id) {
       case 'type': return true;
-      case 'nin': return tx.ninVerified || tx.idNumber.length > 5;
+      case 'nin': return tx.ninVerificationAttempted;
       case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.familyName && tx.familyPhone && (tx.phonesVerified[0] || tx.phonesVerified[1]));
       case 'custPhotos': return !!tx.photoCustomerHolding;
       case 'itemPhotos': return !!(tx.itemPhotos.front || tx.itemPhotos.back) && (!tx.hasReceipt || !!tx.receiptPhoto);
@@ -952,7 +954,7 @@ IS_PHONE: [YES or NO]`;
     const issues = [];
     switch (WIZARD_STEPS[step]?.id) {
       case 'nin':
-        if (!(tx.ninVerified || tx.idNumber.length > 5)) issues.push('You must verify the customer\'s ID before proceeding.');
+        if (!tx.ninVerificationAttempted) issues.push('You must attempt NIN/BVN verification before proceeding.');
         break;
       case 'customer':
         if (!tx.fullName) issues.push('Full name is required.');
@@ -992,7 +994,7 @@ IS_PHONE: [YES or NO]`;
   };
 
   const handleComplete = async () => {
-    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null };
+    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     await API.post('transactions', finalTx);
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
     onSave(finalTx);
@@ -1004,7 +1006,7 @@ IS_PHONE: [YES or NO]`;
     switch (sid) {
       case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
 
-      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} value={tx.idNumber} onChange={e => upd('idNumber', e.target.value)} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerified && <div style={{ marginTop: '16px', padding: '16px', background: COLORS.primaryLight, borderRadius: '12px', border: '1px solid #b7e4c7' }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + COLORS.primary }} alt="NIN Photo" />}<div><div style={{ fontSize: '15px', fontWeight: 700, color: COLORS.primary, marginBottom: '4px' }}>✅ {tx.idType.toUpperCase()} Verified</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}</div>);
+      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} value={tx.idNumber} onChange={e => upd('idNumber', e.target.value)} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerificationAttempted && <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + (tx.ninVerified ? COLORS.primary : COLORS.warning) }} alt="NIN/BVN Photo" />}<div><div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}</div>);
 
       case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value; upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} value={tx.phoneNumbers[1]} onChange={e => { const n = [...tx.phoneNumbers]; n[1] = e.target.value; upd('phoneNumbers', n); if (!e.target.value) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required><input style={S.input} value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value)} placeholder="e.g. 08099887766" /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
@@ -1275,7 +1277,7 @@ export default function App() {
   const TxDetail = ({ tx }) => (<div>
     <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span><span style={S.badge('#6b7280')}>{tx.type === 'outright' ? 'Outright' : 'Advance'}</span><span style={S.badge(COLORS.primary)}>Ref: {tx.ref}</span></div>
     <div style={S.grid2}>
-      <div style={S.card}><div style={S.cardTitle}>👤 Customer</div><div style={{ fontSize: '13px' }}><strong>{tx.fullName}</strong><br />{tx.address}<br />📱 {tx.phoneNumbers?.filter(Boolean).join(', ')}<br />👨‍👩‍👧 {tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}<br />🪪 {tx.idType?.toUpperCase()} — {tx.idNumber}</div></div>
+      <div style={S.card}><div style={S.cardTitle}>👤 Customer</div><div style={{ fontSize: '13px' }}><strong>{tx.fullName}</strong><br />{tx.address}<br />📱 {tx.phoneNumbers?.filter(Boolean).join(', ')}<br />👨‍👩‍👧 {tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}<br />🪪 {tx.idType?.toUpperCase()} — {tx.idNumber}<br /><strong>Verification:</strong> {tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠ Verification attempted, using placeholder/demo data' : '❌ Not attempted'}<br /><strong>Completed by:</strong> {tx.completedBy || tx.createdBy || 'Unknown user'}</div></div>
       <div style={S.card}><div style={S.cardTitle}>📦 Item</div><div style={{ fontSize: '13px' }}><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong><br />Colour: {tx.aiColour}{tx.imei && <><br />IMEI: {tx.imei}</>}{tx.serialNumber && <><br />Serial: {tx.serialNumber}</>}<br />{tx.conditionDescription}</div></div>
     </div>
     <div style={S.card}><div style={S.cardTitle}>💰 Financials</div><div style={S.grid4}>
@@ -1286,10 +1288,11 @@ export default function App() {
     {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px' }}>Repaid: {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
     {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.accentLight, borderRadius: '8px' }}>Sold: {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} — Profit: {fmtMoney(tx.salePrice - tx.cashAdvance)}</div>}
     </div>
+    <div style={S.card}><div style={S.cardTitle}>🧾 Screening & Notes Summary</div><div style={{ fontSize: '13px', lineHeight: 1.7 }}><div><strong>How long in use:</strong> {tx.screeningDuration || 'Not provided'}</div><div><strong>Where purchased:</strong> {tx.screeningPurchaseLocation || 'Not provided'}</div><div><strong>Registered/Synced account:</strong> {tx.screeningRegistered || 'Not provided'}</div><div><strong>Other users on device:</strong> {tx.screeningOthersUsing || 'Not provided'}</div><div><strong>Red flag from screening:</strong> {tx.screeningRedFlag ? 'Yes' : 'No'}</div><div><strong>Staff notes:</strong> {tx.notes || 'No notes captured.'}</div></div></div>
     <div style={S.card}>
       <div style={S.cardTitle}>📸 Photos</div>
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        {[tx.photoCustomerHolding, tx.photoCustomerID, tx.itemPhotos?.front, tx.itemPhotos?.back, tx.photoSigning, tx.photoSealedPkg]
+        {[tx.ninPhoto, tx.photoCustomerHolding, tx.photoCustomerID, tx.itemPhotos?.front, tx.itemPhotos?.back, tx.photoSigning, tx.photoSealedPkg]
           .filter(Boolean)
           .map((p, i) => (
             <button
@@ -1405,7 +1408,7 @@ export default function App() {
 
   const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { await API.post('declined', dec); loadData(); setShowAddDeclined(false); }}>Save</button></Modal>; };
 
-  const UsrModal = () => { const [usr, setUsr] = useState({ name: '', username: '', password: '', role: 'staff' }); return <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User"><div style={S.grid2}><Field label="Name"><input style={S.input} value={usr.name} onChange={e => setUsr({ ...usr, name: e.target.value })} /></Field><Field label="Username"><input style={S.input} value={usr.username} onChange={e => setUsr({ ...usr, username: e.target.value })} /></Field><Field label="Password"><input style={S.input} value={usr.password} onChange={e => setUsr({ ...usr, password: e.target.value })} /></Field><Field label="Role"><select style={S.select} value={usr.role} onChange={e => setUsr({ ...usr, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field></div><button style={S.btn('primary')} onClick={async () => { await API.post('users', { ...usr, id: `u-${Date.now()}` }); loadData(); setShowAddUser(false); }}>Add</button></Modal>; };
+  const UsrModal = () => { const [usr, setUsr] = useState({ name: '', username: '', password: '', role: 'staff' }); const [showUsrPassword, setShowUsrPassword] = useState(false); return <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User"><div style={S.grid2}><Field label="Name"><input style={S.input} value={usr.name} onChange={e => setUsr({ ...usr, name: e.target.value })} /></Field><Field label="Username"><input style={S.input} value={usr.username} onChange={e => setUsr({ ...usr, username: e.target.value })} /></Field><Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showUsrPassword ? 'text' : 'password'} value={usr.password} onChange={e => setUsr({ ...usr, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setShowUsrPassword(v => !v)}>{showUsrPassword ? '🙈 Hide' : '👁 Show'}</button></div></Field><Field label="Role"><select style={S.select} value={usr.role} onChange={e => setUsr({ ...usr, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field></div><button style={S.btn('primary')} onClick={async () => { await API.post('users', { ...usr, id: `u-${Date.now()}` }); loadData(); setShowAddUser(false); }}>Add</button></Modal>; };
 
   const navAction = (item) => {
     setSidebarOpen(false);
