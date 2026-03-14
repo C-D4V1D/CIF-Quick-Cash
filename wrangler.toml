@@ -1,12 +1,11 @@
 name = "cifcash"
 pages_build_output_dir = "dist"
 
-# ── Bindings are managed in the Cloudflare Dashboard ─────────────────────────
-# Pages → cifcash → Settings → Functions → Bindings
-#
-# Required bindings:
-#   D1 database  →  variable name: DB       (your existing database)
-#   R2 bucket    →  variable name: PHOTOS   (bucket: cifcash-photos)
-#
-# Do NOT add [[d1_databases]] or [[r2_buckets]] sections here — doing so
-# requires a valid database_id and will override your dashboard settings.
+[[d1_databases]]
+binding       = "DB"
+database_name = "cifcash-db"
+database_id   = "84f2f966-3cf2-43d5-b5bc-028435dcc419"
+
+[[r2_buckets]]
+binding     = "PHOTOS"
+bucket_name = "cifcash-photos"
