@@ -231,6 +231,11 @@ export async function onRequest(context) {
     }
     if (path === 'drafts' && method === 'POST') {
       const draft = await request.json();
+      const hasPassedIdentityStep = Number(draft?.wizardStep ?? 0) > 1 || Boolean(draft?.ninVerified) || Boolean(draft?.ninVerificationAttempted);
+      if (!hasPassedIdentityStep) {
+        await sql`DELETE FROM drafts WHERE ref = ${draft.ref}`;
+        return json({ success: false, skipped: true, reason: 'Drafts before identity verification are not persisted.' });
+      }
       await sql`INSERT INTO drafts (ref, data, updated_at) VALUES (${draft.ref}, ${JSON.stringify(draft)}::jsonb, NOW()) ON CONFLICT (ref) DO UPDATE SET data = ${JSON.stringify(draft)}::jsonb, updated_at = NOW()`;
       return json({ success: true });
     }
