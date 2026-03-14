@@ -60,6 +60,28 @@ export async function onRequest(context) {
 
   const db = env.DB;
 
+  // Extract R2 keys from all photo fields in a draft/transaction data object.
+  const extractPhotoKeys = (data) => {
+    const keys = [];
+    const collect = (url) => {
+      if (typeof url === 'string' && url.startsWith('/api/photos/'))
+        keys.push(url.slice('/api/photos/'.length));
+    };
+    collect(data.ninPhoto);
+    collect(data.photoCustomerHolding);
+    collect(data.photoCustomerID);
+    collect(data.photoSigning);
+    collect(data.photoSealedPkg);
+    collect(data.imeiPhoto);
+    collect(data.serialNumberPhoto);
+    collect(data.receiptPhoto);
+    if (data.itemPhotos) {
+      ['front', 'back', 'left', 'right', 'powerOn', 'aboutPage'].forEach(k => collect(data.itemPhotos[k]));
+      (data.itemPhotos.corners || []).forEach(collect);
+    }
+    return keys;
+  };
+
   try {
     // ============================================================
     // PHOTOS: GET /api/photos/:key  (serve from R2 — no auth needed,
@@ -293,6 +315,14 @@ export async function onRequest(context) {
     }
     if (path.startsWith('drafts/') && method === 'DELETE') {
       const ref = decodeURIComponent(path.split('/')[1]);
+      // Delete photos from R2 before removing the draft record
+      if (env.PHOTOS) {
+        const row = await db.prepare('SELECT data FROM drafts WHERE ref = ?').bind(ref).first();
+        if (row) {
+          const keys = extractPhotoKeys(JSON.parse(row.data));
+          if (keys.length > 0) await Promise.all(keys.map(k => env.PHOTOS.delete(k)));
+        }
+      }
       await db.prepare('DELETE FROM drafts WHERE ref = ?').bind(ref).run();
       return json({ success: true });
     }
