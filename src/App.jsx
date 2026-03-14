@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 
 // --- MOBILE DETECTION HOOK ---
 const useMobile = () => {
@@ -136,18 +137,21 @@ const DEFAULT_SETTINGS = {
   shopMapsUrl: '',
 };
 
-const PUBLIC_ROUTE_BY_SCREEN = {
-  landing: '/',
-  portal: '/checkloanstatus',
-  login: '/login'
+const PAGE_PATHS = {
+  dashboard: '/dashboard',
+  transactions: '/transactions',
+  active: '/loans/active',
+  deadlines: '/alerts',
+  forSale: '/for-sale',
+  reports: '/reports',
+  capital: '/capital',
+  expenses: '/expenses',
+  declined: '/declined',
+  settings: '/admin/settings',
+  users: '/admin/users',
 };
 
-const getPublicScreenFromPath = (path) => {
-  const normalized = (path || '/').replace(/\/+$/, '') || '/';
-  if (normalized === '/login') return 'login';
-  if (normalized === '/checkloanstatus') return 'portal';
-  return 'landing';
-};
+const PAGE_FROM_PATH = Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]) => [v, k]));
 
 // ============================================================
 // GEMINI AI INTEGRATION
@@ -1090,10 +1094,10 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 // MAIN APPLICATION
 // ============================================================
 export default function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
   const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
-  const [publicScreen, setPublicScreen] = useState(() => getPublicScreenFromPath(window.location.pathname)); // 'landing' | 'portal' | 'login'
-  const [page, setPage] = useState('dashboard');
   const [transactions, setTransactions] = useState(() => readCache('cfc_transactions')?.transactions || []);
   const [drafts, setDrafts] = useState(() => readCache('cfc_transactions')?.drafts || []);
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
@@ -1116,25 +1120,6 @@ export default function App() {
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
-
-  useEffect(() => {
-    const handlePopState = () => {
-      if (!currentUser) {
-        setPublicScreen(getPublicScreenFromPath(window.location.pathname));
-      }
-    };
-
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [currentUser]);
-
-  const navigatePublic = (screen) => {
-    const path = PUBLIC_ROUTE_BY_SCREEN[screen] || '/';
-    if (window.location.pathname !== path) {
-      window.history.pushState({ publicScreen: screen }, '', path);
-    }
-    setPublicScreen(screen);
-  };
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -1200,6 +1185,13 @@ export default function App() {
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
 
+  // Auto-open wizard when navigating directly to /transactions/new
+  useEffect(() => {
+    if (currentUser && location.pathname === '/transactions/new' && editingTx === null) {
+      setEditingTx('new');
+    }
+  }, [currentUser, location.pathname]);
+
   // Save helpers
   const saveSettings = async (s) => { setSettings(s); await API.put('settings', s); };
   const saveTx = async (tx) => {
@@ -1235,19 +1227,28 @@ export default function App() {
   if (loading && currentUser) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>💰</div><div style={{ fontWeight: 700 }}>Loading essentials...</div></div></div>;
 
   if (!currentUser) {
-    if (publicScreen === 'portal') return <CustomerPortal settings={settings} onBack={() => navigatePublic('landing')} />;
-    if (publicScreen === 'login') return <LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); setPublicScreen('landing'); window.history.replaceState({}, '', '/'); }} />;
-    return <LandingPage settings={settings} onCheckLoan={() => navigatePublic('portal')} onStaffLogin={() => navigatePublic('login')} />;
+    return (
+      <Routes>
+        <Route path="/checkloanstatus" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/login" element={<LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); navigate('/dashboard'); }} />} />
+        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/checkloanstatus')} onStaffLogin={() => navigate('/login')} />} />
+      </Routes>
+    );
+  }
+
+  // Redirect authenticated users away from public paths (including root)
+  if (['/', '/login', '/checkloanstatus'].includes(location.pathname)) {
+    return <Navigate to="/dashboard" replace />;
   }
 
   if (editingTx !== null) return (
     <div style={S.app}>
       <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
         <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</div>
-        <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); setPage('dashboard'); }}>✕ {isMobile ? '' : 'Exit'}</button>
+        <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
-        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); setPage('dashboard'); }} onCancel={() => { setEditingTx(null); setPage('dashboard'); }} />
+        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); }} />
       </div>
     </div>
   );
@@ -1256,18 +1257,18 @@ export default function App() {
   const isAdmin = currentUser.role === 'admin';
 
   const navItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: '📊', roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'newTx', label: 'New Transaction', icon: '➕', roles: ['staff', 'admin'] },
-    { id: 'transactions', label: 'All Transactions', icon: '📋', roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'active', label: 'Active Loans', icon: '⏳', roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'deadlines', label: 'Deadlines & Alerts', icon: '🔔', roles: ['staff', 'admin'] },
-    { id: 'forSale', label: 'For Sale', icon: '🏷', roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'reports', label: 'Monthly Report', icon: '📈', roles: ['admin', 'stakeholder'] },
-    { id: 'capital', label: 'Capital & Profits', icon: '💎', roles: ['admin', 'stakeholder'] },
-    { id: 'expenses', label: 'Expenses', icon: '🧾', roles: ['staff', 'admin'] },
-    { id: 'declined', label: 'Declined Log', icon: '🚫', roles: ['staff', 'admin'] },
-    { id: 'settings', label: 'Settings', icon: '⚙', roles: ['admin'] },
-    { id: 'users', label: 'Users', icon: '👥', roles: ['admin'] },
+    { id: 'dashboard', label: 'Dashboard', icon: '📊', path: PAGE_PATHS.dashboard, roles: ['staff', 'admin', 'stakeholder'] },
+    { id: 'newTx', label: 'New Transaction', icon: '➕', path: '/transactions/new', roles: ['staff', 'admin'] },
+    { id: 'transactions', label: 'All Transactions', icon: '📋', path: PAGE_PATHS.transactions, roles: ['staff', 'admin', 'stakeholder'] },
+    { id: 'active', label: 'Active Loans', icon: '⏳', path: PAGE_PATHS.active, roles: ['staff', 'admin', 'stakeholder'] },
+    { id: 'deadlines', label: 'Deadlines & Alerts', icon: '🔔', path: PAGE_PATHS.deadlines, roles: ['staff', 'admin'] },
+    { id: 'forSale', label: 'For Sale', icon: '🏷', path: PAGE_PATHS.forSale, roles: ['staff', 'admin', 'stakeholder'] },
+    { id: 'reports', label: 'Monthly Report', icon: '📈', path: PAGE_PATHS.reports, roles: ['admin', 'stakeholder'] },
+    { id: 'capital', label: 'Capital & Profits', icon: '💎', path: PAGE_PATHS.capital, roles: ['admin', 'stakeholder'] },
+    { id: 'expenses', label: 'Expenses', icon: '🧾', path: PAGE_PATHS.expenses, roles: ['staff', 'admin'] },
+    { id: 'declined', label: 'Declined Log', icon: '🚫', path: PAGE_PATHS.declined, roles: ['staff', 'admin'] },
+    { id: 'settings', label: 'Settings', icon: '⚙', path: PAGE_PATHS.settings, roles: ['admin'] },
+    { id: 'users', label: 'Users', icon: '👥', path: PAGE_PATHS.users, roles: ['admin'] },
   ].filter(n => n.roles.includes(currentUser.role));
 
   // Render transaction detail
@@ -1342,6 +1343,7 @@ export default function App() {
 
   // Main page renderer
   const renderPage = () => {
+    const page = PAGE_FROM_PATH[location.pathname] || 'dashboard';
     const listLoadingNotice = listLoading ? (<div style={{ ...S.alert('info'), marginBottom: '16px' }}>⏳ Transactions and drafts are still loading in the background...</div>) : null;
     if (viewingTx) return <TxDetail tx={viewingTx} />;
 
@@ -1359,10 +1361,8 @@ export default function App() {
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Neon PostgreSQL' : 'Connection error'}</div></div>
         <div style={S.card}><div style={S.cardTitle}>Recent Transactions</div><TxTable items={transactions.slice(0, 10)} /></div>
-        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => setEditingTx(d)}>Resume</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
+        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate('/transactions/new'); }}>Resume</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
       </div>);
-
-      case 'newTx': setEditingTx('new'); return null;
 
       case 'transactions': return (<div>{listLoadingNotice}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, margin: 0 }}>📋 All Transactions</h2><input style={{ ...S.input, flex: '1 1 180px', maxWidth: '300px' }} placeholder="🔍 Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
@@ -1390,11 +1390,11 @@ export default function App() {
 
       case 'declined': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Item</th><th style={S.th}>Reason</th></tr></thead><tbody>{declinedLog.map((d, i) => (<tr key={i}><td style={S.td}>{fmtDate(d.date)}</td><td style={S.td}>{d.item}</td><td style={S.td}>{d.reason}</td></tr>))}{declinedLog.length === 0 && <tr><td style={S.td} colSpan={3}>None.</td></tr>}</tbody></table></div></div>);
 
-      case 'settings': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div></div>);
+      case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div></div>);
 
-      case 'users': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => (<tr key={u.id}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}>{u.id !== 'admin' && <button style={S.btnSm('danger')} onClick={async () => { await API.del(`users/${u.id}`); loadData(); }}>Remove</button>}</td></tr>))}</tbody></table></div></div>);
+      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => (<tr key={u.id}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}>{u.id !== 'admin' && <button style={S.btnSm('danger')} onClick={async () => { await API.del(`users/${u.id}`); loadData(); }}>Remove</button>}</td></tr>))}</tbody></table></div></div>);
 
-      default: return <div>Page not found</div>;
+      default: return <Navigate to="/dashboard" replace />;
     }
   };
 
@@ -1409,8 +1409,13 @@ export default function App() {
 
   const navAction = (item) => {
     setSidebarOpen(false);
-    if (item.id === 'newTx') setEditingTx('new');
-    else { setPage(item.id); setViewingTx(null); }
+    if (item.id === 'newTx') {
+      setEditingTx('new');
+      navigate('/transactions/new');
+    } else {
+      navigate(item.path);
+      setViewingTx(null);
+    }
   };
 
   return (
@@ -1441,7 +1446,7 @@ export default function App() {
               <button onClick={() => setSidebarOpen(false)} style={{ background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', color: COLORS.textMuted }}>✕</button>
             </div>
             {navItems.map(item => (
-              <div key={item.id} style={S.sideItem(page === item.id)} onClick={() => navAction(item)}>
+              <div key={item.id} style={S.sideItem(location.pathname === item.path)} onClick={() => navAction(item)}>
                 <span>{item.icon}</span> {item.label}
               </div>
             ))}
@@ -1455,7 +1460,7 @@ export default function App() {
         {!isMobile && (
           <div style={S.sidebar}>
             {navItems.map(item => (
-              <div key={item.id} style={S.sideItem(page === item.id)} onClick={() => navAction(item)}>
+              <div key={item.id} style={S.sideItem(location.pathname === item.path)} onClick={() => navAction(item)}>
                 <span>{item.icon}</span> {item.label}
               </div>
             ))}
@@ -1472,9 +1477,9 @@ export default function App() {
         <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, background: '#fff', borderTop: `2px solid ${COLORS.border}`, display: 'flex', zIndex: 100, boxShadow: '0 -2px 12px rgba(0,0,0,0.1)' }}>
           {navItems.slice(0, 4).map(item => (
             <div key={item.id} onClick={() => navAction(item)}
-              style={{ flex: 1, padding: '8px 4px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', cursor: 'pointer', background: page === item.id ? COLORS.primaryLight : 'transparent', borderTop: page === item.id ? `2px solid ${COLORS.primary}` : '2px solid transparent', marginTop: '-2px' }}>
+              style={{ flex: 1, padding: '8px 4px 6px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', cursor: 'pointer', background: location.pathname === item.path ? COLORS.primaryLight : 'transparent', borderTop: location.pathname === item.path ? `2px solid ${COLORS.primary}` : '2px solid transparent', marginTop: '-2px' }}>
               <span style={{ fontSize: '20px' }}>{item.icon}</span>
-              <span style={{ fontSize: '10px', fontWeight: 600, color: page === item.id ? COLORS.primary : COLORS.textMuted, lineHeight: 1 }}>{item.label.split(' ')[0]}</span>
+              <span style={{ fontSize: '10px', fontWeight: 600, color: location.pathname === item.path ? COLORS.primary : COLORS.textMuted, lineHeight: 1 }}>{item.label.split(' ')[0]}</span>
             </div>
           ))}
           <div onClick={() => setSidebarOpen(o => !o)}
