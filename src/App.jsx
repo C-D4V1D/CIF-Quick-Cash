@@ -309,12 +309,12 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
 });
 
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
-  const cameraRef = useRef();
   const fileRef = useRef();
   // Local base64 preview shown while the R2 upload is in flight.
   // The parent tx state only ever receives the final /api/photos/ URL.
   const [preview, setPreview] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
@@ -343,9 +343,29 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
   };
 
   const displaySrc = value || preview;
+
+  const handleBoxClick = () => {
+    if (uploading) return;
+    if (value) {
+      setZoomed(true);
+    } else {
+      fileRef.current?.click();
+    }
+  };
+
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ ...S.photoBox, width: size, height: size }} onClick={() => !uploading && cameraRef.current?.click()}>
+      {zoomed && (
+        <div onClick={() => setZoomed(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000, padding: '16px' }}>
+          <div onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', textAlign: 'center' }}>
+            <img src={value} alt={label} style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px', display: 'block' }} />
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+              <button type="button" style={S.btn('outline')} onClick={() => setZoomed(false)}>✕ Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : 'pointer' }} onClick={handleBoxClick}>
         {displaySrc
           ? <img src={displaySrc} style={S.photoImg} alt={label} />
           : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
@@ -354,12 +374,13 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
             <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>Uploading…</span>
           </div>
         )}
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('accent')} onClick={() => !uploading && cameraRef.current?.click()} disabled={uploading}>📷 Camera</button>
-        <button type="button" style={S.btnSm('primary')} onClick={() => !uploading && fileRef.current?.click()} disabled={uploading}>🖼 Gallery/File</button>
+        <button type="button" style={S.btnSm('primary')} onClick={() => !uploading && fileRef.current?.click()} disabled={uploading}>📷 Camera/Gallery</button>
+        {value && !uploading && (
+          <button type="button" style={S.btnSm('danger')} onClick={() => { onChange(null); setPreview(null); }}>🗑 Clear</button>
+        )}
       </div>
       <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
     </div>
