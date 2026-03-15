@@ -3,11 +3,6 @@
 // Aguleri_Loan_Agreement_Form_v6.docx visual design.
 // Called from the Agreement step in App.jsx via: printAgreement(tx, settings)
 
-const fmtMoney = (n) => {
-  if (!n && n !== 0) return '';
-  return '₦' + Number(n).toLocaleString();
-};
-
 const fmtDateLong = (d) => {
   if (!d) return '';
   return new Date(d + 'T00:00:00').toLocaleDateString('en-GB', {

@@ -48,6 +48,19 @@ const getSessionUser = (request) => {
   try { return JSON.parse(raw); } catch { return null; }
 };
 
+const requireAuth = (request) => {
+  const user = getSessionUser(request);
+  if (!user) return { error: error('Not authenticated', 401) };
+  return { user };
+};
+
+const requireAdmin = (request) => {
+  const auth = requireAuth(request);
+  if (auth.error) return auth;
+  if (auth.user.role !== 'admin') return { error: error('Admin access required', 403) };
+  return auth;
+};
+
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -59,6 +72,17 @@ export async function onRequest(context) {
   }
 
   const db = env.DB;
+
+  const logActivity = async ({ user, action, entityType, entityId, description = '' }) => {
+    if (!user) return;
+    await db
+      .prepare(`
+        INSERT INTO activity_logs (user_id, username, user_role, action, entity_type, entity_id, description)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(user.id, user.username, user.role, action, entityType, entityId || null, description)
+      .run();
+  };
 
   // Extract R2 keys from all photo fields in a draft/transaction data object.
   const extractPhotoKeys = (data) => {
@@ -161,6 +185,10 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'bootstrap' && method === 'GET') {
       const scope = url.searchParams.get('scope') || 'critical';
+      if (scope !== 'critical') {
+        const auth = requireAuth(request);
+        if (auth.error) return auth.error;
+      }
       const role = url.searchParams.get('role') || '';
 
       if (scope === 'secondary') {
@@ -234,21 +262,30 @@ export async function onRequest(context) {
     // USERS: GET, POST, DELETE /api/users
     // ============================================================
     if (path === 'users' && method === 'GET') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT id, username, role, name, created_at FROM users ORDER BY created_at').all();
       return json(results);
     }
     if (path === 'users' && method === 'POST') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
       const { id, username, password, role, name } = await request.json();
       await db
         .prepare('INSERT INTO users (id, username, password, role, name) VALUES (?, ?, ?, ?, ?)')
         .bind(id, username, password, role, name)
         .run();
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `Added user ${username} (${role})` });
       return json({ success: true });
     }
     if (path.startsWith('users/') && method === 'DELETE') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
       const id = path.split('/')[1];
       if (id === 'admin') return error('Cannot delete admin user');
+      const targetUser = await db.prepare('SELECT username FROM users WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'user', entityId: id, description: `Deleted user ${targetUser?.username || id}` });
       return json({ success: true });
     }
 
@@ -256,15 +293,20 @@ export async function onRequest(context) {
     // SETTINGS: GET, PUT /api/settings
     // ============================================================
     if (path === 'settings' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
       return json(row ? JSON.parse(row.value) : {});
     }
     if (path === 'settings' && method === 'PUT') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
       const data = await request.json();
       await db
         .prepare("INSERT INTO settings (key, value, updated_at) VALUES ('config', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
         .bind(JSON.stringify(data))
         .run();
+      await logActivity({ user: auth.user, action: 'update', entityType: 'settings', entityId: 'config', description: 'Updated system settings' });
       return json({ success: true });
     }
 
@@ -272,24 +314,47 @@ export async function onRequest(context) {
     // TRANSACTIONS: GET, POST, PUT /api/transactions
     // ============================================================
     if (path === 'transactions' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC').all();
       return json(results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref, status: r.status })));
     }
     if (path === 'transactions' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const tx = await request.json();
+      const existing = await db.prepare('SELECT ref FROM transactions WHERE ref = ?').bind(tx.ref).first();
       await db
         .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, status = excluded.status, updated_at = datetime('now')")
         .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
         .run();
+      await logActivity({
+        user: auth.user,
+        action: existing ? 'update' : 'entry',
+        entityType: 'transaction',
+        entityId: tx.ref,
+        description: `${existing ? 'Updated' : 'Created'} transaction ${tx.ref}`
+      });
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'PUT') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
       const tx = await request.json();
       await db
         .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
         .bind(JSON.stringify(tx), tx.status || 'active', ref)
         .run();
+      await logActivity({ user: auth.user, action: 'update', entityType: 'transaction', entityId: ref, description: `Updated transaction ${ref}` });
+      return json({ success: true });
+    }
+    if (path.startsWith('transactions/') && method === 'DELETE') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
+      const ref = decodeURIComponent(path.split('/')[1]);
+      await db.prepare('DELETE FROM transactions WHERE ref = ?').bind(ref).run();
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'transaction', entityId: ref, description: `Deleted transaction ${ref}` });
       return json({ success: true });
     }
 
@@ -297,10 +362,14 @@ export async function onRequest(context) {
     // DRAFTS: GET, POST, DELETE /api/drafts
     // ============================================================
     if (path === 'drafts' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT ref, data FROM drafts ORDER BY updated_at DESC').all();
       return json(results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })));
     }
     if (path === 'drafts' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const draft = await request.json();
       const hasPassedIdentityStep = Number(draft?.wizardStep ?? 0) > 1 || Boolean(draft?.ninVerified) || Boolean(draft?.ninVerificationAttempted);
       if (!hasPassedIdentityStep) {
@@ -314,6 +383,8 @@ export async function onRequest(context) {
       return json({ success: true });
     }
     if (path.startsWith('drafts/') && method === 'DELETE') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
       // Delete photos from R2 before removing the draft record
       if (env.PHOTOS) {
@@ -324,6 +395,7 @@ export async function onRequest(context) {
         }
       }
       await db.prepare('DELETE FROM drafts WHERE ref = ?').bind(ref).run();
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'draft', entityId: ref, description: `Deleted draft ${ref}` });
       return json({ success: true });
     }
 
@@ -331,15 +403,28 @@ export async function onRequest(context) {
     // EXPENSES: GET, POST /api/expenses
     // ============================================================
     if (path === 'expenses' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all();
       return json(results);
     }
     if (path === 'expenses' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { date, category, description, amount } = await request.json();
-      await db
+      const inserted = await db
         .prepare('INSERT INTO expenses (date, category, description, amount) VALUES (?, ?, ?, ?)')
         .bind(date, category, description, amount)
         .run();
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'expense', entityId: String(inserted.meta.last_row_id), description: `Added expense ${category} (${amount})` });
+      return json({ success: true });
+    }
+    if (path.startsWith('expenses/') && method === 'DELETE') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
+      const id = Number(path.split('/')[1]);
+      await db.prepare('DELETE FROM expenses WHERE id = ?').bind(id).run();
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'expense', entityId: String(id), description: `Deleted expense #${id}` });
       return json({ success: true });
     }
 
@@ -347,15 +432,28 @@ export async function onRequest(context) {
     // CAPITAL: GET, POST /api/capital
     // ============================================================
     if (path === 'capital' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT id, name, amount, date, method FROM capital ORDER BY date').all();
       return json(results);
     }
     if (path === 'capital' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { name, amount, date, method: capitalMethod } = await request.json();
-      await db
+      const inserted = await db
         .prepare('INSERT INTO capital (name, amount, date, method) VALUES (?, ?, ?, ?)')
         .bind(name, amount, date, capitalMethod)
         .run();
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `Added capital by ${name} (${amount})` });
+      return json({ success: true });
+    }
+    if (path.startsWith('capital/') && method === 'DELETE') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
+      const id = Number(path.split('/')[1]);
+      await db.prepare('DELETE FROM capital WHERE id = ?').bind(id).run();
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'capital', entityId: String(id), description: `Deleted capital #${id}` });
       return json({ success: true });
     }
 
@@ -363,16 +461,35 @@ export async function onRequest(context) {
     // DECLINED LOG: GET, POST /api/declined
     // ============================================================
     if (path === 'declined' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all();
       return json(results);
     }
     if (path === 'declined' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const { date, item, reason } = await request.json();
-      await db
+      const inserted = await db
         .prepare('INSERT INTO declined_log (date, item, reason) VALUES (?, ?, ?)')
         .bind(date, item, reason)
         .run();
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'declined', entityId: String(inserted.meta.last_row_id), description: `Logged declined item: ${item}` });
       return json({ success: true });
+    }
+
+    // ============================================================
+    // ACTIVITIES: GET /api/activity-logs
+    // ============================================================
+    if (path === 'activity-logs' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const limit = Math.max(1, Math.min(500, Number.parseInt(url.searchParams.get('limit') || '200', 10) || 200));
+      const { results } = await db
+        .prepare('SELECT id, created_at, user_id, username, user_role, action, entity_type, entity_id, description FROM activity_logs ORDER BY created_at DESC, id DESC LIMIT ?')
+        .bind(limit)
+        .all();
+      return json(results);
     }
 
     // ============================================================
