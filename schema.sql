@@ -77,3 +77,14 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs (created_at DESC);
+
+-- NIN/BVN verification cache — stores successful API results so we don't pay for duplicates
+CREATE TABLE IF NOT EXISTS nin_bvn_cache (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  id_type     TEXT    NOT NULL,  -- 'nin' or 'bvn'
+  id_number   TEXT    NOT NULL,
+  data        TEXT    NOT NULL,  -- full JSON response from the API (includes photo as base64)
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nin_bvn_cache_type_number ON nin_bvn_cache (id_type, id_number);

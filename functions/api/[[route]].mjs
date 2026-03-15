@@ -494,25 +494,66 @@ export async function onRequest(context) {
 
     // ============================================================
     // NIN/BVN VERIFICATION PROXY: POST /api/verify-nin, /api/verify-bvn
+    // Checks local cache first — only calls paid API on cache miss.
     // ============================================================
     if (path === 'verify-nin' && method === 'POST') {
       const { nin, apiKey } = await request.json();
+
+      // Check cache first
+      const cached = await db.prepare(
+        'SELECT data FROM nin_bvn_cache WHERE id_type = ? AND id_number = ? LIMIT 1'
+      ).bind('nin', nin).first();
+      if (cached) {
+        const cachedData = JSON.parse(cached.data);
+        return json({ ...cachedData, _source: 'cache' });
+      }
+
+      // Cache miss — call the paid API
       const resp = await fetch('https://checkmyninbvn.com.ng/api/nin-verification', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
         body: JSON.stringify({ nin, consent: true })
       });
       const data = await resp.json();
+
+      // Store successful results in cache
+      const isSuccess = data?.status === 'success' || data?.status === true || data?.status === 'true' || data?.code === 200;
+      if (isSuccess && (data?.data || data?.response)) {
+        await db.prepare(
+          'INSERT OR REPLACE INTO nin_bvn_cache (id_type, id_number, data, created_at) VALUES (?, ?, ?, datetime(\'now\'))'
+        ).bind('nin', nin, JSON.stringify(data)).run();
+      }
+
       return json(data);
     }
     if (path === 'verify-bvn' && method === 'POST') {
       const { bvn, apiKey } = await request.json();
+
+      // Check cache first
+      const cached = await db.prepare(
+        'SELECT data FROM nin_bvn_cache WHERE id_type = ? AND id_number = ? LIMIT 1'
+      ).bind('bvn', bvn).first();
+      if (cached) {
+        const cachedData = JSON.parse(cached.data);
+        return json({ ...cachedData, _source: 'cache' });
+      }
+
+      // Cache miss — call the paid API
       const resp = await fetch('https://checkmyninbvn.com.ng/api/bvn-verification', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
         body: JSON.stringify({ bvn, consent: true })
       });
       const data = await resp.json();
+
+      // Store successful results in cache
+      const isSuccess = data?.status === 'success' || data?.status === true || data?.status === 'true' || data?.code === 200;
+      if (isSuccess && (data?.data || data?.response)) {
+        await db.prepare(
+          'INSERT OR REPLACE INTO nin_bvn_cache (id_type, id_number, data, created_at) VALUES (?, ?, ?, datetime(\'now\'))'
+        ).bind('bvn', bvn, JSON.stringify(data)).run();
+      }
+
       return json(data);
     }
 
