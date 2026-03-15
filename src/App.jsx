@@ -309,16 +309,24 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
 });
 
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
-  const fileRef = useRef();
+  const cameraRef = useRef();
+  const galleryRef = useRef();
+  const awaitingCameraResultRef = useRef(false);
+  const galleryFallbackTimerRef = useRef(null);
   // Local base64 preview shown while the R2 upload is in flight.
   // The parent tx state only ever receives the final /api/photos/ URL.
   const [preview, setPreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [zoomed, setZoomed] = useState(false);
 
+  useEffect(() => () => {
+    if (galleryFallbackTimerRef.current) clearTimeout(galleryFallbackTimerRef.current);
+  }, []);
+
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    awaitingCameraResultRef.current = false;
     e.target.value = '';
     const base64 = await compressImageFile(file);
     setPreview(base64); // instant local preview
@@ -344,8 +352,30 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
 
   const displaySrc = value || preview;
 
+  const openCameraFlow = () => {
+    if (uploading) return;
+    awaitingCameraResultRef.current = true;
+
+    if (galleryFallbackTimerRef.current) clearTimeout(galleryFallbackTimerRef.current);
+    const handleFocus = () => {
+      window.removeEventListener('focus', handleFocus);
+      galleryFallbackTimerRef.current = setTimeout(() => {
+        if (!awaitingCameraResultRef.current) return;
+        awaitingCameraResultRef.current = false;
+        galleryRef.current?.click();
+      }, 250);
+    };
+
+    window.addEventListener('focus', handleFocus, { once: true });
+    cameraRef.current?.click();
+  };
+
   const handleBoxClick = () => {
     if (uploading) return;
+    if (!value) {
+      openCameraFlow();
+      return;
+    }
     if (value) setZoomed(true);
   };
 
@@ -370,10 +400,11 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
             <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>Uploading…</span>
           </div>
         )}
-        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={galleryRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>📷 Add Photo</button>
+        <button type="button" style={S.btnSm('primary')} onClick={openCameraFlow} disabled={uploading}>📷 Add Photo</button>
         {value && !uploading && (
           <button type="button" style={S.btnSm('danger')} onClick={() => { onChange(null); setPreview(null); }}>🗑 Clear</button>
         )}
