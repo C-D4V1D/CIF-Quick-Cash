@@ -316,12 +316,10 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
   const [preview, setPreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [zoomed, setZoomed] = useState(false);
-  const fileSelectedRef = useRef(false);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    fileSelectedRef.current = true;
     e.target.value = '';
     const base64 = await compressImageFile(file);
     setPreview(base64); // instant local preview
@@ -345,29 +343,11 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
     }
   };
 
-  // Opens camera first; if the user cancels, automatically opens gallery.
-  const openCameraWithGalleryFallback = () => {
-    if (uploading) return;
-    fileSelectedRef.current = false;
-    cameraRef.current?.click();
-    const onFocus = () => {
-      window.removeEventListener('focus', onFocus);
-      setTimeout(() => {
-        if (!fileSelectedRef.current) fileRef.current?.click();
-      }, 250);
-    };
-    window.addEventListener('focus', onFocus);
-  };
-
   const displaySrc = value || preview;
 
   const handleBoxClick = () => {
     if (uploading) return;
-    if (value) {
-      setZoomed(true);
-    } else {
-      openCameraWithGalleryFallback();
-    }
+    if (value) setZoomed(true);
   };
 
   return (
@@ -382,7 +362,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
           </div>
         </div>
       )}
-      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : 'pointer' }} onClick={handleBoxClick}>
+      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : (value ? 'pointer' : 'default') }} onClick={handleBoxClick}>
         {displaySrc
           ? <img src={displaySrc} style={S.photoImg} alt={label} />
           : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
@@ -395,7 +375,8 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('primary')} onClick={openCameraWithGalleryFallback} disabled={uploading}>📷 Add Photo</button>
+        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) cameraRef.current?.click(); }} disabled={uploading}>📷 Camera</button>
+        <button type="button" style={S.btnSm('secondary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>🖼 Gallery</button>
         {value && !uploading && (
           <button type="button" style={S.btnSm('danger')} onClick={() => { onChange(null); setPreview(null); }}>🗑 Clear</button>
         )}
