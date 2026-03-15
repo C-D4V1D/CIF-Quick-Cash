@@ -309,13 +309,13 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
 });
 
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
+  const cameraRef = useRef();
   const fileRef = useRef();
   // Local base64 preview shown while the R2 upload is in flight.
   // The parent tx state only ever receives the final /api/photos/ URL.
   const [preview, setPreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [zoomed, setZoomed] = useState(false);
-
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -344,11 +344,6 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
 
   const displaySrc = value || preview;
 
-  const handleBoxClick = () => {
-    if (uploading) return;
-    if (value) setZoomed(true);
-  };
-
   return (
     <div style={{ textAlign: 'center' }}>
       {zoomed && (
@@ -361,7 +356,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
           </div>
         </div>
       )}
-      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : (value ? 'pointer' : 'default') }} onClick={handleBoxClick}>
+      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : 'pointer' }} onClick={() => { if (uploading) return; displaySrc ? setZoomed(true) : cameraRef.current?.click(); }}>
         {displaySrc
           ? <img src={displaySrc} style={S.photoImg} alt={label} />
           : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
@@ -370,13 +365,15 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
             <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>Uploading…</span>
           </div>
         )}
+        {displaySrc && !uploading && (
+          <button type="button" onClick={e => { e.stopPropagation(); onChange(null); setPreview(null); }} style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '11px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>✕</button>
+        )}
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>📷 Add Photo</button>
-        {value && !uploading && (
-          <button type="button" style={S.btnSm('danger')} onClick={() => { onChange(null); setPreview(null); }}>🗑 Clear</button>
-        )}
+        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) cameraRef.current?.click(); }} disabled={uploading}>📷 Camera</button>
+        <button type="button" style={S.btnSm('secondary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>🖼 Gallery</button>
       </div>
       <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
     </div>
