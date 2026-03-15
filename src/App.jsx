@@ -309,16 +309,19 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
 });
 
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
+  const cameraRef = useRef();
   const fileRef = useRef();
   // Local base64 preview shown while the R2 upload is in flight.
   // The parent tx state only ever receives the final /api/photos/ URL.
   const [preview, setPreview] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [zoomed, setZoomed] = useState(false);
+  const fileSelectedRef = useRef(false);
 
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    fileSelectedRef.current = true;
     e.target.value = '';
     const base64 = await compressImageFile(file);
     setPreview(base64); // instant local preview
@@ -342,11 +345,29 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
     }
   };
 
+  // Opens camera first; if the user cancels, automatically opens gallery.
+  const openCameraWithGalleryFallback = () => {
+    if (uploading) return;
+    fileSelectedRef.current = false;
+    cameraRef.current?.click();
+    const onFocus = () => {
+      window.removeEventListener('focus', onFocus);
+      setTimeout(() => {
+        if (!fileSelectedRef.current) fileRef.current?.click();
+      }, 250);
+    };
+    window.addEventListener('focus', onFocus);
+  };
+
   const displaySrc = value || preview;
 
   const handleBoxClick = () => {
     if (uploading) return;
-    if (value) setZoomed(true);
+    if (value) {
+      setZoomed(true);
+    } else {
+      openCameraWithGalleryFallback();
+    }
   };
 
   return (
@@ -361,7 +382,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
           </div>
         </div>
       )}
-      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : (value ? 'pointer' : 'default') }} onClick={handleBoxClick}>
+      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : 'pointer' }} onClick={handleBoxClick}>
         {displaySrc
           ? <img src={displaySrc} style={S.photoImg} alt={label} />
           : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
@@ -370,10 +391,11 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
             <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>Uploading…</span>
           </div>
         )}
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>📷 Add Photo</button>
+        <button type="button" style={S.btnSm('primary')} onClick={openCameraWithGalleryFallback} disabled={uploading}>📷 Add Photo</button>
         {value && !uploading && (
           <button type="button" style={S.btnSm('danger')} onClick={() => { onChange(null); setPreview(null); }}>🗑 Clear</button>
         )}
