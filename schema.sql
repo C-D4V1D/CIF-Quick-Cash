@@ -63,3 +63,17 @@ CREATE TABLE IF NOT EXISTS declined_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_declined_log_date ON declined_log (date DESC);
+
+CREATE TABLE IF NOT EXISTS activity_logs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  user_id     TEXT    NOT NULL,
+  username    TEXT    NOT NULL,
+  user_role   TEXT    NOT NULL,
+  action      TEXT    NOT NULL,
+  entity_type TEXT    NOT NULL,
+  entity_id   TEXT,
+  description TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs (created_at DESC);
