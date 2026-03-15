@@ -309,7 +309,6 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
 });
 
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
-  const cameraRef = useRef();
   const fileRef = useRef();
   // Local base64 preview shown while the R2 upload is in flight.
   // The parent tx state only ever receives the final /api/photos/ URL.
@@ -371,12 +370,10 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
             <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>Uploading…</span>
           </div>
         )}
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) cameraRef.current?.click(); }} disabled={uploading}>📷 Camera</button>
-        <button type="button" style={S.btnSm('secondary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>🖼 Gallery</button>
+        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>📷 Add Photo</button>
         {value && !uploading && (
           <button type="button" style={S.btnSm('danger')} onClick={() => { onChange(null); setPreview(null); }}>🗑 Clear</button>
         )}
