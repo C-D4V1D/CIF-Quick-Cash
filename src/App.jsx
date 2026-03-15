@@ -172,6 +172,36 @@ const PAGE_FROM_PATH = Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]
 // ============================================================
 const FALLBACK_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
 
+const toBase64 = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const result = typeof reader.result === 'string' ? reader.result : '';
+    const data = result.includes(',') ? result.split(',')[1] : result;
+    resolve(data || '');
+  };
+  reader.onerror = () => reject(new Error('Failed to read uploaded image.'));
+  reader.readAsDataURL(blob);
+});
+
+const imageToGeminiInlineData = async (img) => {
+  if (!img) return null;
+
+  if (img.startsWith('data:')) {
+    const [meta, data = ''] = img.split(',');
+    const mime = meta.match(/^data:([^;]+)/i)?.[1] || '';
+    if (!mime || !data) throw new Error('Unsupported image format. Please re-upload the photo.');
+    return { mime_type: mime, data };
+  }
+
+  const resp = await fetch(img);
+  if (!resp.ok) throw new Error('Failed to load one of the uploaded photos. Please re-upload and try again.');
+  const blob = await resp.blob();
+  const mime = blob.type || 'image/jpeg';
+  const data = await toBase64(blob);
+  if (!data) throw new Error('Failed to process one of the uploaded photos. Please re-upload and try again.');
+  return { mime_type: mime, data };
+};
+
 const callGeminiAI = async (apiKey, model, images, promptText) => {
   if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
   try {
@@ -181,11 +211,8 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
       .filter((m, idx, arr) => arr.indexOf(m) === idx);
     const parts = [{ text: promptText }];
     for (const img of images) {
-      if (img) {
-        const base64 = img.split(',')[1];
-        const mime = img.split(';')[0].split(':')[1];
-        parts.push({ inline_data: { mime_type: mime, data: base64 } });
-      }
+      const inlineData = await imageToGeminiInlineData(img);
+      if (inlineData) parts.push({ inline_data: inlineData });
     }
 
     for (const modelName of modelCandidates) {
