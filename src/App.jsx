@@ -395,7 +395,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
-        <button type="button" style={S.btnSm('primary')} onClick={openCameraWithGalleryFallback} disabled={uploading}>📷 Camera/Gallery</button>
+        <button type="button" style={S.btnSm('primary')} onClick={openCameraWithGalleryFallback} disabled={uploading}>📷 Add Photo</button>
         {value && !uploading && (
           <button type="button" style={S.btnSm('danger')} onClick={() => { onChange(null); setPreview(null); }}>🗑 Clear</button>
         )}
