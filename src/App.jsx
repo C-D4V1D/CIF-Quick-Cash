@@ -1319,6 +1319,87 @@ function SaleModal({ tx, settings, onClose, onSave }) {
 }
 
 // ============================================================
+// CONTACT LOG
+// ============================================================
+const CONTACT_OUTCOMES = [
+  { value: 'no_answer',           label: 'No Answer' },
+  { value: 'voicemail',           label: 'Voicemail Left' },
+  { value: 'answered_promises',   label: 'Answered — Promises to Pay' },
+  { value: 'answered_refuses',    label: 'Answered — Refuses to Pay' },
+  { value: 'answered_disputed',   label: 'Answered — Disputed Debt' },
+  { value: 'wrong_number',        label: 'Wrong Number / Disconnected' },
+  { value: 'number_unreachable',  label: 'Number Not Reachable' },
+  { value: 'in_person',           label: 'In-Person Visit' },
+  { value: 'partial_payment',     label: 'Partial Payment Received' },
+  { value: 'other',               label: 'Other' },
+];
+const CONTACT_OUTCOME_LABEL = Object.fromEntries(CONTACT_OUTCOMES.map(o => [o.value, o.label]));
+
+const OUTCOME_COLORS = {
+  no_answer:          '#6b7280',
+  voicemail:          '#8b5cf6',
+  answered_promises:  '#10b981',
+  answered_refuses:   '#ef4444',
+  answered_disputed:  '#f59e0b',
+  wrong_number:       '#ef4444',
+  number_unreachable: '#6b7280',
+  in_person:          '#3b82f6',
+  partial_payment:    '#10b981',
+  other:              '#6b7280',
+};
+
+function ContactLogModal({ tx, onClose, onSave, currentUser }) {
+  const now = new Date();
+  const [date, setDate] = React.useState(now.toISOString().split('T')[0]);
+  const [time, setTime] = React.useState(now.toTimeString().slice(0, 5));
+  const [result, setResult] = React.useState('no_answer');
+  const [notes, setNotes] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const entry = {
+      date,
+      time,
+      result,
+      notes: notes.trim(),
+      loggedBy: currentUser?.name || currentUser?.username || 'Staff',
+      loggedAt: new Date().toISOString(),
+    };
+    await onSave({ ...tx, contactLog: [...(tx.contactLog || []), entry] });
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <div style={{ ...S.card, background: COLORS.bg, marginBottom: '16px' }}>
+        <div style={{ fontSize: '13px' }}>
+          <strong>{tx.fullName}</strong> — {tx.aiBrand} {tx.aiModel}<br />
+          📱 {tx.phoneNumbers?.filter(Boolean).join(' / ')}
+          {tx.familyPhone && <><br />👨‍👩‍👧 {tx.familyName} ({tx.familyRelation}): {tx.familyPhone}</>}
+        </div>
+      </div>
+      <div style={S.grid2}>
+        <Field label="Date"><input style={S.input} type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+        <Field label="Time"><input style={S.input} type="time" value={time} onChange={e => setTime(e.target.value)} /></Field>
+      </div>
+      <Field label="Outcome" required style={{ marginTop: '12px' }}>
+        <select style={S.select} value={result} onChange={e => setResult(e.target.value)}>
+          {CONTACT_OUTCOMES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </Field>
+      <Field label="Notes (optional)" style={{ marginTop: '12px' }}>
+        <textarea style={S.textarea} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Additional context, what was said, next steps..." />
+      </Field>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+        <button style={S.btn('primary')} onClick={handleSave} disabled={saving}>{saving ? 'Saving…' : '📋 Save Entry'}</button>
+        <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // MAIN APPLICATION
 // ============================================================
 export default function App() {
@@ -1344,6 +1425,7 @@ export default function App() {
   const [viewingTx, setViewingTx] = useState(null);
   const [repayingTx, setRepayingTx] = useState(null);
   const [sellingTx, setSellingTx] = useState(null);
+  const [loggingContactTx, setLoggingContactTx] = useState(null);
   const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
   const [showAddExpense, setShowAddExpense] = useState(false);
@@ -1612,6 +1694,30 @@ export default function App() {
           ))}
       </div>
       <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
+    </div>
+    <div style={S.card}>
+      <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>📋 Contact Log</span>
+        {tx.status === 'active' && isStaff && (
+          <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>+ Log Contact Attempt</button>
+        )}
+      </div>
+      {(tx.contactLog?.length > 0) ? (
+        <div>
+          {[...tx.contactLog].reverse().map((entry, i) => (
+            <div key={i} style={{ padding: '10px 0', borderBottom: i < tx.contactLog.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
+                <span style={{ ...S.badge(OUTCOME_COLORS[entry.result] || '#6b7280'), fontSize: '12px' }}>{CONTACT_OUTCOME_LABEL[entry.result] || entry.result}</span>
+                <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{entry.date} {entry.time}</span>
+              </div>
+              {entry.notes && <div style={{ fontSize: '13px', marginTop: '4px' }}>{entry.notes}</div>}
+              <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>Logged by {entry.loggedBy}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No contact attempts logged yet.{tx.status === 'active' && ' Use the button above to record a call attempt.'}</div>
+      )}
     </div>
     <button style={S.btn('outline')} onClick={() => setViewingTx(null)}>← Back</button>
   </div>);
@@ -2113,6 +2219,7 @@ export default function App() {
       <ExpModal /><CapModal /><DecModal /><UsrModal /><EditUserModal />
       <Modal open={!!repayingTx} onClose={() => setRepayingTx(null)} title="Record Repayment">{repayingTx && <RepaymentModal tx={repayingTx} settings={settings} onClose={() => setRepayingTx(null)} onSave={async (tx) => { await saveTx(tx); setRepayingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!sellingTx} onClose={() => setSellingTx(null)} title="Record Sale" wide>{sellingTx && <SaleModal tx={sellingTx} settings={settings} onClose={() => setSellingTx(null)} onSave={async (tx) => { await saveTx(tx); setSellingTx(null); loadData(); }} />}</Modal>
+      <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); setViewingTx(tx); }} />}</Modal>
       <style>{`
         input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}
         ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}
