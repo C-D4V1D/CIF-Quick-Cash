@@ -241,7 +241,7 @@ export async function onRequest(context) {
         const hasMore = offset + limit < Math.max(totalTransactions, totalDrafts);
 
         return json({
-          transactions: transactionsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref, status: r.status })),
+          transactions: transactionsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref, status: r.status, created_at: r.created_at, updated_at: r.updated_at })),
           drafts: draftsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })),
           pagination: {
             limit,
@@ -360,7 +360,13 @@ export async function onRequest(context) {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const tx = await request.json();
-      const existing = await db.prepare('SELECT ref FROM transactions WHERE ref = ?').bind(tx.ref).first();
+      const existing = await db.prepare('SELECT ref, status, data FROM transactions WHERE ref = ?').bind(tx.ref).first();
+      const existingData = existing?.data ? JSON.parse(existing.data) : null;
+      if (tx.status === 'for_sale' && !tx.listedForSaleDate) {
+        tx.listedForSaleDate = existingData?.listedForSaleDate
+          || (existing?.status === 'for_sale' ? new Date().toISOString() : null)
+          || new Date().toISOString();
+      }
       await db
         .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, status = excluded.status, updated_at = datetime('now')")
         .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
@@ -391,6 +397,13 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
       const tx = await request.json();
+      const existing = await db.prepare('SELECT status, data FROM transactions WHERE ref = ?').bind(ref).first();
+      const existingData = existing?.data ? JSON.parse(existing.data) : null;
+      if (tx.status === 'for_sale' && !tx.listedForSaleDate) {
+        tx.listedForSaleDate = existingData?.listedForSaleDate
+          || (existing?.status === 'for_sale' ? new Date().toISOString() : null)
+          || new Date().toISOString();
+      }
       await db
         .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
         .bind(JSON.stringify(tx), tx.status || 'active', ref)
