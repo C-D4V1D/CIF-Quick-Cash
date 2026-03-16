@@ -1694,8 +1694,8 @@ export default function App() {
           const d = new Date(dateStr.replace(' ', 'T'));
           return d.getFullYear() === reportYear && d.getMonth() + 1 === reportMonth;
         };
-        const rClosed = closedTxs.filter(t => inPeriod(t.updated_at));
-        const rSold = soldTxs.filter(t => inPeriod(t.updated_at));
+        const rClosed = closedTxs.filter(t => inPeriod(t.dateRepaid || t.updated_at));
+        const rSold = soldTxs.filter(t => inPeriod(t.saleDate || t.updated_at));
         const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
         const rExpenses = expenses.filter(e => inPeriod(e.date));
         const rRevenue = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0)
