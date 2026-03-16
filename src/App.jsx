@@ -285,7 +285,7 @@ const S = {
 // ============================================================
 // REUSABLE COMPONENTS
 // ============================================================
-const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) => new Promise((resolve) => {
+const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) => new Promise((resolve, reject) => {
   const img = new Image();
   img.onload = () => {
     let { width, height } = img;
@@ -305,6 +305,7 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
     resolve(canvas.toDataURL('image/jpeg', quality));
     URL.revokeObjectURL(img.src);
   };
+  img.onerror = () => reject(new Error('Failed to read uploaded image.'));
   img.src = URL.createObjectURL(file);
 });
 
@@ -315,12 +316,20 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
   // The parent tx state only ever receives the final /api/photos/ URL.
   const [preview, setPreview] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
   const [zoomed, setZoomed] = useState(false);
   const handleFile = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     e.target.value = '';
-    const base64 = await compressImageFile(file);
+    setUploadError(null);
+    let base64;
+    try {
+      base64 = await compressImageFile(file);
+    } catch {
+      setUploadError('Could not read this image. Please try a different photo.');
+      return;
+    }
     setPreview(base64); // instant local preview
     setUploading(true);
     try {
@@ -376,6 +385,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
         <button type="button" style={S.btnSm('secondary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>🖼 Gallery</button>
       </div>
       <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
+      {uploadError && <div style={{ fontSize: '11px', color: COLORS.danger, marginTop: '4px', maxWidth: size }}>{uploadError}</div>}
     </div>
   );
 }
@@ -1467,7 +1477,23 @@ export default function App() {
     <div style={S.card}>
       <div style={S.cardTitle}>📸 Photos</div>
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        {[tx.ninPhoto, tx.photoCustomerHolding, tx.photoCustomerID, tx.itemPhotos?.front, tx.itemPhotos?.back, tx.photoSigning, tx.photoSealedPkg]
+        {[
+          tx.ninPhoto,
+          tx.photoCustomerHolding,
+          tx.photoCustomerID,
+          tx.itemPhotos?.front,
+          tx.itemPhotos?.back,
+          tx.itemPhotos?.left,
+          tx.itemPhotos?.right,
+          tx.itemPhotos?.powerOn,
+          tx.itemPhotos?.aboutPage,
+          ...(tx.itemPhotos?.corners || []),
+          tx.imeiPhoto,
+          tx.serialNumberPhoto,
+          tx.receiptPhoto,
+          tx.photoSigning,
+          tx.photoSealedPkg,
+        ]
           .filter(Boolean)
           .map((p, i) => (
             <button
@@ -1483,7 +1509,15 @@ export default function App() {
               }}
               title="Tap to view full image"
             >
-              <img src={p} alt={`Transaction photo ${i + 1}`} style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }} />
+              <img
+                src={p}
+                alt={`Transaction photo ${i + 1}`}
+                style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }}
+                onError={e => {
+                  e.currentTarget.style.background = '#fee2e2';
+                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E";
+                }}
+              />
             </button>
           ))}
       </div>
