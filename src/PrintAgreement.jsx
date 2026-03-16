@@ -220,7 +220,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
     <div class="page-footer">Page <b>${pageOffset + 1}</b> of <b>6</b></div>
   </div>`;
 
-  // ── PAGE 3 (clause 4 body + clause 5 + signatures + official use) ──
+  // ── PAGE 3 (clause 4 body + clauses 5-6 + signatures + official use) ──
   const page3 = `
   <div class="page">
     <div class="clause-body cb4">
@@ -231,6 +231,10 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
     <!-- Clause 5 -->
     <div class="clause-hdr c5">5. &nbsp;DECLARATION OF OWNERSHIP</div>
     <div class="clause-body cb5">I swear that I am the true and legal owner of this item. It is NOT stolen property. If the Nigerian Police or any authority claims this item is stolen or linked to any crime, I take full legal and financial responsibility. I will protect Christ-in-Fabian Quick Cash from any arrest, seizure, or liability that arises from my false claim of ownership.</div>
+
+    <!-- Clause 6 -->
+    <div class="clause-hdr c6">6. &nbsp;DATA CONSENT</div>
+    <div class="clause-body cb6">The customer consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction.</div>
 
     <!-- Horizontal rule -->
     <div class="hr-gold"></div>
@@ -463,6 +467,7 @@ body{
 .c3{ background: #8B1A1A; }
 .c4{ background: #7A5200; }
 .c5{ background: #8B1A1A; }
+.c6{ background: #2E6DA4; }
 
 /* === CLAUSE BODIES === */
 .clause-body{
@@ -474,6 +479,7 @@ body{
 .cb3{ background: #F5D5D5; border-color: #E0B0B0; }
 .cb4{ background: #FEF3D5; border-color: #E8D5A3; }
 .cb5{ background: #F5D5D5; border-color: #E0B0B0; }
+.cb6{ background: #D8E8F5; border-color: #B0CCE0; }
 
 /* === SIGNATURES === */
 .consent{
