@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 
@@ -1624,7 +1624,7 @@ export default function App() {
                     const pct = totalCapital > 0 ? (s.total / totalCapital * 100).toFixed(1) : '0.0';
                     const isExpanded = expandedCapital.has(s.name.toLowerCase());
                     return (
-                      <React.Fragment key={i}>
+                      <Fragment key={i}>
                         <tr>
                           <td style={S.td}><strong>{s.name}</strong>{s.username && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>@{s.username}</div>}{!s.username && isAdmin && <div style={{ fontSize: '11px', color: COLORS.warning, marginTop: '2px' }}>No account</div>}</td>
                           <td style={S.td}><strong>{fmtMoney(s.total)}</strong></td>
@@ -1656,7 +1656,7 @@ export default function App() {
                             </td>
                           </tr>
                         )}
-                      </React.Fragment>
+                      </Fragment>
                     );
                   })}
                   {capByName.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}
