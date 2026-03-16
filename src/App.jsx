@@ -1672,7 +1672,67 @@ export default function App() {
 
       case 'declined': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Item</th><th style={S.th}>Reason</th></tr></thead><tbody>{declinedLog.map((d, i) => (<tr key={i}><td style={S.td}>{fmtDate(d.date)}</td><td style={S.td}>{d.item}</td><td style={S.td}>{d.reason}</td></tr>))}{declinedLog.length === 0 && <tr><td style={S.td} colSpan={3}>None.</td></tr>}</tbody></table></div></div>);
 
-      case 'activity': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🕘 Activity Log</h2><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Time</th><th style={S.th}>User</th><th style={S.th}>Role</th><th style={S.th}>Action</th><th style={S.th}>Entity</th><th style={S.th}>Description</th></tr></thead><tbody>{activityLogs.map((a) => (<tr key={a.id}><td style={S.td}>{new Date(a.created_at).toLocaleString()}</td><td style={S.td}>{a.username}</td><td style={S.td}><span style={S.badge(a.user_role === 'admin' ? '#c8a84e' : a.user_role === 'staff' ? '#10b981' : '#6b7280')}>{a.user_role}</span></td><td style={S.td}>{a.action}</td><td style={S.td}>{a.entity_type}{a.entity_id ? ` #${a.entity_id}` : ''}</td><td style={S.td}>{a.description || '-'}</td></tr>))}{activityLogs.length === 0 && <tr><td style={S.td} colSpan={6}>No activities yet.</td></tr>}</tbody></table></div></div>);
+      case 'activity': {
+        const actColor = (a) => {
+          if (a.action === 'delete') return COLORS.danger;
+          if (a.action === 'repaid' || a.action === 'sold') return COLORS.primary;
+          if (a.entity_type === 'transaction' && a.action === 'entry') return '#3b82f6';
+          if (a.entity_type === 'expense') return COLORS.warning;
+          if (a.entity_type === 'capital') return '#8b5cf6';
+          if (a.entity_type === 'auth') return COLORS.textMuted;
+          return COLORS.textMuted;
+        };
+        const fmtActivityTime = (iso) => {
+          const d = new Date(iso);
+          const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+          const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          if (d.toDateString() === today.toDateString()) return `Today ${time}`;
+          if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
+          return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() !== today.getFullYear() ? 'numeric' : undefined }) + ' ' + time;
+        };
+        const roleColor = (r) => r === 'admin' ? '#c8a84e' : r === 'staff' ? '#10b981' : '#6b7280';
+        // Group by calendar date
+        const grouped = activityLogs.reduce((acc, a) => {
+          const dateKey = new Date(a.created_at).toDateString();
+          if (!acc[dateKey]) acc[dateKey] = [];
+          acc[dateKey].push(a);
+          return acc;
+        }, {});
+        const dateGroups = Object.entries(grouped);
+        return (
+          <div>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>🕘 Activity Log</h2>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px' }}>Full audit trail — every action taken in the system is recorded here.</p>
+            {activityLogs.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted }}>No activities recorded yet.</p></div>}
+            {dateGroups.map(([dateKey, entries]) => {
+              const d = new Date(dateKey);
+              const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+              const label = d.toDateString() === today.toDateString() ? 'Today' : d.toDateString() === yesterday.toDateString() ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+              return (
+                <div key={dateKey} style={{ marginBottom: '24px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px', paddingLeft: '4px' }}>{label}</div>
+                  <div style={{ ...S.card, padding: 0, overflow: 'hidden' }}>
+                    {entries.map((a, i) => (
+                      <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px 16px', borderBottom: i < entries.length - 1 ? `1px solid ${COLORS.border}` : 'none', borderLeft: `3px solid ${actColor(a)}` }}>
+                        <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '76px' }}>
+                          <div style={{ fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'nowrap' }}>{new Date(a.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '14px', fontWeight: 500, wordBreak: 'break-word' }}>{a.description || `${a.action} ${a.entity_type}`}</div>
+                          <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            <span style={S.badge(roleColor(a.user_role))}>{a.user_role}</span>
+                            <span>{a.username}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      }
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div><div style={S.card}><div style={S.cardTitle}>🪪 Identity Verification Rules</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div><Field label="Require API-verified NIN/BVN to proceed"><label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} /><span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span></label></Field></div></div>);
 

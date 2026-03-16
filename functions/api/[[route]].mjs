@@ -157,6 +157,7 @@ export async function onRequest(context) {
         ? clearSessionCookie(SESSION_COOKIE_SHORT)
         : clearSessionCookie(SESSION_COOKIE_LONG);
 
+      await logActivity({ user, action: 'login', entityType: 'auth', entityId: user.id, description: `🔐 ${user.name} (${user.role}) logged in` });
       return json({ user }, 200, { 'Set-Cookie': [activeCookie, staleCookie] });
     }
 
@@ -275,7 +276,7 @@ export async function onRequest(context) {
         .prepare('INSERT INTO users (id, username, password, role, name) VALUES (?, ?, ?, ?, ?)')
         .bind(id, username, password, role, name)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `Added user ${username} (${role})` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `👤 New ${role} account created: ${name} (@${username})` });
       return json({ success: true });
     }
     if (path.startsWith('users/') && method === 'DELETE') {
@@ -283,9 +284,9 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const id = path.split('/')[1];
       if (id === 'admin') return error('Cannot delete admin user');
-      const targetUser = await db.prepare('SELECT username FROM users WHERE id = ?').bind(id).first();
+      const targetUser = await db.prepare('SELECT username, name, role FROM users WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'user', entityId: id, description: `Deleted user ${targetUser?.username || id}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'user', entityId: id, description: `👤 User account removed: ${targetUser?.name || ''} (@${targetUser?.username || id}) — was ${targetUser?.role || ''}` });
       return json({ success: true });
     }
 
@@ -306,7 +307,7 @@ export async function onRequest(context) {
         .prepare("INSERT INTO settings (key, value, updated_at) VALUES ('config', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
         .bind(JSON.stringify(data))
         .run();
-      await logActivity({ user: auth.user, action: 'update', entityType: 'settings', entityId: 'config', description: 'Updated system settings' });
+      await logActivity({ user: auth.user, action: 'update', entityType: 'settings', entityId: 'config', description: `⚙️ System settings updated by ${auth.user.name}` });
       return json({ success: true });
     }
 
@@ -328,13 +329,25 @@ export async function onRequest(context) {
         .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, status = excluded.status, updated_at = datetime('now')")
         .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
         .run();
-      await logActivity({
-        user: auth.user,
-        action: existing ? 'update' : 'entry',
-        entityType: 'transaction',
-        entityId: tx.ref,
-        description: `${existing ? 'Updated' : 'Created'} transaction ${tx.ref}`
-      });
+      let txAction, txDesc;
+      const fmtN = (n) => Number(n || 0).toLocaleString('en-NG');
+      if (!existing) {
+        if (tx.type === 'outright' || tx.status === 'for_sale') {
+          txAction = 'entry'; txDesc = `🏷 Outright purchase — ${tx.ref}: ${tx.fullName} brought in ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — paid ₦${fmtN(tx.cashAdvance)}`;
+        } else {
+          txAction = 'entry'; txDesc = `📋 New loan — ${tx.ref}: ${tx.fullName} — ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtN(tx.cashAdvance)} advance given`;
+        }
+      } else if (tx.status === 'closed') {
+        txAction = 'repaid'; txDesc = `✅ Loan repaid — ${tx.ref}: ${tx.fullName} — ₦${fmtN(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
+      } else if (tx.status === 'sold') {
+        const profit = (tx.salePrice || 0) - (tx.cashAdvance || 0);
+        txAction = 'sold'; txDesc = `💰 Item sold — ${tx.ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtN(tx.salePrice)} (profit ₦${fmtN(profit)})`;
+      } else if (tx.status === 'for_sale') {
+        txAction = 'update'; txDesc = `🏷 Marked for sale — ${tx.ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
+      } else {
+        txAction = 'update'; txDesc = `🔄 Transaction updated — ${tx.ref}`;
+      }
+      await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'PUT') {
@@ -346,7 +359,19 @@ export async function onRequest(context) {
         .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
         .bind(JSON.stringify(tx), tx.status || 'active', ref)
         .run();
-      await logActivity({ user: auth.user, action: 'update', entityType: 'transaction', entityId: ref, description: `Updated transaction ${ref}` });
+      const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
+      let putAction, putDesc;
+      if (tx.status === 'closed') {
+        putAction = 'repaid'; putDesc = `✅ Loan repaid — ${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
+      } else if (tx.status === 'sold') {
+        const profit = (tx.salePrice || 0) - (tx.cashAdvance || 0);
+        putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})`;
+      } else if (tx.status === 'for_sale') {
+        putAction = 'update'; putDesc = `🏷 Marked for sale — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
+      } else {
+        putAction = 'update'; putDesc = `🔄 Transaction updated — ${ref}`;
+      }
+      await logActivity({ user: auth.user, action: putAction, entityType: 'transaction', entityId: ref, description: putDesc });
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'DELETE') {
@@ -354,7 +379,7 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
       await db.prepare('DELETE FROM transactions WHERE ref = ?').bind(ref).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'transaction', entityId: ref, description: `Deleted transaction ${ref}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'transaction', entityId: ref, description: `🗑 Transaction deleted — ${ref}` });
       return json({ success: true });
     }
 
@@ -416,15 +441,16 @@ export async function onRequest(context) {
         .prepare('INSERT INTO expenses (date, category, description, amount) VALUES (?, ?, ?, ?)')
         .bind(date, category, description, amount)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'expense', entityId: String(inserted.meta.last_row_id), description: `Added expense ${category} (${amount})` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'expense', entityId: String(inserted.meta.last_row_id), description: `🧾 Expense recorded — ${category}${description ? ': ' + description : ''} — ₦${Number(amount).toLocaleString('en-NG')}` });
       return json({ success: true });
     }
     if (path.startsWith('expenses/') && method === 'DELETE') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
       const id = Number(path.split('/')[1]);
+      const expRow = await db.prepare('SELECT category, description AS expDesc, amount FROM expenses WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM expenses WHERE id = ?').bind(id).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'expense', entityId: String(id), description: `Deleted expense #${id}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'expense', entityId: String(id), description: `🗑 Expense deleted — ${expRow?.category || ''}${expRow?.expDesc ? ': ' + expRow.expDesc : ''} — ₦${Number(expRow?.amount || 0).toLocaleString('en-NG')}` });
       return json({ success: true });
     }
 
@@ -445,15 +471,16 @@ export async function onRequest(context) {
         .prepare('INSERT INTO capital (name, amount, date, method, receipt, user_id) VALUES (?, ?, ?, ?, ?, ?)')
         .bind(name, amount, date, capitalMethod, receipt || null, user_id || null)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `Added capital by ${name} (${amount})` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `💎 Capital deposited — ${name} contributed ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}` });
       return json({ success: true });
     }
     if (path.startsWith('capital/') && method === 'DELETE') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
       const id = Number(path.split('/')[1]);
+      const capRow = await db.prepare('SELECT name, amount, method FROM capital WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM capital WHERE id = ?').bind(id).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'capital', entityId: String(id), description: `Deleted capital #${id}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'capital', entityId: String(id), description: `🗑 Capital entry removed — ${capRow?.name || ''} ₦${Number(capRow?.amount || 0).toLocaleString('en-NG')} (${capRow?.method || ''})` });
       return json({ success: true });
     }
 
@@ -474,7 +501,7 @@ export async function onRequest(context) {
         .prepare('INSERT INTO declined_log (date, item, reason) VALUES (?, ?, ?)')
         .bind(date, item, reason)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'declined', entityId: String(inserted.meta.last_row_id), description: `Logged declined item: ${item}` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'declined', entityId: String(inserted.meta.last_row_id), description: `🚫 Item declined — ${item}: ${reason}` });
       return json({ success: true });
     }
 
