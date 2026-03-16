@@ -1474,7 +1474,13 @@ export default function App() {
   const closedTxs = transactions.filter(t => t.status === 'closed');
   const soldTxs = transactions.filter(t => t.status === 'sold');
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale');
-  const pastDeadline = activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30));
+  const graceWindowDays = Number(settings.graceDays) || 3;
+  const inGracePeriod = activeTxs.filter(t => {
+    const elapsed = daysBetween(t.dateGiven);
+    const loanDays = t.loanDays || 30;
+    return elapsed > loanDays && elapsed <= loanDays + graceWindowDays;
+  });
+  const readyToSell = activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + graceWindowDays);
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
@@ -1667,7 +1673,8 @@ export default function App() {
           <div style={S.stat}><div style={S.statLabel}>Capital Out</div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
           <div style={S.stat}><div style={S.statLabel}>Active Loans</div><div style={S.statValue}>{activeTxs.length}</div></div>
           <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
-          <div style={{ ...S.stat, background: pastDeadline.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={S.statLabel}>Past Deadline</div><div style={{ ...S.statValue, color: pastDeadline.length > 0 ? COLORS.danger : COLORS.primary }}>{pastDeadline.length}</div></div>
+          <div style={{ ...S.stat, background: inGracePeriod.length > 0 ? '#f3e8ff' : COLORS.primaryLight }}><div style={S.statLabel}>In Grace Period</div><div style={{ ...S.statValue, color: inGracePeriod.length > 0 ? '#7c3aed' : COLORS.primary }}>{inGracePeriod.length}</div></div>
+          <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={S.statLabel}>Ready to Sell</div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={S.cardTitle}>Recent Transactions</div><TxTable items={transactions.slice(0, 10)} /></div>
@@ -1684,13 +1691,12 @@ export default function App() {
       case 'deadlines': {
         
         const AlertGroup = ({ title, items, color, icon }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color }}>{icon} {title} ({items.length})</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button><button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button></div></div>))}</div>);
-        const readyToSell = activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3);
-        const inGrace = activeTxs.filter(t => { const d = daysBetween(t.dateGiven); return d > (t.loanDays || 30) && d <= (t.loanDays || 30) + 3; });
+        const inGrace = inGracePeriod;
         const upcoming7 = activeTxs.filter(t => { const l = (t.loanDays || 30) - daysBetween(t.dateGiven); return l <= 7 && l > 0; });
         return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
       }
 
-      case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} showDaysListed /></div></div>); }
+      case 'forSale': { const sellable = [...forSaleTxs, ...readyToSell]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} showDaysListed /></div></div>); }
 
       case 'reports': {
         const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
