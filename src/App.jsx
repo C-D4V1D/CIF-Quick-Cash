@@ -35,9 +35,10 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      if (!r.ok) throw new Error(`API error: ${r.status}`);
-      return await r.json();
-    } catch (e) { console.error(`POST /api/${endpoint}:`, e); return null; }
+      const body = await r.json().catch(() => null);
+      if (!r.ok) return body || { error: `Server error ${r.status}` };
+      return body;
+    } catch (e) { console.error(`POST /api/${endpoint}:`, e); return { error: 'Network error — please try again' }; }
   },
   async put(endpoint, data) {
     try {
