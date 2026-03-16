@@ -1601,7 +1601,10 @@ export default function App() {
       case 'capital': {
         const capByName = Object.values(capital.reduce((acc, c) => {
           const key = c.name.toLowerCase();
-          if (!acc[key]) acc[key] = { name: c.name, total: 0, entries: [] };
+          if (!acc[key]) {
+            const lu = c.user_id ? users.find(u => u.id === c.user_id) : null;
+            acc[key] = { name: c.name, total: 0, entries: [], user_id: c.user_id || null, username: lu?.username || null };
+          }
           acc[key].total += (c.amount || 0);
           acc[key].entries.push(c);
           return acc;
@@ -1623,7 +1626,7 @@ export default function App() {
                     return (
                       <React.Fragment key={i}>
                         <tr>
-                          <td style={S.td}><strong>{s.name}</strong></td>
+                          <td style={S.td}><strong>{s.name}</strong>{s.username && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>@{s.username}</div>}{!s.username && isAdmin && <div style={{ fontSize: '11px', color: COLORS.warning, marginTop: '2px' }}>No account</div>}</td>
                           <td style={S.td}><strong>{fmtMoney(s.total)}</strong></td>
                           <td style={S.td}><strong>{pct}%</strong></td>
                           <td style={S.td}>
@@ -1680,27 +1683,60 @@ export default function App() {
   };
 
   // Modals
-  const ExpModal = () => { const [exp, setExp] = useState({ date: new Date().toISOString().split('T')[0], category: 'Stationery & Printing', description: '', amount: 0 }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} onChange={e => setExp({ ...exp, amount: Number(e.target.value) })} /></Field><button style={S.btn('primary')} onClick={async () => { setExpenses(prev => [{ ...exp, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', exp); loadData(); }}>Save</button></Modal>; };
+  const ExpModal = () => { const [exp, setExp] = useState({ date: new Date().toISOString().split('T')[0], category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; setExpenses(prev => [{ ...e2, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
 
   const CapModal = () => {
-    const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: 0, date: new Date().toISOString().split('T')[0], method: '', receipt: '' });
-    const existingNames = [...new Set(capital.map(c => c.name))];
+    const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: new Date().toISOString().split('T')[0], method: '', receipt: '', username: '', password: '' });
+    const [showPwd, setShowPwd] = useState(false);
     const isTopUp = !!capitalTopUpFor;
+    const existingNames = [...new Set(capital.map(c => c.name))];
+    const linkedEntry = isTopUp ? capital.find(c => c.name.toLowerCase() === capitalTopUpFor.toLowerCase()) : null;
+    const linkedUserId = linkedEntry?.user_id || null;
+    const linkedUser = linkedUserId ? users.find(u => u.id === linkedUserId) : null;
     const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); };
+    const handleSave = async () => {
+      const amount = Number(cap.amount) || 0;
+      if (!cap.name.trim() || !amount || !cap.date || !cap.method.trim()) return;
+      let userId = linkedUserId;
+      if (!isTopUp && cap.username.trim() && cap.password.trim()) {
+        userId = `u-${Date.now()}`;
+        const newUser = { id: userId, name: cap.name.trim(), username: cap.username.trim(), password: cap.password.trim(), role: 'stakeholder' };
+        setUsers(prev => [...prev, { ...newUser, created_at: new Date().toISOString() }]);
+        await API.post('users', newUser);
+      }
+      const capEntry = { name: cap.name.trim(), amount, date: cap.date, method: cap.method.trim(), receipt: cap.receipt, user_id: userId };
+      setCapital(prev => [...prev, { ...capEntry, id: Date.now() }]);
+      closeModal();
+      await API.post('capital', capEntry);
+      loadData();
+    };
     return (
-      <Modal open={showAddCapital} onClose={closeModal} title={isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add Capital'}>
+      <Modal open={showAddCapital} onClose={closeModal} title={isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add New Stakeholder'}>
         <div style={S.grid2}>
           <Field label="Stakeholder Name">
             {isTopUp
               ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={cap.name} readOnly />
-              : <><input style={S.input} list="cap-names" value={cap.name} onChange={e => setCap({ ...cap, name: e.target.value })} placeholder="Type or select existing" /><datalist id="cap-names">{existingNames.map(n => <option key={n} value={n} />)}</datalist></>}
+              : <><input style={S.input} list="cap-names" value={cap.name} onChange={e => setCap({ ...cap, name: e.target.value })} placeholder="Full name" /><datalist id="cap-names">{existingNames.map(n => <option key={n} value={n} />)}</datalist></>}
           </Field>
-          <Field label="Amount (₦)"><input style={S.input} type="number" value={cap.amount} onChange={e => setCap({ ...cap, amount: Number(e.target.value) })} /></Field>
+          {isTopUp
+            ? <Field label="Account">{linkedUser ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={`@${linkedUser.username}`} readOnly /> : <span style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '40px' }}>No account linked</span>}</Field>
+            : <div />}
+          <Field label="Amount (₦)"><input style={S.input} type="number" value={cap.amount} placeholder="0" onChange={e => setCap({ ...cap, amount: e.target.value })} /></Field>
           <Field label="Date"><input style={S.input} type="date" value={cap.date} onChange={e => setCap({ ...cap, date: e.target.value })} /></Field>
-          <Field label="Method/Bank"><input style={S.input} value={cap.method} onChange={e => setCap({ ...cap, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
+          <Field label="Method/Bank" style={{ gridColumn: '1 / -1' }}><input style={S.input} value={cap.method} onChange={e => setCap({ ...cap, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
         </div>
+        {!isTopUp && (
+          <div style={{ margin: '16px 0 8px', padding: '14px', background: COLORS.primaryLight, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Stakeholder Login Account (optional)</div>
+            <div style={S.grid2}>
+              <Field label="Username"><input style={S.input} value={cap.username} onChange={e => setCap({ ...cap, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
+              <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={cap.password} onChange={e => setCap({ ...cap, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
+            </div>
+            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '6px' }}>If provided, this stakeholder will be able to log in and view their capital and profit share.</div>
+          </div>
+        )}
         <Field label="Transfer Receipt (optional)"><PhotoUpload label="Receipt" value={cap.receipt} onChange={v => setCap({ ...cap, receipt: v })} size={120} /></Field>
-        <button style={S.btn('primary')} onClick={async () => { setCapital(prev => [...prev, { ...cap, id: Date.now() }]); closeModal(); await API.post('capital', cap); loadData(); }}>Save</button>
+        <button style={S.btn('primary')} onClick={handleSave}>Save</button>
       </Modal>
     );
   };
