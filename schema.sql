@@ -52,8 +52,12 @@ CREATE TABLE IF NOT EXISTS capital (
   name    TEXT    NOT NULL,
   amount  REAL    NOT NULL,
   date    TEXT    NOT NULL,
-  method  TEXT    NOT NULL
+  method  TEXT    NOT NULL,
+  receipt TEXT
 );
+
+-- Migration: add receipt column if not exists (safe to run on existing DBs)
+-- ALTER TABLE capital ADD COLUMN receipt TEXT;
 
 CREATE TABLE IF NOT EXISTS declined_log (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
