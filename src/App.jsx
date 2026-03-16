@@ -1350,11 +1350,11 @@ const OUTCOME_COLORS = {
 
 function ContactLogModal({ tx, onClose, onSave, currentUser }) {
   const now = new Date();
-  const [date, setDate] = React.useState(now.toISOString().split('T')[0]);
-  const [time, setTime] = React.useState(now.toTimeString().slice(0, 5));
-  const [result, setResult] = React.useState('no_answer');
-  const [notes, setNotes] = React.useState('');
-  const [saving, setSaving] = React.useState(false);
+  const [date, setDate] = useState(now.toISOString().split('T')[0]);
+  const [time, setTime] = useState(now.toTimeString().slice(0, 5));
+  const [result, setResult] = useState('no_answer');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     setSaving(true);
