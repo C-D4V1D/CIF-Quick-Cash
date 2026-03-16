@@ -140,10 +140,15 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'login' && method === 'POST') {
       const { username, password, rememberMe } = await request.json();
-      const user = await db
+      let user = await db
         .prepare('SELECT id, username, role, name, active FROM users WHERE username = ? AND password = ?')
         .bind(username, password)
-        .first();
+        .first()
+        .catch(() =>
+          // Fallback for databases where the `active` migration hasn't run yet
+          db.prepare('SELECT id, username, role, name FROM users WHERE username = ? AND password = ?')
+            .bind(username, password).first().then(u => u ? { ...u, active: 1 } : null)
+        );
       if (!user) return error('Invalid username or password', 401);
       if (user.active === 0) return error('This account has been disabled. Contact the administrator.', 403);
 
