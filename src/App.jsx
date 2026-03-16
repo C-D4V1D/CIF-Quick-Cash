@@ -1299,6 +1299,8 @@ export default function App() {
   const [viewingTx, setViewingTx] = useState(null);
   const [repayingTx, setRepayingTx] = useState(null);
   const [sellingTx, setSellingTx] = useState(null);
+  const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
+  const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showAddCapital, setShowAddCapital] = useState(false);
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
@@ -1483,7 +1485,7 @@ export default function App() {
     { id: 'forSale', label: 'For Sale', icon: '🏷', path: PAGE_PATHS.forSale, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'reports', label: 'Monthly Report', icon: '📈', path: PAGE_PATHS.reports, roles: ['admin', 'stakeholder'] },
     { id: 'capital', label: 'Capital & Profits', icon: '💎', path: PAGE_PATHS.capital, roles: ['admin', 'stakeholder'] },
-    { id: 'expenses', label: 'Expenses', icon: '🧾', path: PAGE_PATHS.expenses, roles: ['staff', 'admin'] },
+    { id: 'expenses', label: 'Expenses', icon: '🧾', path: PAGE_PATHS.expenses, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'declined', label: 'Declined Log', icon: '🚫', path: PAGE_PATHS.declined, roles: ['staff', 'admin'] },
     { id: 'activity', label: 'Activity Log', icon: '🕘', path: PAGE_PATHS.activity, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'settings', label: 'Settings', icon: '⚙', path: PAGE_PATHS.settings, roles: ['admin'] },
@@ -1626,7 +1628,72 @@ export default function App() {
 
       case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} /></div></div>); }
 
-      case 'reports': { const fabianComp = Math.floor(netProfit * 0.10); const stakeholderProfit = netProfit - fabianComp; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📈 Monthly Report</h2><div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div><div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(totalExpenses)}</div></div><div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: netProfit > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(netProfit)}</div></div></div><div style={S.grid2}><div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(fabianComp)}</div></div><div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(stakeholderProfit)}</div></div></div><div style={S.card}><div style={S.cardTitle}>Distribution</div>{Object.values(capital.reduce((acc, c) => { const key = c.name.toLowerCase(); if (!acc[key]) acc[key] = { name: c.name, total: 0 }; acc[key].total += (c.amount || 0); return acc; }, {})).map(s => { const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0; return (<div key={s.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(Math.floor(stakeholderProfit * pct / 100))}</strong></div>); })}{capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}</div></div>); }
+      case 'reports': {
+        const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        const thisYear = new Date().getFullYear();
+        const years = [thisYear, thisYear - 1, thisYear - 2, thisYear - 3];
+        const inPeriod = (dateStr) => {
+          if (!dateStr) return false;
+          const d = new Date(dateStr.replace(' ', 'T'));
+          return d.getFullYear() === reportYear && d.getMonth() + 1 === reportMonth;
+        };
+        const rClosed = closedTxs.filter(t => inPeriod(t.updated_at));
+        const rSold = soldTxs.filter(t => inPeriod(t.updated_at));
+        const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
+        const rExpenses = expenses.filter(e => inPeriod(e.date));
+        const rRevenue = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0)
+          + rSold.reduce((s, t) => s + (t.salePrice || 0), 0)
+          + rNewTxs.length * (settings.serviceFee || 1000);
+        const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+        const rProfit = rRevenue - rExpTotal;
+        const rFabian = Math.floor(rProfit * 0.10);
+        const rStakeholder = rProfit - rFabian;
+        return (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📈 Monthly Report</h2>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <select value={reportMonth} onChange={e => setReportMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+                  {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                </select>
+                <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+                  {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ marginBottom: '8px', fontSize: '13px', color: COLORS.textMuted }}>
+              Showing: <strong>{MONTH_NAMES[reportMonth - 1]} {reportYear}</strong> — {rClosed.length} repayment{rClosed.length !== 1 ? 's' : ''}, {rSold.length} sale{rSold.length !== 1 ? 's' : ''}, {rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''}, {rExpenses.length} expense{rExpenses.length !== 1 ? 's' : ''}
+            </div>
+            <div style={S.grid3}>
+              <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+            </div>
+            <div style={S.grid2}>
+              <div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rFabian)}</div></div>
+              <div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
+            </div>
+            <div style={S.card}>
+              <div style={S.cardTitle}>Distribution</div>
+              {Object.values(capital.reduce((acc, c) => {
+                const key = c.name.toLowerCase();
+                if (!acc[key]) acc[key] = { name: c.name, total: 0 };
+                acc[key].total += (c.amount || 0);
+                return acc;
+              }, {})).map(s => {
+                const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
+                return (
+                  <div key={s.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span>
+                    <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(Math.floor(rStakeholder * pct / 100))}</strong>
+                  </div>
+                );
+              })}
+              {capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}
+            </div>
+          </div>
+        );
+      }
 
       case 'capital': {
         const capByName = Object.values(capital.reduce((acc, c) => {
