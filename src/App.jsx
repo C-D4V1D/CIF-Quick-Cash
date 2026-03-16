@@ -1296,6 +1296,8 @@ export default function App() {
   const [sellingTx, setSellingTx] = useState(null);
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showAddCapital, setShowAddCapital] = useState(false);
+  const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
+  const [expandedCapital, setExpandedCapital] = useState(new Set());
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -1594,9 +1596,77 @@ export default function App() {
 
       case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} /></div></div>); }
 
-      case 'reports': { const fabianComp = Math.floor(netProfit * 0.10); const stakeholderProfit = netProfit - fabianComp; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📈 Monthly Report</h2><div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div><div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(totalExpenses)}</div></div><div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: netProfit > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(netProfit)}</div></div></div><div style={S.grid2}><div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(fabianComp)}</div></div><div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(stakeholderProfit)}</div></div></div><div style={S.card}><div style={S.cardTitle}>Distribution</div>{capital.map(c => { const pct = totalCapital > 0 ? (c.amount / totalCapital * 100) : 0; return (<div key={c.name + c.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><span><strong>{c.name}</strong> — {fmtMoney(c.amount)} ({pct.toFixed(1)}%)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(Math.floor(stakeholderProfit * pct / 100))}</strong></div>); })}{capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}</div></div>); }
+      case 'reports': { const fabianComp = Math.floor(netProfit * 0.10); const stakeholderProfit = netProfit - fabianComp; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📈 Monthly Report</h2><div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div><div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(totalExpenses)}</div></div><div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: netProfit > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(netProfit)}</div></div></div><div style={S.grid2}><div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(fabianComp)}</div></div><div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(stakeholderProfit)}</div></div></div><div style={S.card}><div style={S.cardTitle}>Distribution</div>{Object.values(capital.reduce((acc, c) => { const key = c.name.toLowerCase(); if (!acc[key]) acc[key] = { name: c.name, total: 0 }; acc[key].total += (c.amount || 0); return acc; }, {})).map(s => { const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0; return (<div key={s.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(Math.floor(stakeholderProfit * pct / 100))}</strong></div>); })}{capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}</div></div>); }
 
-      case 'capital': { return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>💎 Capital</h2>{isAdmin && <button style={S.btn('primary')} onClick={() => setShowAddCapital(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Amount</th><th style={S.th}>Date</th><th style={S.th}>Share %</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead><tbody>{capital.map((c, i) => (<tr key={i}><td style={S.td}><strong>{c.name}</strong></td><td style={S.td}>{fmtMoney(c.amount)}</td><td style={S.td}>{fmtDate(c.date)}</td><td style={S.td}><strong>{totalCapital > 0 ? (c.amount / totalCapital * 100).toFixed(1) : 0}%</strong></td>{isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete capital entry from ${c.name}?`)) { setCapital(prev => prev.filter(x => x.id !== c.id)); await API.del(`capital/${c.id}`); loadData(); } }}>Delete</button></td>}</tr>))}{capital.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}</tbody></table><div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px', fontWeight: 700 }}>Total: {fmtMoney(totalCapital)}</div></div></div>); }
+      case 'capital': {
+        const capByName = Object.values(capital.reduce((acc, c) => {
+          const key = c.name.toLowerCase();
+          if (!acc[key]) {
+            const lu = c.user_id ? users.find(u => u.id === c.user_id) : null;
+            acc[key] = { name: c.name, total: 0, entries: [], user_id: c.user_id || null, username: lu?.username || null };
+          }
+          acc[key].total += (c.amount || 0);
+          acc[key].entries.push(c);
+          return acc;
+        }, {}));
+        const toggleExpand = (name) => setExpandedCapital(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
+        return (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>💎 Capital</h2>
+              {isAdmin && <button style={S.btn('primary')} onClick={() => { setCapitalTopUpFor(null); setShowAddCapital(true); }}>+ Add Stakeholder</button>}
+            </div>
+            <div style={S.card}>
+              <table style={S.table}>
+                <thead><tr><th style={S.th}>Name</th><th style={S.th}>Total Capital</th><th style={S.th}>Share %</th><th style={S.th}>History</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead>
+                <tbody>
+                  {capByName.map((s, i) => {
+                    const pct = totalCapital > 0 ? (s.total / totalCapital * 100).toFixed(1) : '0.0';
+                    const isExpanded = expandedCapital.has(s.name.toLowerCase());
+                    return (
+                      <React.Fragment key={i}>
+                        <tr>
+                          <td style={S.td}><strong>{s.name}</strong>{s.username && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>@{s.username}</div>}{!s.username && isAdmin && <div style={{ fontSize: '11px', color: COLORS.warning, marginTop: '2px' }}>No account</div>}</td>
+                          <td style={S.td}><strong>{fmtMoney(s.total)}</strong></td>
+                          <td style={S.td}><strong>{pct}%</strong></td>
+                          <td style={S.td}>
+                            <button style={S.btnSm('accent')} onClick={() => toggleExpand(s.name.toLowerCase())}>
+                              {isExpanded ? '▲ Hide' : `▼ ${s.entries.length} entry${s.entries.length !== 1 ? 'ies' : 'y'}`}
+                            </button>
+                          </td>
+                          {isAdmin && <td style={S.td}><button style={S.btnSm('primary')} onClick={() => { setCapitalTopUpFor(s.name); setShowAddCapital(true); }}>+ Top Up</button></td>}
+                        </tr>
+                        {isExpanded && (
+                          <tr>
+                            <td colSpan={isAdmin ? 5 : 4} style={{ padding: '4px 0 12px 20px', background: COLORS.bg }}>
+                              <table style={{ ...S.table, fontSize: '12px' }}>
+                                <thead><tr><th style={S.th}>Date</th><th style={S.th}>Amount</th><th style={S.th}>Method</th><th style={S.th}>Receipt</th>{isAdmin && <th style={S.th}></th>}</tr></thead>
+                                <tbody>
+                                  {s.entries.map((e, j) => (
+                                    <tr key={j}>
+                                      <td style={S.td}>{fmtDate(e.date)}</td>
+                                      <td style={S.td}>{fmtMoney(e.amount)}</td>
+                                      <td style={S.td}>{e.method}</td>
+                                      <td style={S.td}>{e.receipt ? <a href={e.receipt} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.primary, fontWeight: 600 }}>View</a> : <span style={{ color: COLORS.textMuted }}>—</span>}</td>
+                                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete ₦${e.amount.toLocaleString()} contribution from ${e.name}?`)) { setCapital(prev => prev.filter(x => x.id !== e.id)); await API.del(`capital/${e.id}`); loadData(); } }}>Del</button></td>}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                  {capByName.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}
+                </tbody>
+              </table>
+              <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px', fontWeight: 700 }}>Total: {fmtMoney(totalCapital)}</div>
+            </div>
+          </div>
+        );
+      }
 
       case 'expenses': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🧾 Expenses</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddExpense(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Category</th><th style={S.th}>Description</th><th style={S.th}>Amount</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead><tbody>{expenses.map((e, i) => (<tr key={i}><td style={S.td}>{fmtDate(e.date)}</td><td style={S.td}>{e.category}</td><td style={S.td}>{e.description}</td><td style={S.td}><strong>{fmtMoney(e.amount)}</strong></td>{isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm('Delete this expense entry?')) { setExpenses(prev => prev.filter(x => x.id !== e.id)); await API.del(`expenses/${e.id}`); loadData(); } }}>Delete</button></td>}</tr>))}{expenses.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}</tbody></table><div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total: {fmtMoney(totalExpenses)}</div></div></div>);
 
@@ -1613,9 +1683,63 @@ export default function App() {
   };
 
   // Modals
-  const ExpModal = () => { const [exp, setExp] = useState({ date: new Date().toISOString().split('T')[0], category: 'Stationery & Printing', description: '', amount: 0 }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} onChange={e => setExp({ ...exp, amount: Number(e.target.value) })} /></Field><button style={S.btn('primary')} onClick={async () => { setExpenses(prev => [{ ...exp, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', exp); loadData(); }}>Save</button></Modal>; };
+  const ExpModal = () => { const [exp, setExp] = useState({ date: new Date().toISOString().split('T')[0], category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; setExpenses(prev => [{ ...e2, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
 
-  const CapModal = () => { const [cap, setCap] = useState({ name: '', amount: 0, date: new Date().toISOString().split('T')[0], method: '' }); return <Modal open={showAddCapital} onClose={() => setShowAddCapital(false)} title="Add Capital"><div style={S.grid2}><Field label="Stakeholder Name"><input style={S.input} value={cap.name} onChange={e => setCap({ ...cap, name: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={cap.amount} onChange={e => setCap({ ...cap, amount: Number(e.target.value) })} /></Field><Field label="Date"><input style={S.input} type="date" value={cap.date} onChange={e => setCap({ ...cap, date: e.target.value })} /></Field><Field label="Method/Bank"><input style={S.input} value={cap.method} onChange={e => setCap({ ...cap, method: e.target.value })} /></Field></div><button style={S.btn('primary')} onClick={async () => { setCapital(prev => [...prev, { ...cap, id: Date.now() }]); setShowAddCapital(false); await API.post('capital', cap); loadData(); }}>Save</button></Modal>; };
+  const CapModal = () => {
+    const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: new Date().toISOString().split('T')[0], method: '', receipt: '', username: '', password: '' });
+    const [showPwd, setShowPwd] = useState(false);
+    const isTopUp = !!capitalTopUpFor;
+    const existingNames = [...new Set(capital.map(c => c.name))];
+    const linkedEntry = isTopUp ? capital.find(c => c.name.toLowerCase() === capitalTopUpFor.toLowerCase()) : null;
+    const linkedUserId = linkedEntry?.user_id || null;
+    const linkedUser = linkedUserId ? users.find(u => u.id === linkedUserId) : null;
+    const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); };
+    const handleSave = async () => {
+      const amount = Number(cap.amount) || 0;
+      if (!cap.name.trim() || !amount || !cap.date || !cap.method.trim()) return;
+      let userId = linkedUserId;
+      if (!isTopUp && cap.username.trim() && cap.password.trim()) {
+        userId = `u-${Date.now()}`;
+        const newUser = { id: userId, name: cap.name.trim(), username: cap.username.trim(), password: cap.password.trim(), role: 'stakeholder' };
+        setUsers(prev => [...prev, { ...newUser, created_at: new Date().toISOString() }]);
+        await API.post('users', newUser);
+      }
+      const capEntry = { name: cap.name.trim(), amount, date: cap.date, method: cap.method.trim(), receipt: cap.receipt, user_id: userId };
+      setCapital(prev => [...prev, { ...capEntry, id: Date.now() }]);
+      closeModal();
+      await API.post('capital', capEntry);
+      loadData();
+    };
+    return (
+      <Modal open={showAddCapital} onClose={closeModal} title={isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add New Stakeholder'}>
+        <div style={S.grid2}>
+          <Field label="Stakeholder Name">
+            {isTopUp
+              ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={cap.name} readOnly />
+              : <><input style={S.input} list="cap-names" value={cap.name} onChange={e => setCap({ ...cap, name: e.target.value })} placeholder="Full name" /><datalist id="cap-names">{existingNames.map(n => <option key={n} value={n} />)}</datalist></>}
+          </Field>
+          {isTopUp
+            ? <Field label="Account">{linkedUser ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={`@${linkedUser.username}`} readOnly /> : <span style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '40px' }}>No account linked</span>}</Field>
+            : <div />}
+          <Field label="Amount (₦)"><input style={S.input} type="number" value={cap.amount} placeholder="0" onChange={e => setCap({ ...cap, amount: e.target.value })} /></Field>
+          <Field label="Date"><input style={S.input} type="date" value={cap.date} onChange={e => setCap({ ...cap, date: e.target.value })} /></Field>
+          <Field label="Method/Bank" style={{ gridColumn: '1 / -1' }}><input style={S.input} value={cap.method} onChange={e => setCap({ ...cap, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
+        </div>
+        {!isTopUp && (
+          <div style={{ margin: '16px 0 8px', padding: '14px', background: COLORS.primaryLight, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Stakeholder Login Account (optional)</div>
+            <div style={S.grid2}>
+              <Field label="Username"><input style={S.input} value={cap.username} onChange={e => setCap({ ...cap, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
+              <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={cap.password} onChange={e => setCap({ ...cap, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
+            </div>
+            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '6px' }}>If provided, this stakeholder will be able to log in and view their capital and profit share.</div>
+          </div>
+        )}
+        <Field label="Transfer Receipt (optional)"><PhotoUpload label="Receipt" value={cap.receipt} onChange={v => setCap({ ...cap, receipt: v })} size={120} /></Field>
+        <button style={S.btn('primary')} onClick={handleSave}>Save</button>
+      </Modal>
+    );
+  };
 
   const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button></Modal>; };
 

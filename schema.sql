@@ -52,8 +52,14 @@ CREATE TABLE IF NOT EXISTS capital (
   name    TEXT    NOT NULL,
   amount  REAL    NOT NULL,
   date    TEXT    NOT NULL,
-  method  TEXT    NOT NULL
+  method  TEXT    NOT NULL,
+  receipt TEXT,
+  user_id TEXT    REFERENCES users(id)
 );
+
+-- Migrations for existing databases (run once against live D1):
+-- ALTER TABLE capital ADD COLUMN receipt TEXT;
+-- ALTER TABLE capital ADD COLUMN user_id TEXT REFERENCES users(id);
 
 CREATE TABLE IF NOT EXISTS declined_log (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
