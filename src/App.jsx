@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 
@@ -35,9 +35,10 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      if (!r.ok) throw new Error(`API error: ${r.status}`);
-      return await r.json();
-    } catch (e) { console.error(`POST /api/${endpoint}:`, e); return null; }
+      const body = await r.json().catch(() => null);
+      if (!r.ok) return body || { error: `Server error ${r.status}` };
+      return body;
+    } catch (e) { console.error(`POST /api/${endpoint}:`, e); return { error: 'Network error — please try again' }; }
   },
   async put(endpoint, data) {
     try {
@@ -1288,12 +1289,18 @@ export default function App() {
   const [capital, setCapital] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
+  const [activityMeta, setActivityMeta] = useState({ total: 0, limit: 300 });
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityFilter, setActivityFilter] = useState({ q: '', from: '', to: '', category: '', sort: 'desc' });
+  const [showEditUser, setShowEditUser] = useState(null);
   const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
   const [viewingTx, setViewingTx] = useState(null);
   const [repayingTx, setRepayingTx] = useState(null);
   const [sellingTx, setSellingTx] = useState(null);
+  const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
+  const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showAddCapital, setShowAddCapital] = useState(false);
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
@@ -1329,6 +1336,32 @@ export default function App() {
   }, []);
 
   // Load critical data first, then hydrate heavy lists in the background.
+  const ACTIVITY_CATS = [
+    { value: '', label: 'All Events', type: '', action: '' },
+    { value: 'loans', label: '📋 New Loans', type: 'transaction', action: 'entry' },
+    { value: 'repayments', label: '✅ Repayments', type: 'transaction', action: 'repaid' },
+    { value: 'sales', label: '💰 Sales', type: 'transaction', action: 'sold' },
+    { value: 'expense', label: '🧾 Expenses', type: 'expense', action: '' },
+    { value: 'capital', label: '💎 Capital', type: 'capital', action: '' },
+    { value: 'auth', label: '🔐 Logins', type: 'auth', action: '' },
+    { value: 'user', label: '👤 User Changes', type: 'user', action: '' },
+    { value: 'settings', label: '⚙️ Settings', type: 'settings', action: '' },
+    { value: 'declined', label: '🚫 Declined', type: 'declined', action: '' },
+  ];
+  const loadActivityLogs = async (filter) => {
+    const f = filter !== undefined ? filter : activityFilter;
+    setActivityLoading(true);
+    const cat = ACTIVITY_CATS.find(c => c.value === f.category) || ACTIVITY_CATS[0];
+    const p = new URLSearchParams({ limit: '300', sort: f.sort || 'desc' });
+    if (f.q && f.q.trim()) p.set('q', f.q.trim());
+    if (f.from) p.set('from', f.from);
+    if (f.to) p.set('to', f.to);
+    if (cat.type) p.set('type', cat.type);
+    if (cat.action) p.set('action', cat.action);
+    const data = await API.get(`activity-logs?${p}`);
+    if (data) { setActivityLogs(data.logs || []); setActivityMeta({ total: data.total ?? 0, limit: data.limit ?? 300 }); }
+    setActivityLoading(false);
+  };
   const loadData = async () => {
     const criticalCache = readCache('cfc_critical');
     const listCache = readCache('cfc_transactions');
@@ -1367,8 +1400,7 @@ export default function App() {
       setUsers(secondary.users || []);
     }
 
-    const activities = await API.get('activity-logs?limit=300');
-    if (activities) setActivityLogs(activities);
+    await loadActivityLogs();
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
@@ -1453,7 +1485,7 @@ export default function App() {
     { id: 'forSale', label: 'For Sale', icon: '🏷', path: PAGE_PATHS.forSale, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'reports', label: 'Monthly Report', icon: '📈', path: PAGE_PATHS.reports, roles: ['admin', 'stakeholder'] },
     { id: 'capital', label: 'Capital & Profits', icon: '💎', path: PAGE_PATHS.capital, roles: ['admin', 'stakeholder'] },
-    { id: 'expenses', label: 'Expenses', icon: '🧾', path: PAGE_PATHS.expenses, roles: ['staff', 'admin'] },
+    { id: 'expenses', label: 'Expenses', icon: '🧾', path: PAGE_PATHS.expenses, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'declined', label: 'Declined Log', icon: '🚫', path: PAGE_PATHS.declined, roles: ['staff', 'admin'] },
     { id: 'activity', label: 'Activity Log', icon: '🕘', path: PAGE_PATHS.activity, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'settings', label: 'Settings', icon: '⚙', path: PAGE_PATHS.settings, roles: ['admin'] },
@@ -1596,7 +1628,72 @@ export default function App() {
 
       case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} /></div></div>); }
 
-      case 'reports': { const fabianComp = Math.floor(netProfit * 0.10); const stakeholderProfit = netProfit - fabianComp; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📈 Monthly Report</h2><div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div><div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(totalExpenses)}</div></div><div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: netProfit > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(netProfit)}</div></div></div><div style={S.grid2}><div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(fabianComp)}</div></div><div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(stakeholderProfit)}</div></div></div><div style={S.card}><div style={S.cardTitle}>Distribution</div>{Object.values(capital.reduce((acc, c) => { const key = c.name.toLowerCase(); if (!acc[key]) acc[key] = { name: c.name, total: 0 }; acc[key].total += (c.amount || 0); return acc; }, {})).map(s => { const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0; return (<div key={s.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(Math.floor(stakeholderProfit * pct / 100))}</strong></div>); })}{capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}</div></div>); }
+      case 'reports': {
+        const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        const thisYear = new Date().getFullYear();
+        const years = [thisYear, thisYear - 1, thisYear - 2, thisYear - 3];
+        const inPeriod = (dateStr) => {
+          if (!dateStr) return false;
+          const d = new Date(dateStr.replace(' ', 'T'));
+          return d.getFullYear() === reportYear && d.getMonth() + 1 === reportMonth;
+        };
+        const rClosed = closedTxs.filter(t => inPeriod(t.updated_at));
+        const rSold = soldTxs.filter(t => inPeriod(t.updated_at));
+        const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
+        const rExpenses = expenses.filter(e => inPeriod(e.date));
+        const rRevenue = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0)
+          + rSold.reduce((s, t) => s + (t.salePrice || 0), 0)
+          + rNewTxs.length * (settings.serviceFee || 1000);
+        const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+        const rProfit = rRevenue - rExpTotal;
+        const rFabian = Math.floor(rProfit * 0.10);
+        const rStakeholder = rProfit - rFabian;
+        return (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📈 Monthly Report</h2>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <select value={reportMonth} onChange={e => setReportMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+                  {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                </select>
+                <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+                  {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ marginBottom: '8px', fontSize: '13px', color: COLORS.textMuted }}>
+              Showing: <strong>{MONTH_NAMES[reportMonth - 1]} {reportYear}</strong> — {rClosed.length} repayment{rClosed.length !== 1 ? 's' : ''}, {rSold.length} sale{rSold.length !== 1 ? 's' : ''}, {rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''}, {rExpenses.length} expense{rExpenses.length !== 1 ? 's' : ''}
+            </div>
+            <div style={S.grid3}>
+              <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+            </div>
+            <div style={S.grid2}>
+              <div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rFabian)}</div></div>
+              <div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
+            </div>
+            <div style={S.card}>
+              <div style={S.cardTitle}>Distribution</div>
+              {Object.values(capital.reduce((acc, c) => {
+                const key = c.name.toLowerCase();
+                if (!acc[key]) acc[key] = { name: c.name, total: 0 };
+                acc[key].total += (c.amount || 0);
+                return acc;
+              }, {})).map(s => {
+                const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
+                return (
+                  <div key={s.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span>
+                    <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(Math.floor(rStakeholder * pct / 100))}</strong>
+                  </div>
+                );
+              })}
+              {capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}
+            </div>
+          </div>
+        );
+      }
 
       case 'capital': {
         const capByName = Object.values(capital.reduce((acc, c) => {
@@ -1624,7 +1721,7 @@ export default function App() {
                     const pct = totalCapital > 0 ? (s.total / totalCapital * 100).toFixed(1) : '0.0';
                     const isExpanded = expandedCapital.has(s.name.toLowerCase());
                     return (
-                      <React.Fragment key={i}>
+                      <Fragment key={i}>
                         <tr>
                           <td style={S.td}><strong>{s.name}</strong>{s.username && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>@{s.username}</div>}{!s.username && isAdmin && <div style={{ fontSize: '11px', color: COLORS.warning, marginTop: '2px' }}>No account</div>}</td>
                           <td style={S.td}><strong>{fmtMoney(s.total)}</strong></td>
@@ -1656,7 +1753,7 @@ export default function App() {
                             </td>
                           </tr>
                         )}
-                      </React.Fragment>
+                      </Fragment>
                     );
                   })}
                   {capByName.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}
@@ -1672,11 +1769,101 @@ export default function App() {
 
       case 'declined': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Item</th><th style={S.th}>Reason</th></tr></thead><tbody>{declinedLog.map((d, i) => (<tr key={i}><td style={S.td}>{fmtDate(d.date)}</td><td style={S.td}>{d.item}</td><td style={S.td}>{d.reason}</td></tr>))}{declinedLog.length === 0 && <tr><td style={S.td} colSpan={3}>None.</td></tr>}</tbody></table></div></div>);
 
-      case 'activity': return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🕘 Activity Log</h2><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Time</th><th style={S.th}>User</th><th style={S.th}>Role</th><th style={S.th}>Action</th><th style={S.th}>Entity</th><th style={S.th}>Description</th></tr></thead><tbody>{activityLogs.map((a) => (<tr key={a.id}><td style={S.td}>{new Date(a.created_at).toLocaleString()}</td><td style={S.td}>{a.username}</td><td style={S.td}><span style={S.badge(a.user_role === 'admin' ? '#c8a84e' : a.user_role === 'staff' ? '#10b981' : '#6b7280')}>{a.user_role}</span></td><td style={S.td}>{a.action}</td><td style={S.td}>{a.entity_type}{a.entity_id ? ` #${a.entity_id}` : ''}</td><td style={S.td}>{a.description || '-'}</td></tr>))}{activityLogs.length === 0 && <tr><td style={S.td} colSpan={6}>No activities yet.</td></tr>}</tbody></table></div></div>);
+      case 'activity': {
+        const actColor = (a) => {
+          if (a.action === 'delete') return COLORS.danger;
+          if (a.action === 'repaid' || a.action === 'sold') return COLORS.primary;
+          if (a.action === 'deactivate') return COLORS.danger;
+          if (a.action === 'activate') return COLORS.primary;
+          if (a.entity_type === 'transaction' && a.action === 'entry') return '#3b82f6';
+          if (a.entity_type === 'expense') return COLORS.warning;
+          if (a.entity_type === 'capital') return '#8b5cf6';
+          if (a.entity_type === 'auth') return COLORS.textMuted;
+          return COLORS.textMuted;
+        };
+        const roleColor = (r) => r === 'admin' ? '#c8a84e' : r === 'staff' ? '#10b981' : '#6b7280';
+        const grouped = activityLogs.reduce((acc, a) => { const k = new Date(a.created_at).toDateString(); if (!acc[k]) acc[k] = []; acc[k].push(a); return acc; }, {});
+        const applyFilters = () => loadActivityLogs(activityFilter);
+        const setF = (patch) => setActivityFilter(prev => ({ ...prev, ...patch }));
+        const todayStr = new Date().toISOString().split('T')[0];
+        return (
+          <div>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>🕘 Activity Log</h2>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Full audit trail — every action is permanently recorded. Visible to all roles.</p>
+            {/* Filter bar */}
+            <div style={{ ...S.card, marginBottom: '16px', padding: '14px' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div style={{ flex: '2 1 200px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>SEARCH</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <input style={{ ...S.input, margin: 0 }} value={activityFilter.q} placeholder="Search descriptions, usernames…"
+                      onChange={e => setF({ q: e.target.value })}
+                      onKeyDown={e => e.key === 'Enter' && applyFilters()} />
+                  </div>
+                </div>
+                <div style={{ flex: '1 1 140px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>CATEGORY</div>
+                  <select style={S.select} value={activityFilter.category} onChange={e => setF({ category: e.target.value })}>
+                    {ACTIVITY_CATS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: '1 1 130px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>FROM DATE</div>
+                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.from} max={activityFilter.to || todayStr} onChange={e => setF({ from: e.target.value })} />
+                </div>
+                <div style={{ flex: '1 1 130px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>TO DATE</div>
+                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.to} min={activityFilter.from} max={todayStr} onChange={e => setF({ to: e.target.value })} />
+                </div>
+                <div style={{ flex: '1 1 120px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>SORT</div>
+                  <select style={S.select} value={activityFilter.sort} onChange={e => setF({ sort: e.target.value })}>
+                    <option value="desc">Newest first</option>
+                    <option value="asc">Oldest first</option>
+                  </select>
+                </div>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-end', paddingBottom: '1px' }}>
+                  <button style={S.btn('primary')} onClick={applyFilters}>Search</button>
+                  <button style={S.btn('outline')} onClick={() => { const reset = { q: '', from: '', to: '', category: '', sort: 'desc' }; setActivityFilter(reset); loadActivityLogs(reset); }}>Clear</button>
+                </div>
+              </div>
+              <div style={{ marginTop: '10px', fontSize: '12px', color: COLORS.textMuted }}>
+                {activityLoading ? 'Loading…' : <>{activityLogs.length.toLocaleString()} result{activityLogs.length !== 1 ? 's' : ''} shown · {activityMeta.total.toLocaleString()} total events in database</>}
+              </div>
+            </div>
+            {activityLogs.length === 0 && !activityLoading && <div style={S.card}><p style={{ color: COLORS.textMuted }}>No matching events found.</p></div>}
+            {Object.entries(grouped).map(([dateKey, entries]) => {
+              const d = new Date(dateKey); const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+              const label = d.toDateString() === today.toDateString() ? 'Today' : d.toDateString() === yesterday.toDateString() ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+              return (
+                <div key={dateKey} style={{ marginBottom: '24px' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px', paddingLeft: '4px' }}>{label}</div>
+                  <div style={{ ...S.card, padding: 0, overflow: 'hidden' }}>
+                    {entries.map((a, i) => (
+                      <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px 16px', borderBottom: i < entries.length - 1 ? `1px solid ${COLORS.border}` : 'none', borderLeft: `3px solid ${actColor(a)}` }}>
+                        <div style={{ flexShrink: 0, minWidth: '54px' }}>
+                          <div style={{ fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'nowrap' }}>{new Date(a.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '14px', fontWeight: 500, wordBreak: 'break-word' }}>{a.description || `${a.action} ${a.entity_type}`}</div>
+                          <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                            <span style={S.badge(roleColor(a.user_role))}>{a.user_role}</span>
+                            <span>{a.username}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      }
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div><div style={S.card}><div style={S.cardTitle}>🪪 Identity Verification Rules</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div><Field label="Require API-verified NIN/BVN to proceed"><label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} /><span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span></label></Field></div></div>);
 
-      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => (<tr key={u.id}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}>{u.id !== 'admin' && <button style={S.btnSm('danger')} onClick={async () => { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); }}>Remove</button>}</td></tr>))}</tbody></table></div></div>);
+      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add User</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => setShowEditUser(u)}>Edit</button><button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
 
       default: return <Navigate to="/dashboard" replace />;
     }
@@ -1743,6 +1930,31 @@ export default function App() {
 
   const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button></Modal>; };
 
+  const EditUserModal = () => {
+    const u = showEditUser;
+    const [username, setUsername] = useState(u?.username || '');
+    const [password, setPassword] = useState('');
+    const [showPwd, setShowPwd] = useState(false);
+    if (!u) return null;
+    const handleSave = async () => {
+      const payload = {};
+      if (username.trim() && username.trim() !== u.username) payload.username = username.trim();
+      if (password.trim()) payload.password = password.trim();
+      if (!Object.keys(payload).length) { setShowEditUser(null); return; }
+      setUsers(prev => prev.map(x => x.id === u.id ? { ...x, ...(payload.username ? { username: payload.username } : {}) } : x));
+      setShowEditUser(null);
+      await API.put(`users/${u.id}`, payload);
+      loadData(); loadActivityLogs();
+    };
+    return (
+      <Modal open={!!showEditUser} onClose={() => setShowEditUser(null)} title={`Edit Account — ${u.name}`}>
+        <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Leave a field blank to keep it unchanged.</div>
+        <Field label="New Username"><input style={S.input} value={username} onChange={e => setUsername(e.target.value)} placeholder={u.username} autoComplete="off" /></Field>
+        <Field label="New Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="Leave blank to keep current" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
+        <button style={S.btn('primary')} onClick={handleSave}>Save Changes</button>
+      </Modal>
+    );
+  };
   const UsrModal = () => { const [usr, setUsr] = useState({ name: '', username: '', password: '', role: 'staff' }); const [showUsrPassword, setShowUsrPassword] = useState(false); return <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User"><div style={S.grid2}><Field label="Name"><input style={S.input} value={usr.name} onChange={e => setUsr({ ...usr, name: e.target.value })} /></Field><Field label="Username"><input style={S.input} value={usr.username} onChange={e => setUsr({ ...usr, username: e.target.value })} /></Field><Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showUsrPassword ? 'text' : 'password'} value={usr.password} onChange={e => setUsr({ ...usr, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setShowUsrPassword(v => !v)}>{showUsrPassword ? '🙈 Hide' : '👁 Show'}</button></div></Field><Field label="Role"><select style={S.select} value={usr.role} onChange={e => setUsr({ ...usr, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field></div><button style={S.btn('primary')} onClick={async () => { const newId = `u-${Date.now()}`; setUsers(prev => [...prev, { ...usr, id: newId, created_at: new Date().toISOString() }]); setShowAddUser(false); await API.post('users', { ...usr, id: newId }); loadData(); }}>Add</button></Modal>; };
 
   const navAction = (item) => {
@@ -1828,7 +2040,7 @@ export default function App() {
         </div>
       )}
 
-      <ExpModal /><CapModal /><DecModal /><UsrModal />
+      <ExpModal /><CapModal /><DecModal /><UsrModal /><EditUserModal />
       <Modal open={!!repayingTx} onClose={() => setRepayingTx(null)} title="Record Repayment">{repayingTx && <RepaymentModal tx={repayingTx} settings={settings} onClose={() => setRepayingTx(null)} onSave={async (tx) => { await saveTx(tx); setRepayingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!sellingTx} onClose={() => setSellingTx(null)} title="Record Sale" wide>{sellingTx && <SaleModal tx={sellingTx} settings={settings} onClose={() => setSellingTx(null)} onSave={async (tx) => { await saveTx(tx); setSellingTx(null); loadData(); }} />}</Modal>
       <style>{`

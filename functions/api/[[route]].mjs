@@ -76,10 +76,7 @@ export async function onRequest(context) {
   const logActivity = async ({ user, action, entityType, entityId, description = '' }) => {
     if (!user) return;
     await db
-      .prepare(`
-        INSERT INTO activity_logs (user_id, username, user_role, action, entity_type, entity_id, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `)
+      .prepare('INSERT INTO activity_logs (user_id, username, user_role, action, entity_type, entity_id, description) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .bind(user.id, user.username, user.role, action, entityType, entityId || null, description)
       .run();
   };
@@ -143,11 +140,17 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'login' && method === 'POST') {
       const { username, password, rememberMe } = await request.json();
-      const user = await db
-        .prepare('SELECT id, username, role, name FROM users WHERE username = ? AND password = ?')
+      let user = await db
+        .prepare('SELECT id, username, role, name, active FROM users WHERE username = ? AND password = ?')
         .bind(username, password)
-        .first();
+        .first()
+        .catch(() =>
+          // Fallback for databases where the `active` migration hasn't run yet
+          db.prepare('SELECT id, username, role, name FROM users WHERE username = ? AND password = ?')
+            .bind(username, password).first().then(u => u ? { ...u, active: 1 } : null)
+        );
       if (!user) return error('Invalid username or password', 401);
+      if (user.active === 0) return error('This account has been disabled. Contact the administrator.', 403);
 
       const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, name: user.name, issuedAt: Date.now() });
       const activeCookie = rememberMe
@@ -157,6 +160,7 @@ export async function onRequest(context) {
         ? clearSessionCookie(SESSION_COOKIE_SHORT)
         : clearSessionCookie(SESSION_COOKIE_LONG);
 
+      await logActivity({ user, action: 'login', entityType: 'auth', entityId: user.id, description: `🔐 ${user.name} (${user.role}) logged in` });
       return json({ user }, 200, { 'Set-Cookie': [activeCookie, staleCookie] });
     }
 
@@ -197,7 +201,7 @@ export async function onRequest(context) {
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
-            ? db.prepare('SELECT id, username, role, name, created_at FROM users ORDER BY created_at').all()
+            ? db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] })
         ]);
 
@@ -264,7 +268,7 @@ export async function onRequest(context) {
     if (path === 'users' && method === 'GET') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, username, role, name, created_at FROM users ORDER BY created_at').all();
+      const { results } = await db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY created_at').all();
       return json(results);
     }
     if (path === 'users' && method === 'POST') {
@@ -275,7 +279,7 @@ export async function onRequest(context) {
         .prepare('INSERT INTO users (id, username, password, role, name) VALUES (?, ?, ?, ?, ?)')
         .bind(id, username, password, role, name)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `Added user ${username} (${role})` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `👤 New ${role} account created: ${name} (@${username})` });
       return json({ success: true });
     }
     if (path.startsWith('users/') && method === 'DELETE') {
@@ -283,9 +287,30 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const id = path.split('/')[1];
       if (id === 'admin') return error('Cannot delete admin user');
-      const targetUser = await db.prepare('SELECT username FROM users WHERE id = ?').bind(id).first();
+      const targetUser = await db.prepare('SELECT username, name, role FROM users WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'user', entityId: id, description: `Deleted user ${targetUser?.username || id}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'user', entityId: id, description: `👤 User account removed: ${targetUser?.name || ''} (@${targetUser?.username || id}) — was ${targetUser?.role || ''}` });
+      return json({ success: true });
+    }
+    if (path.startsWith('users/') && method === 'PUT') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
+      const id = path.split('/')[1];
+      if (id === 'admin') return error('Cannot modify the admin account');
+      const { username, password, active } = await request.json();
+      const cur = await db.prepare('SELECT username, name, role, active FROM users WHERE id = ?').bind(id).first();
+      if (!cur) return error('User not found', 404);
+      const setClauses = []; const setParams = [];
+      if (username !== undefined && username.trim() && username.trim() !== cur.username) { setClauses.push('username = ?'); setParams.push(username.trim()); }
+      if (password !== undefined && password.trim()) { setClauses.push('password = ?'); setParams.push(password.trim()); }
+      if (active !== undefined && Number(active) !== Number(cur.active ?? 1)) { setClauses.push('active = ?'); setParams.push(active ? 1 : 0); }
+      if (setClauses.length) await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, id).run();
+      if (username !== undefined && username.trim() && username.trim() !== cur.username)
+        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `👤 Username changed: ${cur.name} — @${cur.username} → @${username.trim()}` });
+      if (password !== undefined && password.trim())
+        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `🔑 Password changed for ${cur.name} (@${cur.username})` });
+      if (active !== undefined && Number(active) !== Number(cur.active ?? 1))
+        await logActivity({ user: auth.user, action: active ? 'activate' : 'deactivate', entityType: 'user', entityId: id, description: `${active ? '✅' : '🔒'} User account ${active ? 'activated' : 'deactivated'}: ${cur.name} (@${cur.username})` });
       return json({ success: true });
     }
 
@@ -306,7 +331,7 @@ export async function onRequest(context) {
         .prepare("INSERT INTO settings (key, value, updated_at) VALUES ('config', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
         .bind(JSON.stringify(data))
         .run();
-      await logActivity({ user: auth.user, action: 'update', entityType: 'settings', entityId: 'config', description: 'Updated system settings' });
+      await logActivity({ user: auth.user, action: 'update', entityType: 'settings', entityId: 'config', description: `⚙️ System settings updated by ${auth.user.name}` });
       return json({ success: true });
     }
 
@@ -328,13 +353,25 @@ export async function onRequest(context) {
         .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, status = excluded.status, updated_at = datetime('now')")
         .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
         .run();
-      await logActivity({
-        user: auth.user,
-        action: existing ? 'update' : 'entry',
-        entityType: 'transaction',
-        entityId: tx.ref,
-        description: `${existing ? 'Updated' : 'Created'} transaction ${tx.ref}`
-      });
+      let txAction, txDesc;
+      const fmtN = (n) => Number(n || 0).toLocaleString('en-NG');
+      if (!existing) {
+        if (tx.type === 'outright' || tx.status === 'for_sale') {
+          txAction = 'entry'; txDesc = `🏷 Outright purchase — ${tx.ref}: ${tx.fullName} brought in ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — paid ₦${fmtN(tx.cashAdvance)}`;
+        } else {
+          txAction = 'entry'; txDesc = `📋 New loan — ${tx.ref}: ${tx.fullName} — ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtN(tx.cashAdvance)} advance given`;
+        }
+      } else if (tx.status === 'closed') {
+        txAction = 'repaid'; txDesc = `✅ Loan repaid — ${tx.ref}: ${tx.fullName} — ₦${fmtN(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
+      } else if (tx.status === 'sold') {
+        const profit = (tx.salePrice || 0) - (tx.cashAdvance || 0);
+        txAction = 'sold'; txDesc = `💰 Item sold — ${tx.ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtN(tx.salePrice)} (profit ₦${fmtN(profit)})`;
+      } else if (tx.status === 'for_sale') {
+        txAction = 'update'; txDesc = `🏷 Marked for sale — ${tx.ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
+      } else {
+        txAction = 'update'; txDesc = `🔄 Transaction updated — ${tx.ref}`;
+      }
+      await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'PUT') {
@@ -346,7 +383,19 @@ export async function onRequest(context) {
         .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
         .bind(JSON.stringify(tx), tx.status || 'active', ref)
         .run();
-      await logActivity({ user: auth.user, action: 'update', entityType: 'transaction', entityId: ref, description: `Updated transaction ${ref}` });
+      const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
+      let putAction, putDesc;
+      if (tx.status === 'closed') {
+        putAction = 'repaid'; putDesc = `✅ Loan repaid — ${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
+      } else if (tx.status === 'sold') {
+        const profit = (tx.salePrice || 0) - (tx.cashAdvance || 0);
+        putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})`;
+      } else if (tx.status === 'for_sale') {
+        putAction = 'update'; putDesc = `🏷 Marked for sale — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
+      } else {
+        putAction = 'update'; putDesc = `🔄 Transaction updated — ${ref}`;
+      }
+      await logActivity({ user: auth.user, action: putAction, entityType: 'transaction', entityId: ref, description: putDesc });
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'DELETE') {
@@ -354,7 +403,7 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
       await db.prepare('DELETE FROM transactions WHERE ref = ?').bind(ref).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'transaction', entityId: ref, description: `Deleted transaction ${ref}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'transaction', entityId: ref, description: `🗑 Transaction deleted — ${ref}` });
       return json({ success: true });
     }
 
@@ -416,15 +465,16 @@ export async function onRequest(context) {
         .prepare('INSERT INTO expenses (date, category, description, amount) VALUES (?, ?, ?, ?)')
         .bind(date, category, description, amount)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'expense', entityId: String(inserted.meta.last_row_id), description: `Added expense ${category} (${amount})` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'expense', entityId: String(inserted.meta.last_row_id), description: `🧾 Expense recorded — ${category}${description ? ': ' + description : ''} — ₦${Number(amount).toLocaleString('en-NG')}` });
       return json({ success: true });
     }
     if (path.startsWith('expenses/') && method === 'DELETE') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
       const id = Number(path.split('/')[1]);
+      const expRow = await db.prepare('SELECT category, description AS expDesc, amount FROM expenses WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM expenses WHERE id = ?').bind(id).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'expense', entityId: String(id), description: `Deleted expense #${id}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'expense', entityId: String(id), description: `🗑 Expense deleted — ${expRow?.category || ''}${expRow?.expDesc ? ': ' + expRow.expDesc : ''} — ₦${Number(expRow?.amount || 0).toLocaleString('en-NG')}` });
       return json({ success: true });
     }
 
@@ -445,15 +495,16 @@ export async function onRequest(context) {
         .prepare('INSERT INTO capital (name, amount, date, method, receipt, user_id) VALUES (?, ?, ?, ?, ?, ?)')
         .bind(name, amount, date, capitalMethod, receipt || null, user_id || null)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `Added capital by ${name} (${amount})` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `💎 Capital deposited — ${name} contributed ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}` });
       return json({ success: true });
     }
     if (path.startsWith('capital/') && method === 'DELETE') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
       const id = Number(path.split('/')[1]);
+      const capRow = await db.prepare('SELECT name, amount, method FROM capital WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM capital WHERE id = ?').bind(id).run();
-      await logActivity({ user: auth.user, action: 'delete', entityType: 'capital', entityId: String(id), description: `Deleted capital #${id}` });
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'capital', entityId: String(id), description: `🗑 Capital entry removed — ${capRow?.name || ''} ₦${Number(capRow?.amount || 0).toLocaleString('en-NG')} (${capRow?.method || ''})` });
       return json({ success: true });
     }
 
@@ -474,7 +525,7 @@ export async function onRequest(context) {
         .prepare('INSERT INTO declined_log (date, item, reason) VALUES (?, ?, ?)')
         .bind(date, item, reason)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'declined', entityId: String(inserted.meta.last_row_id), description: `Logged declined item: ${item}` });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'declined', entityId: String(inserted.meta.last_row_id), description: `🚫 Item declined — ${item}: ${reason}` });
       return json({ success: true });
     }
 
@@ -484,12 +535,26 @@ export async function onRequest(context) {
     if (path === 'activity-logs' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const limit = Math.max(1, Math.min(500, Number.parseInt(url.searchParams.get('limit') || '200', 10) || 200));
-      const { results } = await db
-        .prepare('SELECT id, created_at, user_id, username, user_role, action, entity_type, entity_id, description FROM activity_logs ORDER BY created_at DESC, id DESC LIMIT ?')
-        .bind(limit)
-        .all();
-      return json(results);
+      const limit = Math.max(1, Math.min(500, Number.parseInt(url.searchParams.get('limit') || '200') || 200));
+      const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0') || 0);
+      const q = (url.searchParams.get('q') || '').trim();
+      const from = url.searchParams.get('from') || '';
+      const to = url.searchParams.get('to') || '';
+      const type = url.searchParams.get('type') || '';
+      const action = url.searchParams.get('action') || '';
+      const sort = url.searchParams.get('sort') === 'asc' ? 'ASC' : 'DESC';
+      const conds = []; const params = [];
+      if (q) { conds.push('(description LIKE ? OR username LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+      if (from) { conds.push("date(created_at) >= date(?)"); params.push(from); }
+      if (to) { conds.push("date(created_at) <= date(?)"); params.push(to); }
+      if (type) { conds.push('entity_type = ?'); params.push(type); }
+      if (action) { conds.push('action = ?'); params.push(action); }
+      const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+      const [countRow, { results }] = await Promise.all([
+        db.prepare(`SELECT COUNT(*) AS total FROM activity_logs ${where}`).bind(...params).first(),
+        db.prepare(`SELECT id, created_at, user_id, username, user_role, action, entity_type, entity_id, description FROM activity_logs ${where} ORDER BY created_at ${sort}, id ${sort} LIMIT ? OFFSET ?`).bind(...params, limit, offset).all(),
+      ]);
+      return json({ logs: results, total: countRow?.total ?? 0, limit, offset });
     }
 
     // ============================================================

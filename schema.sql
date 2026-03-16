@@ -7,8 +7,12 @@ CREATE TABLE IF NOT EXISTS users (
   password    TEXT    NOT NULL,
   role        TEXT    NOT NULL DEFAULT 'user',
   name        TEXT    NOT NULL,
+  active      INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Migration for existing databases:
+-- ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
 
 -- Default admin user
 INSERT OR IGNORE INTO users (id, username, password, role, name)
