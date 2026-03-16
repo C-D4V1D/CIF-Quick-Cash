@@ -73,15 +73,17 @@ export async function onRequest(context) {
 
   const db = env.DB;
 
+  const ACTIVITY_RETENTION_DAYS = 90;
   const logActivity = async ({ user, action, entityType, entityId, description = '' }) => {
     if (!user) return;
     await db
-      .prepare(`
-        INSERT INTO activity_logs (user_id, username, user_role, action, entity_type, entity_id, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `)
+      .prepare('INSERT INTO activity_logs (user_id, username, user_role, action, entity_type, entity_id, description) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .bind(user.id, user.username, user.role, action, entityType, entityId || null, description)
       .run();
+    // Probabilistic cleanup (~10% of writes) — keeps rolling 90-day window without a cron job
+    if (Math.random() < 0.1) {
+      await db.prepare(`DELETE FROM activity_logs WHERE created_at < datetime('now', '-${ACTIVITY_RETENTION_DAYS} days')`).run();
+    }
   };
 
   // Extract R2 keys from all photo fields in a draft/transaction data object.
@@ -512,11 +514,11 @@ export async function onRequest(context) {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const limit = Math.max(1, Math.min(500, Number.parseInt(url.searchParams.get('limit') || '200', 10) || 200));
-      const { results } = await db
-        .prepare('SELECT id, created_at, user_id, username, user_role, action, entity_type, entity_id, description FROM activity_logs ORDER BY created_at DESC, id DESC LIMIT ?')
-        .bind(limit)
-        .all();
-      return json(results);
+      const [{ results }, countRow] = await Promise.all([
+        db.prepare('SELECT id, created_at, user_id, username, user_role, action, entity_type, entity_id, description FROM activity_logs ORDER BY created_at DESC, id DESC LIMIT ?').bind(limit).all(),
+        db.prepare('SELECT COUNT(*) AS total FROM activity_logs').first(),
+      ]);
+      return json({ logs: results, total: countRow?.total ?? 0, retentionDays: ACTIVITY_RETENTION_DAYS, limit });
     }
 
     // ============================================================

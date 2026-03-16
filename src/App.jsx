@@ -1288,6 +1288,7 @@ export default function App() {
   const [capital, setCapital] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
+  const [activityMeta, setActivityMeta] = useState({ total: 0, retentionDays: 90, limit: 300 });
   const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
@@ -1368,7 +1369,7 @@ export default function App() {
     }
 
     const activities = await API.get('activity-logs?limit=300');
-    if (activities) setActivityLogs(activities);
+    if (activities) { setActivityLogs(activities.logs || []); setActivityMeta({ total: activities.total ?? 0, retentionDays: activities.retentionDays ?? 90, limit: activities.limit ?? 300 }); }
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
@@ -1702,7 +1703,12 @@ export default function App() {
         return (
           <div>
             <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>🕘 Activity Log</h2>
-            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px' }}>Full audit trail — every action taken in the system is recorded here.</p>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Full audit trail — every action taken in the system is recorded here. Visible to all staff and stakeholders.</p>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px' }}>
+              <span style={{ fontSize: '12px', padding: '4px 10px', background: COLORS.primaryLight, borderRadius: '20px', color: COLORS.primary, fontWeight: 600 }}>{activityMeta.total.toLocaleString()} total events</span>
+              <span style={{ fontSize: '12px', padding: '4px 10px', background: COLORS.bg, borderRadius: '20px', color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>Showing last {activityLogs.length} of {activityMeta.total}</span>
+              <span style={{ fontSize: '12px', padding: '4px 10px', background: COLORS.bg, borderRadius: '20px', color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>Auto-purged after {activityMeta.retentionDays} days</span>
+            </div>
             {activityLogs.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted }}>No activities recorded yet.</p></div>}
             {dateGroups.map(([dateKey, entries]) => {
               const d = new Date(dateKey);
