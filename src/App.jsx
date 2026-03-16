@@ -99,6 +99,21 @@ const daysBetween = (dateStr) => {
   return Math.max(0, Math.ceil((now - given) / 86400000));
 };
 
+const getForSaleListedDate = (tx) => tx.listedForSaleDate || tx.updated_at || tx.created_at || null;
+
+const getForSaleDaysListed = (tx) => {
+  const listedDate = getForSaleListedDate(tx);
+  if (!listedDate) return null;
+  return daysBetween(listedDate);
+};
+
+const getForSaleDaysBadgeStyle = (days) => {
+  if (days === null || days === undefined) return null;
+  if (days >= 14) return { bg: '#fee2e2', fg: '#b91c1c', border: '#fecaca' };
+  if (days >= 7) return { bg: '#fef3c7', fg: '#92400e', border: '#fde68a' };
+  return { bg: '#dcfce7', fg: '#166534', border: '#86efac' };
+};
+
 const fmtMoney = (n) => {
   if (!n && n !== 0) return '₦0';
   return '₦' + Number(n).toLocaleString();
@@ -1438,8 +1453,13 @@ export default function App() {
   // Save helpers
   const saveSettings = async (s) => { setSettings(s); await API.put('settings', s); };
   const saveTx = async (tx) => {
-    await API.post('transactions', tx);
-    setTransactions(prev => { const i = prev.findIndex(t => t.ref === tx.ref); if (i >= 0) { const n = [...prev]; n[i] = tx; return n; } return [...prev, tx]; });
+    const existing = transactions.find(t => t.ref === tx.ref);
+    const nowIso = new Date().toISOString();
+    const nextTx = tx.status === 'for_sale'
+      ? { ...tx, listedForSaleDate: tx.listedForSaleDate || existing?.listedForSaleDate || nowIso }
+      : tx;
+    await API.post('transactions', nextTx);
+    setTransactions(prev => { const i = prev.findIndex(t => t.ref === nextTx.ref); if (i >= 0) { const n = [...prev]; n[i] = nextTx; return n; } return [...prev, nextTx]; });
   };
 
   // Computed stats
@@ -1630,7 +1650,7 @@ export default function App() {
     const listLoadingNotice = listLoading ? (<div style={{ ...S.alert('info'), marginBottom: '16px' }}>⏳ Transactions and drafts are still loading in the background...</div>) : null;
     if (viewingTx) return <TxDetail tx={viewingTx} />;
 
-    const TxTable = ({ items, showActions = true }) => (<table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th><th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{items.map(tx => (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td><td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && daysBetween(tx.dateGiven) > (tx.loanDays || 30) + 3)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>))}{items.length === 0 && <tr><td style={S.td} colSpan={7}>No records.</td></tr>}</tbody></table>);
+    const TxTable = ({ items, showActions = true, showDaysListed = false }) => (<table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{items.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && daysBetween(tx.dateGiven) > (tx.loanDays || 30) + 3)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={showActions ? (showDaysListed ? 8 : 7) : (showDaysListed ? 7 : 6)}>No records.</td></tr>}</tbody></table>);
 
     switch (page) {
       case 'dashboard': return (<div>{listLoadingNotice}
@@ -1663,7 +1683,7 @@ export default function App() {
         return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
       }
 
-      case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} /></div></div>); }
+      case 'forSale': { const sellable = [...forSaleTxs, ...activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + 3)]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} showDaysListed /></div></div>); }
 
       case 'reports': {
         const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
