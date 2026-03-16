@@ -1457,7 +1457,7 @@ export default function App() {
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
   const totalCapital = capital.reduce((s, c) => s + (c.amount || 0), 0);
-  const availableLendingCapital = totalCapital - totalCapitalOut - totalCapitalInForSaleInventory + Math.min(netProfit, 0);
+  const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory;
 
   const filteredTxs = useMemo(() => {
     if (!searchQuery) return transactions;
