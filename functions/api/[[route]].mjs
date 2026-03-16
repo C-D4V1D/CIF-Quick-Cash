@@ -120,6 +120,18 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // PHOTOS: DELETE /api/photos/:key  (remove from R2)
+    // ============================================================
+    if (path.startsWith('photos/') && method === 'DELETE') {
+      const user = getSessionUser(request);
+      if (!user) return error('Not authenticated', 401);
+      if (!env.PHOTOS) return error('R2 bucket binding missing', 500);
+      const key = decodeURIComponent(path.slice('photos/'.length));
+      await env.PHOTOS.delete(key);
+      return json({ success: true });
+    }
+
+    // ============================================================
     // PHOTOS: POST /api/photos  (upload to R2, returns { url })
     // ============================================================
     if (path === 'photos' && method === 'POST') {
@@ -402,6 +414,14 @@ export async function onRequest(context) {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
+      // Delete photos from R2 before removing the transaction record
+      if (env.PHOTOS) {
+        const row = await db.prepare('SELECT data FROM transactions WHERE ref = ?').bind(ref).first();
+        if (row) {
+          const keys = extractPhotoKeys(JSON.parse(row.data));
+          if (keys.length > 0) await Promise.all(keys.map(k => env.PHOTOS.delete(k)));
+        }
+      }
       await db.prepare('DELETE FROM transactions WHERE ref = ?').bind(ref).run();
       await logActivity({ user: auth.user, action: 'delete', entityType: 'transaction', entityId: ref, description: `🗑 Transaction deleted — ${ref}` });
       return json({ success: true });

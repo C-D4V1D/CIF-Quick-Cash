@@ -359,8 +359,23 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
       {zoomed && (
         <div onClick={() => setZoomed(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000, padding: '16px' }}>
           <div onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', textAlign: 'center' }}>
-            <img src={value} alt={label} style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px', display: 'block' }} />
+            <img
+              src={displaySrc}
+              alt={label}
+              style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px', display: 'block' }}
+              onError={e => { e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='%23dc2626'%3EPhoto unavailable%3C/text%3E%3C/svg%3E"; }}
+            />
             <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+              {displaySrc && <button type="button" style={{ ...S.btn('primary'), border: 'none', cursor: 'pointer' }} onClick={async () => {
+                try {
+                  const resp = await fetch(displaySrc);
+                  const blob = await resp.blob();
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = `photo-${Date.now()}.jpg`; a.click();
+                  URL.revokeObjectURL(url);
+                } catch { /* fall back to direct navigation */ window.open(displaySrc, '_blank'); }
+              }}>⬇ Download</button>}
               <button type="button" style={S.btn('outline')} onClick={() => setZoomed(false)}>✕ Close</button>
             </div>
           </div>
@@ -368,7 +383,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
       )}
       <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : 'pointer' }} onClick={() => { if (uploading) return; displaySrc ? setZoomed(true) : cameraRef.current?.click(); }}>
         {displaySrc
-          ? <img src={displaySrc} style={S.photoImg} alt={label} />
+          ? <img src={displaySrc} style={S.photoImg} alt={label} onError={e => { e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Crect width='120' height='120' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E"; }} />
           : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
         {uploading && (
           <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
@@ -376,7 +391,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
           </div>
         )}
         {displaySrc && !uploading && (
-          <button type="button" onClick={e => { e.stopPropagation(); onChange(null); setPreview(null); }} style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '11px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>✕</button>
+          <button type="button" onClick={e => { e.stopPropagation(); if (value && value.startsWith('/api/photos/')) { API.del(value.slice(5)).catch(() => {}); } onChange(null); setPreview(null); }} style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '11px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>✕</button>
         )}
         <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
         <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
@@ -895,7 +910,7 @@ const WIZARD_STEPS = [
 ];
 
 const EMPTY_TX = {
-  type: 'advance', status: 'active', idType: 'nin', idNumber: '', ninVerified: false, ninVerificationAttempted: false, ninVerificationStatus: 'not_attempted', ninData: null,
+  type: 'advance', status: 'active', idType: 'nin', idNumber: '', ninVerified: false, ninVerificationAttempted: false, ninVerificationStatus: 'not_attempted', ninData: null, ninPhoto: null,
   fullName: '', address: '', phoneNumbers: ['', ''], phonesVerified: [false, false],
   familyName: '', familyPhone: '', familyRelation: '',
   photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null,
@@ -999,7 +1014,15 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
         let rawPhoto = d.photo || d.base64Image || d.picture || d.image;
         if (rawPhoto) {
           if (!rawPhoto.startsWith('data:image')) rawPhoto = `data:image/jpeg;base64,${rawPhoto}`;
-          upd('ninPhoto', rawPhoto);
+          // Upload NIN photo to R2 to avoid bloating the database with base64
+          try {
+            const mimeType = rawPhoto.split(';')[0].split(':')[1] || 'image/jpeg';
+            const photoData = rawPhoto.split(',')[1];
+            const uploadResult = await API.post('photos', { data: photoData, mimeType });
+            upd('ninPhoto', uploadResult?.url || rawPhoto);
+          } catch {
+            upd('ninPhoto', rawPhoto); // fall back to base64 if R2 upload fails
+          }
         }
       } else {
         throw new Error(result?.message || result?.detail || 'Verification failed');
@@ -1577,9 +1600,23 @@ export default function App() {
         }}
       >
         <div onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', textAlign: 'center' }}>
-          <img src={zoomedPhoto} alt="Zoomed transaction" style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px' }} />
+          <img
+            src={zoomedPhoto}
+            alt="Zoomed transaction"
+            style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px' }}
+            onError={e => { e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='%23dc2626'%3EPhoto unavailable%3C/text%3E%3C/svg%3E"; }}
+          />
           <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
-            <a href={zoomedPhoto} download={`transaction-photo-${Date.now()}.jpg`} style={{ ...S.btn('primary'), textDecoration: 'none' }}>⬇ Download</a>
+            <button style={{ ...S.btn('primary'), border: 'none', cursor: 'pointer' }} onClick={async () => {
+              try {
+                const resp = await fetch(zoomedPhoto);
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `transaction-photo-${Date.now()}.jpg`; a.click();
+                URL.revokeObjectURL(url);
+              } catch { window.open(zoomedPhoto, '_blank'); }
+            }}>⬇ Download</button>
             <button style={S.btn('outline')} onClick={() => setZoomedPhoto(null)}>✕ Close</button>
           </div>
         </div>
