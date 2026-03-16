@@ -1288,7 +1288,10 @@ export default function App() {
   const [capital, setCapital] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
-  const [activityMeta, setActivityMeta] = useState({ total: 0, retentionDays: 90, limit: 300 });
+  const [activityMeta, setActivityMeta] = useState({ total: 0, limit: 300 });
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityFilter, setActivityFilter] = useState({ q: '', from: '', to: '', category: '', sort: 'desc' });
+  const [showEditUser, setShowEditUser] = useState(null);
   const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
@@ -1330,6 +1333,32 @@ export default function App() {
   }, []);
 
   // Load critical data first, then hydrate heavy lists in the background.
+  const ACTIVITY_CATS = [
+    { value: '', label: 'All Events', type: '', action: '' },
+    { value: 'loans', label: '📋 New Loans', type: 'transaction', action: 'entry' },
+    { value: 'repayments', label: '✅ Repayments', type: 'transaction', action: 'repaid' },
+    { value: 'sales', label: '💰 Sales', type: 'transaction', action: 'sold' },
+    { value: 'expense', label: '🧾 Expenses', type: 'expense', action: '' },
+    { value: 'capital', label: '💎 Capital', type: 'capital', action: '' },
+    { value: 'auth', label: '🔐 Logins', type: 'auth', action: '' },
+    { value: 'user', label: '👤 User Changes', type: 'user', action: '' },
+    { value: 'settings', label: '⚙️ Settings', type: 'settings', action: '' },
+    { value: 'declined', label: '🚫 Declined', type: 'declined', action: '' },
+  ];
+  const loadActivityLogs = async (filter) => {
+    const f = filter !== undefined ? filter : activityFilter;
+    setActivityLoading(true);
+    const cat = ACTIVITY_CATS.find(c => c.value === f.category) || ACTIVITY_CATS[0];
+    const p = new URLSearchParams({ limit: '300', sort: f.sort || 'desc' });
+    if (f.q && f.q.trim()) p.set('q', f.q.trim());
+    if (f.from) p.set('from', f.from);
+    if (f.to) p.set('to', f.to);
+    if (cat.type) p.set('type', cat.type);
+    if (cat.action) p.set('action', cat.action);
+    const data = await API.get(`activity-logs?${p}`);
+    if (data) { setActivityLogs(data.logs || []); setActivityMeta({ total: data.total ?? 0, limit: data.limit ?? 300 }); }
+    setActivityLoading(false);
+  };
   const loadData = async () => {
     const criticalCache = readCache('cfc_critical');
     const listCache = readCache('cfc_transactions');
@@ -1368,8 +1397,7 @@ export default function App() {
       setUsers(secondary.users || []);
     }
 
-    const activities = await API.get('activity-logs?limit=300');
-    if (activities) { setActivityLogs(activities.logs || []); setActivityMeta({ total: activities.total ?? 0, retentionDays: activities.retentionDays ?? 90, limit: activities.limit ?? 300 }); }
+    await loadActivityLogs();
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
@@ -1677,42 +1705,67 @@ export default function App() {
         const actColor = (a) => {
           if (a.action === 'delete') return COLORS.danger;
           if (a.action === 'repaid' || a.action === 'sold') return COLORS.primary;
+          if (a.action === 'deactivate') return COLORS.danger;
+          if (a.action === 'activate') return COLORS.primary;
           if (a.entity_type === 'transaction' && a.action === 'entry') return '#3b82f6';
           if (a.entity_type === 'expense') return COLORS.warning;
           if (a.entity_type === 'capital') return '#8b5cf6';
           if (a.entity_type === 'auth') return COLORS.textMuted;
           return COLORS.textMuted;
         };
-        const fmtActivityTime = (iso) => {
-          const d = new Date(iso);
-          const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
-          const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-          if (d.toDateString() === today.toDateString()) return `Today ${time}`;
-          if (d.toDateString() === yesterday.toDateString()) return `Yesterday ${time}`;
-          return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() !== today.getFullYear() ? 'numeric' : undefined }) + ' ' + time;
-        };
         const roleColor = (r) => r === 'admin' ? '#c8a84e' : r === 'staff' ? '#10b981' : '#6b7280';
-        // Group by calendar date
-        const grouped = activityLogs.reduce((acc, a) => {
-          const dateKey = new Date(a.created_at).toDateString();
-          if (!acc[dateKey]) acc[dateKey] = [];
-          acc[dateKey].push(a);
-          return acc;
-        }, {});
-        const dateGroups = Object.entries(grouped);
+        const grouped = activityLogs.reduce((acc, a) => { const k = new Date(a.created_at).toDateString(); if (!acc[k]) acc[k] = []; acc[k].push(a); return acc; }, {});
+        const applyFilters = () => loadActivityLogs(activityFilter);
+        const setF = (patch) => setActivityFilter(prev => ({ ...prev, ...patch }));
+        const todayStr = new Date().toISOString().split('T')[0];
         return (
           <div>
             <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>🕘 Activity Log</h2>
-            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Full audit trail — every action taken in the system is recorded here. Visible to all staff and stakeholders.</p>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px' }}>
-              <span style={{ fontSize: '12px', padding: '4px 10px', background: COLORS.primaryLight, borderRadius: '20px', color: COLORS.primary, fontWeight: 600 }}>{activityMeta.total.toLocaleString()} total events</span>
-              <span style={{ fontSize: '12px', padding: '4px 10px', background: COLORS.bg, borderRadius: '20px', color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>Showing last {activityLogs.length} of {activityMeta.total}</span>
-              <span style={{ fontSize: '12px', padding: '4px 10px', background: COLORS.bg, borderRadius: '20px', color: COLORS.textMuted, border: `1px solid ${COLORS.border}` }}>Auto-purged after {activityMeta.retentionDays} days</span>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Full audit trail — every action is permanently recorded. Visible to all roles.</p>
+            {/* Filter bar */}
+            <div style={{ ...S.card, marginBottom: '16px', padding: '14px' }}>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div style={{ flex: '2 1 200px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>SEARCH</div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <input style={{ ...S.input, margin: 0 }} value={activityFilter.q} placeholder="Search descriptions, usernames…"
+                      onChange={e => setF({ q: e.target.value })}
+                      onKeyDown={e => e.key === 'Enter' && applyFilters()} />
+                  </div>
+                </div>
+                <div style={{ flex: '1 1 140px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>CATEGORY</div>
+                  <select style={S.select} value={activityFilter.category} onChange={e => setF({ category: e.target.value })}>
+                    {ACTIVITY_CATS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: '1 1 130px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>FROM DATE</div>
+                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.from} max={activityFilter.to || todayStr} onChange={e => setF({ from: e.target.value })} />
+                </div>
+                <div style={{ flex: '1 1 130px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>TO DATE</div>
+                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.to} min={activityFilter.from} max={todayStr} onChange={e => setF({ to: e.target.value })} />
+                </div>
+                <div style={{ flex: '1 1 120px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>SORT</div>
+                  <select style={S.select} value={activityFilter.sort} onChange={e => setF({ sort: e.target.value })}>
+                    <option value="desc">Newest first</option>
+                    <option value="asc">Oldest first</option>
+                  </select>
+                </div>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-end', paddingBottom: '1px' }}>
+                  <button style={S.btn('primary')} onClick={applyFilters}>Search</button>
+                  <button style={S.btn('outline')} onClick={() => { const reset = { q: '', from: '', to: '', category: '', sort: 'desc' }; setActivityFilter(reset); loadActivityLogs(reset); }}>Clear</button>
+                </div>
+              </div>
+              <div style={{ marginTop: '10px', fontSize: '12px', color: COLORS.textMuted }}>
+                {activityLoading ? 'Loading…' : <>{activityLogs.length.toLocaleString()} result{activityLogs.length !== 1 ? 's' : ''} shown · {activityMeta.total.toLocaleString()} total events in database</>}
+              </div>
             </div>
-            {activityLogs.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted }}>No activities recorded yet.</p></div>}
-            {dateGroups.map(([dateKey, entries]) => {
-              const d = new Date(dateKey);
-              const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+            {activityLogs.length === 0 && !activityLoading && <div style={S.card}><p style={{ color: COLORS.textMuted }}>No matching events found.</p></div>}
+            {Object.entries(grouped).map(([dateKey, entries]) => {
+              const d = new Date(dateKey); const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
               const label = d.toDateString() === today.toDateString() ? 'Today' : d.toDateString() === yesterday.toDateString() ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
               return (
                 <div key={dateKey} style={{ marginBottom: '24px' }}>
@@ -1720,7 +1773,7 @@ export default function App() {
                   <div style={{ ...S.card, padding: 0, overflow: 'hidden' }}>
                     {entries.map((a, i) => (
                       <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px 16px', borderBottom: i < entries.length - 1 ? `1px solid ${COLORS.border}` : 'none', borderLeft: `3px solid ${actColor(a)}` }}>
-                        <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '76px' }}>
+                        <div style={{ flexShrink: 0, minWidth: '54px' }}>
                           <div style={{ fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'nowrap' }}>{new Date(a.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
@@ -1742,7 +1795,7 @@ export default function App() {
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div><div style={S.card}><div style={S.cardTitle}>🪪 Identity Verification Rules</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div><Field label="Require API-verified NIN/BVN to proceed"><label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} /><span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span></label></Field></div></div>);
 
-      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => (<tr key={u.id}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}>{u.id !== 'admin' && <button style={S.btnSm('danger')} onClick={async () => { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); }}>Remove</button>}</td></tr>))}</tbody></table></div></div>);
+      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add User</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => setShowEditUser(u)}>Edit</button><button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
 
       default: return <Navigate to="/dashboard" replace />;
     }
@@ -1809,6 +1862,31 @@ export default function App() {
 
   const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button></Modal>; };
 
+  const EditUserModal = () => {
+    const u = showEditUser;
+    const [username, setUsername] = useState(u?.username || '');
+    const [password, setPassword] = useState('');
+    const [showPwd, setShowPwd] = useState(false);
+    if (!u) return null;
+    const handleSave = async () => {
+      const payload = {};
+      if (username.trim() && username.trim() !== u.username) payload.username = username.trim();
+      if (password.trim()) payload.password = password.trim();
+      if (!Object.keys(payload).length) { setShowEditUser(null); return; }
+      setUsers(prev => prev.map(x => x.id === u.id ? { ...x, ...(payload.username ? { username: payload.username } : {}) } : x));
+      setShowEditUser(null);
+      await API.put(`users/${u.id}`, payload);
+      loadData(); loadActivityLogs();
+    };
+    return (
+      <Modal open={!!showEditUser} onClose={() => setShowEditUser(null)} title={`Edit Account — ${u.name}`}>
+        <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Leave a field blank to keep it unchanged.</div>
+        <Field label="New Username"><input style={S.input} value={username} onChange={e => setUsername(e.target.value)} placeholder={u.username} autoComplete="off" /></Field>
+        <Field label="New Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="Leave blank to keep current" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
+        <button style={S.btn('primary')} onClick={handleSave}>Save Changes</button>
+      </Modal>
+    );
+  };
   const UsrModal = () => { const [usr, setUsr] = useState({ name: '', username: '', password: '', role: 'staff' }); const [showUsrPassword, setShowUsrPassword] = useState(false); return <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User"><div style={S.grid2}><Field label="Name"><input style={S.input} value={usr.name} onChange={e => setUsr({ ...usr, name: e.target.value })} /></Field><Field label="Username"><input style={S.input} value={usr.username} onChange={e => setUsr({ ...usr, username: e.target.value })} /></Field><Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showUsrPassword ? 'text' : 'password'} value={usr.password} onChange={e => setUsr({ ...usr, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setShowUsrPassword(v => !v)}>{showUsrPassword ? '🙈 Hide' : '👁 Show'}</button></div></Field><Field label="Role"><select style={S.select} value={usr.role} onChange={e => setUsr({ ...usr, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field></div><button style={S.btn('primary')} onClick={async () => { const newId = `u-${Date.now()}`; setUsers(prev => [...prev, { ...usr, id: newId, created_at: new Date().toISOString() }]); setShowAddUser(false); await API.post('users', { ...usr, id: newId }); loadData(); }}>Add</button></Modal>; };
 
   const navAction = (item) => {
@@ -1894,7 +1972,7 @@ export default function App() {
         </div>
       )}
 
-      <ExpModal /><CapModal /><DecModal /><UsrModal />
+      <ExpModal /><CapModal /><DecModal /><UsrModal /><EditUserModal />
       <Modal open={!!repayingTx} onClose={() => setRepayingTx(null)} title="Record Repayment">{repayingTx && <RepaymentModal tx={repayingTx} settings={settings} onClose={() => setRepayingTx(null)} onSave={async (tx) => { await saveTx(tx); setRepayingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!sellingTx} onClose={() => setSellingTx(null)} title="Record Sale" wide>{sellingTx && <SaleModal tx={sellingTx} settings={settings} onClose={() => setSellingTx(null)} onSave={async (tx) => { await saveTx(tx); setSellingTx(null); loadData(); }} />}</Modal>
       <style>{`

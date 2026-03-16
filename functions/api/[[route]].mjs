@@ -73,17 +73,12 @@ export async function onRequest(context) {
 
   const db = env.DB;
 
-  const ACTIVITY_RETENTION_DAYS = 90;
   const logActivity = async ({ user, action, entityType, entityId, description = '' }) => {
     if (!user) return;
     await db
       .prepare('INSERT INTO activity_logs (user_id, username, user_role, action, entity_type, entity_id, description) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .bind(user.id, user.username, user.role, action, entityType, entityId || null, description)
       .run();
-    // Probabilistic cleanup (~10% of writes) — keeps rolling 90-day window without a cron job
-    if (Math.random() < 0.1) {
-      await db.prepare(`DELETE FROM activity_logs WHERE created_at < datetime('now', '-${ACTIVITY_RETENTION_DAYS} days')`).run();
-    }
   };
 
   // Extract R2 keys from all photo fields in a draft/transaction data object.
@@ -146,10 +141,11 @@ export async function onRequest(context) {
     if (path === 'login' && method === 'POST') {
       const { username, password, rememberMe } = await request.json();
       const user = await db
-        .prepare('SELECT id, username, role, name FROM users WHERE username = ? AND password = ?')
+        .prepare('SELECT id, username, role, name, active FROM users WHERE username = ? AND password = ?')
         .bind(username, password)
         .first();
       if (!user) return error('Invalid username or password', 401);
+      if (user.active === 0) return error('This account has been disabled. Contact the administrator.', 403);
 
       const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, name: user.name, issuedAt: Date.now() });
       const activeCookie = rememberMe
@@ -200,7 +196,7 @@ export async function onRequest(context) {
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
-            ? db.prepare('SELECT id, username, role, name, created_at FROM users ORDER BY created_at').all()
+            ? db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] })
         ]);
 
@@ -267,7 +263,7 @@ export async function onRequest(context) {
     if (path === 'users' && method === 'GET') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, username, role, name, created_at FROM users ORDER BY created_at').all();
+      const { results } = await db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY created_at').all();
       return json(results);
     }
     if (path === 'users' && method === 'POST') {
@@ -289,6 +285,27 @@ export async function onRequest(context) {
       const targetUser = await db.prepare('SELECT username, name, role FROM users WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
       await logActivity({ user: auth.user, action: 'delete', entityType: 'user', entityId: id, description: `👤 User account removed: ${targetUser?.name || ''} (@${targetUser?.username || id}) — was ${targetUser?.role || ''}` });
+      return json({ success: true });
+    }
+    if (path.startsWith('users/') && method === 'PUT') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
+      const id = path.split('/')[1];
+      if (id === 'admin') return error('Cannot modify the admin account');
+      const { username, password, active } = await request.json();
+      const cur = await db.prepare('SELECT username, name, role, active FROM users WHERE id = ?').bind(id).first();
+      if (!cur) return error('User not found', 404);
+      const setClauses = []; const setParams = [];
+      if (username !== undefined && username.trim() && username.trim() !== cur.username) { setClauses.push('username = ?'); setParams.push(username.trim()); }
+      if (password !== undefined && password.trim()) { setClauses.push('password = ?'); setParams.push(password.trim()); }
+      if (active !== undefined && Number(active) !== Number(cur.active ?? 1)) { setClauses.push('active = ?'); setParams.push(active ? 1 : 0); }
+      if (setClauses.length) await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, id).run();
+      if (username !== undefined && username.trim() && username.trim() !== cur.username)
+        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `👤 Username changed: ${cur.name} — @${cur.username} → @${username.trim()}` });
+      if (password !== undefined && password.trim())
+        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `🔑 Password changed for ${cur.name} (@${cur.username})` });
+      if (active !== undefined && Number(active) !== Number(cur.active ?? 1))
+        await logActivity({ user: auth.user, action: active ? 'activate' : 'deactivate', entityType: 'user', entityId: id, description: `${active ? '✅' : '🔒'} User account ${active ? 'activated' : 'deactivated'}: ${cur.name} (@${cur.username})` });
       return json({ success: true });
     }
 
@@ -513,12 +530,26 @@ export async function onRequest(context) {
     if (path === 'activity-logs' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const limit = Math.max(1, Math.min(500, Number.parseInt(url.searchParams.get('limit') || '200', 10) || 200));
-      const [{ results }, countRow] = await Promise.all([
-        db.prepare('SELECT id, created_at, user_id, username, user_role, action, entity_type, entity_id, description FROM activity_logs ORDER BY created_at DESC, id DESC LIMIT ?').bind(limit).all(),
-        db.prepare('SELECT COUNT(*) AS total FROM activity_logs').first(),
+      const limit = Math.max(1, Math.min(500, Number.parseInt(url.searchParams.get('limit') || '200') || 200));
+      const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0') || 0);
+      const q = (url.searchParams.get('q') || '').trim();
+      const from = url.searchParams.get('from') || '';
+      const to = url.searchParams.get('to') || '';
+      const type = url.searchParams.get('type') || '';
+      const action = url.searchParams.get('action') || '';
+      const sort = url.searchParams.get('sort') === 'asc' ? 'ASC' : 'DESC';
+      const conds = []; const params = [];
+      if (q) { conds.push('(description LIKE ? OR username LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
+      if (from) { conds.push("date(created_at) >= date(?)"); params.push(from); }
+      if (to) { conds.push("date(created_at) <= date(?)"); params.push(to); }
+      if (type) { conds.push('entity_type = ?'); params.push(type); }
+      if (action) { conds.push('action = ?'); params.push(action); }
+      const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+      const [countRow, { results }] = await Promise.all([
+        db.prepare(`SELECT COUNT(*) AS total FROM activity_logs ${where}`).bind(...params).first(),
+        db.prepare(`SELECT id, created_at, user_id, username, user_role, action, entity_type, entity_id, description FROM activity_logs ${where} ORDER BY created_at ${sort}, id ${sort} LIMIT ? OFFSET ?`).bind(...params, limit, offset).all(),
       ]);
-      return json({ logs: results, total: countRow?.total ?? 0, retentionDays: ACTIVITY_RETENTION_DAYS, limit });
+      return json({ logs: results, total: countRow?.total ?? 0, limit, offset });
     }
 
     // ============================================================
