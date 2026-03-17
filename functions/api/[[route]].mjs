@@ -214,22 +214,28 @@ export async function onRequest(context) {
       const role = url.searchParams.get('role') || '';
 
       if (scope === 'secondary') {
-        const [expensesRes, capitalRes, declinedRes, usersRes, distributionsRes] = await Promise.all([
+        const [expensesRes, capitalRes, declinedRes, usersRes] = await Promise.all([
           db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all(),
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
             ? db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] }),
-          db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all(),
         ]);
+
+        // Query distributions separately — table may not exist on older deployments
+        let distributionsResults = [];
+        try {
+          const distributionsRes = await db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all();
+          distributionsResults = distributionsRes.results;
+        } catch (_) { /* table not yet migrated — return empty */ }
 
         return json({
           expenses: expensesRes.results,
           capital: capitalRes.results,
           declined: declinedRes.results,
-          users: usersRes.results.map(u => ({ ...u, roles: parseRoles(u.roles) })),
-          distributions: distributionsRes.results,
+      users: usersRes.results.map(u => ({ ...u, roles: parseRoles(u.roles) })),
+      distributions: distributionsResults,
         });
       }
 
@@ -564,8 +570,10 @@ export async function onRequest(context) {
     if (path === 'distributions' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all();
-      return json(results);
+      try {
+        const { results } = await db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all();
+        return json(results);
+      } catch (_) { return json([]); }
     }
     if (path === 'distributions' && method === 'POST') {
       const auth = requireAuth(request);

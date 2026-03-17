@@ -2290,7 +2290,7 @@ export default function App() {
                       {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { setDistributions(prev => prev.filter(x => x.id !== d.id)); await API.del(`distributions/${d.id}`); loadData(); } }}>Del</button></td>}
                     </tr>
                   ))}
-                  {distributions.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 7 : 6} style={{ color: COLORS.textMuted }}>No distributions recorded yet.</td></tr>}
+                  {distributions.length === 0 && <tr><td style={{ ...S.td, color: COLORS.textMuted }} colSpan={isAdmin ? 7 : 6}>No distributions recorded yet.</td></tr>}
                 </tbody>
               </table>
               <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total distributed: {fmtMoney(totalDistributions)}</div>
