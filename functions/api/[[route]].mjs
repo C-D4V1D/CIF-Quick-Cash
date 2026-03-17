@@ -15,6 +15,11 @@ const json = (data, status = 200, extraHeaders = {}) => {
 
 const error = (msg, status = 400) => json({ error: msg }, status);
 
+// Parse the JSON roles column safely — returns an array (never throws)
+const parseRoles = (rolesJson) => {
+  try { return JSON.parse(rolesJson || '[]'); } catch { return []; }
+};
+
 const parseCookies = (cookieHeader = '') => Object.fromEntries(
   cookieHeader
     .split(';')
@@ -164,7 +169,7 @@ export async function onRequest(context) {
       if (!user) return error('Invalid username or password', 401);
       if (user.active === 0) return error('This account has been disabled. Contact the administrator.', 403);
 
-      const parsedRoles = (() => { try { return JSON.parse(user.roles || '[]'); } catch { return []; } })();
+      const parsedRoles = parseRoles(user.roles);
       const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, issuedAt: Date.now() });
       const activeCookie = rememberMe
         ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
@@ -223,7 +228,7 @@ export async function onRequest(context) {
           expenses: expensesRes.results,
           capital: capitalRes.results,
           declined: declinedRes.results,
-          users: usersRes.results.map(u => ({ ...u, roles: (() => { try { return JSON.parse(u.roles || '[]'); } catch { return []; } })() })),
+          users: usersRes.results.map(u => ({ ...u, roles: parseRoles(u.roles) })),
           distributions: distributionsRes.results,
         });
       }
@@ -284,7 +289,7 @@ export async function onRequest(context) {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all();
-      return json(results.map(u => ({ ...u, roles: (() => { try { return JSON.parse(u.roles || '[]'); } catch { return []; } })() })));
+      return json(results.map(u => ({ ...u, roles: parseRoles(u.roles) })));
     }
     if (path === 'users' && method === 'POST') {
       const auth = requireAdmin(request);
@@ -329,7 +334,7 @@ export async function onRequest(context) {
       if (active !== undefined && Number(active) !== Number(cur.active ?? 1))
         await logActivity({ user: auth.user, action: active ? 'activate' : 'deactivate', entityType: 'user', entityId: id, description: `${active ? '✅' : '🔒'} User account ${active ? 'activated' : 'deactivated'}: ${cur.name} (@${cur.username})` });
       if (roles !== undefined && Array.isArray(roles)) {
-        const curRoles = (() => { try { return JSON.parse(cur.roles || '[]'); } catch { return []; } })();
+        const curRoles = parseRoles(cur.roles);
         const added = roles.filter(r => !curRoles.includes(r));
         const removed = curRoles.filter(r => !roles.includes(r));
         if (added.length || removed.length)
