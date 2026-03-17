@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
+import { printMonthReport } from './PrintMonthReport.jsx';
 
 // --- MOBILE DETECTION HOOK ---
 const useMobile = () => {
@@ -1834,17 +1835,78 @@ export default function App() {
           return acc;
         }, {});
         const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` };
+        const rStakeholders = Object.values(capital.reduce((acc, c) => {
+          const key = c.name.toLowerCase();
+          if (!acc[key]) acc[key] = { name: c.name, total: 0 };
+          acc[key].total += (c.amount || 0);
+          return acc;
+        }, {})).map(s => {
+          const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
+          return { ...s, pct, share: Math.floor(rStakeholder * pct / 100) };
+        });
+        const handlePrintReport = () => printMonthReport({
+          monthName: MONTH_NAMES[reportMonth - 1], year: reportYear,
+          rClosed, rSold, rNewTxs, rExpenses,
+          rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
+          rExpTotal, rProfit, rFabian, rStakeholder,
+          rCapitalDeployed, rCapitalReturned,
+          serviceFee: settings.serviceFee || 1000,
+          stakeholders: rStakeholders,
+          expByCategory,
+        });
+        const handleExportCSV = () => {
+          const csvEscape = (v) => {
+            const s = String(v == null ? '' : v);
+            return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+          };
+          const toCSV = (headers, rows) => [headers, ...rows].map(r => r.map(csvEscape).join(',')).join('\n');
+          const sections = [
+            `MONTHLY REPORT — ${MONTH_NAMES[reportMonth - 1]} ${reportYear}`,
+            '',
+            'FINANCIAL SUMMARY',
+            `Revenue,${rRevenue}`,
+            `Expenses,${rExpTotal}`,
+            `Net Profit,${rProfit}`,
+            `Fabian (10%),${rFabian}`,
+            `Stakeholders,${rStakeholder}`,
+            '',
+            'REPAYMENTS',
+            toCSV(['Ref','Customer','Cash Advanced','Fees Collected','Date Repaid'],
+              rClosed.map(t => [t.ref, t.fullName, t.cashAdvance, t.totalFees, t.dateRepaid || t.updated_at])),
+            '',
+            'SALES',
+            toCSV(['Ref','Item','Cash Advanced','Sale Price','Margin','Buyer','Date'],
+              rSold.map(t => [t.ref, t.aiBrand || t.description, t.cashAdvance, t.salePrice, (t.salePrice||0)-(t.cashAdvance||0), t.saleBuyer, t.saleDate || t.updated_at])),
+            '',
+            'NEW LOANS',
+            toCSV(['Ref','Customer','Cash Advanced','Service Fee','Loan Term (days)','Date','Status'],
+              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, settings.serviceFee || 1000, t.loanDays || 30, t.created_at, t.status])),
+            '',
+            'EXPENSES',
+            toCSV(['Date','Category','Description','Amount'],
+              rExpenses.map(e => [e.date, e.category, e.description || e.note, e.amount])),
+          ];
+          const blob = new Blob([sections.join('\n')], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `report-${MONTH_NAMES[reportMonth - 1]}-${reportYear}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        };
         return (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📈 Monthly Report</h2>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                 <select value={reportMonth} onChange={e => setReportMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
                   {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
                 </select>
                 <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
                   {years.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
+                <button style={S.btn('outline')} onClick={handleExportCSV}>⬇ CSV</button>
+                <button style={S.btn('primary')} onClick={handlePrintReport}>🖨 Print / PDF</button>
               </div>
             </div>
 
@@ -1884,20 +1946,12 @@ export default function App() {
             </div>
             <div style={S.card}>
               <div style={S.cardTitle}>📊 Stakeholder Distribution</div>
-              {Object.values(capital.reduce((acc, c) => {
-                const key = c.name.toLowerCase();
-                if (!acc[key]) acc[key] = { name: c.name, total: 0 };
-                acc[key].total += (c.amount || 0);
-                return acc;
-              }, {})).map(s => {
-                const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
-                return (
-                  <div key={s.name} style={rowStyle}>
-                    <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span>
-                    <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(Math.floor(rStakeholder * pct / 100))}</strong>
-                  </div>
-                );
-              })}
+              {rStakeholders.map(s => (
+                <div key={s.name} style={rowStyle}>
+                  <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({s.pct.toFixed(1)}%)</span>
+                  <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(s.share)}</strong>
+                </div>
+              ))}
               {capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}
             </div>
 
