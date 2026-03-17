@@ -183,6 +183,7 @@ const DEFAULT_SETTINGS = {
 
 const PAGE_PATHS = {
   dashboard: '/dashboard',
+  newTransaction: '/transactions/new',
   transactions: '/transactions',
   active: '/loans/active',
   deadlines: '/alerts',
@@ -197,6 +198,8 @@ const PAGE_PATHS = {
 };
 
 const PAGE_FROM_PATH = Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]) => [v, k]));
+
+const ACTIVITY_PAGE_SIZE = 50;
 
 // ============================================================
 // GEMINI AI INTEGRATION
@@ -1430,7 +1433,7 @@ export default function App() {
   const [distributions, setDistributions] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
-  const [activityMeta, setActivityMeta] = useState({ total: 0, limit: 50, offset: 0 });
+  const [activityMeta, setActivityMeta] = useState({ total: 0, limit: ACTIVITY_PAGE_SIZE, offset: 0 });
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityFilter, setActivityFilter] = useState({ q: '', from: '', to: '', category: '', sort: 'desc' });
   const [showEditUser, setShowEditUser] = useState(null);
@@ -1495,7 +1498,6 @@ export default function App() {
     { value: 'settings', label: '⚙️ Settings', type: 'settings', action: '' },
     { value: 'declined', label: '🚫 Declined', type: 'declined', action: '' },
   ];
-  const ACTIVITY_PAGE_SIZE = 50;
   const loadActivityLogs = async (filter, offset = 0, append = false) => {
     const f = filter !== undefined ? filter : activityFilter;
     setActivityLoading(true);
@@ -1557,18 +1559,12 @@ export default function App() {
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
 
-  // Reset transaction table page when navigating to a different section
-  useEffect(() => { setTxPage(1); }, [location.pathname]);
-
-  // Reset transaction table page when search query changes
-  useEffect(() => { setTxPage(1); }, [searchQuery]);
-
-  // Clamp txPage to valid range when the transaction list reloads
-  useEffect(() => { setTxPage(1); }, [listLoading]);
+  // Reset transaction table to page 1 when route, search, or list data changes
+  useEffect(() => { setTxPage(1); }, [location.pathname, searchQuery, listLoading]);
 
   // Auto-open wizard when navigating directly to /transactions/new
   useEffect(() => {
-    if (currentUser && location.pathname === '/transactions/new' && editingTx === null) {
+    if (currentUser && location.pathname === PAGE_PATHS.newTransaction && editingTx === null) {
       setEditingTx('new');
     }
   }, [currentUser, location.pathname]);
@@ -1656,7 +1652,7 @@ export default function App() {
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: PAGE_PATHS.dashboard, roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'newTx', label: 'New Transaction', icon: '➕', path: '/transactions/new', roles: ['staff', 'admin'] },
+    { id: 'newTx', label: 'New Transaction', icon: '➕', path: PAGE_PATHS.newTransaction, roles: ['staff', 'admin'] },
     { id: 'transactions', label: 'All Transactions', icon: '📋', path: PAGE_PATHS.transactions, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'active', label: 'Active Loans', icon: '⏳', path: PAGE_PATHS.active, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'deadlines', label: 'Deadlines & Alerts', icon: '🔔', path: PAGE_PATHS.deadlines, roles: ['staff', 'admin'] },
@@ -1844,7 +1840,7 @@ export default function App() {
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={S.cardTitle}>Recent Transactions</div><TxTable items={transactions.slice(0, 10)} /></div>
-        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate('/transactions/new'); }}>Resume</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
+        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
       </div>);
 
       case 'transactions': return (<div>{listLoadingNotice}
@@ -2625,7 +2621,7 @@ export default function App() {
     setSidebarOpen(false);
     if (item.id === 'newTx') {
       setEditingTx('new');
-      navigate('/transactions/new');
+      navigate(PAGE_PATHS.newTransaction);
     } else {
       navigate(item.path);
       setViewingTx(null);
