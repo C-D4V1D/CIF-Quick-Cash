@@ -1817,13 +1817,23 @@ export default function App() {
         const rSold = soldTxs.filter(t => inPeriod(t.saleDate || t.updated_at));
         const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
         const rExpenses = expenses.filter(e => inPeriod(e.date));
-        const rRevenue = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0)
-          + rSold.reduce((s, t) => s + (t.salePrice || 0), 0)
-          + rNewTxs.length * (settings.serviceFee || 1000);
+        const rRepaymentFees = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0);
+        const rSalesRevenue = rSold.reduce((s, t) => s + (t.salePrice || 0), 0);
+        const rServiceFees = rNewTxs.length * (settings.serviceFee || 1000);
+        const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
         const rFabian = Math.floor(rProfit * 0.10);
         const rStakeholder = rProfit - rFabian;
+        const rCapitalDeployed = rNewTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const rCapitalReturned = rClosed.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const expByCategory = rExpenses.reduce((acc, e) => {
+          const cat = e.category || 'Other';
+          if (!acc[cat]) acc[cat] = 0;
+          acc[cat] += (e.amount || 0);
+          return acc;
+        }, {});
+        const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` };
         return (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
@@ -1837,20 +1847,43 @@ export default function App() {
                 </select>
               </div>
             </div>
-            <div style={{ marginBottom: '8px', fontSize: '13px', color: COLORS.textMuted }}>
-              Showing: <strong>{MONTH_NAMES[reportMonth - 1]} {reportYear}</strong> — {rClosed.length} repayment{rClosed.length !== 1 ? 's' : ''}, {rSold.length} sale{rSold.length !== 1 ? 's' : ''}, {rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''}, {rExpenses.length} expense{rExpenses.length !== 1 ? 's' : ''}
+
+            {/* Activity counts */}
+            <div style={{ ...S.grid4, marginBottom: '20px' }}>
+              <div style={S.stat}><div style={S.statLabel}>New Loans</div><div style={S.statValue}>{rNewTxs.length}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Repayments</div><div style={S.statValue}>{rClosed.length}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Sales</div><div style={S.statValue}>{rSold.length}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={S.statValue}>{rExpenses.length}</div></div>
             </div>
-            <div style={S.grid3}>
-              <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
-              <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
-              <div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+
+            {/* Financial summary */}
+            <div style={S.card}>
+              <div style={S.cardTitle}>💰 Financial Summary</div>
+              <div style={S.grid3}>
+                <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
+                <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
+                <div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+              </div>
+              <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Revenue Breakdown</div>
+                <div style={rowStyle}><span>Repayment fees ({rClosed.length} loan{rClosed.length !== 1 ? 's' : ''})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rRepaymentFees)}</strong></div>
+                <div style={rowStyle}><span>Sales proceeds ({rSold.length} item{rSold.length !== 1 ? 's' : ''})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rSalesRevenue)}</strong></div>
+                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Service fees ({rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''} × {fmtMoney(settings.serviceFee || 1000)})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rServiceFees)}</strong></div>
+              </div>
+              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Capital Flow</div>
+                <div style={rowStyle}><span>Capital deployed (new loans)</span><strong style={{ color: COLORS.danger }}>{fmtMoney(rCapitalDeployed)}</strong></div>
+                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Capital returned (repayments)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rCapitalReturned)}</strong></div>
+              </div>
             </div>
+
+            {/* Profit distribution */}
             <div style={S.grid2}>
               <div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rFabian)}</div></div>
               <div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
             </div>
             <div style={S.card}>
-              <div style={S.cardTitle}>Distribution</div>
+              <div style={S.cardTitle}>📊 Stakeholder Distribution</div>
               {Object.values(capital.reduce((acc, c) => {
                 const key = c.name.toLowerCase();
                 if (!acc[key]) acc[key] = { name: c.name, total: 0 };
@@ -1859,7 +1892,7 @@ export default function App() {
               }, {})).map(s => {
                 const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
                 return (
-                  <div key={s.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                  <div key={s.name} style={rowStyle}>
                     <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span>
                     <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(Math.floor(rStakeholder * pct / 100))}</strong>
                   </div>
@@ -1867,6 +1900,156 @@ export default function App() {
               })}
               {capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}
             </div>
+
+            {/* Repayments detail */}
+            {rClosed.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>✅ Repayments ({rClosed.length})</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Ref</th>
+                        <th style={S.th}>Customer</th>
+                        <th style={S.th}>Cash Advanced</th>
+                        <th style={S.th}>Fees Collected</th>
+                        <th style={S.th}>Date Repaid</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rClosed.map(t => (
+                        <tr key={t.ref}>
+                          <td style={S.td}><strong>{t.ref}</strong></td>
+                          <td style={S.td}>{t.fullName || '—'}</td>
+                          <td style={S.td}>{fmtMoney(t.cashAdvance)}</td>
+                          <td style={{ ...S.td, color: COLORS.primary, fontWeight: 700 }}>{fmtMoney(t.totalFees)}</td>
+                          <td style={S.td}>{fmtDate(t.dateRepaid || t.updated_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Sales detail */}
+            {rSold.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>🏷 Sales ({rSold.length})</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Ref</th>
+                        <th style={S.th}>Item</th>
+                        <th style={S.th}>Cash Advanced</th>
+                        <th style={S.th}>Sale Price</th>
+                        <th style={S.th}>Margin</th>
+                        <th style={S.th}>Buyer</th>
+                        <th style={S.th}>Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rSold.map(t => {
+                        const margin = (t.salePrice || 0) - (t.cashAdvance || 0);
+                        return (
+                          <tr key={t.ref}>
+                            <td style={S.td}><strong>{t.ref}</strong></td>
+                            <td style={S.td}>{t.aiBrand || t.description || '—'}</td>
+                            <td style={S.td}>{fmtMoney(t.cashAdvance)}</td>
+                            <td style={{ ...S.td, fontWeight: 700 }}>{fmtMoney(t.salePrice)}</td>
+                            <td style={{ ...S.td, color: margin >= 0 ? COLORS.primary : COLORS.danger, fontWeight: 700 }}>{fmtMoney(margin)}</td>
+                            <td style={S.td}>{t.saleBuyer || '—'}</td>
+                            <td style={S.td}>{fmtDate(t.saleDate || t.updated_at)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* New loans detail */}
+            {rNewTxs.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>📋 New Loans ({rNewTxs.length})</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Ref</th>
+                        <th style={S.th}>Customer</th>
+                        <th style={S.th}>Cash Advanced</th>
+                        <th style={S.th}>Service Fee</th>
+                        <th style={S.th}>Loan Term</th>
+                        <th style={S.th}>Date</th>
+                        <th style={S.th}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rNewTxs.map(t => (
+                        <tr key={t.ref}>
+                          <td style={S.td}><strong>{t.ref}</strong></td>
+                          <td style={S.td}>{t.fullName || '—'}</td>
+                          <td style={{ ...S.td, fontWeight: 700 }}>{fmtMoney(t.cashAdvance)}</td>
+                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(settings.serviceFee || 1000)}</td>
+                          <td style={S.td}>{t.loanDays || 30} days</td>
+                          <td style={S.td}>{fmtDate(t.created_at)}</td>
+                          <td style={S.td}><span style={{ fontSize: '12px', fontWeight: 600, color: statusColor(t) }}>{statusLabel(t)}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Expenses detail */}
+            {rExpenses.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>🧾 Expenses ({rExpenses.length}) — {fmtMoney(rExpTotal)}</div>
+                {Object.keys(expByCategory).length > 1 && (
+                  <div style={{ marginBottom: '16px', paddingBottom: '12px', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>By Category</div>
+                    {Object.entries(expByCategory).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
+                      <div key={cat} style={rowStyle}>
+                        <span>{cat}</span>
+                        <strong style={{ color: COLORS.danger }}>{fmtMoney(amt)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Date</th>
+                        <th style={S.th}>Category</th>
+                        <th style={S.th}>Description</th>
+                        <th style={S.th}>Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rExpenses.sort((a, b) => new Date(b.date) - new Date(a.date)).map((e, i) => (
+                        <tr key={i}>
+                          <td style={S.td}>{fmtDate(e.date)}</td>
+                          <td style={S.td}>{e.category || '—'}</td>
+                          <td style={S.td}>{e.description || e.note || '—'}</td>
+                          <td style={{ ...S.td, color: COLORS.danger, fontWeight: 700 }}>{fmtMoney(e.amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {rClosed.length === 0 && rSold.length === 0 && rNewTxs.length === 0 && rExpenses.length === 0 && (
+              <div style={{ ...S.card, textAlign: 'center', color: COLORS.textMuted }}>
+                No activity recorded for {MONTH_NAMES[reportMonth - 1]} {reportYear}.
+              </div>
+            )}
           </div>
         );
       }
