@@ -153,18 +153,19 @@ export async function onRequest(context) {
     if (path === 'login' && method === 'POST') {
       const { username, password, rememberMe } = await request.json();
       let user = await db
-        .prepare('SELECT id, username, role, name, active FROM users WHERE username = ? AND password = ?')
+        .prepare('SELECT id, username, role, roles, name, active FROM users WHERE username = ? AND password = ?')
         .bind(username, password)
         .first()
         .catch(() =>
-          // Fallback for databases where the `active` migration hasn't run yet
+          // Fallback for databases where the `active`/`roles` migration hasn't run yet
           db.prepare('SELECT id, username, role, name FROM users WHERE username = ? AND password = ?')
-            .bind(username, password).first().then(u => u ? { ...u, active: 1 } : null)
+            .bind(username, password).first().then(u => u ? { ...u, active: 1, roles: '[]' } : null)
         );
       if (!user) return error('Invalid username or password', 401);
       if (user.active === 0) return error('This account has been disabled. Contact the administrator.', 403);
 
-      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, name: user.name, issuedAt: Date.now() });
+      const parsedRoles = (() => { try { return JSON.parse(user.roles || '[]'); } catch { return []; } })();
+      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, issuedAt: Date.now() });
       const activeCookie = rememberMe
         ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
         : buildSessionCookie(SESSION_COOKIE_SHORT, sessionPayload);
@@ -213,7 +214,7 @@ export async function onRequest(context) {
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
-            ? db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY created_at').all()
+            ? db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] }),
           db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all(),
         ]);
@@ -222,7 +223,7 @@ export async function onRequest(context) {
           expenses: expensesRes.results,
           capital: capitalRes.results,
           declined: declinedRes.results,
-          users: usersRes.results,
+          users: usersRes.results.map(u => ({ ...u, roles: (() => { try { return JSON.parse(u.roles || '[]'); } catch { return []; } })() })),
           distributions: distributionsRes.results,
         });
       }
@@ -282,16 +283,17 @@ export async function onRequest(context) {
     if (path === 'users' && method === 'GET') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY created_at').all();
-      return json(results);
+      const { results } = await db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all();
+      return json(results.map(u => ({ ...u, roles: (() => { try { return JSON.parse(u.roles || '[]'); } catch { return []; } })() })));
     }
     if (path === 'users' && method === 'POST') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
-      const { id, username, password, role, name } = await request.json();
+      const { id, username, password, role, name, roles } = await request.json();
+      const rolesJson = JSON.stringify(Array.isArray(roles) ? roles : []);
       await db
-        .prepare('INSERT INTO users (id, username, password, role, name) VALUES (?, ?, ?, ?, ?)')
-        .bind(id, username, password, role, name)
+        .prepare('INSERT INTO users (id, username, password, role, roles, name) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(id, username, password, role, rolesJson, name)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `👤 New ${role} account created: ${name} (@${username})` });
       return json({ success: true });
@@ -311,13 +313,14 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const id = path.split('/')[1];
       if (id === 'admin') return error('Cannot modify the admin account');
-      const { username, password, active } = await request.json();
-      const cur = await db.prepare('SELECT username, name, role, active FROM users WHERE id = ?').bind(id).first();
+      const { username, password, active, roles } = await request.json();
+      const cur = await db.prepare('SELECT username, name, role, roles, active FROM users WHERE id = ?').bind(id).first();
       if (!cur) return error('User not found', 404);
       const setClauses = []; const setParams = [];
       if (username !== undefined && username.trim() && username.trim() !== cur.username) { setClauses.push('username = ?'); setParams.push(username.trim()); }
       if (password !== undefined && password.trim()) { setClauses.push('password = ?'); setParams.push(password.trim()); }
       if (active !== undefined && Number(active) !== Number(cur.active ?? 1)) { setClauses.push('active = ?'); setParams.push(active ? 1 : 0); }
+      if (roles !== undefined && Array.isArray(roles)) { setClauses.push('roles = ?'); setParams.push(JSON.stringify(roles)); }
       if (setClauses.length) await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, id).run();
       if (username !== undefined && username.trim() && username.trim() !== cur.username)
         await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `👤 Username changed: ${cur.name} — @${cur.username} → @${username.trim()}` });
@@ -325,6 +328,13 @@ export async function onRequest(context) {
         await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `🔑 Password changed for ${cur.name} (@${cur.username})` });
       if (active !== undefined && Number(active) !== Number(cur.active ?? 1))
         await logActivity({ user: auth.user, action: active ? 'activate' : 'deactivate', entityType: 'user', entityId: id, description: `${active ? '✅' : '🔒'} User account ${active ? 'activated' : 'deactivated'}: ${cur.name} (@${cur.username})` });
+      if (roles !== undefined && Array.isArray(roles)) {
+        const curRoles = (() => { try { return JSON.parse(cur.roles || '[]'); } catch { return []; } })();
+        const added = roles.filter(r => !curRoles.includes(r));
+        const removed = curRoles.filter(r => !roles.includes(r));
+        if (added.length || removed.length)
+          await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `🎭 Roles updated for ${cur.name} (@${cur.username})${added.length ? ` — granted: ${added.join(', ')}` : ''}${removed.length ? ` — revoked: ${removed.join(', ')}` : ''}` });
+      }
       return json({ success: true });
     }
 
