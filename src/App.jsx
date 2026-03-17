@@ -1414,6 +1414,7 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [capital, setCapital] = useState([]);
+  const [distributions, setDistributions] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
   const [activityMeta, setActivityMeta] = useState({ total: 0, limit: 300 });
@@ -1434,6 +1435,7 @@ export default function App() {
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showAddCapital, setShowAddCapital] = useState(false);
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
+  const [showAddDistribution, setShowAddDistribution] = useState(false);
   const [expandedCapital, setExpandedCapital] = useState(new Set());
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
@@ -1526,6 +1528,7 @@ export default function App() {
     if (secondary) {
       setExpenses(secondary.expenses || []);
       setCapital(secondary.capital || []);
+      setDistributions(secondary.distributions || []);
       setDeclinedLog(secondary.declined || []);
       setUsers(secondary.users || []);
     }
@@ -1575,7 +1578,8 @@ export default function App() {
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
   const totalCapital = capital.reduce((s, c) => s + (c.amount || 0), 0);
-  const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory;
+  const totalDistributions = distributions.reduce((s, d) => s + (d.amount || 0), 0);
+  const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory - totalDistributions;
 
   const filteredTxs = useMemo(() => {
     if (!searchQuery) return transactions;
@@ -2143,7 +2147,7 @@ export default function App() {
               <div style={{ padding: '0 16px 16px 16px', borderTop: `1px solid ${COLORS.border}` }}>
                 {[
                   ['Revenue', 'All the money the business received in this period — from loan fees, sales, and service charges combined.'],
-                  ['Expenses', 'Money that was spent to run the business, such as rent, airtime, transport, or other costs.'],
+                  ['Expenses', 'Money that was spent to run the business, such as stationery, printing, airtime, transport, or other running costs.'],
                   ['Net Profit', 'Revenue minus Expenses. This is what the business actually earned after paying all costs.'],
                   ['Cash Advanced', 'The amount of money given to a customer when they bring in an item. This is the loan amount.'],
                   ['Repayment Fees', 'The daily holding charges that are collected when a customer pays back and collects their item.'],
@@ -2179,13 +2183,29 @@ export default function App() {
           return acc;
         }, {}));
         const toggleExpand = (name) => setExpandedCapital(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
+        const capRowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 0', borderBottom: `1px solid ${COLORS.border}`, fontSize: '13px' };
         return (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>💎 Capital</h2>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>💎 Capital & Distributions</h2>
               {isAdmin && <button style={S.btn('primary')} onClick={() => { setCapitalTopUpFor(null); setShowAddCapital(true); }}>+ Add Stakeholder</button>}
             </div>
+
+            {/* Available for Lending */}
+            <div style={{ ...S.card, borderLeft: `4px solid ${availableLendingCapital >= 0 ? COLORS.primary : COLORS.danger}`, marginBottom: '16px' }}>
+              <div style={S.cardTitle}>💰 Available for Lending</div>
+              <div style={{ fontSize: '28px', fontWeight: 800, color: availableLendingCapital >= 0 ? COLORS.primary : COLORS.danger, marginBottom: '16px' }}>{fmtMoney(availableLendingCapital)}</div>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>How this is calculated</div>
+              <div style={capRowStyle}><span>Total capital invested</span><strong>+ {fmtMoney(totalCapital)}</strong></div>
+              <div style={capRowStyle}><span>All-time profit (revenue − expenses)</span><strong style={{ color: netProfit >= 0 ? COLORS.primary : COLORS.danger }}>+ {fmtMoney(netProfit)}</strong></div>
+              <div style={capRowStyle}><span>Money out on active loans</span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalOut)}</strong></div>
+              <div style={capRowStyle}><span>Capital in for-sale inventory</span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalInForSaleInventory)}</strong></div>
+              <div style={{ ...capRowStyle, borderBottom: 'none' }}><span>Profit already distributed to stakeholders</span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalDistributions)}</strong></div>
+            </div>
+
+            {/* Capital table */}
             <div style={S.card}>
+              <div style={S.cardTitle}>📥 Stakeholder Capital</div>
               <table style={S.table}>
                 <thead><tr><th style={S.th}>Name</th><th style={S.th}>Total Capital</th><th style={S.th}>Share %</th><th style={S.th}>History</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead>
                 <tbody>
@@ -2231,7 +2251,46 @@ export default function App() {
                   {capByName.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}
                 </tbody>
               </table>
-              <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px', fontWeight: 700 }}>Total: {fmtMoney(totalCapital)}</div>
+              <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px', fontWeight: 700 }}>Total capital invested: {fmtMoney(totalCapital)}</div>
+            </div>
+
+            {/* Profit Distributions */}
+            <div style={S.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <div style={S.cardTitle}>💸 Profit Distributions</div>
+                {isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDistribution(true)}>+ Record Distribution</button>}
+              </div>
+              <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+                Every time profit is paid out to stakeholders, Fabian records it here. All stakeholders can see this record.
+              </p>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Date</th>
+                    <th style={S.th}>Amount</th>
+                    <th style={S.th}>Method</th>
+                    <th style={S.th}>Note</th>
+                    <th style={S.th}>Recorded By</th>
+                    <th style={S.th}>Receipt</th>
+                    {isAdmin && <th style={S.th}></th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {distributions.map((d, i) => (
+                    <tr key={i}>
+                      <td style={S.td}>{fmtDate(d.date)}</td>
+                      <td style={S.td}><strong style={{ color: COLORS.danger }}>{fmtMoney(d.amount)}</strong></td>
+                      <td style={S.td}>{d.method}</td>
+                      <td style={S.td}>{d.note || <span style={{ color: COLORS.textMuted }}>—</span>}</td>
+                      <td style={S.td}><span style={{ fontSize: '12px', color: COLORS.textMuted }}>{d.created_by || '—'}</span></td>
+                      <td style={S.td}>{d.receipt ? <a href={d.receipt} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.primary, fontWeight: 600 }}>View</a> : <span style={{ color: COLORS.textMuted }}>—</span>}</td>
+                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { setDistributions(prev => prev.filter(x => x.id !== d.id)); await API.del(`distributions/${d.id}`); loadData(); } }}>Del</button></td>}
+                    </tr>
+                  ))}
+                  {distributions.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 7 : 6} style={{ color: COLORS.textMuted }}>No distributions recorded yet.</td></tr>}
+                </tbody>
+              </table>
+              <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total distributed: {fmtMoney(totalDistributions)}</div>
             </div>
           </div>
         );
@@ -2400,6 +2459,47 @@ export default function App() {
     );
   };
 
+  const DistModal = () => {
+    const today = new Date().toISOString().split('T')[0];
+    const [dist, setDist] = useState({ date: today, amount: '', method: '', note: '', receipt: '' });
+    const handleSave = async () => {
+      const amount = Number(dist.amount) || 0;
+      if (!amount || !dist.date || !dist.method) return;
+      const entry = { date: dist.date, amount, method: dist.method, note: dist.note.trim(), receipt: dist.receipt };
+      setDistributions(prev => [{ ...entry, id: Date.now(), created_by: currentUser?.name || currentUser?.username || '', created_at: new Date().toISOString() }, ...prev]);
+      setShowAddDistribution(false);
+      await API.post('distributions', entry);
+      loadData();
+    };
+    return (
+      <Modal open={showAddDistribution} onClose={() => setShowAddDistribution(false)} title="Record Profit Distribution">
+        <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 12px', background: COLORS.primaryLight, borderRadius: '8px' }}>
+          Record a payment made to stakeholders from the business profit. This will be deducted from the available lending capital.
+        </div>
+        <div style={S.grid2}>
+          <Field label="Date"><input style={S.input} type="date" value={dist.date} onChange={e => setDist({ ...dist, date: e.target.value })} /></Field>
+          <Field label="Total Amount Distributed (₦)"><input style={S.input} type="number" value={dist.amount} placeholder="0" onChange={e => setDist({ ...dist, amount: e.target.value })} /></Field>
+          <Field label="Payment Method" style={{ gridColumn: '1 / -1' }}>
+            <select style={S.select} value={dist.method} onChange={e => setDist({ ...dist, method: e.target.value })}>
+              <option value="">— Select method —</option>
+              <option value="Cash">Cash</option>
+              <option value="Bank Transfer">Bank Transfer</option>
+              <option value="Mobile Transfer (Opay/Palmpay)">Mobile Transfer (Opay/Palmpay)</option>
+              <option value="Cheque">Cheque</option>
+            </select>
+          </Field>
+          <Field label="Note (optional)" style={{ gridColumn: '1 / -1' }}>
+            <textarea style={S.textarea} value={dist.note} placeholder="e.g. Q1 2026 profit share, Month of January…" onChange={e => setDist({ ...dist, note: e.target.value })} rows={2} />
+          </Field>
+        </div>
+        <Field label="Receipt / Proof of Payment (optional)">
+          <PhotoUpload label="Receipt" value={dist.receipt} onChange={v => setDist({ ...dist, receipt: v })} size={120} />
+        </Field>
+        <button style={S.btn('primary')} onClick={handleSave}>Save Distribution</button>
+      </Modal>
+    );
+  };
+
   const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button></Modal>; };
 
   const EditUserModal = () => {
@@ -2512,7 +2612,7 @@ export default function App() {
         </div>
       )}
 
-      <ExpModal /><CapModal /><DecModal /><UsrModal /><EditUserModal />
+      <ExpModal /><CapModal /><DistModal /><DecModal /><UsrModal /><EditUserModal />
       <Modal open={!!repayingTx} onClose={() => setRepayingTx(null)} title="Record Repayment">{repayingTx && <RepaymentModal tx={repayingTx} settings={settings} onClose={() => setRepayingTx(null)} onSave={async (tx) => { await saveTx(tx); setRepayingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!sellingTx} onClose={() => setSellingTx(null)} title="Record Sale" wide>{sellingTx && <SaleModal tx={sellingTx} settings={settings} onClose={() => setSellingTx(null)} onSave={async (tx) => { await saveTx(tx); setSellingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); setViewingTx(tx); }} />}</Modal>

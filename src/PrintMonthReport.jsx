@@ -416,7 +416,7 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
 
   ${[
     ['Revenue', 'All the money the business received in this period — from loan fees, sales, and service charges combined. Think of it as the total money that came in through the door.'],
-    ['Expenses', 'Money that was spent to run the business, such as rent, airtime, transport, or stationery. These are the costs of keeping the business going.'],
+    ['Expenses', 'Money that was spent to run the business, such as stationery, printing, airtime, transport, or other running costs. These are the costs of keeping the business going.'],
     ['Net Profit', 'Revenue minus Expenses. This is what the business truly earned after paying all its costs. It is the "real" money made.'],
     ['Cash Advanced', 'The amount of money given to a customer when they bring in an item as collateral. This is the loan amount the customer receives on the spot.'],
     ['Repayment Fees', 'The daily holding and service charges that a customer pays when they come back to collect their item. These fees are how the business earns from loans.'],

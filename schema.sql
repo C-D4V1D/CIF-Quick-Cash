@@ -74,6 +74,23 @@ CREATE TABLE IF NOT EXISTS declined_log (
 
 CREATE INDEX IF NOT EXISTS idx_declined_log_date ON declined_log (date DESC);
 
+CREATE TABLE IF NOT EXISTS profit_distributions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  date        TEXT    NOT NULL,
+  amount      REAL    NOT NULL,
+  method      TEXT    NOT NULL,
+  note        TEXT,
+  receipt     TEXT,
+  created_by  TEXT,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_profit_distributions_date ON profit_distributions (date DESC);
+
+-- Migration for existing databases (run once against live D1):
+-- CREATE TABLE IF NOT EXISTS profit_distributions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, amount REAL NOT NULL, method TEXT NOT NULL, note TEXT, receipt TEXT, created_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+-- CREATE INDEX IF NOT EXISTS idx_profit_distributions_date ON profit_distributions (date DESC);
+
 CREATE TABLE IF NOT EXISTS activity_logs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at  TEXT    NOT NULL DEFAULT (datetime('now')),

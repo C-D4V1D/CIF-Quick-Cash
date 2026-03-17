@@ -208,20 +208,22 @@ export async function onRequest(context) {
       const role = url.searchParams.get('role') || '';
 
       if (scope === 'secondary') {
-        const [expensesRes, capitalRes, declinedRes, usersRes] = await Promise.all([
+        const [expensesRes, capitalRes, declinedRes, usersRes, distributionsRes] = await Promise.all([
           db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all(),
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
             ? db.prepare('SELECT id, username, role, name, active, created_at FROM users ORDER BY created_at').all()
-            : Promise.resolve({ results: [] })
+            : Promise.resolve({ results: [] }),
+          db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all(),
         ]);
 
         return json({
           expenses: expensesRes.results,
           capital: capitalRes.results,
           declined: declinedRes.results,
-          users: usersRes.results
+          users: usersRes.results,
+          distributions: distributionsRes.results,
         });
       }
 
@@ -538,6 +540,40 @@ export async function onRequest(context) {
       const capRow = await db.prepare('SELECT name, amount, method FROM capital WHERE id = ?').bind(id).first();
       await db.prepare('DELETE FROM capital WHERE id = ?').bind(id).run();
       await logActivity({ user: auth.user, action: 'delete', entityType: 'capital', entityId: String(id), description: `🗑 Capital entry removed — ${capRow?.name || ''} ₦${Number(capRow?.amount || 0).toLocaleString('en-NG')} (${capRow?.method || ''})` });
+      return json({ success: true });
+    }
+
+    // ============================================================
+    // PROFIT DISTRIBUTIONS: GET, POST /api/distributions
+    // ============================================================
+    if (path === 'distributions' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { results } = await db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all();
+      return json(results);
+    }
+    if (path === 'distributions' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { date, amount, method: distMethod, note, receipt } = await request.json();
+      const inserted = await db
+        .prepare('INSERT INTO profit_distributions (date, amount, method, note, receipt, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(date, amount, distMethod, note || null, receipt || null, auth.user.name || auth.user.username)
+        .run();
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'distribution', entityId: String(inserted.meta.last_row_id), description: `💸 Profit distributed — ₦${Number(amount).toLocaleString('en-NG')} via ${distMethod}${note ? ' (' + note + ')' : ''}` });
+      return json({ success: true });
+    }
+    if (path.startsWith('distributions/') && method === 'DELETE') {
+      const auth = requireAdmin(request);
+      if (auth.error) return auth.error;
+      const id = Number(path.split('/')[1]);
+      const row = await db.prepare('SELECT amount, method FROM profit_distributions WHERE id = ?').bind(id).first();
+      if (row?.receipt && env.PHOTOS) {
+        const key = row.receipt.replace('/api/photos/', '');
+        if (key && !key.startsWith('http')) await env.PHOTOS.delete(key).catch(() => {});
+      }
+      await db.prepare('DELETE FROM profit_distributions WHERE id = ?').bind(id).run();
+      await logActivity({ user: auth.user, action: 'delete', entityType: 'distribution', entityId: String(id), description: `🗑 Distribution record removed — ₦${Number(row?.amount || 0).toLocaleString('en-NG')} via ${row?.method || ''}` });
       return json({ success: true });
     }
 
