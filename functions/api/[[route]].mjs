@@ -491,12 +491,19 @@ export async function onRequest(context) {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
-      // Delete photos from R2 before removing the draft record
+      // Delete photos from R2 before removing the draft record — but ONLY if no
+      // completed transaction with this ref exists.  When a draft is converted to
+      // a transaction the transaction is saved first, then this endpoint is called;
+      // deleting the photos at that point would make them unavailable in the
+      // transaction detail view.
       if (env.PHOTOS) {
-        const row = await db.prepare('SELECT data FROM drafts WHERE ref = ?').bind(ref).first();
-        if (row) {
-          const keys = extractPhotoKeys(JSON.parse(row.data));
-          if (keys.length > 0) await Promise.all(keys.map(k => env.PHOTOS.delete(k)));
+        const txExists = await db.prepare('SELECT 1 FROM transactions WHERE ref = ?').bind(ref).first();
+        if (!txExists) {
+          const row = await db.prepare('SELECT data FROM drafts WHERE ref = ?').bind(ref).first();
+          if (row) {
+            const keys = extractPhotoKeys(JSON.parse(row.data));
+            if (keys.length > 0) await Promise.all(keys.map(k => env.PHOTOS.delete(k)));
+          }
         }
       }
       await db.prepare('DELETE FROM drafts WHERE ref = ?').bind(ref).run();

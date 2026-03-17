@@ -365,11 +365,17 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
     }
     setPreview(base64); // instant local preview
     setUploading(true);
+    // Capture the old URL so we can delete it from R2 after the new upload succeeds.
+    const oldValue = value;
     try {
       const mimeType = base64.split(';')[0].split(':')[1];
       const data = base64.split(',')[1];
       const result = await API.post('photos', { data, mimeType });
       if (result?.url) {
+        // Delete the previous R2 photo now that a new one is safely uploaded.
+        if (oldValue && oldValue.startsWith('/api/photos/')) {
+          API.del(oldValue.slice(5)).catch(err => console.error('Failed to delete old photo from R2:', err));
+        }
         onChange(result.url); // store only the URL in tx state
         setPreview(null);
       } else {
@@ -395,7 +401,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
               src={displaySrc}
               alt={label}
               style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px', display: 'block' }}
-              onError={e => { e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='%23dc2626'%3EPhoto unavailable%3C/text%3E%3C/svg%3E"; }}
+              onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='%23dc2626'%3EPhoto unavailable%3C/text%3E%3C/svg%3E"; }}
             />
             <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
               {displaySrc && <button type="button" style={{ ...S.btn('primary'), border: 'none', cursor: 'pointer' }} onClick={async () => {
@@ -415,7 +421,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
       )}
       <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : 'pointer' }} onClick={() => { if (uploading) return; displaySrc ? setZoomed(true) : cameraRef.current?.click(); }}>
         {displaySrc
-          ? <img src={displaySrc} style={S.photoImg} alt={label} onError={e => { e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Crect width='120' height='120' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E"; }} />
+          ? <img src={displaySrc} style={S.photoImg} alt={label} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Crect width='120' height='120' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E"; }} />
           : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
         {uploading && (
           <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
@@ -1722,6 +1728,7 @@ export default function App() {
                 alt={`Transaction photo ${i + 1}`}
                 style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }}
                 onError={e => {
+                  e.currentTarget.onerror = null;
                   e.currentTarget.style.background = '#fee2e2';
                   e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E";
                 }}
@@ -1779,7 +1786,7 @@ export default function App() {
             src={zoomedPhoto}
             alt="Zoomed transaction"
             style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px' }}
-            onError={e => { e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='%23dc2626'%3EPhoto unavailable%3C/text%3E%3C/svg%3E"; }}
+            onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='%23dc2626'%3EPhoto unavailable%3C/text%3E%3C/svg%3E"; }}
           />
           <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
             <button style={{ ...S.btn('primary'), border: 'none', cursor: 'pointer' }} onClick={async () => {
