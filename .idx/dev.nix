@@ -5,8 +5,9 @@
   ];
   idx = {
     extensions = [
-      "svelte.svelte-vscode"
-      "vue.volar"
+      "dbaeumer.vscode-eslint"
+      "dsznajder.es7-react-js-snippets"
+      "esbenp.prettier-vscode"
     ];
     previews = {
       enable = true;
