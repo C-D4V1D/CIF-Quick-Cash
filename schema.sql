@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
   username    TEXT    NOT NULL UNIQUE,
   password    TEXT    NOT NULL,
   role        TEXT    NOT NULL DEFAULT 'user',
+  roles       TEXT    NOT NULL DEFAULT '[]',  -- JSON array of additional roles, e.g. '["stakeholder"]'
   name        TEXT    NOT NULL,
   active      INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Migration for existing databases:
 -- ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+-- ALTER TABLE users ADD COLUMN roles TEXT NOT NULL DEFAULT '[]';
 
 -- Default admin user
 INSERT OR IGNORE INTO users (id, username, password, role, name)

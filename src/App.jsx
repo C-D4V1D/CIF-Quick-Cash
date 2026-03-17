@@ -151,6 +151,9 @@ const statusLabel = (tx) => {
   return `Active — Day ${days}`;
 };
 
+// Check whether a user holds a given role (primary or additional)
+const hasRole = (u, r) => u?.role === r || (u?.roles || []).includes(r);
+
 // --- DEFAULT DATA ---
 const DEFAULT_SETTINGS = {
   businessName: 'Christ-in-Fabian Quick Cash',
@@ -1618,8 +1621,8 @@ export default function App() {
     </div>
   );
 
-  const isStaff = currentUser.role === 'staff' || currentUser.role === 'admin';
-  const isAdmin = currentUser.role === 'admin';
+  const isStaff = hasRole(currentUser, 'staff') || hasRole(currentUser, 'admin');
+  const isAdmin = hasRole(currentUser, 'admin');
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: PAGE_PATHS.dashboard, roles: ['staff', 'admin', 'stakeholder'] },
@@ -1635,7 +1638,7 @@ export default function App() {
     { id: 'activity', label: 'Activity Log', icon: '🕘', path: PAGE_PATHS.activity, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'settings', label: 'Settings', icon: '⚙', path: PAGE_PATHS.settings, roles: ['admin'] },
     { id: 'users', label: 'Users', icon: '👥', path: PAGE_PATHS.users, roles: ['admin'] },
-  ].filter(n => n.roles.includes(currentUser.role));
+  ].filter(n => n.roles.some(r => hasRole(currentUser, r)));
 
   // Render transaction detail
   const TxDetail = ({ tx }) => (<div>
@@ -2394,7 +2397,7 @@ export default function App() {
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div><div style={S.card}><div style={S.cardTitle}>🪪 Identity Verification Rules</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div><Field label="Require API-verified NIN/BVN to proceed"><label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} /><span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span></label></Field></div></div>);
 
-      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add User</button></div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Role</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => setShowEditUser(u)}>Edit</button><button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
+      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add User</button></div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 14px', background: COLORS.primaryLight, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>A user can hold multiple roles — for example, a staff member can also be a stakeholder. Use the <strong>Grant/Revoke Stakeholder</strong> button below to manage this without needing two accounts.</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Roles</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; const extraRoles = u.roles || []; const isAlsoStakeholder = u.role !== 'stakeholder' && extraRoles.includes('stakeholder'); const canToggleStakeholder = u.role !== 'admin' && u.role !== 'stakeholder'; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span>{extraRoles.map(r => <span key={r} style={S.badge('#8b5cf6')}>{r}</span>)}</div></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => setShowEditUser(u)}>Edit</button>{canToggleStakeholder && <button style={S.btnSm(isAlsoStakeholder ? 'danger' : 'primary')} onClick={async () => { const newRoles = isAlsoStakeholder ? extraRoles.filter(r => r !== 'stakeholder') : [...extraRoles, 'stakeholder']; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, roles: newRoles } : x)); await API.put(`users/${u.id}`, { roles: newRoles }); loadData(); }}>{isAlsoStakeholder ? '− Revoke Stakeholder' : '+ Grant Stakeholder'}</button>}<button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
 
       default: return <Navigate to="/dashboard" replace />;
     }
@@ -2406,21 +2409,35 @@ export default function App() {
   const CapModal = () => {
     const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: new Date().toISOString().split('T')[0], method: '', receipt: '', username: '', password: '' });
     const [showPwd, setShowPwd] = useState(false);
+    const [accountMode, setAccountMode] = useState('none'); // 'none' | 'existing' | 'new'
+    const [selectedUserId, setSelectedUserId] = useState('');
     const isTopUp = !!capitalTopUpFor;
     const existingNames = [...new Set(capital.map(c => c.name))];
     const linkedEntry = isTopUp ? capital.find(c => c.name.toLowerCase() === capitalTopUpFor.toLowerCase()) : null;
     const linkedUserId = linkedEntry?.user_id || null;
     const linkedUser = linkedUserId ? users.find(u => u.id === linkedUserId) : null;
+    const availableUsers = users.filter(u => u.id !== 'admin');
     const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); };
     const handleSave = async () => {
       const amount = Number(cap.amount) || 0;
       if (!cap.name.trim() || !amount || !cap.date || !cap.method.trim()) return;
       let userId = linkedUserId;
-      if (!isTopUp && cap.username.trim() && cap.password.trim()) {
-        userId = `u-${Date.now()}`;
-        const newUser = { id: userId, name: cap.name.trim(), username: cap.username.trim(), password: cap.password.trim(), role: 'stakeholder' };
-        setUsers(prev => [...prev, { ...newUser, created_at: new Date().toISOString() }]);
-        await API.post('users', newUser);
+      if (!isTopUp) {
+        if (accountMode === 'existing' && selectedUserId) {
+          userId = selectedUserId;
+          // Grant stakeholder role to the linked user if they don't have it yet
+          const existingUser = users.find(u => u.id === selectedUserId);
+          if (existingUser && !hasRole(existingUser, 'stakeholder')) {
+            const newRoles = [...(existingUser.roles || []), 'stakeholder'];
+            setUsers(prev => prev.map(x => x.id === selectedUserId ? { ...x, roles: newRoles } : x));
+            await API.put(`users/${selectedUserId}`, { roles: newRoles });
+          }
+        } else if (accountMode === 'new' && cap.username.trim() && cap.password.trim()) {
+          userId = `u-${Date.now()}`;
+          const newUser = { id: userId, name: cap.name.trim(), username: cap.username.trim(), password: cap.password.trim(), role: 'stakeholder' };
+          setUsers(prev => [...prev, { ...newUser, roles: [], created_at: new Date().toISOString() }]);
+          await API.post('users', newUser);
+        }
       }
       const capEntry = { name: cap.name.trim(), amount, date: cap.date, method: cap.method.trim(), receipt: cap.receipt, user_id: userId };
       setCapital(prev => [...prev, { ...capEntry, id: Date.now() }]);
@@ -2445,12 +2462,29 @@ export default function App() {
         </div>
         {!isTopUp && (
           <div style={{ margin: '16px 0 8px', padding: '14px', background: COLORS.primaryLight, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Stakeholder Login Account (optional)</div>
-            <div style={S.grid2}>
-              <Field label="Username"><input style={S.input} value={cap.username} onChange={e => setCap({ ...cap, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
-              <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={cap.password} onChange={e => setCap({ ...cap, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
-            </div>
-            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '6px' }}>If provided, this stakeholder will be able to log in and view their capital and profit share.</div>
+            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Login Account</div>
+            <Field label="Account type">
+              <select style={S.select} value={accountMode} onChange={e => { setAccountMode(e.target.value); setSelectedUserId(''); }}>
+                <option value="none">No account — stakeholder without login</option>
+                <option value="existing">Link to existing user (e.g. staff who is also a stakeholder)</option>
+                <option value="new">Create new stakeholder account</option>
+              </select>
+            </Field>
+            {accountMode === 'existing' && (
+              <Field label="Select User">
+                <select style={S.select} value={selectedUserId} onChange={e => { setSelectedUserId(e.target.value); const u = availableUsers.find(x => x.id === e.target.value); if (u && !cap.name.trim()) setCap(prev => ({ ...prev, name: u.name })); }}>
+                  <option value="">— Select a user —</option>
+                  {availableUsers.map(u => <option key={u.id} value={u.id}>{u.name} (@{u.username}) — {u.role}{(u.roles || []).length ? ` + ${u.roles.join(', ')}` : ''}</option>)}
+                </select>
+                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>The stakeholder role will be automatically granted to this user so they can view capital &amp; profits.</div>
+              </Field>
+            )}
+            {accountMode === 'new' && (
+              <div style={S.grid2}>
+                <Field label="Username"><input style={S.input} value={cap.username} onChange={e => setCap({ ...cap, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
+                <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={cap.password} onChange={e => setCap({ ...cap, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
+              </div>
+            )}
           </div>
         )}
         <Field label="Transfer Receipt (optional)"><PhotoUpload label="Receipt" value={cap.receipt} onChange={v => setCap({ ...cap, receipt: v })} size={120} /></Field>
@@ -2553,7 +2587,7 @@ export default function App() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
-          <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}</span>
+          <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}{(currentUser.roles || []).length > 0 ? ` + ${(currentUser.roles || []).join(', ')}` : ''}</span>
           <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); clearAuthCache(); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
         </div>
       </div>
