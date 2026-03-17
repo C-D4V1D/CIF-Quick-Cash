@@ -931,17 +931,98 @@ function LoginScreen({ onLogin }) {
 }
 
 // ============================================================
-// TRANSACTION WIZARD (same 11-step flow, saves to database)
+// SCREENING STEP COMPONENT
 // ============================================================
+const DURATION_OPTIONS = ['Less than 6 months', '6–12 months', '1–2 years', '2–5 years', '5+ years', 'Other'];
+const PURCHASE_LOCATION_OPTIONS = ['Phone shop / electronics store', 'Online (Jumia / Jiji / Konga)', 'Open market', 'Gift / received as present', 'Employer / workplace', 'Other'];
+const OTHERS_USING_OPTIONS = ['No — only me', 'Yes — family member(s)', 'Yes — multiple people / shared', 'Yes — business / work use', 'Other'];
+
+function ScreeningStep({ tx, upd, onRedFlagExit }) {
+  const showDurationOther = tx.screeningDuration === 'Other';
+  const showLocationOther = tx.screeningPurchaseLocation === 'Other';
+
+  return (
+    <div>
+      <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>❓ Screening Questions</h3>
+      <div style={S.alert('info')}>📋 Ask these questions calmly and select the closest answer from the dropdown. If anything feels wrong, tick the Red Flag box.</div>
+
+      <Field label="How long have you had this item?" required>
+        <select style={S.select} value={tx.screeningDuration} onChange={e => { upd('screeningDuration', e.target.value); if (e.target.value !== 'Other') upd('screeningDurationOther', ''); }}>
+          <option value="">— Select —</option>
+          {DURATION_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+        {showDurationOther && (
+          <input style={{ ...S.input, marginTop: '8px' }} value={tx.screeningDurationOther} onChange={e => upd('screeningDurationOther', e.target.value)} placeholder="Please specify…" />
+        )}
+      </Field>
+
+      <Field label="Where did you buy it?" required>
+        <select style={S.select} value={tx.screeningPurchaseLocation} onChange={e => { upd('screeningPurchaseLocation', e.target.value); if (e.target.value !== 'Other') upd('screeningPurchaseLocationOther', ''); }}>
+          <option value="">— Select —</option>
+          {PURCHASE_LOCATION_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <input
+          style={{ ...S.input, marginTop: '8px' }}
+          value={tx.screeningPurchaseLocationOther}
+          onChange={e => upd('screeningPurchaseLocationOther', e.target.value)}
+          placeholder={showLocationOther ? 'Required — please specify…' : 'Additional detail (optional)'}
+        />
+        {showLocationOther && !tx.screeningPurchaseLocationOther && (
+          <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>⛔ Please specify the purchase location.</div>
+        )}
+      </Field>
+
+      <Field label="Is this item registered in your name?" required>
+        <select style={S.select} value={tx.screeningRegistered} onChange={e => upd('screeningRegistered', e.target.value)}>
+          <option value="">— Select —</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+          <option value="N/A">N/A</option>
+        </select>
+      </Field>
+
+      <Field label="Has anyone (or is anyone) else used/using this item with you?" required>
+        <select style={S.select} value={tx.screeningOthersUsing} onChange={e => upd('screeningOthersUsing', e.target.value)}>
+          <option value="">— Select —</option>
+          {OTHERS_USING_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </Field>
+
+      <div style={{ marginTop: '16px', padding: '16px', background: COLORS.dangerLight, borderRadius: '8px', border: '1px solid #f5c6cb' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+          <input type="checkbox" checked={tx.screeningRedFlag} onChange={e => upd('screeningRedFlag', e.target.checked)} style={{ width: '20px', height: '20px' }} />
+          <span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.danger }}>🚩 RED FLAG — Something feels wrong (Decline Customer)</span>
+        </label>
+        {tx.screeningRedFlag && (
+          <div style={{ marginTop: '14px' }}>
+            <div style={{ fontSize: '13px', color: COLORS.danger, marginBottom: '10px' }}>⚠ Red flag is set. Click <strong>Save &amp; Exit</strong> to decline this transaction quietly.</div>
+            <button
+              style={{ ...S.btn('danger'), width: '100%', justifyContent: 'center' }}
+              onClick={onRedFlagExit}
+            >
+              🚩 Save &amp; Exit (Decline)
+            </button>
+          </div>
+        )}
+      </div>
+
+      <Field label="Notes / Observations" style={{ marginTop: '16px' }}>
+        <textarea style={S.textarea} value={tx.notes} onChange={e => upd('notes', e.target.value)} placeholder="Any additional notes about this customer or transaction..." />
+      </Field>
+    </div>
+  );
+}
+
+
 const WIZARD_STEPS = [
   { id: 'type', label: '1. Type', icon: '📋' },
   { id: 'nin', label: '2. ID Verify', icon: '🪪' },
   { id: 'customer', label: '3. Customer', icon: '👤' },
   { id: 'custPhotos', label: '4. Photos', icon: '📸' },
-  { id: 'itemPhotos', label: '5. Item Photos', icon: '🔍' },
-  { id: 'aiValuation', label: '6. AI Value', icon: '🤖' },
-  { id: 'imeiSerial', label: '7. IMEI/Serial', icon: '🔢' },
-  { id: 'screening', label: '8. Screening', icon: '❓' },
+  { id: 'screening', label: '5. Screening', icon: '❓' },
+  { id: 'itemPhotos', label: '6. Item Photos', icon: '🔍' },
+  { id: 'aiValuation', label: '7. AI Value', icon: '🤖' },
+  { id: 'imeiSerial', label: '8. IMEI/Serial', icon: '🔢' },
   { id: 'offer', label: '9. Offer', icon: '💰' },
   { id: 'agreement', label: '10. Agreement', icon: '📄' },
   { id: 'complete', label: '11. Complete', icon: '✅' },
@@ -956,7 +1037,7 @@ const EMPTY_TX = {
   aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiCondition: '', aiEstimatedValue: '', aiRawResponse: '', requiresIMEI: false,
   imei: '', imeiPhoto: null, imeiChecked: false, imeiClean: null, serialNumber: '', serialNumberPhoto: null,
   hasReceipt: false, receiptPhoto: null,
-  screeningDuration: '', screeningPurchaseLocation: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
+  screeningDuration: '', screeningDurationOther: '', screeningPurchaseLocation: '', screeningPurchaseLocationOther: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
   estimatedValue: 0, loanCapPct: 40, cashAdvance: 0, dailyFee: 0, loanDays: 30,
   dateGiven: '', deadlineDate: '', serviceFeeCollected: false, conditionDescription: '',
   salePrice: 0, saleDate: '', saleBuyer: '',
@@ -975,6 +1056,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   const [ninError, setNinError] = useState('');
   const [serialAiError, setSerialAiError] = useState('');
   const [imeiAiError, setImeiAiError] = useState('');
+  const [redFlagModal, setRedFlagModal] = useState(false);
   const saveTimer = useRef(null);
 
   const isMobile = useMobile();
@@ -1152,7 +1234,7 @@ IS_PHONE: [YES or NO]`;
       case 'itemPhotos': return !!(tx.itemPhotos.front || tx.itemPhotos.back) && (!tx.hasReceipt || !!tx.receiptPhoto);
       case 'aiValuation': return !!(tx.aiItemType && tx.estimatedValue > 0);
       case 'imeiSerial': return tx.requiresIMEI ? (tx.imei && tx.imeiChecked && tx.imeiClean !== null) : true;
-      case 'screening': return true;
+      case 'screening': return tx.screeningPurchaseLocation !== 'Other' || !!tx.screeningPurchaseLocationOther;
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
       case 'agreement': return !!tx.photoSigning;
       default: return true;
@@ -1195,6 +1277,9 @@ IS_PHONE: [YES or NO]`;
           if (tx.imeiClean === null) issues.push('You must select Clean or Flagged after checking the IMEI before proceeding.');
         }
         break;
+      case 'screening':
+        if (tx.screeningPurchaseLocation === 'Other' && !tx.screeningPurchaseLocationOther) issues.push('Please specify where the item was purchased (you selected "Other").');
+        break;
       case 'offer':
         if (!tx.cashAdvance) issues.push('You must enter the cash advance amount before proceeding.');
         if (!tx.dateGiven) issues.push('You must set the date given before proceeding.');
@@ -1212,6 +1297,18 @@ IS_PHONE: [YES or NO]`;
     await API.post('transactions', finalTx);
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
     onSave(finalTx);
+  };
+
+  const handleRedFlagExit = async () => {
+    const flaggedTx = { ...tx, status: 'declined', screeningRedFlag: true, declineReason: 'Declined - Flagged', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
+    await API.post('transactions', flaggedTx);
+    await API.post('declined', {
+      date: new Date().toISOString().split('T')[0],
+      item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : 'Item (screening stage)',
+      reason: 'Declined - Flagged by staff during screening',
+    });
+    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
+    setRedFlagModal(true);
   };
 
   // Step renderer (abbreviated — same UI as before)
@@ -1232,7 +1329,7 @@ IS_PHONE: [YES or NO]`;
 
       case 'imeiSerial': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔢 IMEI / Serial Number</h3>{tx.requiresIMEI ? (<><div style={{ marginBottom: '16px', padding: '14px', background: COLORS.bg, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>Is this item a phone / device with an IMEI?</div><div style={{ display: 'flex', gap: '12px' }}>{[{ val: true, label: '📱 Yes — Phone (IMEI required)' }, { val: false, label: '📦 No — Other item (Serial only)' }].map(o => (<label key={String(o.val)} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '10px 14px', borderRadius: '8px', border: `2px solid ${tx.requiresIMEI === o.val ? COLORS.primary : COLORS.border}`, background: tx.requiresIMEI === o.val ? COLORS.primaryLight : '#fff', flex: 1 }}><input type="radio" checked={tx.requiresIMEI === o.val} onChange={() => upd('requiresIMEI', o.val)} /><span style={{ fontSize: '13px', fontWeight: 600 }}>{o.label}</span></label>))}</div>{tx.aiItemType && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>AI identified this as: <strong>{tx.aiItemType}</strong> — you can override above if incorrect.</div>}</div><div style={S.alert('info')}>📋 Dial <strong>*#06#</strong> on the phone to display the IMEI. Snap a photo of the screen and tap <strong>Extract with AI</strong> to auto-fill — or type it manually. Then open <strong>imei.info</strong> to check it is not stolen.</div><div style={S.alert('warning')}>📱 IMEI check is required for this item.</div><div style={{ marginBottom: '16px' }}><PhotoUpload label="IMEI Screen Photo" value={tx.imeiPhoto} onChange={v => upd('imeiPhoto', v)} size={140} />{tx.imeiPhoto && <div style={{ marginTop: '10px' }}><button style={S.btn('primary')} onClick={handleExtractIMEI} disabled={imeiAiLoading}>{imeiAiLoading ? '⏳ Extracting...' : '🤖 Extract IMEI with AI'}</button></div>}{imeiAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{imeiAiError}</div>}</div><Field label="IMEI Number" required><input style={S.input} inputMode="numeric" value={tx.imei} onChange={e => upd('imei', e.target.value.replace(/\D/g, ''))} placeholder="15-digit IMEI — auto-filled by AI or type manually" /></Field><div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}><input type="checkbox" checked={tx.imeiChecked} onChange={e => { upd('imeiChecked', e.target.checked); if (!e.target.checked) upd('imeiClean', null); }} style={{ width: '18px', height: '18px' }} /><span style={{ fontSize: '13px' }}>Checked on imei.info</span></label><a href="https://www.imei.info/" target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: COLORS.primary }}>Open imei.info →</a></div>{tx.imeiChecked && <Field label="IMEI Status — select one *"><div style={{ display: 'flex', gap: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', padding: '10px 16px', borderRadius: '8px', border: `2px solid ${tx.imeiClean === true ? '#10b981' : COLORS.border}`, background: tx.imeiClean === true ? '#ecfdf5' : '#fff' }}><input type="radio" checked={tx.imeiClean === true} onChange={() => upd('imeiClean', true)} /><span style={{ color: '#10b981', fontWeight: 700 }}>✓ Clean</span></label><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', padding: '10px 16px', borderRadius: '8px', border: `2px solid ${tx.imeiClean === false ? COLORS.danger : COLORS.border}`, background: tx.imeiClean === false ? COLORS.dangerLight : '#fff' }}><input type="radio" checked={tx.imeiClean === false} onChange={() => upd('imeiClean', false)} /><span style={{ color: COLORS.danger, fontWeight: 700 }}>✗ Flagged — DECLINE</span></label></div></Field>}{tx.imeiChecked && tx.imeiClean === null && <div style={S.alert('warning')}>⚠ You must select Clean or Flagged to continue.</div>}{tx.imeiClean === false && tx.imeiChecked && <div style={S.alert('danger')}>🚫 IMEI flagged. <strong>DECLINE IMMEDIATELY.</strong></div>}</>) : (<><div style={{ marginBottom: '16px', padding: '14px', background: COLORS.bg, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>Is this item a phone / device with an IMEI?</div><div style={{ display: 'flex', gap: '12px' }}>{[{ val: true, label: '📱 Yes — Phone (IMEI required)' }, { val: false, label: '📦 No — Other item (Serial only)' }].map(o => (<label key={String(o.val)} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '10px 14px', borderRadius: '8px', border: `2px solid ${tx.requiresIMEI === o.val ? COLORS.primary : COLORS.border}`, background: tx.requiresIMEI === o.val ? COLORS.primaryLight : '#fff', flex: 1 }}><input type="radio" checked={tx.requiresIMEI === o.val} onChange={() => upd('requiresIMEI', o.val)} /><span style={{ fontSize: '13px', fontWeight: 600 }}>{o.label}</span></label>))}</div>{tx.aiItemType && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>AI identified this as: <strong>{tx.aiItemType}</strong> — you can override above if incorrect.</div>}</div><div style={S.alert('info')}>📋 Check the back panel or sticker for a serial number. Take a photo of the label and tap <strong>Extract with AI</strong> to auto-fill it. If none is found, you may leave it blank and proceed.</div><div style={{ marginBottom: '16px' }}><PhotoUpload label="Serial Number Label Photo" value={tx.serialNumberPhoto} onChange={v => upd('serialNumberPhoto', v)} size={140} />{tx.serialNumberPhoto && <div style={{ marginTop: '10px' }}><button style={S.btn('primary')} onClick={handleExtractSerial} disabled={serialAiLoading}>{serialAiLoading ? '⏳ Extracting...' : '🤖 Extract Serial with AI'}</button></div>}{serialAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{serialAiError}</div>}</div><Field label="Serial Number"><input style={S.input} value={tx.serialNumber} onChange={e => upd('serialNumber', e.target.value)} placeholder="Auto-filled by AI or type manually" /></Field></>)}</div>);
 
-      case 'screening': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>❓ Screening Questions</h3><div style={S.alert('info')}>📋 Ask these questions calmly. Write down the answers <strong>exactly as the customer gives them</strong>. If anything feels wrong, tick the Red Flag box and do not proceed with the transaction.</div><Field label="How long have you had this item?"><input style={S.input} value={tx.screeningDuration} onChange={e => upd('screeningDuration', e.target.value)} placeholder="e.g. 2 years" /></Field><Field label="Where did you buy it?"><input style={S.input} value={tx.screeningPurchaseLocation} onChange={e => upd('screeningPurchaseLocation', e.target.value)} placeholder="e.g. Computer Village, Lagos" /></Field><Field label="Is this item registered in your name?"><input style={S.input} value={tx.screeningRegistered} onChange={e => upd('screeningRegistered', e.target.value)} placeholder="Yes / No / N/A" /></Field><Field label="Has anyone else used this item with you?"><input style={S.input} value={tx.screeningOthersUsing} onChange={e => upd('screeningOthersUsing', e.target.value)} placeholder="e.g. No, only me" /></Field><div style={{ marginTop: '12px', padding: '16px', background: COLORS.dangerLight, borderRadius: '8px', border: '1px solid #f5c6cb' }}><label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={tx.screeningRedFlag} onChange={e => upd('screeningRedFlag', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.danger }}>🚩 RED FLAG — Something feels wrong (decline this customer)</span></label></div><Field label="Notes / Observations" style={{ marginTop: '12px' }}><textarea style={S.textarea} value={tx.notes} onChange={e => upd('notes', e.target.value)} placeholder="Any additional notes about this customer or transaction..." /></Field></div>);
+      case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} />);
 
       case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || 30)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div></div>);
 
@@ -1274,6 +1371,16 @@ IS_PHONE: [YES or NO]`;
 
   return (
     <div>
+      {redFlagModal && (
+        <Modal open={redFlagModal} onClose={() => { setRedFlagModal(false); onCancel(); }} title="Transaction Declined">
+          <div style={{ textAlign: 'center', padding: '8px 0 16px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '12px' }}>🙏</div>
+            <div style={{ fontSize: '16px', fontWeight: 700, marginBottom: '8px', color: COLORS.textDark }}>We're sorry</div>
+            <div style={{ fontSize: '14px', color: COLORS.textMuted, lineHeight: 1.6 }}>Our system is unable to process this transaction at this time. Thank you for your understanding.</div>
+          </div>
+          <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center' }} onClick={() => { setRedFlagModal(false); onCancel(); }}>Return to Home</button>
+        </Modal>
+      )}
       <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
         {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
@@ -1687,7 +1794,7 @@ export default function App() {
     {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px' }}>Repaid: {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
     {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.accentLight, borderRadius: '8px' }}>Sold: {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} — Profit: {fmtMoney(tx.salePrice - tx.cashAdvance)}</div>}
     </div>
-    <div style={S.card}><div style={S.cardTitle}>🧾 Screening & Notes Summary</div><div style={{ fontSize: '13px', lineHeight: 1.7 }}><div><strong>How long in use:</strong> {tx.screeningDuration || 'Not provided'}</div><div><strong>Where purchased:</strong> {tx.screeningPurchaseLocation || 'Not provided'}</div><div><strong>Registered/Synced account:</strong> {tx.screeningRegistered || 'Not provided'}</div><div><strong>Other users on device:</strong> {tx.screeningOthersUsing || 'Not provided'}</div><div><strong>Red flag from screening:</strong> {tx.screeningRedFlag ? 'Yes' : 'No'}</div><div><strong>Staff notes:</strong> {tx.notes || 'No notes captured.'}</div></div></div>
+    <div style={S.card}><div style={S.cardTitle}>🧾 Screening & Notes Summary</div><div style={{ fontSize: '13px', lineHeight: 1.7 }}><div><strong>How long in use:</strong> {tx.screeningDuration ? (tx.screeningDuration === 'Other' ? `Other — ${tx.screeningDurationOther || 'unspecified'}` : tx.screeningDuration) : 'Not provided'}</div><div><strong>Where purchased:</strong> {tx.screeningPurchaseLocation ? (tx.screeningPurchaseLocation === 'Other' ? `Other — ${tx.screeningPurchaseLocationOther || 'unspecified'}` : tx.screeningPurchaseLocationOther ? `${tx.screeningPurchaseLocation} (${tx.screeningPurchaseLocationOther})` : tx.screeningPurchaseLocation) : 'Not provided'}</div><div><strong>Registered in customer name:</strong> {tx.screeningRegistered || 'Not provided'}</div><div><strong>Other users on device:</strong> {tx.screeningOthersUsing || 'Not provided'}</div><div><strong>Red flag from screening:</strong> {tx.screeningRedFlag ? '🚩 Yes' : 'No'}</div><div><strong>Staff notes:</strong> {tx.notes || 'No notes captured.'}</div></div></div>
     <div style={S.card}>
       <div style={S.cardTitle}>📸 Photos</div>
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
