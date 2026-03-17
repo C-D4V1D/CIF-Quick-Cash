@@ -1429,6 +1429,8 @@ export default function App() {
   const [loggingContactTx, setLoggingContactTx] = useState(null);
   const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
+  const [reportEndYear, setReportEndYear] = useState(() => new Date().getFullYear());
+  const [reportEndMonth, setReportEndMonth] = useState(() => new Date().getMonth() + 1);
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showAddCapital, setShowAddCapital] = useState(false);
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
@@ -1809,11 +1811,21 @@ export default function App() {
         const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
         const thisYear = new Date().getFullYear();
         const years = [thisYear, thisYear - 1, thisYear - 2, thisYear - 3];
+        const startVal = reportYear * 12 + reportMonth;
+        const endVal = reportEndYear * 12 + reportEndMonth;
+        const [fromYear, fromMonth, toYear, toMonth] = startVal <= endVal
+          ? [reportYear, reportMonth, reportEndYear, reportEndMonth]
+          : [reportEndYear, reportEndMonth, reportYear, reportMonth];
         const inPeriod = (dateStr) => {
           if (!dateStr) return false;
           const d = new Date(dateStr.replace(' ', 'T'));
-          return d.getFullYear() === reportYear && d.getMonth() + 1 === reportMonth;
+          const v = d.getFullYear() * 12 + d.getMonth() + 1;
+          return v >= fromYear * 12 + fromMonth && v <= toYear * 12 + toMonth;
         };
+        const isSingleMonth = fromYear === toYear && fromMonth === toMonth;
+        const periodLabel = isSingleMonth
+          ? `${MONTH_NAMES[fromMonth - 1]} ${fromYear}`
+          : `${MONTH_NAMES[fromMonth - 1]} ${fromYear} – ${MONTH_NAMES[toMonth - 1]} ${toYear}`;
         const rClosed = closedTxs.filter(t => inPeriod(t.dateRepaid || t.updated_at));
         const rSold = soldTxs.filter(t => inPeriod(t.saleDate || t.updated_at));
         const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
@@ -1845,7 +1857,7 @@ export default function App() {
           return { ...s, pct, share: Math.floor(rStakeholder * pct / 100) };
         });
         const handlePrintReport = () => printMonthReport({
-          monthName: MONTH_NAMES[reportMonth - 1], year: reportYear,
+          periodLabel,
           rClosed, rSold, rNewTxs, rExpenses,
           rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
           rExpTotal, rProfit, rFabian, rStakeholder,
@@ -1861,7 +1873,7 @@ export default function App() {
           };
           const toCSV = (headers, rows) => [headers, ...rows].map(r => r.map(csvEscape).join(',')).join('\n');
           const sections = [
-            `MONTHLY REPORT — ${MONTH_NAMES[reportMonth - 1]} ${reportYear}`,
+            `REPORT — ${periodLabel}`,
             '',
             'FINANCIAL SUMMARY',
             `Revenue,${rRevenue}`,
@@ -1890,23 +1902,41 @@ export default function App() {
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `report-${MONTH_NAMES[reportMonth - 1]}-${reportYear}.csv`;
+          a.download = `report-${periodLabel.replace(/\s/g, '-').replace(/–/g, 'to')}.csv`;
           a.click();
           URL.revokeObjectURL(url);
         };
         return (
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📈 Monthly Report</h2>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                <select value={reportMonth} onChange={e => setReportMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+            <div style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📈 Report — {periodLabel}</h2>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button style={S.btn('outline')} onClick={handleExportCSV}>⬇ CSV</button>
+                  <button style={S.btn('primary')} onClick={handlePrintReport}>🖨 Print / PDF</button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: '8px', padding: '10px 14px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: COLORS.textMuted }}>From:</span>
+                <select value={reportMonth} onChange={e => setReportMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
                   {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
                 </select>
-                <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+                <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
                   {years.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
-                <button style={S.btn('outline')} onClick={handleExportCSV}>⬇ CSV</button>
-                <button style={S.btn('primary')} onClick={handlePrintReport}>🖨 Print / PDF</button>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: COLORS.textMuted, marginLeft: '8px' }}>To:</span>
+                <select value={reportEndMonth} onChange={e => setReportEndMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
+                  {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                </select>
+                <select value={reportEndYear} onChange={e => setReportEndYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
+                  {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+                {!isSingleMonth && (
+                  <button style={{ ...S.btn('outline'), padding: '4px 10px', fontSize: '12px' }}
+                    onClick={() => { setReportEndMonth(reportMonth); setReportEndYear(reportYear); }}>
+                    Reset to single month
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2101,9 +2131,38 @@ export default function App() {
 
             {rClosed.length === 0 && rSold.length === 0 && rNewTxs.length === 0 && rExpenses.length === 0 && (
               <div style={{ ...S.card, textAlign: 'center', color: COLORS.textMuted }}>
-                No activity recorded for {MONTH_NAMES[reportMonth - 1]} {reportYear}.
+                No activity recorded for {periodLabel}.
               </div>
             )}
+
+            {/* Glossary */}
+            <details style={{ ...S.card, padding: 0, overflow: 'hidden' }}>
+              <summary style={{ padding: '12px 16px', cursor: 'pointer', fontWeight: 700, fontSize: '14px', color: COLORS.primaryDark, userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>📖</span> <span>Terms Explained</span> <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 400, color: COLORS.textMuted }}>tap to expand</span>
+              </summary>
+              <div style={{ padding: '0 16px 16px 16px', borderTop: `1px solid ${COLORS.border}` }}>
+                {[
+                  ['Revenue', 'All the money the business received in this period — from loan fees, sales, and service charges combined.'],
+                  ['Expenses', 'Money that was spent to run the business, such as rent, airtime, transport, or other costs.'],
+                  ['Net Profit', 'Revenue minus Expenses. This is what the business actually earned after paying all costs.'],
+                  ['Cash Advanced', 'The amount of money given to a customer when they bring in an item. This is the loan amount.'],
+                  ['Repayment Fees', 'The daily holding charges that are collected when a customer pays back and collects their item.'],
+                  ['Sales Proceeds', 'Money received when an item is sold — for customers who did not come back to redeem within the deadline.'],
+                  ['Service Fee', 'A one-time charge collected when a new loan is started, before daily fees begin.'],
+                  ['Margin (on sales)', 'The extra money made above the cash advance when an item is sold. E.g. if ₦5,000 was advanced and item sold for ₦7,000, margin is ₦2,000.'],
+                  ['Capital Deployed', 'Total advance money given out as new loans this period. This money is out in the field.'],
+                  ['Capital Returned', 'Total advance money recovered from customers who paid back their loans this period.'],
+                  ['Fabian (10%)', 'The management fee — 10% of the net profit goes to Fabian for running and managing the business.'],
+                  ['Stakeholders (90%)', 'The remaining 90% of profit is shared among investors, each getting a share based on how much capital they put into the business.'],
+                  ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from their capital contribution compared to the total capital. More capital = higher share.'],
+                ].map(([term, def]) => (
+                  <div key={term} style={{ padding: '10px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ fontWeight: 700, fontSize: '13px', color: COLORS.primaryDark, marginBottom: '3px' }}>{term}</div>
+                    <div style={{ fontSize: '13px', color: COLORS.text, lineHeight: 1.5 }}>{def}</div>
+                  </div>
+                ))}
+              </div>
+            </details>
           </div>
         );
       }

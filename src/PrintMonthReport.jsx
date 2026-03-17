@@ -18,7 +18,7 @@ const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').
 // Build the full report HTML
 // ---------------------------------------------------------------------------
 const buildReportHTML = ({
-  monthName, year,
+  periodLabel,
   rClosed, rSold, rNewTxs, rExpenses,
   rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
   rExpTotal, rProfit, rFabian, rStakeholder,
@@ -98,7 +98,7 @@ const buildReportHTML = ({
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<title>Monthly Report — ${monthName} ${year}</title>
+<title>Report — ${esc(periodLabel)}</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -236,11 +236,11 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
   <div class="report-header">
     <div>
       <div class="biz-name">CHRIST-IN-FABIAN QUICK CASH</div>
-      <div class="biz-sub">Cash Advance &amp; Buy-Back — Monthly Report</div>
+      <div class="biz-sub">Cash Advance &amp; Buy-Back — Period Report</div>
     </div>
     <div class="report-title-block">
-      <div class="report-title">Monthly Report</div>
-      <div class="report-period">${esc(monthName)} ${year}</div>
+      <div class="report-title">Report</div>
+      <div class="report-period">${esc(periodLabel)}</div>
     </div>
   </div>
 
@@ -384,15 +384,60 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
   </table>` : ''}
 
   ${rClosed.length === 0 && rSold.length === 0 && rNewTxs.length === 0 && rExpenses.length === 0
-    ? `<div style="text-align:center;padding:30px;color:#888;font-style:italic">No activity recorded for ${esc(monthName)} ${year}.</div>`
+    ? `<div style="text-align:center;padding:30px;color:#888;font-style:italic">No activity recorded for ${esc(periodLabel)}.</div>`
     : ''}
 
   <!-- FOOTER -->
   <div class="report-footer">
     Generated on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
-    &nbsp;·&nbsp; Christ-in-Fabian Quick Cash &nbsp;·&nbsp; ${esc(monthName)} ${year} Monthly Report
+    &nbsp;·&nbsp; Christ-in-Fabian Quick Cash &nbsp;·&nbsp; ${esc(periodLabel)}
   </div>
 
+</div>
+
+<!-- GLOSSARY PAGE -->
+<div class="page page-break">
+  <div class="report-header" style="margin-bottom:14px;padding-bottom:10px">
+    <div>
+      <div class="biz-name">CHRIST-IN-FABIAN QUICK CASH</div>
+      <div class="biz-sub">Terms &amp; Definitions — Plain-Language Guide</div>
+    </div>
+    <div class="report-title-block">
+      <div class="report-title">Glossary</div>
+      <div class="report-period">${esc(periodLabel)}</div>
+    </div>
+  </div>
+
+  <div class="section-hdr">📖 What Do These Terms Mean?</div>
+  <p style="font-size:9.5pt;color:#444;margin-bottom:12px;line-height:1.5">
+    This page explains the financial words used in this report in simple, everyday language.
+    It is meant to help all stakeholders — regardless of their financial background — understand the numbers.
+  </p>
+
+  ${[
+    ['Revenue', 'All the money the business received in this period — from loan fees, sales, and service charges combined. Think of it as the total money that came in through the door.'],
+    ['Expenses', 'Money that was spent to run the business, such as rent, airtime, transport, or stationery. These are the costs of keeping the business going.'],
+    ['Net Profit', 'Revenue minus Expenses. This is what the business truly earned after paying all its costs. It is the "real" money made.'],
+    ['Cash Advanced', 'The amount of money given to a customer when they bring in an item as collateral. This is the loan amount the customer receives on the spot.'],
+    ['Repayment Fees', 'The daily holding and service charges that a customer pays when they come back to collect their item. These fees are how the business earns from loans.'],
+    ['Sales Proceeds', 'Money received when an item is sold. This happens when a customer does not return within the agreed number of days. The item is then sold to recover the advance.'],
+    ['Service Fee', 'A one-time charge paid upfront when a new loan is started. It is charged before daily fees begin and covers the cost of processing the agreement.'],
+    ['Margin (on sales)', 'The extra money earned above the original advance when an item is sold. For example: advance was ₦5,000 and item sold for ₦7,000 — margin is ₦2,000 profit.'],
+    ['Capital Deployed', 'The total amount of money given out as new loans in this period. This money is "in the field" — out with customers — and will return when they repay.'],
+    ['Capital Returned', 'The total advance money that came back from customers who repaid their loans in this period. This money is now available to be lent out again.'],
+    ['Fabian (10%)', 'The management fee. 10% of the net profit goes to Fabian for managing the day-to-day running of the business — handling customers, agreements, collections, and operations.'],
+    ['Stakeholders (90%)', 'The remaining 90% of net profit is shared among all investors (stakeholders). Each investor gets a portion based on how much capital they contributed to the business.'],
+    ['Stakeholder % Share', 'Each stakeholder\'s percentage is worked out by dividing their capital by the total capital invested. A person who put in more money receives a proportionally larger share of the profit.'],
+  ].map(([term, def]) => `
+  <div style="margin-bottom:10px;padding:8px 12px;border:1px solid #e5e7eb;background:#f8f9fa;border-left:4px solid #1A3A5C">
+    <div style="font-weight:700;font-size:10.5pt;color:#1A3A5C;margin-bottom:4px">${esc(term)}</div>
+    <div style="font-size:10pt;color:#222;line-height:1.55">${esc(def)}</div>
+  </div>`).join('')}
+
+  <div class="report-footer">
+    Generated on ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+    &nbsp;·&nbsp; Christ-in-Fabian Quick Cash &nbsp;·&nbsp; ${esc(periodLabel)}
+  </div>
 </div>
 </body>
 </html>`;
