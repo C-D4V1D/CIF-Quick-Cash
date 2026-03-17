@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
+import { printMonthReport } from './PrintMonthReport.jsx';
 
 // --- MOBILE DETECTION HOOK ---
 const useMobile = () => {
@@ -1428,6 +1429,8 @@ export default function App() {
   const [loggingContactTx, setLoggingContactTx] = useState(null);
   const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
+  const [reportEndYear, setReportEndYear] = useState(() => new Date().getFullYear());
+  const [reportEndMonth, setReportEndMonth] = useState(() => new Date().getMonth() + 1);
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showAddCapital, setShowAddCapital] = useState(false);
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
@@ -1808,65 +1811,358 @@ export default function App() {
         const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
         const thisYear = new Date().getFullYear();
         const years = [thisYear, thisYear - 1, thisYear - 2, thisYear - 3];
+        const startVal = reportYear * 12 + reportMonth;
+        const endVal = reportEndYear * 12 + reportEndMonth;
+        const [fromYear, fromMonth, toYear, toMonth] = startVal <= endVal
+          ? [reportYear, reportMonth, reportEndYear, reportEndMonth]
+          : [reportEndYear, reportEndMonth, reportYear, reportMonth];
         const inPeriod = (dateStr) => {
           if (!dateStr) return false;
           const d = new Date(dateStr.replace(' ', 'T'));
-          return d.getFullYear() === reportYear && d.getMonth() + 1 === reportMonth;
+          const v = d.getFullYear() * 12 + d.getMonth() + 1;
+          return v >= fromYear * 12 + fromMonth && v <= toYear * 12 + toMonth;
         };
+        const isSingleMonth = fromYear === toYear && fromMonth === toMonth;
+        const periodLabel = isSingleMonth
+          ? `${MONTH_NAMES[fromMonth - 1]} ${fromYear}`
+          : `${MONTH_NAMES[fromMonth - 1]} ${fromYear} – ${MONTH_NAMES[toMonth - 1]} ${toYear}`;
         const rClosed = closedTxs.filter(t => inPeriod(t.dateRepaid || t.updated_at));
         const rSold = soldTxs.filter(t => inPeriod(t.saleDate || t.updated_at));
         const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
         const rExpenses = expenses.filter(e => inPeriod(e.date));
-        const rRevenue = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0)
-          + rSold.reduce((s, t) => s + (t.salePrice || 0), 0)
-          + rNewTxs.length * (settings.serviceFee || 1000);
+        const rRepaymentFees = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0);
+        const rSalesRevenue = rSold.reduce((s, t) => s + (t.salePrice || 0), 0);
+        const rServiceFees = rNewTxs.length * (settings.serviceFee || 1000);
+        const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
         const rFabian = Math.floor(rProfit * 0.10);
         const rStakeholder = rProfit - rFabian;
+        const rCapitalDeployed = rNewTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const rCapitalReturned = rClosed.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const expByCategory = rExpenses.reduce((acc, e) => {
+          const cat = e.category || 'Other';
+          if (!acc[cat]) acc[cat] = 0;
+          acc[cat] += (e.amount || 0);
+          return acc;
+        }, {});
+        const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` };
+        const rStakeholders = Object.values(capital.reduce((acc, c) => {
+          const key = c.name.toLowerCase();
+          if (!acc[key]) acc[key] = { name: c.name, total: 0 };
+          acc[key].total += (c.amount || 0);
+          return acc;
+        }, {})).map(s => {
+          const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
+          return { ...s, pct, share: Math.floor(rStakeholder * pct / 100) };
+        });
+        const handlePrintReport = () => printMonthReport({
+          periodLabel,
+          rClosed, rSold, rNewTxs, rExpenses,
+          rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
+          rExpTotal, rProfit, rFabian, rStakeholder,
+          rCapitalDeployed, rCapitalReturned,
+          serviceFee: settings.serviceFee || 1000,
+          stakeholders: rStakeholders,
+          expByCategory,
+        });
+        const handleExportCSV = () => {
+          const csvEscape = (v) => {
+            const s = String(v == null ? '' : v);
+            return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+          };
+          const toCSV = (headers, rows) => [headers, ...rows].map(r => r.map(csvEscape).join(',')).join('\n');
+          const sections = [
+            `REPORT — ${periodLabel}`,
+            '',
+            'FINANCIAL SUMMARY',
+            `Revenue,${rRevenue}`,
+            `Expenses,${rExpTotal}`,
+            `Net Profit,${rProfit}`,
+            `Fabian (10%),${rFabian}`,
+            `Stakeholders,${rStakeholder}`,
+            '',
+            'REPAYMENTS',
+            toCSV(['Ref','Customer','Cash Advanced','Fees Collected','Date Repaid'],
+              rClosed.map(t => [t.ref, t.fullName, t.cashAdvance, t.totalFees, t.dateRepaid || t.updated_at])),
+            '',
+            'SALES',
+            toCSV(['Ref','Item','Cash Advanced','Sale Price','Margin','Buyer','Date'],
+              rSold.map(t => [t.ref, t.aiBrand || t.description, t.cashAdvance, t.salePrice, (t.salePrice||0)-(t.cashAdvance||0), t.saleBuyer, t.saleDate || t.updated_at])),
+            '',
+            'NEW LOANS',
+            toCSV(['Ref','Customer','Cash Advanced','Service Fee','Loan Term (days)','Date','Status'],
+              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, settings.serviceFee || 1000, t.loanDays || 30, t.created_at, t.status])),
+            '',
+            'EXPENSES',
+            toCSV(['Date','Category','Description','Amount'],
+              rExpenses.map(e => [e.date, e.category, e.description || e.note, e.amount])),
+          ];
+          const blob = new Blob([sections.join('\n')], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `report-${periodLabel.replace(/\s/g, '-').replace(/–/g, 'to')}.csv`;
+          a.click();
+          URL.revokeObjectURL(url);
+        };
         return (
           <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
-              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📈 Monthly Report</h2>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <select value={reportMonth} onChange={e => setReportMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+            <div style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '12px' }}>
+                <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>📈 Report — {periodLabel}</h2>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button style={S.btn('outline')} onClick={handleExportCSV}>⬇ CSV</button>
+                  <button style={S.btn('primary')} onClick={handlePrintReport}>🖨 Print / PDF</button>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: '8px', padding: '10px 14px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: COLORS.textMuted }}>From:</span>
+                <select value={reportMonth} onChange={e => setReportMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
                   {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
                 </select>
-                <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '6px 10px' }}>
+                <select value={reportYear} onChange={e => setReportYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
                   {years.map(y => <option key={y} value={y}>{y}</option>)}
                 </select>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: COLORS.textMuted, marginLeft: '8px' }}>To:</span>
+                <select value={reportEndMonth} onChange={e => setReportEndMonth(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
+                  {MONTH_NAMES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+                </select>
+                <select value={reportEndYear} onChange={e => setReportEndYear(Number(e.target.value))} style={{ ...S.input, width: 'auto', padding: '5px 8px', margin: 0 }}>
+                  {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+                {!isSingleMonth && (
+                  <button style={{ ...S.btn('outline'), padding: '4px 10px', fontSize: '12px' }}
+                    onClick={() => { setReportEndMonth(reportMonth); setReportEndYear(reportYear); }}>
+                    Reset to single month
+                  </button>
+                )}
               </div>
             </div>
-            <div style={{ marginBottom: '8px', fontSize: '13px', color: COLORS.textMuted }}>
-              Showing: <strong>{MONTH_NAMES[reportMonth - 1]} {reportYear}</strong> — {rClosed.length} repayment{rClosed.length !== 1 ? 's' : ''}, {rSold.length} sale{rSold.length !== 1 ? 's' : ''}, {rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''}, {rExpenses.length} expense{rExpenses.length !== 1 ? 's' : ''}
+
+            {/* Activity counts */}
+            <div style={{ ...S.grid4, marginBottom: '20px' }}>
+              <div style={S.stat}><div style={S.statLabel}>New Loans</div><div style={S.statValue}>{rNewTxs.length}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Repayments</div><div style={S.statValue}>{rClosed.length}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Sales</div><div style={S.statValue}>{rSold.length}</div></div>
+              <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={S.statValue}>{rExpenses.length}</div></div>
             </div>
-            <div style={S.grid3}>
-              <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
-              <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
-              <div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+
+            {/* Financial summary */}
+            <div style={S.card}>
+              <div style={S.cardTitle}>💰 Financial Summary</div>
+              <div style={S.grid3}>
+                <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
+                <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
+                <div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+              </div>
+              <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Revenue Breakdown</div>
+                <div style={rowStyle}><span>Repayment fees ({rClosed.length} loan{rClosed.length !== 1 ? 's' : ''})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rRepaymentFees)}</strong></div>
+                <div style={rowStyle}><span>Sales proceeds ({rSold.length} item{rSold.length !== 1 ? 's' : ''})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rSalesRevenue)}</strong></div>
+                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Service fees ({rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''} × {fmtMoney(settings.serviceFee || 1000)})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rServiceFees)}</strong></div>
+              </div>
+              <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Capital Flow</div>
+                <div style={rowStyle}><span>Capital deployed (new loans)</span><strong style={{ color: COLORS.danger }}>{fmtMoney(rCapitalDeployed)}</strong></div>
+                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Capital returned (repayments)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rCapitalReturned)}</strong></div>
+              </div>
             </div>
+
+            {/* Profit distribution */}
             <div style={S.grid2}>
               <div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rFabian)}</div></div>
               <div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
             </div>
             <div style={S.card}>
-              <div style={S.cardTitle}>Distribution</div>
-              {Object.values(capital.reduce((acc, c) => {
-                const key = c.name.toLowerCase();
-                if (!acc[key]) acc[key] = { name: c.name, total: 0 };
-                acc[key].total += (c.amount || 0);
-                return acc;
-              }, {})).map(s => {
-                const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
-                return (
-                  <div key={s.name} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
-                    <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({pct.toFixed(1)}%)</span>
-                    <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(Math.floor(rStakeholder * pct / 100))}</strong>
-                  </div>
-                );
-              })}
+              <div style={S.cardTitle}>📊 Stakeholder Distribution</div>
+              {rStakeholders.map(s => (
+                <div key={s.name} style={rowStyle}>
+                  <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({s.pct.toFixed(1)}%)</span>
+                  <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(s.share)}</strong>
+                </div>
+              ))}
               {capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}
             </div>
+
+            {/* Repayments detail */}
+            {rClosed.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>✅ Repayments ({rClosed.length})</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Ref</th>
+                        <th style={S.th}>Customer</th>
+                        <th style={S.th}>Cash Advanced</th>
+                        <th style={S.th}>Fees Collected</th>
+                        <th style={S.th}>Date Repaid</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rClosed.map(t => (
+                        <tr key={t.ref}>
+                          <td style={S.td}><strong>{t.ref}</strong></td>
+                          <td style={S.td}>{t.fullName || '—'}</td>
+                          <td style={S.td}>{fmtMoney(t.cashAdvance)}</td>
+                          <td style={{ ...S.td, color: COLORS.primary, fontWeight: 700 }}>{fmtMoney(t.totalFees)}</td>
+                          <td style={S.td}>{fmtDate(t.dateRepaid || t.updated_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Sales detail */}
+            {rSold.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>🏷 Sales ({rSold.length})</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Ref</th>
+                        <th style={S.th}>Item</th>
+                        <th style={S.th}>Cash Advanced</th>
+                        <th style={S.th}>Sale Price</th>
+                        <th style={S.th}>Margin</th>
+                        <th style={S.th}>Buyer</th>
+                        <th style={S.th}>Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rSold.map(t => {
+                        const margin = (t.salePrice || 0) - (t.cashAdvance || 0);
+                        return (
+                          <tr key={t.ref}>
+                            <td style={S.td}><strong>{t.ref}</strong></td>
+                            <td style={S.td}>{t.aiBrand || t.description || '—'}</td>
+                            <td style={S.td}>{fmtMoney(t.cashAdvance)}</td>
+                            <td style={{ ...S.td, fontWeight: 700 }}>{fmtMoney(t.salePrice)}</td>
+                            <td style={{ ...S.td, color: margin >= 0 ? COLORS.primary : COLORS.danger, fontWeight: 700 }}>{fmtMoney(margin)}</td>
+                            <td style={S.td}>{t.saleBuyer || '—'}</td>
+                            <td style={S.td}>{fmtDate(t.saleDate || t.updated_at)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* New loans detail */}
+            {rNewTxs.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>📋 New Loans ({rNewTxs.length})</div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Ref</th>
+                        <th style={S.th}>Customer</th>
+                        <th style={S.th}>Cash Advanced</th>
+                        <th style={S.th}>Service Fee</th>
+                        <th style={S.th}>Loan Term</th>
+                        <th style={S.th}>Date</th>
+                        <th style={S.th}>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rNewTxs.map(t => (
+                        <tr key={t.ref}>
+                          <td style={S.td}><strong>{t.ref}</strong></td>
+                          <td style={S.td}>{t.fullName || '—'}</td>
+                          <td style={{ ...S.td, fontWeight: 700 }}>{fmtMoney(t.cashAdvance)}</td>
+                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(settings.serviceFee || 1000)}</td>
+                          <td style={S.td}>{t.loanDays || 30} days</td>
+                          <td style={S.td}>{fmtDate(t.created_at)}</td>
+                          <td style={S.td}><span style={{ fontSize: '12px', fontWeight: 600, color: statusColor(t) }}>{statusLabel(t)}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Expenses detail */}
+            {rExpenses.length > 0 && (
+              <div style={S.card}>
+                <div style={S.cardTitle}>🧾 Expenses ({rExpenses.length}) — {fmtMoney(rExpTotal)}</div>
+                {Object.keys(expByCategory).length > 1 && (
+                  <div style={{ marginBottom: '16px', paddingBottom: '12px', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>By Category</div>
+                    {Object.entries(expByCategory).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
+                      <div key={cat} style={rowStyle}>
+                        <span>{cat}</span>
+                        <strong style={{ color: COLORS.danger }}>{fmtMoney(amt)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Date</th>
+                        <th style={S.th}>Category</th>
+                        <th style={S.th}>Description</th>
+                        <th style={S.th}>Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rExpenses.sort((a, b) => new Date(b.date) - new Date(a.date)).map((e, i) => (
+                        <tr key={i}>
+                          <td style={S.td}>{fmtDate(e.date)}</td>
+                          <td style={S.td}>{e.category || '—'}</td>
+                          <td style={S.td}>{e.description || e.note || '—'}</td>
+                          <td style={{ ...S.td, color: COLORS.danger, fontWeight: 700 }}>{fmtMoney(e.amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {rClosed.length === 0 && rSold.length === 0 && rNewTxs.length === 0 && rExpenses.length === 0 && (
+              <div style={{ ...S.card, textAlign: 'center', color: COLORS.textMuted }}>
+                No activity recorded for {periodLabel}.
+              </div>
+            )}
+
+            {/* Glossary */}
+            <details style={{ ...S.card, padding: 0, overflow: 'hidden' }}>
+              <summary style={{ padding: '12px 16px', cursor: 'pointer', fontWeight: 700, fontSize: '14px', color: COLORS.primaryDark, userSelect: 'none', listStyle: 'none', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span>📖</span> <span>Terms Explained</span> <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 400, color: COLORS.textMuted }}>tap to expand</span>
+              </summary>
+              <div style={{ padding: '0 16px 16px 16px', borderTop: `1px solid ${COLORS.border}` }}>
+                {[
+                  ['Revenue', 'All the money the business received in this period — from loan fees, sales, and service charges combined.'],
+                  ['Expenses', 'Money that was spent to run the business, such as rent, airtime, transport, or other costs.'],
+                  ['Net Profit', 'Revenue minus Expenses. This is what the business actually earned after paying all costs.'],
+                  ['Cash Advanced', 'The amount of money given to a customer when they bring in an item. This is the loan amount.'],
+                  ['Repayment Fees', 'The daily holding charges that are collected when a customer pays back and collects their item.'],
+                  ['Sales Proceeds', 'Money received when an item is sold — for customers who did not come back to redeem within the deadline.'],
+                  ['Service Fee', 'A one-time charge collected when a new loan is started, before daily fees begin.'],
+                  ['Margin (on sales)', 'The extra money made above the cash advance when an item is sold. E.g. if ₦5,000 was advanced and item sold for ₦7,000, margin is ₦2,000.'],
+                  ['Capital Deployed', 'Total advance money given out as new loans this period. This money is out in the field.'],
+                  ['Capital Returned', 'Total advance money recovered from customers who paid back their loans this period.'],
+                  ['Fabian (10%)', 'The management fee — 10% of the net profit goes to Fabian for running and managing the business.'],
+                  ['Stakeholders (90%)', 'The remaining 90% of profit is shared among investors, each getting a share based on how much capital they put into the business.'],
+                  ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from their capital contribution compared to the total capital. More capital = higher share.'],
+                ].map(([term, def]) => (
+                  <div key={term} style={{ padding: '10px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ fontWeight: 700, fontSize: '13px', color: COLORS.primaryDark, marginBottom: '3px' }}>{term}</div>
+                    <div style={{ fontSize: '13px', color: COLORS.text, lineHeight: 1.5 }}>{def}</div>
+                  </div>
+                ))}
+              </div>
+            </details>
           </div>
         );
       }
