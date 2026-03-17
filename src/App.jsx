@@ -1328,7 +1328,7 @@ function SaleModal({ tx, settings, onClose, onSave }) {
     <div>
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
       <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
-      <div style={S.grid2}><Field label="Sale Date"><input style={S.input} type="date" value={saleDate} onChange={e => setSaleDate(e.target.value)} /></Field><Field label="Buyer"><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} /></Field></div>
+      <div style={S.grid2}><Field label="Sale Date"><input style={S.input} type="date" value={saleDate} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setSaleDate(e.target.value)} /></Field><Field label="Buyer"><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} /></Field></div>
       <div style={{ ...S.card, background: COLORS.primaryLight, textAlign: 'center', marginTop: '8px' }}><div style={S.statLabel}>Profit</div><div style={{ fontSize: '28px', fontWeight: 800, color: salePrice - tx.cashAdvance > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(salePrice - tx.cashAdvance)}</div></div>
       <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer })} disabled={salePrice < minPrice}>Record Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
@@ -1397,7 +1397,7 @@ function ContactLogModal({ tx, onClose, onSave, currentUser }) {
         </div>
       </div>
       <div style={S.grid2}>
-        <Field label="Date"><input style={S.input} type="date" value={date} onChange={e => setDate(e.target.value)} /></Field>
+        <Field label="Date"><input style={S.input} type="date" value={date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDate(e.target.value)} /></Field>
         <Field label="Time"><input style={S.input} type="time" value={time} onChange={e => setTime(e.target.value)} /></Field>
       </div>
       <Field label="Outcome" required style={{ marginTop: '12px' }}>
@@ -2389,11 +2389,11 @@ export default function App() {
                 </div>
                 <div style={{ flex: '1 1 130px' }}>
                   <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>FROM DATE</div>
-                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.from} max={activityFilter.to || todayStr} onChange={e => setF({ from: e.target.value })} />
+                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.from} max={activityFilter.to || todayStr} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setF({ from: e.target.value })} />
                 </div>
                 <div style={{ flex: '1 1 130px' }}>
                   <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>TO DATE</div>
-                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.to} min={activityFilter.from} max={todayStr} onChange={e => setF({ to: e.target.value })} />
+                  <input style={{ ...S.input, margin: 0 }} type="date" value={activityFilter.to} min={activityFilter.from} max={todayStr} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setF({ to: e.target.value })} />
                 </div>
                 <div style={{ flex: '1 1 120px' }}>
                   <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px' }}>SORT</div>
@@ -2458,7 +2458,7 @@ export default function App() {
   };
 
   // Modals
-  const ExpModal = () => { const [exp, setExp] = useState({ date: new Date().toISOString().split('T')[0], category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; setExpenses(prev => [{ ...e2, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
+  const ExpModal = () => { const [exp, setExp] = useState({ date: new Date().toISOString().split('T')[0], category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; setExpenses(prev => [{ ...e2, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
 
   const CapModal = () => {
     const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: new Date().toISOString().split('T')[0], method: '', receipt: '', username: '', password: '' });
@@ -2511,7 +2511,7 @@ export default function App() {
             ? <Field label="Account">{linkedUser ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={`@${linkedUser.username}`} readOnly /> : <span style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '40px' }}>No account linked</span>}</Field>
             : <div />}
           <Field label="Amount (₦)"><input style={S.input} type="number" value={cap.amount} placeholder="0" onChange={e => setCap({ ...cap, amount: e.target.value })} /></Field>
-          <Field label="Date"><input style={S.input} type="date" value={cap.date} onChange={e => setCap({ ...cap, date: e.target.value })} /></Field>
+          <Field label="Date"><input style={S.input} type="date" value={cap.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCap({ ...cap, date: e.target.value })} /></Field>
           <Field label="Method/Bank" style={{ gridColumn: '1 / -1' }}><input style={S.input} value={cap.method} onChange={e => setCap({ ...cap, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
         </div>
         {!isTopUp && (
@@ -2565,7 +2565,7 @@ export default function App() {
           Record a payment made to stakeholders from the business profit. This will be deducted from the available lending capital.
         </div>
         <div style={S.grid2}>
-          <Field label="Date"><input style={S.input} type="date" value={dist.date} onChange={e => setDist({ ...dist, date: e.target.value })} /></Field>
+          <Field label="Date"><input style={S.input} type="date" value={dist.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDist({ ...dist, date: e.target.value })} /></Field>
           <Field label="Total Amount Distributed (₦)"><input style={S.input} type="number" value={dist.amount} placeholder="0" onChange={e => setDist({ ...dist, amount: e.target.value })} /></Field>
           <Field label="Payment Method" style={{ gridColumn: '1 / -1' }}>
             <select style={S.select} value={dist.method} onChange={e => setDist({ ...dist, method: e.target.value })}>
@@ -2588,7 +2588,7 @@ export default function App() {
     );
   };
 
-  const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button></Modal>; };
+  const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button></Modal>; };
 
   const EditUserModal = () => {
     const u = showEditUser;
