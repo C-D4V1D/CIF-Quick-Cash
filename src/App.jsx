@@ -183,6 +183,7 @@ const DEFAULT_SETTINGS = {
 
 const PAGE_PATHS = {
   dashboard: '/dashboard',
+  newTransaction: '/transactions/new',
   transactions: '/transactions',
   active: '/loans/active',
   deadlines: '/alerts',
@@ -197,6 +198,8 @@ const PAGE_PATHS = {
 };
 
 const PAGE_FROM_PATH = Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]) => [v, k]));
+
+const ACTIVITY_PAGE_SIZE = 50;
 
 // ============================================================
 // GEMINI AI INTEGRATION
@@ -1430,7 +1433,7 @@ export default function App() {
   const [distributions, setDistributions] = useState([]);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
-  const [activityMeta, setActivityMeta] = useState({ total: 0, limit: 300 });
+  const [activityMeta, setActivityMeta] = useState({ total: 0, limit: ACTIVITY_PAGE_SIZE, offset: 0 });
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityFilter, setActivityFilter] = useState({ q: '', from: '', to: '', category: '', sort: 'desc' });
   const [showEditUser, setShowEditUser] = useState(null);
@@ -1453,6 +1456,7 @@ export default function App() {
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [txPage, setTxPage] = useState(1);
   const [dbStatus, setDbStatus] = useState('checking');
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -1494,18 +1498,21 @@ export default function App() {
     { value: 'settings', label: '⚙️ Settings', type: 'settings', action: '' },
     { value: 'declined', label: '🚫 Declined', type: 'declined', action: '' },
   ];
-  const loadActivityLogs = async (filter) => {
+  const loadActivityLogs = async (filter, offset = 0, append = false) => {
     const f = filter !== undefined ? filter : activityFilter;
     setActivityLoading(true);
     const cat = ACTIVITY_CATS.find(c => c.value === f.category) || ACTIVITY_CATS[0];
-    const p = new URLSearchParams({ limit: '300', sort: f.sort || 'desc' });
+    const p = new URLSearchParams({ limit: String(ACTIVITY_PAGE_SIZE), offset: String(offset), sort: f.sort || 'desc' });
     if (f.q && f.q.trim()) p.set('q', f.q.trim());
     if (f.from) p.set('from', f.from);
     if (f.to) p.set('to', f.to);
     if (cat.type) p.set('type', cat.type);
     if (cat.action) p.set('action', cat.action);
     const data = await API.get(`activity-logs?${p}`);
-    if (data) { setActivityLogs(data.logs || []); setActivityMeta({ total: data.total ?? 0, limit: data.limit ?? 300 }); }
+    if (data) {
+      setActivityLogs(prev => append ? [...prev, ...(data.logs || [])] : (data.logs || []));
+      setActivityMeta({ total: data.total ?? 0, limit: data.limit ?? ACTIVITY_PAGE_SIZE, offset: data.offset ?? offset });
+    }
     setActivityLoading(false);
   };
   const loadData = async () => {
@@ -1552,9 +1559,12 @@ export default function App() {
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
 
+  // Reset transaction table to page 1 when route, search, or list data changes
+  useEffect(() => { setTxPage(1); }, [location.pathname, searchQuery, listLoading]);
+
   // Auto-open wizard when navigating directly to /transactions/new
   useEffect(() => {
-    if (currentUser && location.pathname === '/transactions/new' && editingTx === null) {
+    if (currentUser && location.pathname === PAGE_PATHS.newTransaction && editingTx === null) {
       setEditingTx('new');
     }
   }, [currentUser, location.pathname]);
@@ -1642,7 +1652,7 @@ export default function App() {
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: PAGE_PATHS.dashboard, roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'newTx', label: 'New Transaction', icon: '➕', path: '/transactions/new', roles: ['staff', 'admin'] },
+    { id: 'newTx', label: 'New Transaction', icon: '➕', path: PAGE_PATHS.newTransaction, roles: ['staff', 'admin'] },
     { id: 'transactions', label: 'All Transactions', icon: '📋', path: PAGE_PATHS.transactions, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'active', label: 'Active Loans', icon: '⏳', path: PAGE_PATHS.active, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'deadlines', label: 'Deadlines & Alerts', icon: '🔔', path: PAGE_PATHS.deadlines, roles: ['staff', 'admin'] },
@@ -1795,7 +1805,27 @@ export default function App() {
     const listLoadingNotice = listLoading ? (<div style={{ ...S.alert('info'), marginBottom: '16px' }}>⏳ Transactions and drafts are still loading in the background...</div>) : null;
     if (viewingTx) return <TxDetail tx={viewingTx} />;
 
-    const TxTable = ({ items, showActions = true, showDaysListed = false }) => (<table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{items.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && daysBetween(tx.dateGiven) > (tx.loanDays || 30) + 3)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={showActions ? (showDaysListed ? 8 : 7) : (showDaysListed ? 7 : 6)}>No records.</td></tr>}</tbody></table>);
+    const TX_PAGE_SIZE = 25;
+    const TxTable = ({ items, showActions = true, showDaysListed = false }) => {
+      const totalPages = Math.max(1, Math.ceil(items.length / TX_PAGE_SIZE));
+      const safePage = Math.min(txPage, totalPages);
+      const pageItems = items.slice((safePage - 1) * TX_PAGE_SIZE, safePage * TX_PAGE_SIZE);
+      const colSpan = showActions ? (showDaysListed ? 8 : 7) : (showDaysListed ? 7 : 6);
+      const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
+      const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
+      return (<>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && daysBetween(tx.dateGiven) > (tx.loanDays || 30) + 3)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        {totalPages > 1 && (<div style={paginationStyle}>
+          <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
+          <div style={{ display: 'flex', gap: '4px' }}>
+            <button style={pageBtnStyle(safePage === 1)} disabled={safePage === 1} onClick={() => setTxPage(1)}>«</button>
+            <button style={pageBtnStyle(safePage === 1)} disabled={safePage === 1} onClick={() => setTxPage(p => Math.max(1, p - 1))}>‹ Prev</button>
+            <button style={pageBtnStyle(safePage === totalPages)} disabled={safePage === totalPages} onClick={() => setTxPage(p => Math.min(totalPages, p + 1))}>Next ›</button>
+            <button style={pageBtnStyle(safePage === totalPages)} disabled={safePage === totalPages} onClick={() => setTxPage(totalPages)}>»</button>
+          </div>
+        </div>)}
+      </>);
+    };
 
     switch (page) {
       case 'dashboard': return (<div>{listLoadingNotice}
@@ -1810,7 +1840,7 @@ export default function App() {
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={S.cardTitle}>Recent Transactions</div><TxTable items={transactions.slice(0, 10)} /></div>
-        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate('/transactions/new'); }}>Resume</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
+        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
       </div>);
 
       case 'transactions': return (<div>{listLoadingNotice}
@@ -2407,6 +2437,14 @@ export default function App() {
                 </div>
               );
             })}
+            {!activityLoading && activityLogs.length < activityMeta.total && (
+              <div style={{ textAlign: 'center', padding: '8px 0 16px' }}>
+                <button style={S.btn('outline')} onClick={() => loadActivityLogs(activityFilter, activityLogs.length, true)}>
+                  Load More ({(activityMeta.total - activityLogs.length).toLocaleString()} remaining)
+                </button>
+              </div>
+            )}
+            {activityLoading && activityLogs.length > 0 && <div style={{ textAlign: 'center', padding: '12px', fontSize: '13px', color: COLORS.textMuted }}>Loading more…</div>}
           </div>
         );
       }
@@ -2583,7 +2621,7 @@ export default function App() {
     setSidebarOpen(false);
     if (item.id === 'newTx') {
       setEditingTx('new');
-      navigate('/transactions/new');
+      navigate(PAGE_PATHS.newTransaction);
     } else {
       navigate(item.path);
       setViewingTx(null);
