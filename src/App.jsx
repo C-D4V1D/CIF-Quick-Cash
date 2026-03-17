@@ -81,6 +81,16 @@ const clearAuthCache = () => {
   }
 };
 
+const normalizeUser = (user) => {
+  if (!user) return null;
+  let roles = user.roles;
+  if (typeof roles === 'string') {
+    try { roles = JSON.parse(roles); } catch { roles = []; }
+  }
+  if (!Array.isArray(roles)) roles = [];
+  return { ...user, roles };
+};
+
 // --- UTILITY FUNCTIONS ---
 const genRef = () => {
   const d = new Date();
@@ -1452,8 +1462,9 @@ export default function App() {
     const restoreSession = async () => {
       const me = await API.get('me');
       if (me?.id) {
-        writeCache('cfc_user', me);
-        setCurrentUser(me);
+        const normalizedMe = normalizeUser(me);
+        writeCache('cfc_user', normalizedMe);
+        setCurrentUser(normalizedMe);
       } else {
         // Session invalid or expired — clear cache so next load starts fresh
         clearAuthCache();
@@ -1598,7 +1609,12 @@ export default function App() {
     return (
       <Routes>
         <Route path="/checkloanstatus" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
-        <Route path="/login" element={<LoginScreen onLogin={(u) => { writeCache('cfc_user', u); setCurrentUser(u); navigate('/dashboard'); }} />} />
+        <Route path="/login" element={<LoginScreen onLogin={(u) => {
+          const normalizedUser = normalizeUser(u);
+          writeCache('cfc_user', normalizedUser);
+          setCurrentUser(normalizedUser);
+          navigate('/dashboard');
+        }} />} />
         <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/checkloanstatus')} onStaffLogin={() => navigate('/login')} />} />
       </Routes>
     );
