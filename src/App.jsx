@@ -1428,6 +1428,132 @@ const getPhotoSlots = (itemType) => ITEM_PHOTO_SLOTS[itemType] || DEFAULT_PHOTO_
 // Maximum cash offer for a Parts-Only (non-functional) item
 const MAX_PARTS_ONLY_ADVANCE = 5000;
 
+// Inspection checklists per item type (Step 7)
+const INSPECTION_CHECKLISTS = {
+  'Smartphone': [
+    'Screen powers on normally',
+    'Screen has no cracks or dead pixels',
+    'Touchscreen responds everywhere (tap all corners)',
+    'Can make and receive phone calls',
+    'Front camera takes clear photos',
+    'Back camera takes clear photos',
+    'Earpiece speaker works (hold to ear during a call)',
+    'Loudspeaker works (play audio on loud mode)',
+    'Microphone works (customer speaks — other side hears clearly)',
+    'Charging port is firm, not loose or wobbly',
+    'Phone charges when plugged in (test with our cable)',
+    'WiFi connects to a network',
+    'All physical buttons work (power, volume up, volume down)',
+    'No iCloud lock, Google account lock, or PIN we cannot remove',
+    'SIM tray is present and not damaged',
+    'Face ID or fingerprint sensor works (if present)',
+  ],
+  'Laptop': [
+    'Powers on and reaches the desktop/login screen',
+    'Screen has no cracks, dead pixels, or dark patches',
+    'All keyboard keys work (type a sentence to test)',
+    'Trackpad responds correctly',
+    'WiFi connects to a network',
+    'USB ports work (plug in a flash drive)',
+    'Charging port works, laptop charges when plugged in',
+    'Battery holds charge (not dead or swollen)',
+    'Speakers produce clear sound',
+    'Camera works (if built in)',
+    'No password or BitLocker/FileVault lock we cannot remove',
+  ],
+  'Tablet': [
+    'Powers on',
+    'Screen intact, no cracks or dead areas',
+    'Touchscreen responds everywhere',
+    'WiFi connects',
+    'Camera works (front and back)',
+    'Speaker works',
+    'Charges normally',
+    'No lock screen we cannot remove',
+  ],
+  'Bluetooth Speaker': [
+    'Powers on (light or display shows)',
+    'Pairs with a phone via Bluetooth within 30 seconds',
+    'Audio plays clearly with no crackling or distortion',
+    'Volume controls work (test high and low)',
+    'Input charging port works, speaker accepts charge',
+    'Battery holds charge (not dead)',
+    'All buttons and controls work',
+  ],
+  'Power Bank': [
+    'Indicator lights come on when power button pressed',
+    'Charges a phone (plug in staff\'s phone — watch for charging indicator)',
+    'Both USB ports work (if it has two)',
+    'Input charging port accepts charge',
+    'No swelling or unusual heat',
+  ],
+  'Electric Fan (Standing)': [
+    'Powers on',
+    'All speed settings work (slow, medium, fast)',
+    'Fan oscillates (turns side to side) if it has that function',
+    'No unusual noise, grinding, or burning smell',
+    'All blades are intact (none broken or cracked)',
+    'Remote control works (if included)',
+    'Stand or base is stable, not cracked',
+  ],
+  'Electric Fan (Table/Desk)': [
+    'Powers on',
+    'All speed settings work (slow, medium, fast)',
+    'Fan oscillates (turns side to side) if it has that function',
+    'No unusual noise, grinding, or burning smell',
+    'All blades are intact (none broken or cracked)',
+    'Remote control works (if included)',
+    'Stand or base is stable, not cracked',
+  ],
+  'Flat-Screen TV': [
+    'Powers on, reaches the home/channel screen',
+    'Screen has no cracks, dead pixels, vertical lines, or burn-in',
+    'HDMI port works (test with a cable)',
+    'AV input works (if applicable)',
+    'Sound works clearly',
+    'Remote control works',
+    'Smart TV features work (if applicable — WiFi, apps)',
+    'All physical buttons on the TV work',
+  ],
+  'Generator': [
+    'Starts (pull start or electric start — both if both present)',
+    'Runs steadily without stalling or stuttering',
+    'No unusual smoke, burning smell, or engine noise',
+    'Output voltage is correct (test with a voltage tester if available)',
+    'At least one output socket provides power (plug in a light or phone)',
+    'Fuel tank is not leaking',
+    'Oil level is adequate (check dipstick if accessible)',
+    'All sockets and switches work',
+  ],
+  'Gas Cylinder': [
+    'Valve opens and closes smoothly (no seizing or excessive force)',
+    'No visible cracks, deep dents, or cuts in the body',
+    'No heavy rust on the base or body',
+    'Valve does not leak (pour small soapy water on valve, no bubbles)',
+    'Cylinder has usable weight (not completely empty)',
+    'Safety cap is present',
+  ],
+  'Motorcycle': [
+    'Starts (kick-start or electric start — both if both present)',
+    'Runs steadily without stalling or stuttering',
+    'Engine sounds normal (no knocking or unusual noise)',
+    'Headlight works',
+    'Tail/brake light works',
+    'Horn works',
+    'Throttle is responsive and smooth',
+    'Front brake works',
+    'Rear brake works',
+    'Both tyres are inflated and not visibly worn or cracked',
+    'Fuel tank is not leaking',
+    'Chain or belt is intact and not excessively loose',
+    'Speedometer or dashboard displays correctly (if fitted)',
+    'Mirrors are present and intact (if fitted)',
+    'Seat is secure and not torn',
+    'Registration plate is attached',
+    'No visible frame cracks or bent forks',
+  ],
+};
+
 // Normalise legacy object-format itemPhotos to flat array (for drafts created before this update)
 const normalizeItemPhotos = (ip) => {
   if (Array.isArray(ip)) return ip;
@@ -1659,7 +1785,98 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
 }
 
 // ============================================================
-// TRANSACTION WIZARD (10-step flow, saves to database)
+// INSPECTION STEP COMPONENT (Step 7)
+// ============================================================
+function InspectionStep({ tx, upd }) {
+  const itemType = tx.captureItemType || '';
+  const checklist = INSPECTION_CHECKLISTS[itemType] || [];
+  const isOther = itemType === 'Other' || checklist.length === 0;
+
+  const checkedMap = tx.inspectionChecklist || {};
+  const notes = tx.inspectionNotes || '';
+
+  // Determine if any checklist item is unticked (only relevant when there is a checklist)
+  const anyUnticked = !isOther && checklist.some(item => !checkedMap[item]);
+
+  const toggleItem = (item) => {
+    upd('inspectionChecklist', { ...checkedMap, [item]: !checkedMap[item] });
+  };
+
+  return (
+    <div>
+      <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>✅ Item Inspection Checklist</h3>
+
+      <div style={{ ...S.alert('warning'), marginBottom: '16px' }}>
+        ✅ <strong>Test every item below in front of the customer.</strong> Tick only what you have physically tested and confirmed. Anything you do not test becomes your responsibility if there is a dispute later.
+      </div>
+
+      {isOther ? (
+        <div style={{ ...S.alert('info'), marginBottom: '16px' }}>
+          ℹ️ No standard checklist for &quot;{itemType}&quot;. Use the notes field below to document your inspection observations.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
+          {checklist.map((item) => {
+            const checked = !!checkedMap[item];
+            return (
+              <label
+                key={item}
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer',
+                  padding: '12px', borderRadius: '8px', border: `1px solid ${checked ? '#b7e4c7' : COLORS.border}`,
+                  background: checked ? COLORS.primaryLight : COLORS.bg,
+                  transition: 'background 0.15s, border-color 0.15s',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleItem(item)}
+                  style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0, accentColor: COLORS.primary }}
+                />
+                <span style={{ fontSize: '13px', lineHeight: '1.4', color: checked ? COLORS.text : COLORS.textMuted }}>
+                  {checked ? '✅ ' : '⬜ '}{item}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Prompt if any items are unticked */}
+      {anyUnticked && (
+        <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
+          ⚠ You have left one or more items unticked. Please write a reason in the Notes field below explaining anything you could not test or confirm.
+        </div>
+      )}
+
+      {/* Staff Notes */}
+      <div style={{ marginTop: '4px' }}>
+        <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>
+          📝 Staff Notes
+          {anyUnticked && <span style={{ color: COLORS.danger, fontWeight: 700 }}> *</span>}
+        </div>
+        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>
+          Write anything extra you noticed that is not captured above. Examples: &quot;Customer says battery drains in 3 hours.&quot; / &quot;One key sticks slightly.&quot; / &quot;TV remote is missing — customer says they never had one.&quot; / &quot;Generator started on second pull.&quot; This is a private internal record.
+        </div>
+        <textarea
+          style={{ ...S.textarea, minHeight: '100px' }}
+          value={notes}
+          onChange={e => upd('inspectionNotes', e.target.value)}
+          placeholder={anyUnticked ? 'Required — explain what you could not test and why…' : 'Optional — add any extra observations here…'}
+        />
+        {anyUnticked && !notes.trim() && (
+          <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>
+            ⛔ Notes are required when one or more checklist items are left unticked.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// TRANSACTION WIZARD (11-step flow, saves to database)
 // ============================================================
 const WIZARD_STEPS = [
   { id: 'type', label: '1. Type', icon: '📋' },
@@ -1668,10 +1885,11 @@ const WIZARD_STEPS = [
   { id: 'custPhotos', label: '4. Photos', icon: '📸' },
   { id: 'screening', label: '5. Screening', icon: '❓' },
   { id: 'itemPhotos', label: '6. Capture', icon: '📷' },
-  { id: 'aiValuation', label: '7. AI Value', icon: '🤖' },
-  { id: 'offer', label: '8. Offer', icon: '💰' },
-  { id: 'agreement', label: '9. Agreement', icon: '📄' },
-  { id: 'complete', label: '10. Complete', icon: '✅' },
+  { id: 'inspection', label: '7. Inspection', icon: '✅' },
+  { id: 'aiValuation', label: '8. AI Value', icon: '🤖' },
+  { id: 'offer', label: '9. Offer', icon: '💰' },
+  { id: 'agreement', label: '10. Agreement', icon: '📄' },
+  { id: 'complete', label: '11. Complete', icon: '🏁' },
 ];
 
 const EMPTY_TX = {
@@ -1681,6 +1899,7 @@ const EMPTY_TX = {
   photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null,
   captureItemType: '', itemPowersOn: null, partsOnly: false,
   itemPhotos: [],
+  inspectionChecklist: {}, inspectionNotes: '',
   aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiCondition: '', aiEstimatedValue: '', aiRawResponse: '', requiresIMEI: false,
   imei: '', imeiPhoto: null, imeiModelMatch: false, serialNumber: '', serialNumberPhoto: null,
   hasReceipt: null, receiptPhoto: null,
@@ -1861,6 +2080,13 @@ CONDITION: [detailed condition description]`;
         if (tx.hasReceipt === true && !tx.receiptPhoto) return false;
         return true;
       }
+      case 'inspection': {
+        const checklist = INSPECTION_CHECKLISTS[tx.captureItemType] || [];
+        const checkedMap = tx.inspectionChecklist || {};
+        const anyUnticked = checklist.some(item => !checkedMap[item]);
+        if (anyUnticked && !(tx.inspectionNotes || '').trim()) return false;
+        return true;
+      }
       case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.estimatedValue > 0);
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
       case 'agreement': return !!tx.photoSigning;
@@ -1910,6 +2136,15 @@ CONDITION: [detailed condition description]`;
             if (tx.serialNumberPhoto && !tx.serialNumber) issues.push('You uploaded a serial number photo — please extract or enter the serial number before proceeding.');
           }
           if (tx.hasReceipt === true && !tx.receiptPhoto) issues.push('Receipt photo is required — you indicated a receipt was provided.');
+        }
+        break;
+      }
+      case 'inspection': {
+        const checklist = INSPECTION_CHECKLISTS[tx.captureItemType] || [];
+        const checkedMap = tx.inspectionChecklist || {};
+        const anyUnticked = checklist.some(item => !checkedMap[item]);
+        if (anyUnticked && !(tx.inspectionNotes || '').trim()) {
+          issues.push('One or more checklist items are unticked. You must write a reason in the Staff Notes field before proceeding.');
         }
         break;
       }
@@ -2012,6 +2247,8 @@ CONDITION: [detailed condition description]`;
           onDecline={handleDeclineFromStep}
         />
       );
+
+      case 'inspection': return (<InspectionStep tx={tx} upd={upd} />);
 
       case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button></div></div></div>);
 
