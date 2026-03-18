@@ -1110,7 +1110,7 @@ const DECLINE_REASONS = [
   'Other',
 ];
 
-function ScreeningStep({ tx, upd, onRedFlagExit }) {
+function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
   const showDurationOther = tx.screeningDuration === 'Other';
   const showLocationOther = tx.screeningPurchaseLocation === 'Other';
 
@@ -1177,6 +1177,15 @@ function ScreeningStep({ tx, upd, onRedFlagExit }) {
             </button>
           </div>
         )}
+      </div>
+
+      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
+        <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <button style={S.btnSm('muted')} onClick={() => onDecline('Customer gave inconsistent answers')}>Inconsistent answers</button>
+          <button style={S.btnSm('muted')} onClick={() => onDecline('Item appears stolen / suspicious provenance')}>Suspicious provenance</button>
+          <button style={S.btnSm('muted')} onClick={() => onDecline('Flagged by staff during screening')}>Flagged by staff</button>
+        </div>
       </div>
 
       <Field label="Notes / Observations" style={{ marginTop: '16px' }}>
@@ -1287,7 +1296,7 @@ const AI_PROMPT_SERIAL = `Look at this image carefully. Find the serial number o
 // ============================================================
 // CAPTURE STEP COMPONENT (6A → 6B → 6C → 6D)
 // ============================================================
-function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
+function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDecline }) {
   const [imeiAiLoading, setImeiAiLoading] = useState(false);
   const [imeiAiError, setImeiAiError] = useState('');
   const [serialAiLoading, setSerialAiLoading] = useState(false);
@@ -1495,6 +1504,8 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
           </div>
         </>
       )}
+
+      {tx.captureItemType && <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => onDecline('Item appeared modified')}>Item appeared modified</button></div></div>}
     </div>
   );
 }
@@ -1776,6 +1787,9 @@ CONDITION: [detailed condition description]`;
     // Offer staff a pre-filled declined log entry to review before saving
     setWizDeclineModal({
       date: new Date().toISOString().split('T')[0],
+      ref: tx.ref,
+      customerName: tx.fullName || '',
+      ninBvn: tx.idNumber ? `${tx.idType?.toUpperCase() || 'ID'}: ${tx.idNumber}` : '',
       item: tx.captureItemType || 'Unknown item',
       reason: 'Item does not power on',
       notes: '',
@@ -1787,6 +1801,24 @@ CONDITION: [detailed condition description]`;
     // Jump directly to the Offer step (skipping AI Valuation)
     const offerIdx = WIZARD_STEPS.findIndex(s => s.id === 'offer');
     if (offerIdx !== -1) { saveDraftNow(offerIdx); setStep(offerIdx); }
+  };
+
+  // Generic decline handler — called from any wizard step with a pre-selected reason.
+  // Saves a declined transaction record, removes the draft, then opens the decline log modal.
+  const handleDeclineFromStep = async (reason) => {
+    const declinedTx = { ...tx, status: 'declined', declineReason: `Declined - ${reason}`, wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
+    await API.post('transactions', declinedTx);
+    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
+    setWizDeclineModal({
+      date: new Date().toISOString().split('T')[0],
+      ref: tx.ref,
+      customerName: tx.fullName || '',
+      ninBvn: tx.idNumber ? `${tx.idType?.toUpperCase() || 'ID'}: ${tx.idNumber}` : '',
+      item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : (tx.captureItemType || ''),
+      reason,
+      notes: '',
+      onAfter: onCancel,
+    });
   };
 
   const handleComplete = async () => {
@@ -1803,6 +1835,9 @@ CONDITION: [detailed condition description]`;
     // Offer staff a pre-filled declined log entry to review before saving
     setWizDeclineModal({
       date: new Date().toISOString().split('T')[0],
+      ref: tx.ref,
+      customerName: tx.fullName || '',
+      ninBvn: tx.idNumber ? `${tx.idType?.toUpperCase() || 'ID'}: ${tx.idNumber}` : '',
       item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : (tx.captureItemType || 'Item (screening stage)'),
       reason: 'Flagged by staff during screening',
       notes: '',
@@ -1816,11 +1851,11 @@ CONDITION: [detailed condition description]`;
     switch (sid) {
       case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
 
-      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} inputMode="numeric" value={tx.idNumber} onChange={e => upd('idNumber', e.target.value.replace(/\D/g, ''))} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerificationAttempted && !ninLoading && <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + (tx.ninVerified ? COLORS.primary : COLORS.warning) }} alt="NIN/BVN Photo" />}<div style={{ flex: 1 }}><div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}</div>);
+      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} inputMode="numeric" value={tx.idNumber} onChange={e => upd('idNumber', e.target.value.replace(/\D/g, ''))} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerificationAttempted && !ninLoading && <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + (tx.ninVerified ? COLORS.primary : COLORS.warning) }} alt="NIN/BVN Photo" />}<div style={{ flex: 1 }}><div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('NIN photo did not match')}>NIN photo did not match</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer could not provide valid ID')}>Customer could not provide valid ID</button></div></div></div>);
 
       case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value.replace(/\D/g, ''); upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[1]} onChange={e => { const val = e.target.value.replace(/\D/g, ''); const n = [...tx.phoneNumbers]; n[1] = val; upd('phoneNumbers', n); if (!val) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required><input style={S.input} inputMode="numeric" value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value.replace(/\D/g, ''))} placeholder="e.g. 08099887766" /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
-      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div></div>);
+      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
 
       case 'itemPhotos': return (
         <CaptureStep
@@ -1829,15 +1864,16 @@ CONDITION: [detailed condition description]`;
           settings={settings}
           onJumpToOffer={handlePartsOnlyJump}
           onEndTransaction={handleEndTransaction}
+          onDecline={handleDeclineFromStep}
         />
       );
 
-      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}</div>);
+      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button></div></div></div>);
 
 
-      case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} />);
+      case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
 
-      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || 30)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div></div>);
+      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || 30)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item not acceptable as collateral')}>Item not acceptable as collateral</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>Print Agreement</strong> — a filled-in form will open in a new window ready to print. Load plain paper in your printer, click the Print button in that window, and it prints both the Business Copy and Customer Copy with all the transaction data already filled in. Read every clause aloud to the customer. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
       <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
@@ -1867,7 +1903,8 @@ CONDITION: [detailed condition description]`;
       </button>
       <div style={{ marginTop: '16px' }}>
         <PhotoUpload label="Photo of Signing / Thumbprint" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} />
-      </div></div>);
+      </div>
+      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
 
       case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>✅ Finalize</h3><div style={S.alert('info')}>📋 Tick the service fee checkbox <strong>only after you have physically collected ₦{settings.serviceFee?.toLocaleString() || '1,000'}</strong> from the customer. Then count the cash advance in front of the customer, let them count it too, and click Complete.</div>{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}<label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>₦{settings.serviceFee} service fee collected <span style={{ color: COLORS.danger }}>*</span></span></label><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: !tx.serviceFeeCollected ? 0.5 : 1 }} disabled={!tx.serviceFeeCollected} onClick={handleComplete}>{!tx.serviceFeeCollected ? '⚠ Tick Service Fee to Complete' : '✅ Complete Transaction — Save to Database'}</button></div>);
 
@@ -1931,19 +1968,35 @@ CONDITION: [detailed condition description]`;
 function WizardDeclineLogModal({ prefill, onSave, onSkip }) {
   const [entry, setEntry] = useState({
     date: prefill.date || new Date().toISOString().split('T')[0],
+    ref: prefill.ref || '',
+    customerName: prefill.customerName || '',
+    ninBvn: prefill.ninBvn || '',
     item: prefill.item || '',
     reason: prefill.reason || '',
     notes: prefill.notes || '',
   });
   const upd = (k, v) => setEntry(prev => ({ ...prev, [k]: v }));
   return (
-    <Modal open title="📋 Log This Declined Customer?">
+    <Modal open onClose={onSkip} title="📋 Log This Declined Customer?">
       <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
         ⚠️ The transaction has been declined. Please review the details below and save an entry to the Declined Log — this helps track patterns over time.
       </div>
-      <Field label="Date">
-        <input style={S.input} type="date" value={entry.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => upd('date', e.target.value)} />
-      </Field>
+      <div style={S.grid2}>
+        <Field label="Date">
+          <input style={S.input} type="date" value={entry.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => upd('date', e.target.value)} />
+        </Field>
+        <Field label="Ref #">
+          <input style={S.input} value={entry.ref} onChange={e => upd('ref', e.target.value)} placeholder="e.g. CFC-20240101-A1B2" />
+        </Field>
+      </div>
+      <div style={S.grid2}>
+        <Field label="Customer Name">
+          <input style={S.input} value={entry.customerName} onChange={e => upd('customerName', e.target.value)} placeholder="e.g. David Chukwuemeka" />
+        </Field>
+        <Field label="NIN / BVN">
+          <input style={S.input} value={entry.ninBvn} onChange={e => upd('ninBvn', e.target.value)} placeholder="e.g. NIN: 12345678901" />
+        </Field>
+      </div>
       <Field label="Item Brought">
         <input style={S.input} value={entry.item} onChange={e => upd('item', e.target.value)} placeholder="e.g. Smartphone Samsung Galaxy A14" />
       </Field>
@@ -2132,6 +2185,7 @@ export default function App() {
   const [showAddDistribution, setShowAddDistribution] = useState(false);
   const [expandedCapital, setExpandedCapital] = useState(new Set());
   const [showAddDeclined, setShowAddDeclined] = useState(false);
+  const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [txPage, setTxPage] = useState(1);
@@ -2510,7 +2564,7 @@ export default function App() {
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={S.cardTitle}>Recent Transactions</div><TxTable items={transactions.slice(0, 10)} /></div>
-        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
+        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={() => setDeclineDraftModal(d)}>Decline</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
       </div>);
 
       case 'transactions': return (<div>{listLoadingNotice}
@@ -3031,6 +3085,8 @@ export default function App() {
               <thead>
                 <tr>
                   <th style={S.th}>Date</th>
+                  <th style={S.th}>Ref #</th>
+                  <th style={S.th}>Customer</th>
                   <th style={S.th}>Item Brought</th>
                   <th style={S.th}>Reason</th>
                   <th style={S.th}>Notes</th>
@@ -3040,12 +3096,17 @@ export default function App() {
                 {declinedLog.map((d, i) => (
                   <tr key={i}>
                     <td style={S.td}>{fmtDate(d.date)}</td>
+                    <td style={{ ...S.td, fontSize: '12px', color: COLORS.textMuted }}>{d.ref || '—'}</td>
+                    <td style={S.td}>
+                      <div>{d.customerName || '—'}</div>
+                      {d.ninBvn && <div style={{ fontSize: '11px', color: COLORS.textMuted }}>{d.ninBvn}</div>}
+                    </td>
                     <td style={S.td}>{d.item}</td>
                     <td style={S.td}>{d.reason}</td>
                     <td style={{ ...S.td, color: d.notes ? COLORS.textDark : COLORS.textMuted, fontStyle: d.notes ? 'normal' : 'italic' }}>{d.notes || '—'}</td>
                   </tr>
                 ))}
-                {declinedLog.length === 0 && <tr><td style={S.td} colSpan={4}>None.</td></tr>}
+                {declinedLog.length === 0 && <tr><td style={S.td} colSpan={6}>None.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -3292,12 +3353,25 @@ export default function App() {
   };
 
   const DecModal = () => {
-    const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '', notes: '' });
+    const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], ref: '', customerName: '', ninBvn: '', item: '', reason: '', notes: '' });
     return (
       <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined Customer">
-        <Field label="Date">
-          <input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} />
-        </Field>
+        <div style={S.grid2}>
+          <Field label="Date">
+            <input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} />
+          </Field>
+          <Field label="Ref # (optional)">
+            <input style={S.input} value={dec.ref} onChange={e => setDec({ ...dec, ref: e.target.value })} placeholder="e.g. CFC-20240101-A1B2" />
+          </Field>
+        </div>
+        <div style={S.grid2}>
+          <Field label="Customer Name (optional)">
+            <input style={S.input} value={dec.customerName} onChange={e => setDec({ ...dec, customerName: e.target.value })} placeholder="e.g. David Chukwuemeka" />
+          </Field>
+          <Field label="NIN / BVN (optional)">
+            <input style={S.input} value={dec.ninBvn} onChange={e => setDec({ ...dec, ninBvn: e.target.value })} placeholder="e.g. NIN: 12345678901" />
+          </Field>
+        </div>
         <Field label="Item Brought" required>
           <input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} placeholder="e.g. Smartphone Samsung Galaxy A14" />
         </Field>
@@ -3311,6 +3385,74 @@ export default function App() {
           <textarea style={S.textarea} value={dec.notes} onChange={e => setDec({ ...dec, notes: e.target.value })} placeholder="e.g. NIN photo did not match, customer gave two different answers about purchase date…" rows={3} />
         </Field>
         <button style={S.btn('primary')} disabled={!dec.item || !dec.reason} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button>
+      </Modal>
+    );
+  };
+
+  const DeclineDraftModal = () => {
+    const d = declineDraftModal;
+    const ninBvnPrefill = d?.idNumber ? `${d.idType?.toUpperCase() || 'ID'}: ${d.idNumber}` : '';
+    const itemPrefill = d?.aiItemType ? `${d.aiItemType} ${d.aiBrand || ''} ${d.aiModel || ''}`.trim() : (d?.captureItemType || '');
+    const [dec, setDec] = useState({
+      date: new Date().toISOString().split('T')[0],
+      ref: d?.ref || '',
+      customerName: d?.fullName || '',
+      ninBvn: ninBvnPrefill,
+      item: itemPrefill,
+      reason: '',
+      notes: '',
+    });
+    if (!d) return null;
+    const handleSave = async () => {
+      const entry = { ...dec, id: Date.now() };
+      setDeclinedLog(prev => [entry, ...prev]);
+      setDeclineDraftModal(null);
+      setDrafts(prev => prev.filter(x => x.ref !== d.ref));
+      await API.post('declined', dec);
+      await API.del(`drafts/${encodeURIComponent(d.ref)}`);
+      loadData();
+    };
+    return (
+      <Modal open={!!d} onClose={() => setDeclineDraftModal(null)} title="🚫 Decline In-Progress Draft">
+        <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
+          ⚠️ This will decline and remove the draft. Fill in the reason and save an entry to the Declined Log.
+        </div>
+        <div style={S.grid2}>
+          <Field label="Date">
+            <input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} />
+          </Field>
+          <Field label="Ref #">
+            <input style={{ ...S.input, background: COLORS.bg }} value={dec.ref} readOnly />
+          </Field>
+        </div>
+        <div style={S.grid2}>
+          <Field label="Customer Name">
+            <input style={S.input} value={dec.customerName} onChange={e => setDec({ ...dec, customerName: e.target.value })} placeholder="e.g. David Chukwuemeka" />
+          </Field>
+          <Field label="NIN / BVN">
+            <input style={S.input} value={dec.ninBvn} onChange={e => setDec({ ...dec, ninBvn: e.target.value })} placeholder="e.g. NIN: 12345678901" />
+          </Field>
+        </div>
+        <Field label="Item Brought" required>
+          <input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} placeholder="e.g. Smartphone Samsung Galaxy A14" />
+        </Field>
+        <Field label="Decline Reason" required>
+          <select style={S.select} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })}>
+            <option value="">— Select a reason —</option>
+            {DECLINE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </Field>
+        <Field label="Additional Notes (optional)">
+          <textarea style={S.textarea} value={dec.notes} onChange={e => setDec({ ...dec, notes: e.target.value })} placeholder="e.g. Customer gave two different answers about purchase date…" rows={3} />
+        </Field>
+        <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+          <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={!dec.item || !dec.reason} onClick={handleSave}>
+            🚫 Decline &amp; Save to Log
+          </button>
+          <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={() => setDeclineDraftModal(null)}>
+            Cancel
+          </button>
+        </div>
       </Modal>
     );
   };
@@ -3425,7 +3567,7 @@ export default function App() {
         </div>
       )}
 
-      <ExpModal /><CapModal /><DistModal /><DecModal /><UsrModal /><EditUserModal />
+      <ExpModal /><CapModal /><DistModal /><DecModal /><DeclineDraftModal /><UsrModal /><EditUserModal />
       <Modal open={!!repayingTx} onClose={() => setRepayingTx(null)} title="Record Repayment">{repayingTx && <RepaymentModal tx={repayingTx} settings={settings} onClose={() => setRepayingTx(null)} onSave={async (tx) => { await saveTx(tx); setRepayingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!sellingTx} onClose={() => setSellingTx(null)} title="Record Sale" wide>{sellingTx && <SaleModal tx={sellingTx} settings={settings} onClose={() => setSellingTx(null)} onSave={async (tx) => { await saveTx(tx); setSellingTx(null); loadData(); }} />}</Modal>
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); setViewingTx(tx); }} />}</Modal>
