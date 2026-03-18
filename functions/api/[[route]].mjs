@@ -876,6 +876,59 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // PUBLIC LOAN STATUS CHECK: GET /api/check-loan?ref=CIF-DDMMYY-NNN
+    // No authentication required — returns only non-sensitive fields.
+    // ============================================================
+    if (path === 'check-loan' && method === 'GET') {
+      const ref = (url.searchParams.get('ref') || '').trim().toUpperCase();
+      if (!ref) return error('ref query parameter is required', 400);
+
+      const [row, loanCfg] = await Promise.all([
+        db.prepare('SELECT data, status FROM transactions WHERE UPPER(ref) = ?').bind(ref).first(),
+        loadLoanConfig(db),
+      ]);
+
+      if (!row) return json({ found: false });
+
+      const txData = JSON.parse(row.data);
+      const withTimeline = withLoanTimeline({ ...txData, status: row.status }, loanCfg);
+
+      // Return only the fields needed by the customer portal — no NIN, BVN, photos, etc.
+      const {
+        ref: txRef, type, status,
+        fullName,
+        aiItemType, aiBrand, aiModel,
+        cashAdvance, dailyFee,
+        dateGiven, deadlineDate, loanDays,
+        // loan timeline fields
+        elapsedDays, customer_due_date, internal_deadline,
+        grace_end_date, sale_allowed_date, loanStatus,
+      } = withTimeline;
+
+      return json({
+        found: true,
+        ref: txRef,
+        type,
+        status,
+        fullName,
+        aiItemType,
+        aiBrand,
+        aiModel,
+        cashAdvance,
+        dailyFee,
+        dateGiven,
+        deadlineDate,
+        loanDays,
+        elapsedDays,
+        customer_due_date,
+        internal_deadline,
+        grace_end_date,
+        sale_allowed_date,
+        loanStatus,
+      });
+    }
+
+    // ============================================================
     // HEALTH CHECK: GET /api/health
     // ============================================================
     if (path === 'health' || path === '') {

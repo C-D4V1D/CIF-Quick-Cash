@@ -729,8 +729,8 @@ function CustomerPortal({ onBack, settings }) {
       setSearched(true);
       return;
     }
-    const data = await API.get('transactions');
-    const found = Array.isArray(data) ? withLoanTimelines(data, settings).find(t => t.ref?.toUpperCase() === fullRef.toUpperCase()) : null;
+    const data = await API.get(`check-loan?ref=${encodeURIComponent(fullRef)}`);
+    const found = data?.found ? data : null;
     setResult(found || 'not_found');
     setSearched(true);
   };
