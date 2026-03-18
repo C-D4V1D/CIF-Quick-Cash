@@ -68,18 +68,20 @@ const requireAdmin = (request) => {
 
 // ============================================================
 // LOAN TIMELINE HELPERS
-// Rules:
-//   internal_deadline  = dateGiven + 30 days  (business takes ownership)
-//   grace_end_date     = dateGiven + 33 days  (end of grace period)
-//   sale_allowed_date  = dateGiven + 34 days  (earliest sale date)
-//   customer_due_date  = dateGiven + loanDays (customer's agreed repayment date)
+// Rules (using admin-configured maxLoanDays and graceDays):
+//   internal_deadline  = dateGiven + maxLoanDays          (business takes ownership)
+//   grace_end_date     = dateGiven + maxLoanDays + graceDays
+//   sale_allowed_date  = dateGiven + maxLoanDays + graceDays + 1 (first day of sale eligibility)
+//   customer_due_date  = deadlineDate, or dateGiven + loanDays
 //
 // Status transitions (advance loans only):
-//   ACTIVE           — before customer_due_date
-//   OVERDUE          — after customer_due_date, before day 30
-//   OWNED_BY_BUSINESS — day 30 exactly
-//   GRACE_PERIOD     — days 31–33
-//   ELIGIBLE_FOR_SALE — day 34+
+//   ACTIVE            — before customer_due_date
+//   OVERDUE           — after customer_due_date, before maxLoanDays
+//   OWNED_BY_BUSINESS — on day maxLoanDays exactly
+//   GRACE_PERIOD      — days maxLoanDays+1 through maxLoanDays+graceDays
+//   ELIGIBLE_FOR_SALE — day maxLoanDays+graceDays+1 onwards
+//
+// Defaults: maxLoanDays=30, graceDays=3  (matches DEFAULT_SETTINGS)
 // ============================================================
 
 // Add N calendar days to a YYYY-MM-DD or ISO date string; returns YYYY-MM-DD.
@@ -105,24 +107,34 @@ const elapsedDaysSince = (dateStr) => {
   return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
+// Load loan-duration settings from D1.
+// Returns { maxLoanDays, graceDays } with safe defaults.
+const loadLoanConfig = async (db) => {
+  const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+  const cfg = row ? JSON.parse(row.value) : {};
+  return {
+    maxLoanDays: Math.max(1, Number(cfg.maxLoanDays) || 30),
+    graceDays:   Math.max(0, Number(cfg.graceDays)   || 3),
+  };
+};
+
 // Compute the loan timeline for an advance transaction.
-// txData  — parsed JSON data from the transactions table
+// txData   — parsed JSON data from the transactions table
+// loanCfg  — { maxLoanDays, graceDays } from admin settings
 // Returns an object with computed dates and the derived loanStatus string.
-const computeLoanTimeline = (txData) => {
-  // Use the date the loan was physically given (stored in the data JSON).
-  // Fall back to today if missing.
+const computeLoanTimeline = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) => {
   const baseDate = txData.dateGiven || null;
   if (!baseDate) return null;
 
   // Rule 1: Fixed internal milestones measured from dateGiven
-  const internal_deadline  = addDaysToDate(baseDate, 30); // business ownership begins
-  const grace_end_date     = addDaysToDate(baseDate, 33); // grace period ends
-  const sale_allowed_date  = addDaysToDate(baseDate, 34); // earliest allowed sale date
+  const internal_deadline  = addDaysToDate(baseDate, maxLoanDays);                   // business ownership begins
+  const grace_end_date     = addDaysToDate(baseDate, maxLoanDays + graceDays);        // grace period ends
+  const sale_allowed_date  = addDaysToDate(baseDate, maxLoanDays + graceDays + 1);   // earliest allowed sale date
 
   // Rule 2: Customer due date = dateGiven + agreed loan duration (loanDays).
   // Use the stored deadlineDate if available (already computed at entry time),
   // otherwise derive it from loanDays.
-  const loanDays = Number(txData.loanDays) || 30;
+  const loanDays = Number(txData.loanDays) || maxLoanDays;
   const customer_due_date = txData.deadlineDate || addDaysToDate(baseDate, loanDays);
 
   // Elapsed calendar days since the loan was given
@@ -130,19 +142,19 @@ const computeLoanTimeline = (txData) => {
 
   // Rule 3: Status transitions
   let loanStatus;
-  if (elapsedDays >= 34) {
-    loanStatus = 'ELIGIBLE_FOR_SALE';  // day 34+ — ready for sale
-  } else if (elapsedDays >= 31) {
-    loanStatus = 'GRACE_PERIOD';       // days 31–33 — final grace period
-  } else if (elapsedDays >= 30) {
-    loanStatus = 'OWNED_BY_BUSINESS';  // day 30 — business has taken ownership
+  if (elapsedDays >= maxLoanDays + graceDays + 1) {
+    loanStatus = 'ELIGIBLE_FOR_SALE';   // past grace end — ready for sale
+  } else if (elapsedDays >= maxLoanDays + 1) {
+    loanStatus = 'GRACE_PERIOD';        // within grace window
+  } else if (elapsedDays >= maxLoanDays) {
+    loanStatus = 'OWNED_BY_BUSINESS';   // ownership day
   } else {
-    // Before day 30: check whether the customer's agreed due date has passed
+    // Before ownership: check whether the customer's agreed due date has passed
     const today = new Date().toISOString().split('T')[0];
     if (customer_due_date && today > customer_due_date) {
-      loanStatus = 'OVERDUE';          // past customer deadline, not yet day 30
+      loanStatus = 'OVERDUE';           // past customer deadline, not yet owned
     } else {
-      loanStatus = 'ACTIVE';           // within customer's agreed term
+      loanStatus = 'ACTIVE';            // within customer's agreed term
     }
   }
 
@@ -158,10 +170,10 @@ const computeLoanTimeline = (txData) => {
 
 // Attach loan timeline fields to a transaction record (advance loans only).
 // Returns the original record unchanged for outright purchases and closed/sold loans.
-const withLoanTimeline = (r) => {
+const withLoanTimeline = (r, loanCfg = {}) => {
   // Only compute for advance loans that are still active
   if (!r || r.type === 'outright' || r.status === 'closed' || r.status === 'sold') return r;
-  const timeline = computeLoanTimeline(r);
+  const timeline = computeLoanTimeline(r, loanCfg);
   if (!timeline) return r;
   return { ...r, ...timeline };
 };
@@ -343,19 +355,25 @@ export async function onRequest(context) {
         const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '100', 10) || 100));
         const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
 
-        const [transactionsRes, draftsRes, txCountRow, draftCountRow] = await Promise.all([
+        const [transactionsRes, draftsRes, txCountRow, draftCountRow, settingsRow] = await Promise.all([
           db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
           db.prepare('SELECT ref, data, updated_at FROM drafts ORDER BY updated_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
           db.prepare('SELECT COUNT(*) AS total FROM transactions').first(),
-          db.prepare('SELECT COUNT(*) AS total FROM drafts').first()
+          db.prepare('SELECT COUNT(*) AS total FROM drafts').first(),
+          db.prepare("SELECT value FROM settings WHERE key = 'config'").first()
         ]);
+
+        const loanCfg = (() => {
+          const cfg = settingsRow ? JSON.parse(settingsRow.value) : {};
+          return { maxLoanDays: Math.max(1, Number(cfg.maxLoanDays) || 30), graceDays: Math.max(0, Number(cfg.graceDays) || 3) };
+        })();
 
         const totalTransactions = txCountRow?.total || 0;
         const totalDrafts = draftCountRow?.total || 0;
         const hasMore = offset + limit < Math.max(totalTransactions, totalDrafts);
 
         return json({
-          transactions: transactionsRes.results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status, created_at: r.created_at, updated_at: r.updated_at })),
+          transactions: transactionsRes.results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status, created_at: r.created_at, updated_at: r.updated_at }, loanCfg)),
           drafts: draftsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })),
           pagination: {
             limit,
@@ -476,14 +494,20 @@ export async function onRequest(context) {
     if (path === 'transactions' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC').all();
-      return json(results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status })));
+      const [resultsRes, loanCfg] = await Promise.all([
+        db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC').all(),
+        loadLoanConfig(db)
+      ]);
+      return json(resultsRes.results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status }, loanCfg)));
     }
     if (path === 'transactions' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const tx = await request.json();
-      const existing = await db.prepare('SELECT ref, status, data FROM transactions WHERE ref = ?').bind(tx.ref).first();
+      const [existing, loanCfg] = await Promise.all([
+        db.prepare('SELECT ref, status, data FROM transactions WHERE ref = ?').bind(tx.ref).first(),
+        loadLoanConfig(db)
+      ]);
       const existingData = existing?.data ? JSON.parse(existing.data) : null;
       if (tx.status === 'for_sale' && !tx.listedForSaleDate) {
         tx.listedForSaleDate = existingData?.listedForSaleDate
@@ -491,15 +515,16 @@ export async function onRequest(context) {
           || new Date().toISOString();
       }
 
-      // Rule 4: Prevent marking an advance loan for sale before sale_allowed_date (day 34).
-      // This also satisfies the rule that items cannot be marked as inventory before day 30,
-      // since day 34 > day 30.
+      // Prevent marking an advance loan for sale before sale_allowed_date.
+      // sale_allowed_date = dateGiven + maxLoanDays + graceDays + 1
+      // This single check covers both the "no sale before day maxLoanDays+graceDays+1"
+      // and "no inventory before day maxLoanDays" constraints.
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
-        const timeline = computeLoanTimeline(tx);
+        const timeline = computeLoanTimeline(tx, loanCfg);
         if (timeline && timeline.sale_allowed_date) {
           const today = new Date().toISOString().split('T')[0];
           if (today < timeline.sale_allowed_date) {
-            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day 34 onwards; business ownership begins at day 30)`, 422);
+            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
           }
         }
       }
@@ -534,7 +559,10 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
       const tx = await request.json();
-      const existing = await db.prepare('SELECT status, data FROM transactions WHERE ref = ?').bind(ref).first();
+      const [existing, loanCfg] = await Promise.all([
+        db.prepare('SELECT status, data FROM transactions WHERE ref = ?').bind(ref).first(),
+        loadLoanConfig(db)
+      ]);
       const existingData = existing?.data ? JSON.parse(existing.data) : null;
       if (tx.status === 'for_sale' && !tx.listedForSaleDate) {
         tx.listedForSaleDate = existingData?.listedForSaleDate
@@ -542,15 +570,13 @@ export async function onRequest(context) {
           || new Date().toISOString();
       }
 
-      // Rule 4: Prevent marking an advance loan for sale before sale_allowed_date (day 34).
-      // This also satisfies the rule that items cannot be marked as inventory before day 30,
-      // since day 34 > day 30.
+      // Prevent marking an advance loan for sale before sale_allowed_date.
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
-        const timeline = computeLoanTimeline(tx);
+        const timeline = computeLoanTimeline(tx, loanCfg);
         if (timeline && timeline.sale_allowed_date) {
           const today = new Date().toISOString().split('T')[0];
           if (today < timeline.sale_allowed_date) {
-            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day 34 onwards; business ownership begins at day 30)`, 422);
+            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
           }
         }
       }

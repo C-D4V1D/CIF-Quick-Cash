@@ -119,16 +119,19 @@ const addDays = (dateStr, daysToAdd) => {
   return date.toISOString().split('T')[0];
 };
 
-const getLoanTimeline = (tx) => {
+// settings is optional — falls back to safe defaults when not yet loaded.
+const getLoanTimeline = (tx, settings = {}) => {
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const graceDays   = Math.max(0, Number(settings.graceDays)   || 3);
   const elapsedDays = daysBetween(tx?.dateGiven);
-  const customerDueDate = tx?.deadlineDate || addDays(tx?.dateGiven, Number(tx?.loanDays) || 30);
-  const internalDeadline = addDays(tx?.dateGiven, 30);
-  const graceEndDate = addDays(tx?.dateGiven, 33);
-  const saleAllowedDate = addDays(tx?.dateGiven, 34);
+  const customerDueDate = tx?.deadlineDate || addDays(tx?.dateGiven, Number(tx?.loanDays) || maxLoanDays);
+  const internalDeadline = addDays(tx?.dateGiven, maxLoanDays);
+  const graceEndDate     = addDays(tx?.dateGiven, maxLoanDays + graceDays);
+  const saleAllowedDate  = addDays(tx?.dateGiven, maxLoanDays + graceDays + 1);
   const isOverdueToCustomerAgreement = !!customerDueDate && daysBetween(customerDueDate) > 0;
-  const isOwnedByBusiness = elapsedDays >= 30;
-  const isInFinalGrace = elapsedDays >= 31 && elapsedDays <= 33;
-  const isEligibleForSale = elapsedDays >= 34;
+  const isOwnedByBusiness = elapsedDays >= maxLoanDays;
+  const isInFinalGrace    = elapsedDays >= maxLoanDays + 1 && elapsedDays <= maxLoanDays + graceDays;
+  const isEligibleForSale = elapsedDays >= maxLoanDays + graceDays + 1;
   return {
     elapsedDays,
     customer_due_date: customerDueDate,
@@ -142,12 +145,12 @@ const getLoanTimeline = (tx) => {
   };
 };
 
-const withLoanTimeline = (tx) => {
+const withLoanTimeline = (tx, settings = {}) => {
   if (!tx || tx.type === 'outright') return tx;
-  return { ...tx, ...getLoanTimeline(tx) };
+  return { ...tx, ...getLoanTimeline(tx, settings) };
 };
 
-const withLoanTimelines = (items = []) => items.map(withLoanTimeline);
+const withLoanTimelines = (items = [], settings = {}) => items.map(tx => withLoanTimeline(tx, settings));
 
 const getCustomerDaysLeft = (tx) => {
   const dueDate = tx?.deadlineDate || tx?.customer_due_date;
@@ -184,10 +187,10 @@ const fmtDate = (d) => {
   return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 };
 
-const statusColor = (tx) => {
+const statusColor = (tx, settings = {}) => {
   if (tx.status === 'closed' || tx.status === 'sold') return '#10b981';
   if (tx.status === 'for_sale') return '#8b5cf6';
-  const timeline = getLoanTimeline(tx);
+  const timeline = getLoanTimeline(tx, settings);
   const customerDaysLeft = getCustomerDaysLeft(tx);
   if (timeline.isEligibleForSale) return '#1e1e1e';
   if (timeline.isInFinalGrace) return '#7c3aed';
@@ -196,13 +199,13 @@ const statusColor = (tx) => {
   return '#10b981';
 };
 
-const statusLabel = (tx) => {
+const statusLabel = (tx, settings = {}) => {
   if (tx.status === 'closed') return 'Closed — Returned';
   if (tx.status === 'sold') return 'Sold';
   if (tx.status === 'for_sale') return 'Listed for Sale';
   if (tx.status === 'declined') return 'Declined';
   if (tx.type === 'outright') return 'Outright Purchase';
-  const timeline = getLoanTimeline(tx);
+  const timeline = getLoanTimeline(tx, settings);
   const customerDaysLeft = getCustomerDaysLeft(tx);
   if (timeline.isEligibleForSale) return 'Ready to Sell';
   if (timeline.isInFinalGrace) return 'Final Grace Period';
@@ -727,7 +730,7 @@ function CustomerPortal({ onBack, settings }) {
       return;
     }
     const data = await API.get('transactions');
-    const found = Array.isArray(data) ? withLoanTimelines(data).find(t => t.ref?.toUpperCase() === fullRef.toUpperCase()) : null;
+    const found = Array.isArray(data) ? withLoanTimelines(data, settings).find(t => t.ref?.toUpperCase() === fullRef.toUpperCase()) : null;
     setResult(found || 'not_found');
     setSearched(true);
   };
@@ -760,9 +763,11 @@ function CustomerPortal({ onBack, settings }) {
 
   const getDaysInfo = (tx) => {
     if (!tx || tx.type === 'outright') return null;
+    const maxLoanDays  = Math.max(1, Number(s.maxLoanDays) || 30);
+    const graceDays    = Math.max(0, Number(s.graceDays)   || 3);
     const elapsed = daysBetween(tx.dateGiven);
-    const agreedDueDay = Math.max(0, Number(tx.loanDays) || 30);
-    const saleEligibleDay = 34;
+    const agreedDueDay = Math.max(0, Number(tx.loanDays) || maxLoanDays);
+    const saleEligibleDay = maxLoanDays + graceDays + 1;
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const agreedDueDate = tx.deadlineDate ? new Date(tx.deadlineDate) : null;
     if (agreedDueDate) agreedDueDate.setHours(0, 0, 0, 0);
@@ -786,7 +791,7 @@ function CustomerPortal({ onBack, settings }) {
       isBeforeAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue > 0 : elapsed < agreedDueDay,
       isAfterAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue < 0 : elapsed > agreedDueDay,
       isOnAgreedDueDate: daysUntilAgreedDue === 0,
-      isGraceWindow: elapsed >= 30 && elapsed <= 33,
+      isGraceWindow: elapsed >= maxLoanDays + 1 && elapsed <= maxLoanDays + graceDays,
       isSaleEligible: elapsed >= saleEligibleDay,
     };
   };
@@ -797,8 +802,8 @@ function CustomerPortal({ onBack, settings }) {
     if (tx.type === 'outright') return { label: 'Outright Purchase', color: '#8b5cf6' };
     const info = getDaysInfo(tx);
     if (!info) return { label: 'Active Loan', color: '#10b981' };
-    if (info.isSaleEligible) return { label: 'Eligible for Sale', color: '#ef4444' };
-    if (info.isGraceWindow) return { label: 'Owned by Business / Final Grace', color: '#8b5cf6' };
+    if (info.isSaleEligible) return { label: 'Purchased by Business', color: '#ef4444' };
+    if (info.isGraceWindow) return { label: 'Purchased by Business', color: '#8b5cf6' };
     if (info.isAfterAgreedDue || info.isOnAgreedDueDate) return { label: 'Overdue', color: '#f59e0b' };
     return { label: 'Active Loan', color: '#10b981' };
   };
@@ -881,24 +886,24 @@ function CustomerPortal({ onBack, settings }) {
             if (tx.status === 'closed') return null;
             if (tx.status === 'sold') return {
               bg: '#1e1e1e', border: '#4b5563', textColor: '#d1d5db',
-              msg: `This item was sold. Your agreed return date was ${agreedDueDateLabel}, and the shop final sale date started on ${saleDateLabel || 'Day 34'}.`
+              msg: `This item has been sold. Your agreed return date was ${agreedDueDateLabel}.`
             };
             if (tx.type === 'outright' || !daysInfo) return null;
             if (daysInfo.isSaleEligible) return {
               bg: '#3d1515', border: '#ef4444', textColor: '#fca5a5',
-              msg: `Your agreed return date was ${agreedDueDateLabel}. The shop final date before sale was ${saleDateLabel || 'Day 34'}, and your item is now eligible for sale. Please contact us immediately if you need an update.`
+              msg: `Your agreed return date of ${agreedDueDateLabel} has passed. Your item is now eligible for sale. Please contact us immediately if you need further information.`
             };
             if (daysInfo.isGraceWindow) return {
-              bg: '#2d1f4e', border: '#8b5cf6', textColor: '#ddd6fe',
-              msg: `Your agreed return date was ${agreedDueDateLabel}. We are now in the final grace window before sale. The shop final date before sale is ${saleDateLabel || 'Day 34'}. Please visit or call us as soon as possible if you want to repay and collect your item.`
+              bg: '#3d1515', border: '#ef4444', textColor: '#fca5a5',
+              msg: `Your agreed return date of ${agreedDueDateLabel} has passed. Your item is now considered purchased by the business. Please visit or call us as soon as possible.`
             };
             if (daysInfo.isAfterAgreedDue || daysInfo.isOnAgreedDueDate) return {
               bg: '#3d2600', border: '#f59e0b', textColor: '#fcd34d',
-              msg: `Your agreed return date was ${agreedDueDateLabel}. Your loan is now overdue, but repayment is still available before the shop final date before sale on ${saleDateLabel || 'Day 34'}.`
+              msg: `Your agreed return date was ${agreedDueDateLabel}. Your loan is now overdue. Please contact us as soon as possible to arrange repayment and collect your item.`
             };
             if (daysInfo.daysUntilAgreedDue !== null) return {
               bg: '#0f2920', border: '#10b981', textColor: '#a7f3d0',
-              msg: `Your loan is active. Your agreed return date is ${agreedDueDateLabel}, and the shop final date before sale is ${saleDateLabel || 'Day 34'}.`
+              msg: `Your loan is active. Your agreed return date is ${agreedDueDateLabel}. Please ensure you repay on time to collect your item.`
             };
             return null;
           };
@@ -940,10 +945,6 @@ function CustomerPortal({ onBack, settings }) {
                   <div>
                     <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Your agreed return date</div>
                     <div style={{ fontWeight: 700, fontSize: '15px', color: isOverdue ? '#f59e0b' : '#fff' }}>{agreedDueDateLabel}</div>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Shop final date before sale</div>
-                    <div style={{ fontWeight: 700, fontSize: '15px', color: daysInfo?.isSaleEligible ? '#ef4444' : '#fff' }}>{saleDateLabel || 'Day 34'}</div>
                   </div>
                 </div>
 
@@ -1837,7 +1838,7 @@ CONDITION: [detailed condition description]`;
 
       case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} />);
 
-      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || 30)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div></div>);
+      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || maxLoanDays)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div></div>);
 
       case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>Print Agreement</strong> — a filled-in form will open in a new window ready to print. Load plain paper in your printer, click the Print button in that window, and it prints both the Business Copy and Customer Copy with all the transaction data already filled in. Read every clause aloud to the customer. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
       <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
@@ -1996,7 +1997,8 @@ function RepaymentModal({ tx, settings, onClose, onSave }) {
 
 function SaleModal({ tx, settings, onClose, onSave }) {
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
-  const minPrice = (tx.cashAdvance || 0) + 33 * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
+  const maxHoldDays = (Math.max(1, Number(settings.maxLoanDays) || 30)) + (Math.max(0, Number(settings.graceDays) || 3));
+  const minPrice = (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
   const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
   const listedPrice = Math.max(targetPrice, minPrice);
   const [salePrice, setSalePrice] = useState(listedPrice);
@@ -2102,7 +2104,10 @@ export default function App() {
   const location = useLocation();
   const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
   const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
-  const [transactions, setTransactions] = useState(() => withLoanTimelines(readCache('cfc_transactions')?.transactions || []));
+  const [transactions, setTransactions] = useState(() => {
+    const cachedSettings = { ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) };
+    return withLoanTimelines(readCache('cfc_transactions')?.transactions || [], cachedSettings);
+  });
   const [drafts, setDrafts] = useState(() => readCache('cfc_transactions')?.drafts || []);
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
   const [users, setUsers] = useState([]);
@@ -2215,7 +2220,7 @@ export default function App() {
     // Load large list datasets in the background so navigation/header remain interactive.
     const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');
     if (lists) {
-      const normalizedTransactions = withLoanTimelines(lists.transactions || []);
+      const normalizedTransactions = withLoanTimelines(lists.transactions || [], settings);
       setTransactions(normalizedTransactions);
       setDrafts(lists.drafts || []);
       writeCache('cfc_transactions', { transactions: normalizedTransactions, drafts: lists.drafts || [], pagination: lists.pagination || null });
@@ -2253,7 +2258,7 @@ export default function App() {
   const saveTx = async (tx) => {
     const existing = transactions.find(t => t.ref === tx.ref);
     const nowIso = new Date().toISOString();
-    const preparedTx = withLoanTimeline(tx);
+    const preparedTx = withLoanTimeline(tx, settings);
     const nextTx = preparedTx.status === 'for_sale'
       ? { ...preparedTx, listedForSaleDate: preparedTx.listedForSaleDate || existing?.listedForSaleDate || nowIso }
       : preparedTx;
@@ -2343,7 +2348,7 @@ export default function App() {
 
   // Render transaction detail
   const TxDetail = ({ tx }) => (<div>
-    <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span><span style={S.badge('#6b7280')}>{tx.type === 'outright' ? 'Outright' : 'Advance'}</span><span style={S.badge(COLORS.primary)}>Ref: {tx.ref}</span></div>
+    <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span><span style={S.badge('#6b7280')}>{tx.type === 'outright' ? 'Outright' : 'Advance'}</span><span style={S.badge(COLORS.primary)}>Ref: {tx.ref}</span></div>
     <div style={S.grid2}>
       <div style={S.card}><div style={S.cardTitle}>👤 Customer</div><div style={{ fontSize: '13px' }}><strong>{tx.fullName}</strong><br />{tx.address}<br />📱 {tx.phoneNumbers?.filter(Boolean).join(', ')}<br />👨‍👩‍👧 {tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}<br />🪪 {tx.idType?.toUpperCase()} — {tx.idNumber}<br /><strong>Verification:</strong> {tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠ Verification attempted, using placeholder/demo data' : '❌ Not attempted'}<br /><strong>Completed by:</strong> {tx.completedBy || tx.createdBy || 'Unknown user'}</div></div>
       <div style={S.card}><div style={S.cardTitle}>📦 Item</div><div style={{ fontSize: '13px' }}>{tx.captureItemType && <><strong>Type:</strong> {tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}<br /></>}<strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong><br />Colour: {tx.aiColour}{tx.imei && <><br />IMEI: {tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '6px' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Model not confirmed'}</span>}</>}{tx.serialNumber && <><br />Serial: {tx.serialNumber}</>}<br />{tx.conditionDescription}</div></div>
@@ -2484,7 +2489,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -2806,7 +2811,7 @@ export default function App() {
                           <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(settings.serviceFee || 1000)}</td>
                           <td style={S.td}>{t.loanDays || 30} days</td>
                           <td style={S.td}>{fmtDate(t.created_at)}</td>
-                          <td style={S.td}><span style={{ fontSize: '12px', fontWeight: 600, color: statusColor(t) }}>{statusLabel(t)}</span></td>
+                          <td style={S.td}><span style={{ fontSize: '12px', fontWeight: 600, color: statusColor(t, settings) }}>{statusLabel(t, settings)}</span></td>
                         </tr>
                       ))}
                     </tbody>
