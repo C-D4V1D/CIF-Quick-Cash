@@ -2369,12 +2369,15 @@ export default function App() {
     // Sort
     result.sort((a, b) => {
       let av, bv;
-      if (txSortKey === 'dateGiven') { av = new Date(a.dateGiven || 0); bv = new Date(b.dateGiven || 0); }
+      if (txSortKey === 'dateGiven') { av = a.dateGiven ? new Date(a.dateGiven) : null; bv = b.dateGiven ? new Date(b.dateGiven) : null; }
       else if (txSortKey === 'cashAdvance') { av = a.cashAdvance || 0; bv = b.cashAdvance || 0; }
       else if (txSortKey === 'fullName') { av = (a.fullName || '').toLowerCase(); bv = (b.fullName || '').toLowerCase(); }
       else if (txSortKey === 'status') { av = a.status || ''; bv = b.status || ''; }
       else if (txSortKey === 'aiBrand') { av = (a.aiBrand || '').toLowerCase(); bv = (b.aiBrand || '').toLowerCase(); }
       else { av = a[txSortKey]; bv = b[txSortKey]; }
+      if (av === null && bv === null) return 0;
+      if (av === null) return 1;
+      if (bv === null) return -1;
       if (av < bv) return txSortDir === 'asc' ? -1 : 1;
       if (av > bv) return txSortDir === 'asc' ? 1 : -1;
       return 0;
@@ -2638,7 +2641,10 @@ export default function App() {
           const csv = [cols, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
           const blob = new Blob([csv], { type: 'text/csv' });
           const url = URL.createObjectURL(blob);
-          const a = document.createElement('a'); a.href = url; a.download = `transactions-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `transactions-${new Date().toISOString().slice(0, 10)}.csv`;
+          a.click();
           URL.revokeObjectURL(url);
         };
         const chipStyle = (active, color) => ({ padding: '5px 12px', borderRadius: '999px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: `1.5px solid ${active ? color : COLORS.border}`, background: active ? color : '#fff', color: active ? '#fff' : COLORS.textMuted, whiteSpace: 'nowrap' });
