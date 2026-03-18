@@ -2346,7 +2346,25 @@ export default function App() {
     // Text search
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      result = result.filter(t => t.ref?.toLowerCase().includes(q) || t.fullName?.toLowerCase().includes(q) || t.phoneNumbers?.some(p => p?.includes(q)) || t.imei?.includes(q) || t.aiBrand?.toLowerCase().includes(q) || t.aiModel?.toLowerCase().includes(q));
+      result = result.filter(t =>
+        t.ref?.toLowerCase().includes(q) ||
+        t.fullName?.toLowerCase().includes(q) ||
+        t.phoneNumbers?.some(p => p?.includes(q)) ||
+        t.imei?.toLowerCase().includes(q) ||
+        t.serialNumber?.toLowerCase().includes(q) ||
+        t.idNumber?.toLowerCase().includes(q) ||
+        t.aiBrand?.toLowerCase().includes(q) ||
+        t.aiModel?.toLowerCase().includes(q) ||
+        t.aiColour?.toLowerCase().includes(q) ||
+        t.aiCondition?.toLowerCase().includes(q) ||
+        t.captureItemType?.toLowerCase().includes(q) ||
+        t.address?.toLowerCase().includes(q) ||
+        t.familyName?.toLowerCase().includes(q) ||
+        t.familyPhone?.includes(q) ||
+        t.notes?.toLowerCase().includes(q) ||
+        t.conditionDescription?.toLowerCase().includes(q) ||
+        t.saleBuyer?.toLowerCase().includes(q)
+      );
     }
     // Status filter
     if (txStatusFilter !== 'all') {
@@ -2663,13 +2681,13 @@ export default function App() {
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '14px' }}>
               <div style={{ flex: '2 1 200px' }}>
                 <div style={S.label}>Search</div>
-                <input style={S.input} placeholder="🔍 Ref, name, phone, IMEI, brand..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                <input style={S.input} placeholder="🔍 Ref, name, phone, IMEI, brand, address, notes..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
               </div>
               <div style={{ flex: '1 1 140px' }}>
                 <div style={S.label}>Type</div>
                 <select style={S.select} value={txTypeFilter} onChange={e => setTxTypeFilter(e.target.value)}>
                   <option value="all">All Types</option>
-                  <option value="loan">Loan</option>
+                  <option value="advance">Cash Advance</option>
                   <option value="outright">Outright Purchase</option>
                 </select>
               </div>
