@@ -826,7 +826,7 @@ function CustomerPortal({ onBack, settings }) {
     if (!info) return { label: 'Active', color: '#10b981' };
     if (info.isSaleEligible) return { label: '🏷️ For Sale', color: '#374151' };
     if (info.isLastDayOfGrace) return { label: '🔴 Last Day of Grace', color: '#dc2626' };
-    if (info.isInGracePeriod) return { label: `💜 Grace Period Ends ${formatDateLong(info.graceEndDate)}`, color: '#8b5cf6' };
+    if (info.isInGracePeriod) return { label: `💜 Grace Period Ends ${info.graceEndDate ? formatDateLong(info.graceEndDate) : ''}`, color: '#8b5cf6' };
     if (info.isOnMaxLoanDay) return { label: '🔴 Last Day of Ownership', color: '#dc2626' };
     if (info.isAfterAgreedDue) return { label: `⚠️ ${info.daysOverdue} Day${info.daysOverdue !== 1 ? 's' : ''} Overdue`, color: '#f59e0b' };
     if (info.isOnAgreedDueDate) return { label: '🔴 Due Today', color: '#ef4444' };
@@ -915,16 +915,17 @@ function CustomerPortal({ onBack, settings }) {
           const showContactBlock = showRepaymentInfo;
 
           const getStatusMessage = () => {
+            const todayLabel = formatDateLong(new Date().toISOString().split('T')[0]);
             // Scenario 9: Closed — Returned
             if (tx.status === 'closed') return {
               bg: '#0f2920', border: '#10b981', textColor: '#a7f3d0',
               msg: (
                 <>
                   ✅ <strong>Transaction Closed</strong><br /><br />
-                  You successfully repaid your loan on <strong>{formatDateLong(tx.dateRepaid)}</strong> and collected your item.<br /><br />
+                  You successfully repaid your loan on <strong>{formatDateLong(tx.dateRepaid) || 'the agreed date'}</strong> and collected your item.<br /><br />
                   <strong>Summary:</strong><br />
                   &bull; Cash advance: <strong>{fmtMoney(tx.cashAdvance)}</strong><br />
-                  &bull; Daily fee ({tx.daysCharged} day{tx.daysCharged !== 1 ? 's' : ''} × {fmtMoney(tx.dailyFee)}): <strong>{fmtMoney(tx.totalFees)}</strong><br />
+                  &bull; Daily fee ({tx.daysCharged ?? 0} day{(tx.daysCharged ?? 0) !== 1 ? 's' : ''} × {fmtMoney(tx.dailyFee ?? 0)}): <strong>{fmtMoney(tx.totalFees ?? 0)}</strong><br />
                   &bull; Total repaid: <strong>{fmtMoney(tx.amountRepaid)}</strong><br /><br />
                   Thank you for your business! We&apos;re here whenever you need cash again.<br />
                   <span style={{ opacity: 0.65, fontSize: '12px' }}>Agreement Ref: {tx.ref}</span>
@@ -939,7 +940,10 @@ function CustomerPortal({ onBack, settings }) {
                 <>
                   ✅ <strong>Item Sold</strong><br /><br />
                   Your item was sold to us on <strong>{maxLoanDayLabel}</strong> as per our signed agreement.<br />
-                  We subsequently sold it to the public on <strong>{formatDateLong(tx.saleDate)}</strong> for <strong>{fmtMoney(tx.salePrice)}</strong>.<br /><br />
+                  {tx.saleDate
+                    ? <>We subsequently sold it to the public on <strong>{formatDateLong(tx.saleDate)}</strong>{tx.salePrice ? <> for <strong>{fmtMoney(tx.salePrice)}</strong></> : null}.</>
+                    : <>The item has since been sold to the public.</>
+                  }<br /><br />
                   Your original loan of <strong>{fmtMoney(tx.cashAdvance)}</strong> has been fully offset. No further action is needed.<br /><br />
                   <hr style={{ border: 'none', borderTop: '1px solid #374151', margin: '8px 0' }} />
                   <span style={{ opacity: 0.65, fontSize: '12px' }}>Original agreement: Ref {tx.ref}</span>
@@ -954,7 +958,7 @@ function CustomerPortal({ onBack, settings }) {
                 <>
                   🏷️ <strong>Item Now for Sale</strong><br /><br />
                   Your item was sold to us on <strong>{maxLoanDayLabel}</strong> as per our signed agreement.<br />
-                  We are currently offering it for sale to the public.{tx.salePrice ? <> The sale price is <strong>{fmtMoney(tx.salePrice)}</strong>.</> : ''}<br /><br />
+                  We are currently offering it for sale to the public.{tx.salePrice ? <> The sale price is <strong>{fmtMoney(tx.salePrice)}</strong>.</> : null}<br /><br />
                   You <strong>no longer have ownership rights</strong> to this item. It cannot be reclaimed by you under any circumstances.<br /><br />
                   <hr style={{ border: 'none', borderTop: '1px solid #374151', margin: '8px 0' }} />
                   <span style={{ opacity: 0.65, fontSize: '12px' }}>If you have questions or disputes about this, please contact us in writing with your original agreement.</span>
@@ -971,7 +975,7 @@ function CustomerPortal({ onBack, settings }) {
                 <>
                   🔴 <strong>FINAL CHANCE — Grace period expires TODAY.</strong><br /><br />
                   Your item was sold to us on <strong>{maxLoanDayLabel}</strong> as per our signed agreement.<br />
-                  Today (<strong>{formatDateLong(new Date().toISOString().split('T')[0])}</strong>) is your <strong>final day</strong> to pay the full amount and collect your item.<br /><br />
+                  Today (<strong>{todayLabel}</strong>) is your <strong>final day</strong> to pay the full amount and collect your item.<br /><br />
                   After today, we will list it for sale to others and you will have <strong>no further right</strong> to reclaim it.<br /><br />
                   <strong>Amount due today: {fmtMoney(owed)}</strong><br /><br />
                   📞 <strong>Contact us urgently: {phone1}</strong>
@@ -1000,7 +1004,7 @@ function CustomerPortal({ onBack, settings }) {
               msg: (
                 <>
                   🔴 <strong>FINAL DAY — Item ownership transfers today.</strong><br /><br />
-                  Today is <strong>{formatDateLong(new Date().toISOString().split('T')[0])}</strong> — your final day to pay and collect your item.<br /><br />
+                  Today is <strong>{todayLabel}</strong> — your final day to pay and collect your item.<br /><br />
                   <strong>This is your last chance.</strong> If you do not collect your item today, it automatically becomes our property and we will sell it to others. You will lose all ownership rights.<br /><br />
                   <strong>Amount due today: {fmtMoney(owed)}</strong><br /><br />
                   🏪 <strong>Our shop hours:</strong> {shopHours}<br />
