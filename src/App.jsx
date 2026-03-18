@@ -937,6 +937,21 @@ const DURATION_OPTIONS = ['Less than 6 months', '6–12 months', '1–2 years', 
 const PURCHASE_LOCATION_OPTIONS = ['Phone shop / electronics store', 'Online (Jumia / Jiji / Konga)', 'Open market', 'Gift / received as present', 'Employer / workplace', 'Other'];
 const OTHERS_USING_OPTIONS = ['No — only me', 'Yes — family member(s)', 'Yes — multiple people / shared', 'Yes — business / work use', 'Other'];
 
+// Standard decline reasons — used in both the manual log form and the wizard auto-populate modal
+const DECLINE_REASONS = [
+  'NIN photo did not match',
+  'Item appeared modified',
+  'Customer gave inconsistent answers',
+  'Item does not power on',
+  'Item appears stolen / suspicious provenance',
+  'Customer could not provide valid ID',
+  'Item in poor or heavily damaged condition',
+  'Item not acceptable as collateral',
+  'Customer refused photos or terms',
+  'Flagged by staff during screening',
+  'Other',
+];
+
 function ScreeningStep({ tx, upd, onRedFlagExit }) {
   const showDurationOther = tx.screeningDuration === 'Other';
   const showLocationOther = tx.screeningPurchaseLocation === 'Other';
@@ -1372,6 +1387,10 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   const [aiError, setAiError] = useState('');
   const [ninError, setNinError] = useState('');
   const [redFlagModal, setRedFlagModal] = useState(false);
+  // Wizard decline log modal — shown when a transaction is declined during the wizard so staff
+  // can review / edit the pre-populated entry before it is saved to the declined log.
+  // Shape: { date, item, reason, notes, onAfter } | null
+  const [wizDeclineModal, setWizDeclineModal] = useState(null);
   const saveTimer = useRef(null);
 
   const isMobile = useMobile();
@@ -1595,13 +1614,15 @@ CONDITION: [detailed condition description]`;
   const handleEndTransaction = async () => {
     const declined = { ...tx, status: 'declined', declineReason: 'Declined - Item does not power on (no parts-only agreement)', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     await API.post('transactions', declined);
-    await API.post('declined', {
+    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
+    // Offer staff a pre-filled declined log entry to review before saving
+    setWizDeclineModal({
       date: new Date().toISOString().split('T')[0],
       item: tx.captureItemType || 'Unknown item',
-      reason: 'Declined — item does not power on and staff chose not to proceed with parts-only transaction',
+      reason: 'Item does not power on',
+      notes: '',
+      onAfter: onCancel,
     });
-    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
-    onCancel();
   };
 
   const handlePartsOnlyJump = () => {
@@ -1620,13 +1641,15 @@ CONDITION: [detailed condition description]`;
   const handleRedFlagExit = async () => {
     const flaggedTx = { ...tx, status: 'declined', screeningRedFlag: true, declineReason: 'Declined - Flagged', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     await API.post('transactions', flaggedTx);
-    await API.post('declined', {
-      date: new Date().toISOString().split('T')[0],
-      item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : 'Item (screening stage)',
-      reason: 'Declined - Flagged by staff during screening',
-    });
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
-    setRedFlagModal(true);
+    // Offer staff a pre-filled declined log entry to review before saving
+    setWizDeclineModal({
+      date: new Date().toISOString().split('T')[0],
+      item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : (tx.captureItemType || 'Item (screening stage)'),
+      reason: 'Flagged by staff during screening',
+      notes: '',
+      onAfter: () => setRedFlagModal(true),
+    });
   };
 
   // Step renderer (abbreviated — same UI as before)
@@ -1706,6 +1729,22 @@ CONDITION: [detailed condition description]`;
           <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center' }} onClick={() => { setRedFlagModal(false); onCancel(); }}>Return to Home</button>
         </Modal>
       )}
+      {wizDeclineModal && (
+        <WizardDeclineLogModal
+          prefill={wizDeclineModal}
+          onSave={async (entry) => {
+            const after = wizDeclineModal.onAfter;
+            setWizDeclineModal(null);
+            await API.post('declined', entry);
+            after?.();
+          }}
+          onSkip={() => {
+            const after = wizDeclineModal.onAfter;
+            setWizDeclineModal(null);
+            after?.();
+          }}
+        />
+      )}
       <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
         {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
@@ -1725,6 +1764,49 @@ CONDITION: [detailed condition description]`;
         </div>
       </div>
     </div>
+  );
+}
+
+// ============================================================
+// WIZARD DECLINE LOG MODAL — pre-filled for staff to review
+// ============================================================
+function WizardDeclineLogModal({ prefill, onSave, onSkip }) {
+  const [entry, setEntry] = useState({
+    date: prefill.date || new Date().toISOString().split('T')[0],
+    item: prefill.item || '',
+    reason: prefill.reason || '',
+    notes: prefill.notes || '',
+  });
+  const upd = (k, v) => setEntry(prev => ({ ...prev, [k]: v }));
+  return (
+    <Modal open title="📋 Log This Declined Customer?">
+      <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
+        ⚠️ The transaction has been declined. Please review the details below and save an entry to the Declined Log — this helps track patterns over time.
+      </div>
+      <Field label="Date">
+        <input style={S.input} type="date" value={entry.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => upd('date', e.target.value)} />
+      </Field>
+      <Field label="Item Brought">
+        <input style={S.input} value={entry.item} onChange={e => upd('item', e.target.value)} placeholder="e.g. Smartphone Samsung Galaxy A14" />
+      </Field>
+      <Field label="Decline Reason" required>
+        <select style={S.select} value={entry.reason} onChange={e => upd('reason', e.target.value)}>
+          <option value="">— Select a reason —</option>
+          {DECLINE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </Field>
+      <Field label="Additional Notes (optional)">
+        <textarea style={S.textarea} value={entry.notes} onChange={e => upd('notes', e.target.value)} placeholder="e.g. Customer appeared nervous, gave two different answers about purchase date…" rows={3} />
+      </Field>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+        <button style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }} disabled={!entry.item || !entry.reason} onClick={() => onSave(entry)}>
+          💾 Save to Declined Log
+        </button>
+        <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={onSkip}>
+          Skip (don&apos;t log)
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -2780,7 +2862,37 @@ export default function App() {
 
       case 'expenses': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🧾 Expenses</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddExpense(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Category</th><th style={S.th}>Description</th><th style={S.th}>Amount</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead><tbody>{expenses.map((e, i) => (<tr key={i}><td style={S.td}>{fmtDate(e.date)}</td><td style={S.td}>{e.category}</td><td style={S.td}>{e.description}</td><td style={S.td}><strong>{fmtMoney(e.amount)}</strong></td>{isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm('Delete this expense entry?')) { setExpenses(prev => prev.filter(x => x.id !== e.id)); await API.del(`expenses/${e.id}`); loadData(); } }}>Delete</button></td>}</tr>))}{expenses.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}</tbody></table><div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total: {fmtMoney(totalExpenses)}</div></div></div>);
 
-      case 'declined': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Item</th><th style={S.th}>Reason</th></tr></thead><tbody>{declinedLog.map((d, i) => (<tr key={i}><td style={S.td}>{fmtDate(d.date)}</td><td style={S.td}>{d.item}</td><td style={S.td}>{d.reason}</td></tr>))}{declinedLog.length === 0 && <tr><td style={S.td} colSpan={3}>None.</td></tr>}</tbody></table></div></div>);
+      case 'declined': return (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>
+            {isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}
+          </div>
+          <div style={S.card}>
+            <table style={S.table}>
+              <thead>
+                <tr>
+                  <th style={S.th}>Date</th>
+                  <th style={S.th}>Item Brought</th>
+                  <th style={S.th}>Reason</th>
+                  <th style={S.th}>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {declinedLog.map((d, i) => (
+                  <tr key={i}>
+                    <td style={S.td}>{fmtDate(d.date)}</td>
+                    <td style={S.td}>{d.item}</td>
+                    <td style={S.td}>{d.reason}</td>
+                    <td style={{ ...S.td, color: d.notes ? COLORS.textDark : COLORS.textMuted, fontStyle: d.notes ? 'normal' : 'italic' }}>{d.notes || '—'}</td>
+                  </tr>
+                ))}
+                {declinedLog.length === 0 && <tr><td style={S.td} colSpan={4}>None.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      );
 
       case 'activity': {
         const actColor = (a) => {
@@ -3021,7 +3133,29 @@ export default function App() {
     );
   };
 
-  const DecModal = () => { const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '' }); return <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined"><Field label="Date"><input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} /></Field><Field label="Item"><input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} /></Field><Field label="Reason"><textarea style={S.textarea} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button></Modal>; };
+  const DecModal = () => {
+    const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], item: '', reason: '', notes: '' });
+    return (
+      <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined Customer">
+        <Field label="Date">
+          <input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} />
+        </Field>
+        <Field label="Item Brought" required>
+          <input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} placeholder="e.g. Smartphone Samsung Galaxy A14" />
+        </Field>
+        <Field label="Decline Reason" required>
+          <select style={S.select} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })}>
+            <option value="">— Select a reason —</option>
+            {DECLINE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </Field>
+        <Field label="Additional Notes (optional)">
+          <textarea style={S.textarea} value={dec.notes} onChange={e => setDec({ ...dec, notes: e.target.value })} placeholder="e.g. NIN photo did not match, customer gave two different answers about purchase date…" rows={3} />
+        </Field>
+        <button style={S.btn('primary')} disabled={!dec.item || !dec.reason} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button>
+      </Modal>
+    );
+  };
 
   const EditUserModal = () => {
     const u = showEditUser;
