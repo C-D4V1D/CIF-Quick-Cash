@@ -704,32 +704,53 @@ function CustomerPortal({ onBack, settings }) {
 
   const calcOwedToday = (tx) => {
     if (!tx || tx.type === 'outright') return tx?.cashAdvance || 0;
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const given = new Date(tx.dateGiven); given.setHours(0, 0, 0, 0);
-    const elapsed = Math.max(0, Math.floor((today - given) / 86400000));
+    const elapsed = daysBetween(tx.dateGiven);
     return (tx.cashAdvance || 0) + elapsed * (tx.dailyFee || 0);
   };
 
   const getDaysInfo = (tx) => {
-    if (!tx.deadlineDate) return null;
+    if (!tx || tx.type === 'outright') return null;
+    const elapsed = daysBetween(tx.dateGiven);
+    const agreedDueDay = Math.max(0, Number(tx.loanDays) || 30);
+    const saleEligibleDay = 34;
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const deadline = new Date(tx.deadlineDate); deadline.setHours(0, 0, 0, 0);
-    const diff = Math.ceil((deadline - today) / 86400000);
-    return diff;
+    const agreedDueDate = tx.deadlineDate ? new Date(tx.deadlineDate) : null;
+    if (agreedDueDate) agreedDueDate.setHours(0, 0, 0, 0);
+    const saleEligibleDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
+    if (saleEligibleDate) {
+      saleEligibleDate.setHours(0, 0, 0, 0);
+      saleEligibleDate.setDate(saleEligibleDate.getDate() + saleEligibleDay);
+    }
+
+    const daysUntilAgreedDue = agreedDueDate ? Math.ceil((agreedDueDate - today) / 86400000) : null;
+    const daysUntilSaleEligible = saleEligibleDate ? Math.ceil((saleEligibleDate - today) / 86400000) : null;
+
+    return {
+      elapsed,
+      agreedDueDay,
+      saleEligibleDay,
+      agreedDueDate,
+      saleEligibleDate,
+      daysUntilAgreedDue,
+      daysUntilSaleEligible,
+      isBeforeAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue > 0 : elapsed < agreedDueDay,
+      isAfterAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue < 0 : elapsed > agreedDueDay,
+      isOnAgreedDueDate: daysUntilAgreedDue === 0,
+      isGraceWindow: elapsed >= 30 && elapsed <= 33,
+      isSaleEligible: elapsed >= saleEligibleDay,
+    };
   };
 
   const getStatusBadge = (tx) => {
     if (tx.status === 'closed') return { label: 'Closed — Returned', color: '#10b981' };
     if (tx.status === 'sold') return { label: 'Sold', color: '#6b7280' };
     if (tx.type === 'outright') return { label: 'Outright Purchase', color: '#8b5cf6' };
-    const daysLeft = getDaysInfo(tx);
-    if (daysLeft === null) return { label: 'Active', color: '#10b981' };
-    const loanDays = tx.loanDays || 30;
-    const elapsed = daysBetween(tx.dateGiven);
-    if (elapsed > loanDays + 3) return { label: 'Item Sold — Deadline Passed', color: '#ef4444' };
-    if (elapsed > loanDays) return { label: 'Grace Period', color: '#8b5cf6' };
-    if (daysLeft <= 7) return { label: `⚠ ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`, color: '#f59e0b' };
-    return { label: 'Active', color: '#10b981' };
+    const info = getDaysInfo(tx);
+    if (!info) return { label: 'Active Loan', color: '#10b981' };
+    if (info.isSaleEligible) return { label: 'Eligible for Sale', color: '#ef4444' };
+    if (info.isGraceWindow) return { label: 'Owned by Business / Final Grace', color: '#8b5cf6' };
+    if (info.isAfterAgreedDue || info.isOnAgreedDueDate) return { label: 'Overdue', color: '#f59e0b' };
+    return { label: 'Active Loan', color: '#10b981' };
   };
 
   return (
@@ -801,32 +822,33 @@ function CustomerPortal({ onBack, settings }) {
           const badge = getStatusBadge(tx);
           const daysInfo = getDaysInfo(tx);
           const owed = calcOwedToday(tx);
-          const isOverdue = daysInfo !== null && daysInfo < 0;
-          const loanDays = tx.loanDays || 30;
-          const elapsed = daysBetween(tx.dateGiven);
-          const isGrace = tx.status === 'active' && elapsed > loanDays && elapsed <= loanDays + 3;
-          const isSoldPending = tx.status === 'active' && elapsed > loanDays + 3;
-          const daysLeft = daysInfo;
+          const agreedDueDateLabel = formatDateLong(tx.deadlineDate);
+          const saleDateLabel = formatDateLong(daysInfo?.saleEligibleDate);
+          const isOverdue = !!daysInfo && (daysInfo.isAfterAgreedDue || daysInfo.isOnAgreedDueDate);
+          const showRepaymentInfo = tx.status === 'active' && tx.type !== 'outright' && (!daysInfo || !daysInfo.isSaleEligible);
 
           const getStatusMessage = () => {
             if (tx.status === 'closed') return null;
-            if (tx.status === 'sold') return { bg: '#1e1e1e', border: '#4b5563', textColor: '#d1d5db', msg: 'This item has been sold. The loan is now closed.' };
-            if (tx.type === 'outright') return null;
-            if (isSoldPending) return {
+            if (tx.status === 'sold') return {
+              bg: '#1e1e1e', border: '#4b5563', textColor: '#d1d5db',
+              msg: `This item was sold. Your agreed return date was ${agreedDueDateLabel}, and the shop final sale date started on ${saleDateLabel || 'Day 34'}.`
+            };
+            if (tx.type === 'outright' || !daysInfo) return null;
+            if (daysInfo.isSaleEligible) return {
               bg: '#3d1515', border: '#ef4444', textColor: '#fca5a5',
-              msg: `Your loan deadline of ${formatDateLong(tx.deadlineDate)} has passed. Your item is now considered SOLD BY YOU and PURCHASED BY US. Contact us immediately if you have questions.`
+              msg: `Your agreed return date was ${agreedDueDateLabel}. The shop final date before sale was ${saleDateLabel || 'Day 34'}, and your item is now eligible for sale. Please contact us immediately if you need an update.`
             };
-            if (isGrace) return {
-              bg: '#2d1f4e', border: '#8b5cf6', textColor: '#c4b5fd',
-              msg: `Your loan deadline was ${formatDateLong(tx.deadlineDate)}. You are now in the grace period — please visit us or call immediately to avoid your item being sold.`
+            if (daysInfo.isGraceWindow) return {
+              bg: '#2d1f4e', border: '#8b5cf6', textColor: '#ddd6fe',
+              msg: `Your agreed return date was ${agreedDueDateLabel}. We are now in the final grace window before sale. The shop final date before sale is ${saleDateLabel || 'Day 34'}. Please visit or call us as soon as possible if you want to repay and collect your item.`
             };
-            if (daysLeft !== null && daysLeft <= 7 && daysLeft >= 0) return {
+            if (daysInfo.isAfterAgreedDue || daysInfo.isOnAgreedDueDate) return {
               bg: '#3d2600', border: '#f59e0b', textColor: '#fcd34d',
-              msg: `⚠ Only ${daysLeft} day${daysLeft === 1 ? '' : 's'} left! Your deadline is ${formatDateLong(tx.deadlineDate)}. On that day, your item will be considered SOLD BY YOU and PURCHASED BY US if not redeemed.`
+              msg: `Your agreed return date was ${agreedDueDateLabel}. Your loan is now overdue, but repayment is still available before the shop final date before sale on ${saleDateLabel || 'Day 34'}.`
             };
-            if (daysLeft !== null && daysLeft > 0) return {
+            if (daysInfo.daysUntilAgreedDue !== null) return {
               bg: '#0f2920', border: '#10b981', textColor: '#a7f3d0',
-              msg: `Your item is safe with us. You have ${daysLeft} day${daysLeft === 1 ? '' : 's'} remaining — your deadline is ${formatDateLong(tx.deadlineDate)}.`
+              msg: `Your loan is active. Your agreed return date is ${agreedDueDateLabel}, and the shop final date before sale is ${saleDateLabel || 'Day 34'}.`
             };
             return null;
           };
@@ -866,8 +888,12 @@ function CustomerPortal({ onBack, settings }) {
                     <div style={{ fontWeight: 600, fontSize: '15px' }}>{formatDateLong(tx.dateGiven)}</div>
                   </div>
                   <div>
-                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Return Deadline</div>
-                    <div style={{ fontWeight: 700, fontSize: '15px', color: isOverdue ? '#ef4444' : '#fff' }}>{formatDateLong(tx.deadlineDate)}</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Your agreed return date</div>
+                    <div style={{ fontWeight: 700, fontSize: '15px', color: isOverdue ? '#f59e0b' : '#fff' }}>{agreedDueDateLabel}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Shop final date before sale</div>
+                    <div style={{ fontWeight: 700, fontSize: '15px', color: daysInfo?.isSaleEligible ? '#ef4444' : '#fff' }}>{saleDateLabel || 'Day 34'}</div>
                   </div>
                 </div>
 
@@ -877,7 +903,7 @@ function CustomerPortal({ onBack, settings }) {
                   </div>
                 )}
 
-                {tx.status === 'active' && tx.type !== 'outright' && !isSoldPending && (
+                {showRepaymentInfo && (
                   <div style={{ background: '#111827', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
                     <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '4px' }}>Total owed today</div>
                     <div style={{ fontSize: '26px', fontWeight: 800, color: isOverdue ? '#ef4444' : '#4ade80' }}>{fmtMoney(owed)}</div>
@@ -886,7 +912,7 @@ function CustomerPortal({ onBack, settings }) {
                 )}
               </div>
 
-              {!isSoldPending && tx.status !== 'sold' && (
+              {showRepaymentInfo && tx.status !== 'sold' && (
                 <div style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '14px', color: '#d1d5db', border: '1px solid #2a3447' }}>
                   To pay back and collect your item, visit our shop or call <strong style={{ color: '#fff' }}>{phone1}</strong>
                 </div>
