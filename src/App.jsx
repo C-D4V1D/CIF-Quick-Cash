@@ -101,21 +101,39 @@ const genRef = () => {
   return `CIF-${dd}${mm}${yy}-${rand}`;
 };
 
+// Returns today's date as a YYYY-MM-DD string in the device's local timezone.
+// Using toISOString() would give the UTC date, which can be a different calendar
+// day for users in UTC+ timezones (e.g. Nigeria WAT = UTC+1).
+const localISODate = () => {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+// Returns the number of whole UTC calendar days elapsed since dateStr (YYYY-MM-DD or ISO).
+// Uses UTC midnight arithmetic to stay consistent with the server-side elapsedDaysSince()
+// and to avoid local-timezone shifts that can make a day-boundary fall on the wrong date.
 const daysBetween = (dateStr) => {
   if (!dateStr) return 0;
   const given = new Date(dateStr);
+  if (Number.isNaN(given.getTime())) return 0;
   const now = new Date();
-  given.setHours(0, 0, 0, 0);
-  now.setHours(0, 0, 0, 0);
-  return Math.max(0, Math.ceil((now - given) / 86400000));
+  const givenMidnight = Date.UTC(given.getUTCFullYear(), given.getUTCMonth(), given.getUTCDate());
+  const nowMidnight   = Date.UTC(now.getUTCFullYear(),   now.getUTCMonth(),   now.getUTCDate());
+  return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
+// Adds N calendar days to a YYYY-MM-DD (or ISO) date string and returns YYYY-MM-DD.
+// Uses UTC throughout so that the result is the same calendar date regardless of
+// the device's local timezone (mirrors the server-side addDaysToDate() helper).
 const addDays = (dateStr, daysToAdd) => {
   if (!dateStr) return '';
   const date = new Date(dateStr);
   if (Number.isNaN(date.getTime())) return '';
-  date.setHours(0, 0, 0, 0);
-  date.setDate(date.getDate() + daysToAdd);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() + daysToAdd);
   return date.toISOString().split('T')[0];
 };
 
@@ -915,7 +933,7 @@ function CustomerPortal({ onBack, settings }) {
           const showContactBlock = showRepaymentInfo;
 
           const getStatusMessage = () => {
-            const todayLabel = formatDateLong(new Date().toISOString().split('T')[0]);
+            const todayLabel = formatDateLong(localISODate());
             // Scenario 9: Closed — Returned
             if (tx.status === 'closed') return {
               bg: '#0f2920', border: '#10b981', textColor: '#a7f3d0',
@@ -1718,9 +1736,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     if (tx.loanDays !== '' && Number(tx.loanDays) > maxLoanDays) {
       upd('loanDays', maxLoanDays);
       if (tx.dateGiven) {
-        const d = new Date(tx.dateGiven);
-        d.setDate(d.getDate() + maxLoanDays);
-        upd('deadlineDate', d.toISOString().split('T')[0]);
+        upd('deadlineDate', addDays(tx.dateGiven, maxLoanDays));
       }
     }
   }, [maxLoanDays, tx.loanDays, tx.dateGiven]);
@@ -1932,7 +1948,7 @@ CONDITION: [detailed condition description]`;
     const declinedTx = { ...tx, status: 'declined', declineReason: 'Declined - Item does not power on (no parts-only agreement)', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     // Open the decline log modal first — saving happens only when user confirms
     setWizDeclineModal({
-      date: new Date().toISOString().split('T')[0],
+      date: localISODate(),
       ref: tx.ref,
       customerName: tx.fullName || '',
       ninBvn: tx.idNumber ? `${tx.idType?.toUpperCase() || 'ID'}: ${tx.idNumber}` : '',
@@ -1955,7 +1971,7 @@ CONDITION: [detailed condition description]`;
   const handleDeclineFromStep = async (reason) => {
     const declinedTx = { ...tx, status: 'declined', declineReason: `Declined - ${reason}`, wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     setWizDeclineModal({
-      date: new Date().toISOString().split('T')[0],
+      date: localISODate(),
       ref: tx.ref,
       customerName: tx.fullName || '',
       ninBvn: tx.idNumber ? `${tx.idType?.toUpperCase() || 'ID'}: ${tx.idNumber}` : '',
@@ -1978,7 +1994,7 @@ CONDITION: [detailed condition description]`;
     const flaggedTx = { ...tx, status: 'declined', screeningRedFlag: true, declineReason: 'Declined - Flagged', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     // Open the decline log modal first — saving happens only when user confirms
     setWizDeclineModal({
-      date: new Date().toISOString().split('T')[0],
+      date: localISODate(),
       ref: tx.ref,
       customerName: tx.fullName || '',
       ninBvn: tx.idNumber ? `${tx.idType?.toUpperCase() || 'ID'}: ${tx.idNumber}` : '',
@@ -2018,7 +2034,7 @@ CONDITION: [detailed condition description]`;
 
       case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
 
-      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || maxLoanDays)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item not acceptable as collateral')}>Item not acceptable as collateral</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
+      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item not acceptable as collateral')}>Item not acceptable as collateral</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>Print Agreement</strong> — a filled-in form will open in a new window ready to print. Load plain paper in your printer, click the Print button in that window, and it prints both the Business Copy and Customer Copy with all the transaction data already filled in. Read every clause aloud to the customer. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
       <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
@@ -2110,7 +2126,7 @@ CONDITION: [detailed condition description]`;
 // ============================================================
 function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
   const [entry, setEntry] = useState({
-    date: prefill.date || new Date().toISOString().split('T')[0],
+    date: prefill.date || localISODate(),
     ref: prefill.ref || '',
     customerName: prefill.customerName || '',
     ninBvn: prefill.ninBvn || '',
@@ -2169,7 +2185,7 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
 // ============================================================
 function RepaymentModal({ tx, settings, onClose, onSave }) {
   const days = daysBetween(tx.dateGiven);
-  const today = new Date().toISOString().split('T')[0];
+  const today = localISODate();
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
   const totalFees = days * dailyFee;
   const totalDue = (tx.cashAdvance || 0) + totalFees;
@@ -2185,7 +2201,7 @@ function RepaymentModal({ tx, settings, onClose, onSave }) {
       </div>
       <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Total Due</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item returned</span></label>
-      <div style={{ display: 'flex', gap: '12px' }}><button style={S.btn('primary')} disabled={!confirmed} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: new Date().toISOString().split('T')[0], daysCharged: days, totalFees, itemReturned: true })}>✅ Confirm</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+      <div style={{ display: 'flex', gap: '12px' }}><button style={S.btn('primary')} disabled={!confirmed} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: localISODate(), daysCharged: days, totalFees, itemReturned: true })}>✅ Confirm</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
   );
 }
@@ -2197,7 +2213,7 @@ function SaleModal({ tx, settings, onClose, onSave }) {
   const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
   const listedPrice = Math.max(targetPrice, minPrice);
   const [salePrice, setSalePrice] = useState(listedPrice);
-  const [saleDate, setSaleDate] = useState(new Date().toISOString().split('T')[0]);
+  const [saleDate, setSaleDate] = useState(localISODate());
   const [saleBuyer, setSaleBuyer] = useState('');
   return (
     <div>
@@ -2242,7 +2258,7 @@ const OUTCOME_COLORS = {
 
 function ContactLogModal({ tx, onClose, onSave, currentUser }) {
   const now = new Date();
-  const [date, setDate] = useState(now.toISOString().split('T')[0]);
+  const [date, setDate] = useState(localISODate());
   const [time, setTime] = useState(now.toTimeString().slice(0, 5));
   const [result, setResult] = useState('no_answer');
   const [notes, setNotes] = useState('');
@@ -3445,7 +3461,7 @@ export default function App() {
         const grouped = activityLogs.reduce((acc, a) => { const k = new Date(a.created_at).toDateString(); if (!acc[k]) acc[k] = []; acc[k].push(a); return acc; }, {});
         const applyFilters = () => loadActivityLogs(activityFilter);
         const setF = (patch) => setActivityFilter(prev => ({ ...prev, ...patch }));
-        const todayStr = new Date().toISOString().split('T')[0];
+        const todayStr = localISODate();
         return (
           <div>
             <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>🕘 Activity Log</h2>
@@ -3538,10 +3554,10 @@ export default function App() {
   };
 
   // Modals
-  const ExpModal = () => { const [exp, setExp] = useState({ date: new Date().toISOString().split('T')[0], category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; setExpenses(prev => [{ ...e2, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
+  const ExpModal = () => { const [exp, setExp] = useState({ date: localISODate(), category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; setExpenses(prev => [{ ...e2, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
 
   const CapModal = () => {
-    const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: new Date().toISOString().split('T')[0], method: '', receipt: '', username: '', password: '' });
+    const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' });
     const [showPwd, setShowPwd] = useState(false);
     const [accountMode, setAccountMode] = useState('none'); // 'none' | 'existing' | 'new'
     const [selectedUserId, setSelectedUserId] = useState('');
@@ -3628,7 +3644,7 @@ export default function App() {
   };
 
   const DistModal = () => {
-    const today = new Date().toISOString().split('T')[0];
+    const today = localISODate();
     const [dist, setDist] = useState({ date: today, amount: '', method: '', note: '', receipt: '' });
     const handleSave = async () => {
       const amount = Number(dist.amount) || 0;
@@ -3669,7 +3685,7 @@ export default function App() {
   };
 
   const DecModal = () => {
-    const [dec, setDec] = useState({ date: new Date().toISOString().split('T')[0], ref: '', customerName: '', ninBvn: '', item: '', reason: '', notes: '' });
+    const [dec, setDec] = useState({ date: localISODate(), ref: '', customerName: '', ninBvn: '', item: '', reason: '', notes: '' });
     return (
       <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined Customer">
         <div style={S.grid2}>
@@ -3710,7 +3726,7 @@ export default function App() {
     const ninBvnPrefill = d?.idNumber ? `${d.idType?.toUpperCase() || 'ID'}: ${d.idNumber}` : '';
     const itemPrefill = d?.aiItemType ? `${d.aiItemType} ${d.aiBrand || ''} ${d.aiModel || ''}`.trim() : (d?.captureItemType || '');
     const [dec, setDec] = useState({
-      date: new Date().toISOString().split('T')[0],
+      date: localISODate(),
       ref: d?.ref || '',
       customerName: d?.fullName || '',
       ninBvn: ninBvnPrefill,
