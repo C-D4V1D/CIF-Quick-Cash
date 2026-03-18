@@ -931,20 +931,415 @@ function LoginScreen({ onLogin }) {
 }
 
 // ============================================================
-// TRANSACTION WIZARD (same 11-step flow, saves to database)
+// SCREENING STEP COMPONENT
+// ============================================================
+const DURATION_OPTIONS = ['Less than 6 months', '6–12 months', '1–2 years', '2–5 years', '5+ years', 'Other'];
+const PURCHASE_LOCATION_OPTIONS = ['Phone shop / electronics store', 'Online (Jumia / Jiji / Konga)', 'Open market', 'Gift / received as present', 'Employer / workplace', 'Other'];
+const OTHERS_USING_OPTIONS = ['No — only me', 'Yes — family member(s)', 'Yes — multiple people / shared', 'Yes — business / work use', 'Other'];
+
+function ScreeningStep({ tx, upd, onRedFlagExit }) {
+  const showDurationOther = tx.screeningDuration === 'Other';
+  const showLocationOther = tx.screeningPurchaseLocation === 'Other';
+
+  return (
+    <div>
+      <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>❓ Screening Questions</h3>
+      <div style={S.alert('info')}>📋 Ask these questions calmly and select the closest answer from the dropdown. If anything feels wrong, tick the Red Flag box.</div>
+
+      <Field label="How long have you had this item?" required>
+        <select style={S.select} value={tx.screeningDuration} onChange={e => { upd('screeningDuration', e.target.value); if (e.target.value !== 'Other') upd('screeningDurationOther', ''); }}>
+          <option value="">— Select —</option>
+          {DURATION_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+        {showDurationOther && (
+          <input style={{ ...S.input, marginTop: '8px' }} value={tx.screeningDurationOther} onChange={e => upd('screeningDurationOther', e.target.value)} placeholder="Please specify…" />
+        )}
+      </Field>
+
+      <Field label="Where did you buy it?" required>
+        <select style={S.select} value={tx.screeningPurchaseLocation} onChange={e => { upd('screeningPurchaseLocation', e.target.value); if (e.target.value !== 'Other') upd('screeningPurchaseLocationOther', ''); }}>
+          <option value="">— Select —</option>
+          {PURCHASE_LOCATION_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <input
+          style={{ ...S.input, marginTop: '8px' }}
+          value={tx.screeningPurchaseLocationOther}
+          onChange={e => upd('screeningPurchaseLocationOther', e.target.value)}
+          placeholder={showLocationOther ? 'Required — please specify…' : 'Additional detail (optional)'}
+        />
+        {showLocationOther && !tx.screeningPurchaseLocationOther && (
+          <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>⛔ Please specify the purchase location.</div>
+        )}
+      </Field>
+
+      <Field label="Is this item registered in your name?" required>
+        <select style={S.select} value={tx.screeningRegistered} onChange={e => upd('screeningRegistered', e.target.value)}>
+          <option value="">— Select —</option>
+          <option value="Yes">Yes</option>
+          <option value="No">No</option>
+          <option value="N/A">N/A</option>
+        </select>
+      </Field>
+
+      <Field label="Has anyone (or is anyone) else used/using this item with you?" required>
+        <select style={S.select} value={tx.screeningOthersUsing} onChange={e => upd('screeningOthersUsing', e.target.value)}>
+          <option value="">— Select —</option>
+          {OTHERS_USING_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      </Field>
+
+      <div style={{ marginTop: '16px', padding: '16px', background: COLORS.dangerLight, borderRadius: '8px', border: '1px solid #f5c6cb' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+          <input type="checkbox" checked={tx.screeningRedFlag} onChange={e => upd('screeningRedFlag', e.target.checked)} style={{ width: '20px', height: '20px' }} />
+          <span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.danger }}>🚩 RED FLAG — Something feels wrong (Decline Customer)</span>
+        </label>
+        {tx.screeningRedFlag && (
+          <div style={{ marginTop: '14px' }}>
+            <div style={{ fontSize: '13px', color: COLORS.danger, marginBottom: '10px' }}>⚠ Red flag is set. Click <strong>Save &amp; Exit</strong> to decline this transaction quietly.</div>
+            <button
+              style={{ ...S.btn('danger'), width: '100%', justifyContent: 'center' }}
+              onClick={onRedFlagExit}
+            >
+              🚩 Save &amp; Exit (Decline)
+            </button>
+          </div>
+        )}
+      </div>
+
+      <Field label="Notes / Observations" style={{ marginTop: '16px' }}>
+        <textarea style={S.textarea} value={tx.notes} onChange={e => upd('notes', e.target.value)} placeholder="Any additional notes about this customer or transaction..." />
+      </Field>
+    </div>
+  );
+}
+
+
+// ============================================================
+// CAPTURE STEP — Item type options, photo slot definitions
+// ============================================================
+const CAPTURE_ITEM_TYPES = [
+  'Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank',
+  'Electric Fan (Standing)', 'Electric Fan (Table/Desk)', 'Flat-Screen TV',
+  'Generator', 'Gas Cylinder', 'Motorcycle', 'Other',
+];
+
+// Item types that require IMEI verification (not just serial number)
+const IMEI_ITEM_TYPES = ['Smartphone', 'Tablet'];
+
+// Item types that physically cannot "power on" — skip the power-on gatekeeper
+const NON_POWERED_ITEM_TYPES = ['Gas Cylinder'];
+
+const ITEM_PHOTO_SLOTS = {
+  'Smartphone': [
+    'Front (Screen ON)',
+    'Back Panel',
+    'Left Edge',
+    'Right Edge',
+    'Top Edge',
+    'Bottom Edge',
+    'About Phone/Locks',
+  ],
+  'Laptop': [
+    'Closed Lid',
+    'Keyboard & Trackpad',
+    'Bottom Panel',
+    'Left Ports',
+    'Right Ports',
+    'Power Charger',
+    'Specs & Battery',
+  ],
+  'Tablet': [
+    'Front (Screen ON)',
+    'Back Panel',
+    'Left Edge',
+    'Right Edge',
+    'Top Edge',
+    'Bottom Edge',
+    'About Tablet',
+  ],
+  'Motorcycle': [
+    'Full Right Side',
+    'Full Left Side',
+    'Dashboard/Odometer',
+    'Engine Area',
+    'Tires & Wheels',
+    'Seat & Tail',
+  ],
+  'Generator': [
+    'Full Unit Front',
+    'Nameplate',
+    'Fuel Tank',
+    'Engine Side',
+    'Output Sockets',
+    'Back/Exhaust',
+  ],
+  'Gas Cylinder': [
+    'Full Cylinder Front',
+    'Valve Head',
+    'Base Ring',
+    'Collar/Handle',
+    'Date/Weight Stamp',
+    'Full Cylinder Back',
+  ],
+  'Flat-Screen TV': [
+    'Screen ON',
+    'Back Panel',
+    'HDMI/AV Ports',
+    'Remote Control',
+    'Model Label',
+    'Side Profile',
+  ],
+};
+const DEFAULT_PHOTO_SLOTS = ['Front', 'Back', 'Left', 'Right', 'Top/Label', 'Working (Power ON)'];
+// Bluetooth Speaker, Power Bank, Electric Fan (Standing/Desk) are not listed above;
+// they intentionally use DEFAULT_PHOTO_SLOTS (6-slot generic layout).
+const getPhotoSlots = (itemType) => ITEM_PHOTO_SLOTS[itemType] || DEFAULT_PHOTO_SLOTS;
+
+// Maximum cash offer for a Parts-Only (non-functional) item
+const MAX_PARTS_ONLY_ADVANCE = 5000;
+
+// Normalise legacy object-format itemPhotos to flat array (for drafts created before this update)
+const normalizeItemPhotos = (ip) => {
+  if (Array.isArray(ip)) return ip;
+  if (ip && typeof ip === 'object') {
+    return [ip.front, ip.back, ip.left, ip.right, ip.powerOn, ip.aboutPage, ...(ip.corners || [])].filter(v => v != null);
+  }
+  return [];
+};
+
+const AI_PROMPT_IMEI = `Look at this image carefully. This is a photo of a device screen showing the IMEI number (typically displayed after dialing *#06#, or visible in Settings > About Device / About Phone / About Tablet). Extract the IMEI number. It is a 15-digit number made up entirely of digits. Respond with ONLY the 15 digits, no spaces, no dashes, nothing else. If you cannot find a 15-digit IMEI, respond with exactly: NOT_FOUND`;
+
+const AI_PROMPT_SERIAL = `Look at this image carefully. Find the serial number on the label. A serial number is usually labelled "S/N", "Serial No.", "Serial Number", or "SN:" and is a combination of letters and digits. Respond with ONLY the serial number text exactly as printed, nothing else. If you cannot find any serial number, respond with exactly: NOT_FOUND`;
+
+// ============================================================
+// CAPTURE STEP COMPONENT (6A → 6B → 6C → 6D)
+// ============================================================
+function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
+  const [imeiAiLoading, setImeiAiLoading] = useState(false);
+  const [imeiAiError, setImeiAiError] = useState('');
+  const [serialAiLoading, setSerialAiLoading] = useState(false);
+  const [serialAiError, setSerialAiError] = useState('');
+
+  const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
+  const isNonPowered = NON_POWERED_ITEM_TYPES.includes(tx.captureItemType);
+  const slots = tx.captureItemType ? getPhotoSlots(tx.captureItemType) : [];
+  const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
+  const photoCount = photoArr.filter(Boolean).length;
+  const showCaptureBody = tx.captureItemType && (tx.itemPowersOn === true || tx.partsOnly);
+
+  // For non-powered items the gatekeeper is skipped but we still need the body to appear
+  // (itemPowersOn is auto-set to true above, so showCaptureBody will be true already)
+
+  const updPhoto = (idx, val) => {
+    const arr = [...(Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [])];
+    arr[idx] = val || null;
+    upd('itemPhotos', arr);
+  };
+
+  const handleExtractIMEI = async () => {
+    setImeiAiLoading(true); setImeiAiError('');
+    if (!tx.imeiPhoto) { setImeiAiError('Upload a photo of the IMEI screen first.'); setImeiAiLoading(false); return; }
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.imeiPhoto], AI_PROMPT_IMEI);
+    if (result.error) { setImeiAiError(result.error); }
+    else {
+      const extracted = result.text.trim().replace(/\D/g, '');
+      if (!extracted || extracted.length < 14) { setImeiAiError('AI could not read a valid IMEI from the photo. Try a clearer, closer shot of the screen.'); }
+      else { upd('imei', extracted); setImeiAiError(''); }
+    }
+    setImeiAiLoading(false);
+  };
+
+  const handleExtractSerial = async () => {
+    setSerialAiLoading(true); setSerialAiError('');
+    if (!tx.serialNumberPhoto) { setSerialAiError('Upload a photo of the serial label first.'); setSerialAiLoading(false); return; }
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.serialNumberPhoto], AI_PROMPT_SERIAL);
+    if (result.error) { setSerialAiError(result.error); }
+    else {
+      const extracted = result.text.trim();
+      if (extracted === 'NOT_FOUND' || extracted === '') { setSerialAiError('AI could not find a serial number in the photo. Try a clearer, closer shot of the label.'); }
+      else { upd('serialNumber', extracted); setSerialAiError(''); }
+    }
+    setSerialAiLoading(false);
+  };
+
+  return (
+    <div>
+      <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📷 Item Capture</h3>
+
+      {/* 6A — Item Type */}
+      <Field label="Item Type" required>
+        <select
+          style={S.select}
+          value={tx.captureItemType}
+          onChange={e => {
+            const newType = e.target.value;
+            upd('captureItemType', newType);
+            upd('requiresIMEI', IMEI_ITEM_TYPES.includes(newType));
+            // Non-powered items (e.g. Gas Cylinder) cannot be asked to "power on"
+            upd('itemPowersOn', NON_POWERED_ITEM_TYPES.includes(newType) ? true : null);
+            upd('partsOnly', false);
+            upd('itemPhotos', []);
+            upd('imei', '');
+            upd('imeiPhoto', null);
+            upd('imeiModelMatch', false);
+            upd('serialNumber', '');
+            upd('serialNumberPhoto', null);
+          }}
+        >
+          <option value="">— Select item type —</option>
+          {CAPTURE_ITEM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        {!tx.captureItemType && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>⛔ Item type is required before proceeding.</div>}
+      </Field>
+      <div style={{ ...S.alert('warning'), marginTop: '4px' }}>
+        ⚠ Only accept items you can confidently sell within <strong>14 days</strong> in Aguleri. If in doubt, decline politely. <strong>Do not accept jewellery, clothing, or documents.</strong>
+      </div>
+
+      {/* 6A — Power-on Gatekeeper (skipped for items that physically cannot power on) */}
+      {tx.captureItemType && !isNonPowered && (
+        <div style={{ marginTop: '16px', padding: '16px', background: COLORS.bg, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
+          <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '12px' }}>Does this item power on and function at a basic level?</div>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <button style={{ ...S.btn(tx.itemPowersOn === true ? 'primary' : 'outline'), flex: 1, justifyContent: 'center' }} onClick={() => { upd('itemPowersOn', true); upd('partsOnly', false); }}>✅ Yes — Powers On</button>
+            <button style={{ ...S.btn(tx.itemPowersOn === false ? 'danger' : 'outline'), flex: 1, justifyContent: 'center' }} onClick={() => upd('itemPowersOn', false)}>❌ No — Does Not Power On</button>
+          </div>
+          {tx.itemPowersOn === null && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '8px' }}>⛔ You must confirm whether this item powers on before proceeding.</div>}
+        </div>
+      )}
+
+      {/* Parts-Only Branch (only for items that can power on) */}
+      {tx.captureItemType && !isNonPowered && tx.itemPowersOn === false && !tx.partsOnly && (
+        <div style={{ ...S.alert('danger'), marginTop: '12px' }}>
+          <div style={{ fontWeight: 700, marginBottom: '8px' }}>⚠️ Value: ₦0 (Scrap Only)</div>
+          <div style={{ marginBottom: '12px' }}>This item does not power on. Do you wish to proceed with a <strong>Parts Only</strong> transaction? The maximum offer will be ₦{MAX_PARTS_ONLY_ADVANCE.toLocaleString()}.</div>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <button style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }} onClick={() => { upd('partsOnly', true); upd('estimatedValue', 0); onJumpToOffer(); }}>Yes — Proceed as Parts Only (Max ₦{MAX_PARTS_ONLY_ADVANCE.toLocaleString()})</button>
+            <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={onEndTransaction}>No — End Transaction</button>
+          </div>
+        </div>
+      )}
+
+      {/* 6B — Item Photos */}
+      {showCaptureBody && (
+        <>
+          <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `2px solid ${COLORS.border}` }}>
+            <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '4px' }}>📸 Item Photos</div>
+            <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
+              Take photos in <strong>good light near a window</strong>. Minimum <strong>3 photos</strong> required ({slots.length} slots for this item type). Capture exterior first, then settings/specs screens last.
+            </div>
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              {slots.map((slotLabel, i) => (
+                <PhotoUpload
+                  key={i}
+                  label={`${i + 1}. ${slotLabel}`}
+                  value={photoArr[i] || null}
+                  onChange={v => updPhoto(i, v)}
+                  required={i < 3}
+                  size={110}
+                />
+              ))}
+            </div>
+            {photoCount < 3 && (
+              <div style={{ ...S.alert('danger'), marginTop: '12px' }}>
+                ⛔ At least 3 photos are required. You have uploaded {photoCount} so far.
+              </div>
+            )}
+          </div>
+
+          {/* 6C — IMEI (Smartphone/Tablet) or Serial Number (all others) */}
+          <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `2px solid ${COLORS.border}` }}>
+            {requiresImei ? (
+              <>
+                <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>📱 IMEI Capture</div>
+                <div style={{ ...S.alert('info'), marginBottom: '12px' }}>
+                  📱 The IMEI permanently identifies this specific device. Dial <strong>*#06#</strong> on the device — a number will appear on screen. Take a clear close-up photo. We use the IMEI to confirm this is the exact device the customer says it is. Check that the brand and model on imei.info matches what you see in the device's About/Settings screen.</div>
+                <PhotoUpload label="Photo of IMEI on screen (*#06#)" value={tx.imeiPhoto} onChange={v => { upd('imeiPhoto', v); if (!v) { upd('imei', ''); upd('imeiModelMatch', false); } }} required size={130} />
+                {tx.imeiPhoto && (
+                  <div style={{ marginTop: '10px' }}>
+                    <button style={S.btn('primary')} onClick={handleExtractIMEI} disabled={imeiAiLoading}>
+                      {imeiAiLoading ? '⏳ Extracting...' : '🤖 Extract IMEI with AI'}
+                    </button>
+                  </div>
+                )}
+                {tx.imeiPhoto && !tx.imei && !imeiAiLoading && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ Please extract or enter the IMEI number.</div>}
+                {imeiAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{imeiAiError}</div>}
+                <Field label="IMEI Number" required style={{ marginTop: '12px' }}>
+                  <input style={S.input} inputMode="numeric" value={tx.imei} onChange={e => upd('imei', e.target.value.replace(/\D/g, ''))} placeholder="15-digit IMEI — auto-filled by AI or type manually" />
+                  {!tx.imei && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>⛔ IMEI is required for this device.</div>}
+                </Field>
+                {tx.imei && (
+                  <>
+                    <div style={{ marginBottom: '12px' }}>
+                      <a href={`https://www.imei.info/?imei=${tx.imei}`} target="_blank" rel="noopener noreferrer" style={{ ...S.btn('primary'), display: 'inline-flex', textDecoration: 'none' }}>
+                        🔍 Verify on imei.info →
+                      </a>
+                    </div>
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+                      <input type="checkbox" checked={tx.imeiModelMatch} onChange={e => upd('imeiModelMatch', e.target.checked)} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
+                      <span style={{ fontSize: '13px' }}>✅ Brand and model on imei.info matches what we saw on the device</span>
+                    </label>
+                    {!tx.imeiModelMatch && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ You must confirm the brand and model match before proceeding.</div>}
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>📦 Serial Number</div>
+                <div style={{ ...S.alert('info'), marginBottom: '12px' }}>
+                  📦 Check the back panel, bottom sticker, or inside compartment for a serial/model number. If you find one, photograph the label and let AI read it. This helps identify this specific unit if there is ever a dispute.
+                </div>
+                <PhotoUpload label="Photo of serial number label" value={tx.serialNumberPhoto} onChange={v => { upd('serialNumberPhoto', v); if (!v) upd('serialNumber', ''); }} size={130} />
+                {tx.serialNumberPhoto && (
+                  <div style={{ marginTop: '10px' }}>
+                    <button style={S.btn('primary')} onClick={handleExtractSerial} disabled={serialAiLoading}>
+                      {serialAiLoading ? '⏳ Extracting...' : '🤖 Extract Serial Number with AI'}
+                    </button>
+                  </div>
+                )}
+                {tx.serialNumberPhoto && !tx.serialNumber && !serialAiLoading && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ You uploaded a serial photo — please extract or enter the serial number.</div>}
+                {serialAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{serialAiError}</div>}
+                <Field label="Serial Number" style={{ marginTop: '12px' }}>
+                  <input style={S.input} value={tx.serialNumber} onChange={e => upd('serialNumber', e.target.value)} placeholder="Auto-filled by AI or type manually (optional)" />
+                </Field>
+              </>
+            )}
+          </div>
+
+          {/* 6D — Receipt */}
+          <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `2px solid ${COLORS.border}` }}>
+            <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>🧾 Original Purchase Receipt</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Does the customer have the original purchase receipt?</div>
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
+              <button style={{ ...S.btn(tx.hasReceipt === true ? 'primary' : 'outline'), flex: 1, justifyContent: 'center' }} onClick={() => upd('hasReceipt', true)}>✅ Yes — Has Receipt</button>
+              <button style={{ ...S.btn(tx.hasReceipt === false ? 'primary' : 'outline'), flex: 1, justifyContent: 'center' }} onClick={() => { upd('hasReceipt', false); upd('receiptPhoto', null); }}>❌ No — No Receipt</button>
+            </div>
+            {tx.hasReceipt === true && (
+              <>
+                <PhotoUpload label="Receipt Photo" value={tx.receiptPhoto} onChange={v => upd('receiptPhoto', v)} required size={140} />
+                {!tx.receiptPhoto && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ Receipt photo is required — you indicated a receipt was provided.</div>}
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// TRANSACTION WIZARD (10-step flow, saves to database)
 // ============================================================
 const WIZARD_STEPS = [
   { id: 'type', label: '1. Type', icon: '📋' },
   { id: 'nin', label: '2. ID Verify', icon: '🪪' },
   { id: 'customer', label: '3. Customer', icon: '👤' },
   { id: 'custPhotos', label: '4. Photos', icon: '📸' },
-  { id: 'itemPhotos', label: '5. Item Photos', icon: '🔍' },
-  { id: 'aiValuation', label: '6. AI Value', icon: '🤖' },
-  { id: 'imeiSerial', label: '7. IMEI/Serial', icon: '🔢' },
-  { id: 'screening', label: '8. Screening', icon: '❓' },
-  { id: 'offer', label: '9. Offer', icon: '💰' },
-  { id: 'agreement', label: '10. Agreement', icon: '📄' },
-  { id: 'complete', label: '11. Complete', icon: '✅' },
+  { id: 'screening', label: '5. Screening', icon: '❓' },
+  { id: 'itemPhotos', label: '6. Capture', icon: '📷' },
+  { id: 'aiValuation', label: '7. AI Value', icon: '🤖' },
+  { id: 'offer', label: '8. Offer', icon: '💰' },
+  { id: 'agreement', label: '9. Agreement', icon: '📄' },
+  { id: 'complete', label: '10. Complete', icon: '✅' },
 ];
 
 const EMPTY_TX = {
@@ -952,11 +1347,12 @@ const EMPTY_TX = {
   fullName: '', address: '', phoneNumbers: ['', ''], phonesVerified: [false, false],
   familyName: '', familyPhone: '', familyRelation: '',
   photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null,
-  itemPhotos: { front: null, back: null, left: null, right: null, corners: [], powerOn: null, aboutPage: null },
+  captureItemType: '', itemPowersOn: null, partsOnly: false,
+  itemPhotos: [],
   aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiCondition: '', aiEstimatedValue: '', aiRawResponse: '', requiresIMEI: false,
-  imei: '', imeiPhoto: null, imeiChecked: false, imeiClean: null, serialNumber: '', serialNumberPhoto: null,
-  hasReceipt: false, receiptPhoto: null,
-  screeningDuration: '', screeningPurchaseLocation: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
+  imei: '', imeiPhoto: null, imeiModelMatch: false, serialNumber: '', serialNumberPhoto: null,
+  hasReceipt: null, receiptPhoto: null,
+  screeningDuration: '', screeningDurationOther: '', screeningPurchaseLocation: '', screeningPurchaseLocationOther: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
   estimatedValue: 0, loanCapPct: 40, cashAdvance: 0, dailyFee: 0, loanDays: 30,
   dateGiven: '', deadlineDate: '', serviceFeeCollected: false, conditionDescription: '',
   salePrice: 0, saleDate: '', saleBuyer: '',
@@ -966,20 +1362,20 @@ const EMPTY_TX = {
 
 function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   const [step, setStep] = useState(draft?.wizardStep || 0);
-  const [tx, setTx] = useState(draft || { ...EMPTY_TX, ref: genRef(), createdBy: currentUser?.name || '', createdAt: new Date().toISOString() });
+  const [tx, setTx] = useState(() => {
+    const base = draft || { ...EMPTY_TX, ref: genRef(), createdBy: currentUser?.name || '', createdAt: new Date().toISOString() };
+    // Normalize legacy object-format itemPhotos to array
+    return { ...base, itemPhotos: normalizeItemPhotos(base.itemPhotos) };
+  });
   const [aiLoading, setAiLoading] = useState(false);
   const [ninLoading, setNinLoading] = useState(false);
-  const [serialAiLoading, setSerialAiLoading] = useState(false);
-  const [imeiAiLoading, setImeiAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [ninError, setNinError] = useState('');
-  const [serialAiError, setSerialAiError] = useState('');
-  const [imeiAiError, setImeiAiError] = useState('');
+  const [redFlagModal, setRedFlagModal] = useState(false);
   const saveTimer = useRef(null);
 
   const isMobile = useMobile();
   const upd = (field, val) => setTx(prev => ({ ...prev, [field]: val }));
-  const updNested = (parent, field, val) => setTx(prev => ({ ...prev, [parent]: { ...prev[parent], [field]: val } }));
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
 
   useEffect(() => {
@@ -1080,21 +1476,19 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   // AI Valuation
   const handleAIValuation = async () => {
     setAiLoading(true); setAiError('');
-    const photos = [tx.itemPhotos.front, tx.itemPhotos.back, tx.itemPhotos.left, tx.itemPhotos.right, tx.itemPhotos.powerOn, tx.itemPhotos.aboutPage, ...(tx.itemPhotos.corners || [])].filter(Boolean);
+    const photos = (Array.isArray(tx.itemPhotos) ? tx.itemPhotos : []).filter(Boolean);
     if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); return; }
     const prompt = `I am running a second-hand item shop in Aguleri, Anambra State, Nigeria. I have uploaded photos of an item. Please do the following:
 1. Identify the exact item type, brand, model, colour, and specifications from the photos.
 2. Give me the current realistic second-hand resale price in Nigerian Naira (₦) for Aguleri or similar towns in Anambra State. Give ONLY the number.
 3. Describe the physical condition in detail: note all visible damage, wear, scratches, dents, cracks, and any cosmetic or functional issues. Keep it under 5 sentences.
-4. State if this appears to be a smartphone/phone (answer YES or NO).
 RESPOND IN THIS EXACT FORMAT (no markdown):
 ITEM_TYPE: [type]
 BRAND: [brand]
 MODEL: [model]
 COLOUR: [colour]
 ESTIMATED_VALUE: [number only, no symbol]
-CONDITION: [detailed condition description]
-IS_PHONE: [YES or NO]`;
+CONDITION: [detailed condition description]`;
     const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt);
     if (result.error) { setAiError(result.error); }
     else {
@@ -1104,43 +1498,12 @@ IS_PHONE: [YES or NO]`;
       upd('aiCondition', parse('CONDITION')); upd('conditionDescription', parse('CONDITION'));
       const val = parse('ESTIMATED_VALUE').replace(/[^0-9]/g, '');
       upd('aiEstimatedValue', val); upd('estimatedValue', Number(val) || 0);
-      upd('requiresIMEI', parse('IS_PHONE').toUpperCase().includes('YES'));
     }
     setAiLoading(false);
   };
 
-  // Serial Number AI Extraction
-  const handleExtractSerial = async () => {
-    setSerialAiLoading(true); setSerialAiError('');
-    if (!tx.serialNumberPhoto) { setSerialAiError('Upload a photo of the serial label first.'); setSerialAiLoading(false); return; }
-    const prompt = `Look at this image carefully. Find the serial number on the label. A serial number is usually labelled "S/N", "Serial No.", "Serial Number", or "SN:" and is a combination of letters and digits. Respond with ONLY the serial number text exactly as printed, nothing else. If you cannot find any serial number, respond with exactly: NOT_FOUND`;
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.serialNumberPhoto], prompt);
-    if (result.error) { setSerialAiError(result.error); }
-    else {
-      const extracted = result.text.trim();
-      if (extracted === 'NOT_FOUND' || extracted === '') { setSerialAiError('AI could not find a serial number in the photo. Try a clearer, closer shot of the label.'); }
-      else { upd('serialNumber', extracted); setSerialAiError(''); }
-    }
-    setSerialAiLoading(false);
-  };
-
-  // IMEI AI Extraction from screen photo
-  const handleExtractIMEI = async () => {
-    setImeiAiLoading(true); setImeiAiError('');
-    if (!tx.imeiPhoto) { setImeiAiError('Upload a photo of the IMEI screen first.'); setImeiAiLoading(false); return; }
-    const prompt = `Look at this image carefully. This is a photo of a phone screen showing the IMEI number (typically displayed after dialing *#06#, or visible in Settings > About Phone). Extract the IMEI number. It is a 15-digit number made up entirely of digits. Respond with ONLY the 15 digits, no spaces, no dashes, nothing else. If you cannot find a 15-digit IMEI, respond with exactly: NOT_FOUND`;
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.imeiPhoto], prompt);
-    if (result.error) { setImeiAiError(result.error); }
-    else {
-      const extracted = result.text.trim().replace(/\D/g, '');
-      if (!extracted || extracted.length < 14) { setImeiAiError('AI could not read a valid IMEI from the photo. Try a clearer, closer shot of the screen.'); }
-      else { upd('imei', extracted); setImeiAiError(''); }
-    }
-    setImeiAiLoading(false);
-  };
-
-  const capPct = tx.hasReceipt ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
-  const maxAdvance = Math.floor((tx.estimatedValue || 0) * capPct / 100);
+  const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
+  const maxAdvance = tx.partsOnly ? MAX_PARTS_ONLY_ADVANCE : Math.floor((tx.estimatedValue || 0) * capPct / 100);
   const dailyFeeCalc = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
 
   const canProceed = () => {
@@ -1149,10 +1512,20 @@ IS_PHONE: [YES or NO]`;
       case 'nin': return settings.requireNinVerification ? (tx.ninVerified && !!tx.ninPhoto) : tx.ninVerificationAttempted;
       case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.familyName && tx.familyPhone && (tx.phonesVerified[0] || tx.phonesVerified[1]));
       case 'custPhotos': return !!tx.photoCustomerHolding;
-      case 'itemPhotos': return !!(tx.itemPhotos.front || tx.itemPhotos.back) && (!tx.hasReceipt || !!tx.receiptPhoto);
-      case 'aiValuation': return !!(tx.aiItemType && tx.estimatedValue > 0);
-      case 'imeiSerial': return tx.requiresIMEI ? (tx.imei && tx.imeiChecked && tx.imeiClean !== null) : true;
-      case 'screening': return true;
+      case 'screening': return tx.screeningPurchaseLocation !== 'Other' || !!tx.screeningPurchaseLocationOther;
+      case 'itemPhotos': {
+        const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
+        const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
+        const photoCount = photoArr.filter(Boolean).length;
+        if (!tx.captureItemType) return false;
+        if (tx.itemPowersOn !== true && !tx.partsOnly) return false;
+        if (photoCount < 3) return false;
+        if (requiresImei) { if (!tx.imei || !tx.imeiModelMatch) return false; }
+        else { if (tx.serialNumberPhoto && !tx.serialNumber) return false; }
+        if (tx.hasReceipt === true && !tx.receiptPhoto) return false;
+        return true;
+      }
+      case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.estimatedValue > 0);
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
       case 'agreement': return !!tx.photoSigning;
       default: return true;
@@ -1181,19 +1554,31 @@ IS_PHONE: [YES or NO]`;
       case 'custPhotos':
         if (!tx.photoCustomerHolding) issues.push('You must upload a photo of the customer holding the item before proceeding.');
         break;
-      case 'itemPhotos':
-        if (!(tx.itemPhotos.front || tx.itemPhotos.back)) issues.push('You must upload at least one item photo (front or back) before proceeding.');
-        if (tx.hasReceipt && !tx.receiptPhoto) issues.push('You ticked that a receipt was provided — you must upload a photo of it before proceeding.');
+      case 'screening':
+        if (tx.screeningPurchaseLocation === 'Other' && !tx.screeningPurchaseLocationOther) issues.push('Please specify where the item was purchased (you selected "Other").');
         break;
-      case 'aiValuation':
-        if (!(tx.aiItemType && tx.estimatedValue > 0)) issues.push('You must run AI Valuation and confirm the item type and value before proceeding.');
-        break;
-      case 'imeiSerial':
-        if (tx.requiresIMEI) {
-          if (!tx.imei) issues.push('You must enter the IMEI number before proceeding.');
-          if (!tx.imeiChecked) issues.push('You must tick the "Checked on imei.info" checkbox before proceeding.');
-          if (tx.imeiClean === null) issues.push('You must select Clean or Flagged after checking the IMEI before proceeding.');
+      case 'itemPhotos': {
+        const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
+        const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
+        const photoCount = photoArr.filter(Boolean).length;
+        if (!tx.captureItemType) {
+          issues.push('You must select the item type before proceeding.');
+        } else if (tx.itemPowersOn !== true && !tx.partsOnly) {
+          issues.push('You must confirm whether this item powers on before proceeding.');
+        } else {
+          if (photoCount < 3) issues.push(`At least 3 item photos are required. You have uploaded ${photoCount} so far.`);
+          if (requiresImei) {
+            if (!tx.imei) issues.push('IMEI number is required. Upload a photo of the *#06# screen and extract with AI.');
+            if (tx.imei && !tx.imeiModelMatch) issues.push('You must confirm the brand and model on imei.info match the device before proceeding.');
+          } else {
+            if (tx.serialNumberPhoto && !tx.serialNumber) issues.push('You uploaded a serial number photo — please extract or enter the serial number before proceeding.');
+          }
+          if (tx.hasReceipt === true && !tx.receiptPhoto) issues.push('Receipt photo is required — you indicated a receipt was provided.');
         }
+        break;
+      }
+      case 'aiValuation':
+        if (!tx.partsOnly && !(tx.aiItemType && tx.estimatedValue > 0)) issues.push('You must run AI Valuation and confirm the item type and value before proceeding.');
         break;
       case 'offer':
         if (!tx.cashAdvance) issues.push('You must enter the cash advance amount before proceeding.');
@@ -1207,11 +1592,41 @@ IS_PHONE: [YES or NO]`;
     return issues;
   };
 
+  const handleEndTransaction = async () => {
+    const declined = { ...tx, status: 'declined', declineReason: 'Declined - Item does not power on (no parts-only agreement)', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
+    await API.post('transactions', declined);
+    await API.post('declined', {
+      date: new Date().toISOString().split('T')[0],
+      item: tx.captureItemType || 'Unknown item',
+      reason: 'Declined — item does not power on and staff chose not to proceed with parts-only transaction',
+    });
+    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
+    onCancel();
+  };
+
+  const handlePartsOnlyJump = () => {
+    // Jump directly to the Offer step (skipping AI Valuation)
+    const offerIdx = WIZARD_STEPS.findIndex(s => s.id === 'offer');
+    if (offerIdx !== -1) { saveDraftNow(offerIdx); setStep(offerIdx); }
+  };
+
   const handleComplete = async () => {
     const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     await API.post('transactions', finalTx);
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
     onSave(finalTx);
+  };
+
+  const handleRedFlagExit = async () => {
+    const flaggedTx = { ...tx, status: 'declined', screeningRedFlag: true, declineReason: 'Declined - Flagged', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
+    await API.post('transactions', flaggedTx);
+    await API.post('declined', {
+      date: new Date().toISOString().split('T')[0],
+      item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : 'Item (screening stage)',
+      reason: 'Declined - Flagged by staff during screening',
+    });
+    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
+    setRedFlagModal(true);
   };
 
   // Step renderer (abbreviated — same UI as before)
@@ -1226,13 +1641,20 @@ IS_PHONE: [YES or NO]`;
       
       case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div></div>);
 
-      case 'itemPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔍 Item Photos</h3><div style={S.alert('info')}>📋 Take photos in <strong>good light near a window</strong>. Front and back are mandatory. Power the item on and take a screenshot of the home/startup screen.</div><div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}><PhotoUpload label="Front" value={tx.itemPhotos.front} onChange={v => updNested('itemPhotos', 'front', v)} required size={110} /><PhotoUpload label="Back" value={tx.itemPhotos.back} onChange={v => updNested('itemPhotos', 'back', v)} required size={110} /><PhotoUpload label="Left Side" value={tx.itemPhotos.left} onChange={v => updNested('itemPhotos', 'left', v)} size={110} /><PhotoUpload label="Right Side" value={tx.itemPhotos.right} onChange={v => updNested('itemPhotos', 'right', v)} size={110} /><PhotoUpload label="Power On Screen" value={tx.itemPhotos.powerOn} onChange={v => updNested('itemPhotos', 'powerOn', v)} size={110} /><PhotoUpload label="About / Nameplate" value={tx.itemPhotos.aboutPage} onChange={v => updNested('itemPhotos', 'aboutPage', v)} size={110} /></div><Field label="Has Original Receipt?" style={{ marginTop: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}><input type="checkbox" checked={tx.hasReceipt} onChange={e => upd('hasReceipt', e.target.checked)} style={{ width: '18px', height: '18px' }} /><span>Yes — original purchase receipt provided</span></label></Field>{tx.hasReceipt && <><PhotoUpload label="Receipt Photo" value={tx.receiptPhoto} onChange={v => upd('receiptPhoto', v)} required size={140} />{!tx.receiptPhoto && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ Receipt photo is required — you ticked that a receipt was provided.</div>}</>}</div>);
+      case 'itemPhotos': return (
+        <CaptureStep
+          tx={tx}
+          upd={upd}
+          settings={settings}
+          onJumpToOffer={handlePartsOnlyJump}
+          onEndTransaction={handleEndTransaction}
+        />
+      );
 
-      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field>{tx.requiresIMEI && <div style={S.alert('warning')}>📱 Phone detected — IMEI check required next.</div>}</div>);
+      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}</div>);
 
-      case 'imeiSerial': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔢 IMEI / Serial Number</h3>{tx.requiresIMEI ? (<><div style={{ marginBottom: '16px', padding: '14px', background: COLORS.bg, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>Is this item a phone / device with an IMEI?</div><div style={{ display: 'flex', gap: '12px' }}>{[{ val: true, label: '📱 Yes — Phone (IMEI required)' }, { val: false, label: '📦 No — Other item (Serial only)' }].map(o => (<label key={String(o.val)} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '10px 14px', borderRadius: '8px', border: `2px solid ${tx.requiresIMEI === o.val ? COLORS.primary : COLORS.border}`, background: tx.requiresIMEI === o.val ? COLORS.primaryLight : '#fff', flex: 1 }}><input type="radio" checked={tx.requiresIMEI === o.val} onChange={() => upd('requiresIMEI', o.val)} /><span style={{ fontSize: '13px', fontWeight: 600 }}>{o.label}</span></label>))}</div>{tx.aiItemType && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>AI identified this as: <strong>{tx.aiItemType}</strong> — you can override above if incorrect.</div>}</div><div style={S.alert('info')}>📋 Dial <strong>*#06#</strong> on the phone to display the IMEI. Snap a photo of the screen and tap <strong>Extract with AI</strong> to auto-fill — or type it manually. Then open <strong>imei.info</strong> to check it is not stolen.</div><div style={S.alert('warning')}>📱 IMEI check is required for this item.</div><div style={{ marginBottom: '16px' }}><PhotoUpload label="IMEI Screen Photo" value={tx.imeiPhoto} onChange={v => upd('imeiPhoto', v)} size={140} />{tx.imeiPhoto && <div style={{ marginTop: '10px' }}><button style={S.btn('primary')} onClick={handleExtractIMEI} disabled={imeiAiLoading}>{imeiAiLoading ? '⏳ Extracting...' : '🤖 Extract IMEI with AI'}</button></div>}{imeiAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{imeiAiError}</div>}</div><Field label="IMEI Number" required><input style={S.input} inputMode="numeric" value={tx.imei} onChange={e => upd('imei', e.target.value.replace(/\D/g, ''))} placeholder="15-digit IMEI — auto-filled by AI or type manually" /></Field><div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}><input type="checkbox" checked={tx.imeiChecked} onChange={e => { upd('imeiChecked', e.target.checked); if (!e.target.checked) upd('imeiClean', null); }} style={{ width: '18px', height: '18px' }} /><span style={{ fontSize: '13px' }}>Checked on imei.info</span></label><a href="https://www.imei.info/" target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: COLORS.primary }}>Open imei.info →</a></div>{tx.imeiChecked && <Field label="IMEI Status — select one *"><div style={{ display: 'flex', gap: '16px' }}><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', padding: '10px 16px', borderRadius: '8px', border: `2px solid ${tx.imeiClean === true ? '#10b981' : COLORS.border}`, background: tx.imeiClean === true ? '#ecfdf5' : '#fff' }}><input type="radio" checked={tx.imeiClean === true} onChange={() => upd('imeiClean', true)} /><span style={{ color: '#10b981', fontWeight: 700 }}>✓ Clean</span></label><label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', padding: '10px 16px', borderRadius: '8px', border: `2px solid ${tx.imeiClean === false ? COLORS.danger : COLORS.border}`, background: tx.imeiClean === false ? COLORS.dangerLight : '#fff' }}><input type="radio" checked={tx.imeiClean === false} onChange={() => upd('imeiClean', false)} /><span style={{ color: COLORS.danger, fontWeight: 700 }}>✗ Flagged — DECLINE</span></label></div></Field>}{tx.imeiChecked && tx.imeiClean === null && <div style={S.alert('warning')}>⚠ You must select Clean or Flagged to continue.</div>}{tx.imeiClean === false && tx.imeiChecked && <div style={S.alert('danger')}>🚫 IMEI flagged. <strong>DECLINE IMMEDIATELY.</strong></div>}</>) : (<><div style={{ marginBottom: '16px', padding: '14px', background: COLORS.bg, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>Is this item a phone / device with an IMEI?</div><div style={{ display: 'flex', gap: '12px' }}>{[{ val: true, label: '📱 Yes — Phone (IMEI required)' }, { val: false, label: '📦 No — Other item (Serial only)' }].map(o => (<label key={String(o.val)} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '10px 14px', borderRadius: '8px', border: `2px solid ${tx.requiresIMEI === o.val ? COLORS.primary : COLORS.border}`, background: tx.requiresIMEI === o.val ? COLORS.primaryLight : '#fff', flex: 1 }}><input type="radio" checked={tx.requiresIMEI === o.val} onChange={() => upd('requiresIMEI', o.val)} /><span style={{ fontSize: '13px', fontWeight: 600 }}>{o.label}</span></label>))}</div>{tx.aiItemType && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>AI identified this as: <strong>{tx.aiItemType}</strong> — you can override above if incorrect.</div>}</div><div style={S.alert('info')}>📋 Check the back panel or sticker for a serial number. Take a photo of the label and tap <strong>Extract with AI</strong> to auto-fill it. If none is found, you may leave it blank and proceed.</div><div style={{ marginBottom: '16px' }}><PhotoUpload label="Serial Number Label Photo" value={tx.serialNumberPhoto} onChange={v => upd('serialNumberPhoto', v)} size={140} />{tx.serialNumberPhoto && <div style={{ marginTop: '10px' }}><button style={S.btn('primary')} onClick={handleExtractSerial} disabled={serialAiLoading}>{serialAiLoading ? '⏳ Extracting...' : '🤖 Extract Serial with AI'}</button></div>}{serialAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{serialAiError}</div>}</div><Field label="Serial Number"><input style={S.input} value={tx.serialNumber} onChange={e => upd('serialNumber', e.target.value)} placeholder="Auto-filled by AI or type manually" /></Field></>)}</div>);
 
-      case 'screening': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>❓ Screening Questions</h3><div style={S.alert('info')}>📋 Ask these questions calmly. Write down the answers <strong>exactly as the customer gives them</strong>. If anything feels wrong, tick the Red Flag box and do not proceed with the transaction.</div><Field label="How long have you had this item?"><input style={S.input} value={tx.screeningDuration} onChange={e => upd('screeningDuration', e.target.value)} placeholder="e.g. 2 years" /></Field><Field label="Where did you buy it?"><input style={S.input} value={tx.screeningPurchaseLocation} onChange={e => upd('screeningPurchaseLocation', e.target.value)} placeholder="e.g. Computer Village, Lagos" /></Field><Field label="Is this item registered in your name?"><input style={S.input} value={tx.screeningRegistered} onChange={e => upd('screeningRegistered', e.target.value)} placeholder="Yes / No / N/A" /></Field><Field label="Has anyone else used this item with you?"><input style={S.input} value={tx.screeningOthersUsing} onChange={e => upd('screeningOthersUsing', e.target.value)} placeholder="e.g. No, only me" /></Field><div style={{ marginTop: '12px', padding: '16px', background: COLORS.dangerLight, borderRadius: '8px', border: '1px solid #f5c6cb' }}><label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={tx.screeningRedFlag} onChange={e => upd('screeningRedFlag', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.danger }}>🚩 RED FLAG — Something feels wrong (decline this customer)</span></label></div><Field label="Notes / Observations" style={{ marginTop: '12px' }}><textarea style={S.textarea} value={tx.notes} onChange={e => upd('notes', e.target.value)} placeholder="Any additional notes about this customer or transaction..." /></Field></div>);
+      case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} />);
 
       case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { const d = new Date(e.target.value); d.setDate(d.getDate() + (Number(tx.loanDays) || 30)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { const d = new Date(tx.dateGiven); d.setDate(d.getDate() + Number(v)); upd('deadlineDate', d.toISOString().split('T')[0]); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div></div>);
 
@@ -1274,6 +1696,16 @@ IS_PHONE: [YES or NO]`;
 
   return (
     <div>
+      {redFlagModal && (
+        <Modal open={redFlagModal} onClose={() => { setRedFlagModal(false); onCancel(); }} title="Transaction Declined">
+          <div style={{ textAlign: 'center', padding: '8px 0 16px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '12px' }}>🙏</div>
+            <div style={{ fontSize: '16px', fontWeight: 700, marginBottom: '8px', color: COLORS.textDark }}>We're sorry</div>
+            <div style={{ fontSize: '14px', color: COLORS.textMuted, lineHeight: 1.6 }}>Our system is unable to process this transaction at this time. Thank you for your understanding.</div>
+          </div>
+          <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center' }} onClick={() => { setRedFlagModal(false); onCancel(); }}>Return to Home</button>
+        </Modal>
+      )}
       <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
         {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
@@ -1677,7 +2109,7 @@ export default function App() {
     <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span><span style={S.badge('#6b7280')}>{tx.type === 'outright' ? 'Outright' : 'Advance'}</span><span style={S.badge(COLORS.primary)}>Ref: {tx.ref}</span></div>
     <div style={S.grid2}>
       <div style={S.card}><div style={S.cardTitle}>👤 Customer</div><div style={{ fontSize: '13px' }}><strong>{tx.fullName}</strong><br />{tx.address}<br />📱 {tx.phoneNumbers?.filter(Boolean).join(', ')}<br />👨‍👩‍👧 {tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}<br />🪪 {tx.idType?.toUpperCase()} — {tx.idNumber}<br /><strong>Verification:</strong> {tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠ Verification attempted, using placeholder/demo data' : '❌ Not attempted'}<br /><strong>Completed by:</strong> {tx.completedBy || tx.createdBy || 'Unknown user'}</div></div>
-      <div style={S.card}><div style={S.cardTitle}>📦 Item</div><div style={{ fontSize: '13px' }}><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong><br />Colour: {tx.aiColour}{tx.imei && <><br />IMEI: {tx.imei}</>}{tx.serialNumber && <><br />Serial: {tx.serialNumber}</>}<br />{tx.conditionDescription}</div></div>
+      <div style={S.card}><div style={S.cardTitle}>📦 Item</div><div style={{ fontSize: '13px' }}>{tx.captureItemType && <><strong>Type:</strong> {tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}<br /></>}<strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong><br />Colour: {tx.aiColour}{tx.imei && <><br />IMEI: {tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '6px' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Model not confirmed'}</span>}</>}{tx.serialNumber && <><br />Serial: {tx.serialNumber}</>}<br />{tx.conditionDescription}</div></div>
     </div>
     <div style={S.card}><div style={S.cardTitle}>💰 Financials</div><div style={S.grid4}>
       <div style={S.stat}><div style={S.statLabel}>Value</div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
@@ -1687,7 +2119,7 @@ export default function App() {
     {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px' }}>Repaid: {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
     {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.accentLight, borderRadius: '8px' }}>Sold: {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} — Profit: {fmtMoney(tx.salePrice - tx.cashAdvance)}</div>}
     </div>
-    <div style={S.card}><div style={S.cardTitle}>🧾 Screening & Notes Summary</div><div style={{ fontSize: '13px', lineHeight: 1.7 }}><div><strong>How long in use:</strong> {tx.screeningDuration || 'Not provided'}</div><div><strong>Where purchased:</strong> {tx.screeningPurchaseLocation || 'Not provided'}</div><div><strong>Registered/Synced account:</strong> {tx.screeningRegistered || 'Not provided'}</div><div><strong>Other users on device:</strong> {tx.screeningOthersUsing || 'Not provided'}</div><div><strong>Red flag from screening:</strong> {tx.screeningRedFlag ? 'Yes' : 'No'}</div><div><strong>Staff notes:</strong> {tx.notes || 'No notes captured.'}</div></div></div>
+    <div style={S.card}><div style={S.cardTitle}>🧾 Screening & Notes Summary</div><div style={{ fontSize: '13px', lineHeight: 1.7 }}><div><strong>How long in use:</strong> {tx.screeningDuration ? (tx.screeningDuration === 'Other' ? `Other — ${tx.screeningDurationOther || 'unspecified'}` : tx.screeningDuration) : 'Not provided'}</div><div><strong>Where purchased:</strong> {tx.screeningPurchaseLocation ? (tx.screeningPurchaseLocation === 'Other' ? `Other — ${tx.screeningPurchaseLocationOther || 'unspecified'}` : tx.screeningPurchaseLocationOther ? `${tx.screeningPurchaseLocation} (${tx.screeningPurchaseLocationOther})` : tx.screeningPurchaseLocation) : 'Not provided'}</div><div><strong>Registered in customer name:</strong> {tx.screeningRegistered || 'Not provided'}</div><div><strong>Other users on device:</strong> {tx.screeningOthersUsing || 'Not provided'}</div><div><strong>Red flag from screening:</strong> {tx.screeningRedFlag ? '🚩 Yes' : 'No'}</div><div><strong>Staff notes:</strong> {tx.notes || 'No notes captured.'}</div></div></div>
     <div style={S.card}>
       <div style={S.cardTitle}>📸 Photos</div>
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -1695,13 +2127,7 @@ export default function App() {
           tx.ninPhoto,
           tx.photoCustomerHolding,
           tx.photoCustomerID,
-          tx.itemPhotos?.front,
-          tx.itemPhotos?.back,
-          tx.itemPhotos?.left,
-          tx.itemPhotos?.right,
-          tx.itemPhotos?.powerOn,
-          tx.itemPhotos?.aboutPage,
-          ...(tx.itemPhotos?.corners || []),
+          ...(normalizeItemPhotos(tx.itemPhotos)),
           tx.imeiPhoto,
           tx.serialNumberPhoto,
           tx.receiptPhoto,
