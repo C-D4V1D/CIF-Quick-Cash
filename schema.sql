@@ -68,10 +68,14 @@ CREATE TABLE IF NOT EXISTS capital (
 -- ALTER TABLE capital ADD COLUMN user_id TEXT REFERENCES users(id);
 
 CREATE TABLE IF NOT EXISTS declined_log (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  date    TEXT    NOT NULL,
-  item    TEXT    NOT NULL,
-  reason  TEXT    NOT NULL
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  date          TEXT    NOT NULL,
+  ref           TEXT,
+  customer_name TEXT,
+  nin_bvn       TEXT,
+  item          TEXT    NOT NULL,
+  reason        TEXT    NOT NULL,
+  notes         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_declined_log_date ON declined_log (date DESC);

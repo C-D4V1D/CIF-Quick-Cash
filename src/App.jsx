@@ -188,6 +188,7 @@ const fmtDate = (d) => {
 };
 
 const statusColor = (tx, settings = {}) => {
+  if (tx.status === 'declined') return '#6b7280';
   if (tx.status === 'closed' || tx.status === 'sold') return '#10b981';
   if (tx.status === 'for_sale') return '#8b5cf6';
   const timeline = getLoanTimeline(tx, settings);
@@ -1782,10 +1783,8 @@ CONDITION: [detailed condition description]`;
   };
 
   const handleEndTransaction = async () => {
-    const declined = { ...tx, status: 'declined', declineReason: 'Declined - Item does not power on (no parts-only agreement)', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
-    await API.post('transactions', declined);
-    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
-    // Offer staff a pre-filled declined log entry to review before saving
+    const declinedTx = { ...tx, status: 'declined', declineReason: 'Declined - Item does not power on (no parts-only agreement)', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
+    // Open the decline log modal first — saving happens only when user confirms
     setWizDeclineModal({
       date: new Date().toISOString().split('T')[0],
       ref: tx.ref,
@@ -1794,6 +1793,7 @@ CONDITION: [detailed condition description]`;
       item: tx.captureItemType || 'Unknown item',
       reason: 'Item does not power on',
       notes: '',
+      declinedTx,
       onAfter: onCancel,
     });
   };
@@ -1805,11 +1805,9 @@ CONDITION: [detailed condition description]`;
   };
 
   // Generic decline handler — called from any wizard step with a pre-selected reason.
-  // Saves a declined transaction record, removes the draft, then opens the decline log modal.
+  // Opens the decline log modal; saving the transaction + log entry happens only when the user confirms.
   const handleDeclineFromStep = async (reason) => {
     const declinedTx = { ...tx, status: 'declined', declineReason: `Declined - ${reason}`, wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
-    await API.post('transactions', declinedTx);
-    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
     setWizDeclineModal({
       date: new Date().toISOString().split('T')[0],
       ref: tx.ref,
@@ -1818,6 +1816,7 @@ CONDITION: [detailed condition description]`;
       item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : (tx.captureItemType || ''),
       reason,
       notes: '',
+      declinedTx,
       onAfter: onCancel,
     });
   };
@@ -1831,9 +1830,7 @@ CONDITION: [detailed condition description]`;
 
   const handleRedFlagExit = async () => {
     const flaggedTx = { ...tx, status: 'declined', screeningRedFlag: true, declineReason: 'Declined - Flagged', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
-    await API.post('transactions', flaggedTx);
-    await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
-    // Offer staff a pre-filled declined log entry to review before saving
+    // Open the decline log modal first — saving happens only when user confirms
     setWizDeclineModal({
       date: new Date().toISOString().split('T')[0],
       ref: tx.ref,
@@ -1842,6 +1839,7 @@ CONDITION: [detailed condition description]`;
       item: tx.aiItemType ? `${tx.aiItemType} ${tx.aiBrand || ''} ${tx.aiModel || ''}`.trim() : (tx.captureItemType || 'Item (screening stage)'),
       reason: 'Flagged by staff during screening',
       notes: '',
+      declinedTx: flaggedTx,
       onAfter: () => setRedFlagModal(true),
     });
   };
@@ -1929,16 +1927,14 @@ CONDITION: [detailed condition description]`;
         <WizardDeclineLogModal
           prefill={wizDeclineModal}
           onSave={async (entry) => {
-            const after = wizDeclineModal.onAfter;
+            const { onAfter, declinedTx, ref } = wizDeclineModal;
             setWizDeclineModal(null);
+            await API.post('transactions', declinedTx);
+            await API.del(`drafts/${encodeURIComponent(ref)}`);
             await API.post('declined', entry);
-            after?.();
+            onAfter?.();
           }}
-          onSkip={() => {
-            const after = wizDeclineModal.onAfter;
-            setWizDeclineModal(null);
-            after?.();
-          }}
+          onCancel={() => setWizDeclineModal(null)}
         />
       )}
       <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
@@ -1966,7 +1962,7 @@ CONDITION: [detailed condition description]`;
 // ============================================================
 // WIZARD DECLINE LOG MODAL — pre-filled for staff to review
 // ============================================================
-function WizardDeclineLogModal({ prefill, onSave, onSkip }) {
+function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
   const [entry, setEntry] = useState({
     date: prefill.date || new Date().toISOString().split('T')[0],
     ref: prefill.ref || '',
@@ -1978,9 +1974,9 @@ function WizardDeclineLogModal({ prefill, onSave, onSkip }) {
   });
   const upd = (k, v) => setEntry(prev => ({ ...prev, [k]: v }));
   return (
-    <Modal open onClose={onSkip} title="📋 Log This Declined Customer?">
+    <Modal open onClose={onCancel} title="📋 Log Declined Customer">
       <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
-        ⚠️ The transaction has been declined. Please review the details below and save an entry to the Declined Log — this helps track patterns over time.
+        ⚠️ Fill in the details below and click <strong>Decline &amp; Save to Log</strong> to record this declined transaction. Clicking Cancel or ✕ returns you to the wizard without saving.
       </div>
       <div style={S.grid2}>
         <Field label="Date">
@@ -2011,11 +2007,11 @@ function WizardDeclineLogModal({ prefill, onSave, onSkip }) {
         <textarea style={S.textarea} value={entry.notes} onChange={e => upd('notes', e.target.value)} placeholder="e.g. Customer appeared nervous, gave two different answers about purchase date…" rows={3} />
       </Field>
       <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
-        <button style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }} disabled={!entry.item || !entry.reason} onClick={() => onSave(entry)}>
-          💾 Save to Declined Log
+        <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={!entry.item || !entry.reason} onClick={() => onSave(entry)}>
+          🚫 Decline &amp; Save to Log
         </button>
-        <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={onSkip}>
-          Skip (don&apos;t log)
+        <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={onCancel}>
+          Cancel
         </button>
       </div>
     </Modal>
@@ -3098,10 +3094,18 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {declinedLog.map((d, i) => (
+                {declinedLog.map((d, i) => {
+                  const linkedTx = d.ref ? transactions.find(t => t.ref === d.ref) : null;
+                  return (
                   <tr key={i}>
                     <td style={S.td}>{fmtDate(d.date)}</td>
-                    <td style={{ ...S.td, fontSize: '12px', color: COLORS.textMuted }}>{d.ref || '—'}</td>
+                    <td style={{ ...S.td, fontSize: '12px' }}>
+                      {d.ref
+                        ? linkedTx
+                          ? (<button style={{ background: 'none', border: 'none', color: COLORS.primary, cursor: 'pointer', padding: 0, fontSize: '12px', textDecoration: 'underline', fontWeight: 600 }} onClick={() => setViewingTx(linkedTx)}>{d.ref}</button>)
+                          : (<span style={{ color: COLORS.textMuted }}>{d.ref}</span>)
+                        : '—'}
+                    </td>
                     <td style={S.td}>
                       <div>{d.customerName || '—'}</div>
                       {d.ninBvn && <div style={{ fontSize: '11px', color: COLORS.textMuted }}>{d.ninBvn}</div>}
@@ -3110,7 +3114,8 @@ export default function App() {
                     <td style={S.td}>{d.reason}</td>
                     <td style={{ ...S.td, color: d.notes ? COLORS.textDark : COLORS.textMuted, fontStyle: d.notes ? 'normal' : 'italic' }}>{d.notes || '—'}</td>
                   </tr>
-                ))}
+                  );
+                })}
                 {declinedLog.length === 0 && <tr><td style={S.td} colSpan={6}>None.</td></tr>}
               </tbody>
             </table>
@@ -3409,10 +3414,12 @@ export default function App() {
     });
     if (!d) return null;
     const handleSave = async () => {
+      const declinedTx = { ...d, status: 'declined', declineReason: `Declined - ${dec.reason}`, wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
       const entry = { ...dec, id: Date.now() };
       setDeclinedLog(prev => [entry, ...prev]);
       setDeclineDraftModal(null);
       setDrafts(prev => prev.filter(x => x.ref !== d.ref));
+      await API.post('transactions', declinedTx);
       await API.post('declined', dec);
       await API.del(`drafts/${encodeURIComponent(d.ref)}`);
       loadData();

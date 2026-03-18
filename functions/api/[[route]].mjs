@@ -329,7 +329,7 @@ export async function onRequest(context) {
         const [expensesRes, capitalRes, declinedRes, usersRes] = await Promise.all([
           db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all(),
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
-          db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all(),
+          db.prepare('SELECT id, date, ref, customer_name AS customerName, nin_bvn AS ninBvn, item, reason, notes FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
             ? db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] }),
@@ -767,16 +767,16 @@ export async function onRequest(context) {
     if (path === 'declined' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, date, item, reason FROM declined_log ORDER BY date DESC').all();
+      const { results } = await db.prepare('SELECT id, date, ref, customer_name AS customerName, nin_bvn AS ninBvn, item, reason, notes FROM declined_log ORDER BY date DESC').all();
       return json(results);
     }
     if (path === 'declined' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { date, item, reason } = await request.json();
+      const { date, ref, customerName, ninBvn, item, reason, notes } = await request.json();
       const inserted = await db
-        .prepare('INSERT INTO declined_log (date, item, reason) VALUES (?, ?, ?)')
-        .bind(date, item, reason)
+        .prepare('INSERT INTO declined_log (date, ref, customer_name, nin_bvn, item, reason, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(date, ref || null, customerName || null, ninBvn || null, item, reason, notes || null)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'declined', entityId: String(inserted.meta.last_row_id), description: `🚫 Item declined — ${item}: ${reason}` });
       return json({ success: true });
