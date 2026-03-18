@@ -1819,7 +1819,7 @@ function WizardDeclineLogModal({ prefill, onSave, onSkip }) {
   });
   const upd = (k, v) => setEntry(prev => ({ ...prev, [k]: v }));
   return (
-    <Modal open title="📋 Log This Declined Customer?">
+    <Modal open onClose={onSkip} title="📋 Log This Declined Customer?">
       <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
         ⚠️ The transaction has been declined. Please review the details below and save an entry to the Declined Log — this helps track patterns over time.
       </div>
