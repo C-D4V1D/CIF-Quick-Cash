@@ -110,6 +110,55 @@ const daysBetween = (dateStr) => {
   return Math.max(0, Math.ceil((now - given) / 86400000));
 };
 
+const addDays = (dateStr, daysToAdd) => {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  if (Number.isNaN(date.getTime())) return '';
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() + daysToAdd);
+  return date.toISOString().split('T')[0];
+};
+
+const getLoanTimeline = (tx) => {
+  const elapsedDays = daysBetween(tx?.dateGiven);
+  const customerDueDate = tx?.deadlineDate || addDays(tx?.dateGiven, Number(tx?.loanDays) || 30);
+  const internalDeadline = addDays(tx?.dateGiven, 30);
+  const graceEndDate = addDays(tx?.dateGiven, 33);
+  const saleAllowedDate = addDays(tx?.dateGiven, 34);
+  const isOverdueToCustomerAgreement = !!customerDueDate && daysBetween(customerDueDate) > 0;
+  const isOwnedByBusiness = elapsedDays >= 30;
+  const isInFinalGrace = elapsedDays >= 31 && elapsedDays <= 33;
+  const isEligibleForSale = elapsedDays >= 34;
+  return {
+    elapsedDays,
+    customer_due_date: customerDueDate,
+    internal_deadline: internalDeadline,
+    grace_end_date: graceEndDate,
+    sale_allowed_date: saleAllowedDate,
+    isOverdueToCustomerAgreement,
+    isOwnedByBusiness,
+    isInFinalGrace,
+    isEligibleForSale,
+  };
+};
+
+const withLoanTimeline = (tx) => {
+  if (!tx || tx.type === 'outright') return tx;
+  return { ...tx, ...getLoanTimeline(tx) };
+};
+
+const withLoanTimelines = (items = []) => items.map(withLoanTimeline);
+
+const getCustomerDaysLeft = (tx) => {
+  const dueDate = tx?.deadlineDate || tx?.customer_due_date;
+  if (!dueDate) return null;
+  const today = new Date();
+  const deadline = new Date(dueDate);
+  today.setHours(0, 0, 0, 0);
+  deadline.setHours(0, 0, 0, 0);
+  return Math.ceil((deadline - today) / 86400000);
+};
+
 const getForSaleListedDate = (tx) => tx.listedForSaleDate || tx.updated_at || tx.created_at || null;
 
 const getForSaleDaysListed = (tx) => {
@@ -138,12 +187,12 @@ const fmtDate = (d) => {
 const statusColor = (tx) => {
   if (tx.status === 'closed' || tx.status === 'sold') return '#10b981';
   if (tx.status === 'for_sale') return '#8b5cf6';
-  const days = daysBetween(tx.dateGiven);
-  const deadline = tx.loanDays || 30;
-  if (days > deadline + 3) return '#1e1e1e';
-  if (days > deadline) return '#7c3aed';
-  if (days > deadline - 7) return '#ef4444';
-  if (days > deadline - 15) return '#f59e0b';
+  const timeline = getLoanTimeline(tx);
+  const customerDaysLeft = getCustomerDaysLeft(tx);
+  if (timeline.isEligibleForSale) return '#1e1e1e';
+  if (timeline.isInFinalGrace) return '#7c3aed';
+  if (customerDaysLeft !== null && customerDaysLeft <= 7 && customerDaysLeft >= 0) return '#ef4444';
+  if (customerDaysLeft !== null && customerDaysLeft <= 15 && customerDaysLeft >= 0) return '#f59e0b';
   return '#10b981';
 };
 
@@ -153,12 +202,13 @@ const statusLabel = (tx) => {
   if (tx.status === 'for_sale') return 'Listed for Sale';
   if (tx.status === 'declined') return 'Declined';
   if (tx.type === 'outright') return 'Outright Purchase';
-  const days = daysBetween(tx.dateGiven);
-  const deadline = tx.loanDays || 30;
-  if (days > deadline + 3) return 'Ready to Sell';
-  if (days > deadline) return 'Grace Period';
-  if (days > deadline - 7) return `⚠ ${deadline - days} days left`;
-  return `Active — Day ${days}`;
+  const timeline = getLoanTimeline(tx);
+  const customerDaysLeft = getCustomerDaysLeft(tx);
+  if (timeline.isEligibleForSale) return 'Ready to Sell';
+  if (timeline.isInFinalGrace) return 'Final Grace Period';
+  if (customerDaysLeft !== null && customerDaysLeft <= 7 && customerDaysLeft >= 0) return `⚠ ${customerDaysLeft} days left`;
+  if (timeline.isOwnedByBusiness) return 'Owned by Business';
+  return `Active — Day ${timeline.elapsedDays}`;
 };
 
 // Check whether a user holds a given role (primary or additional)
@@ -677,7 +727,7 @@ function CustomerPortal({ onBack, settings }) {
       return;
     }
     const data = await API.get('transactions');
-    const found = Array.isArray(data) ? data.find(t => t.ref?.toUpperCase() === fullRef.toUpperCase()) : null;
+    const found = Array.isArray(data) ? withLoanTimelines(data).find(t => t.ref?.toUpperCase() === fullRef.toUpperCase()) : null;
     setResult(found || 'not_found');
     setSearched(true);
   };
@@ -2052,7 +2102,7 @@ export default function App() {
   const location = useLocation();
   const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
   const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
-  const [transactions, setTransactions] = useState(() => readCache('cfc_transactions')?.transactions || []);
+  const [transactions, setTransactions] = useState(() => withLoanTimelines(readCache('cfc_transactions')?.transactions || []));
   const [drafts, setDrafts] = useState(() => readCache('cfc_transactions')?.drafts || []);
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
   const [users, setUsers] = useState([]);
@@ -2165,9 +2215,10 @@ export default function App() {
     // Load large list datasets in the background so navigation/header remain interactive.
     const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');
     if (lists) {
-      setTransactions(lists.transactions || []);
+      const normalizedTransactions = withLoanTimelines(lists.transactions || []);
+      setTransactions(normalizedTransactions);
       setDrafts(lists.drafts || []);
-      writeCache('cfc_transactions', { transactions: lists.transactions || [], drafts: lists.drafts || [], pagination: lists.pagination || null });
+      writeCache('cfc_transactions', { transactions: normalizedTransactions, drafts: lists.drafts || [], pagination: lists.pagination || null });
     }
     setListLoading(false);
 
@@ -2202,9 +2253,10 @@ export default function App() {
   const saveTx = async (tx) => {
     const existing = transactions.find(t => t.ref === tx.ref);
     const nowIso = new Date().toISOString();
-    const nextTx = tx.status === 'for_sale'
-      ? { ...tx, listedForSaleDate: tx.listedForSaleDate || existing?.listedForSaleDate || nowIso }
-      : tx;
+    const preparedTx = withLoanTimeline(tx);
+    const nextTx = preparedTx.status === 'for_sale'
+      ? { ...preparedTx, listedForSaleDate: preparedTx.listedForSaleDate || existing?.listedForSaleDate || nowIso }
+      : preparedTx;
     await API.post('transactions', nextTx);
     setTransactions(prev => { const i = prev.findIndex(t => t.ref === nextTx.ref); if (i >= 0) { const n = [...prev]; n[i] = nextTx; return n; } return [...prev, nextTx]; });
   };
@@ -2214,13 +2266,8 @@ export default function App() {
   const closedTxs = transactions.filter(t => t.status === 'closed');
   const soldTxs = transactions.filter(t => t.status === 'sold');
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale');
-  const graceWindowDays = Number(settings.graceDays) || 3;
-  const inGracePeriod = activeTxs.filter(t => {
-    const elapsed = daysBetween(t.dateGiven);
-    const loanDays = t.loanDays || 30;
-    return elapsed > loanDays && elapsed <= loanDays + graceWindowDays;
-  });
-  const readyToSell = activeTxs.filter(t => daysBetween(t.dateGiven) > (t.loanDays || 30) + graceWindowDays);
+  const inGracePeriod = activeTxs.filter(t => t.isInFinalGrace);
+  const readyToSell = activeTxs.filter(t => t.isEligibleForSale);
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
@@ -2437,7 +2484,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && daysBetween(tx.dateGiven) > (tx.loanDays || 30) + 3)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx))}>{statusLabel(tx)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -2477,7 +2524,10 @@ export default function App() {
         
         const AlertGroup = ({ title, items, color, icon }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color }}>{icon} {title} ({items.length})</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button><button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button></div></div>))}</div>);
         const inGrace = inGracePeriod;
-        const upcoming7 = activeTxs.filter(t => { const l = (t.loanDays || 30) - daysBetween(t.dateGiven); return l <= 7 && l > 0; });
+        const upcoming7 = activeTxs.filter(t => {
+          const daysLeft = getCustomerDaysLeft(t);
+          return daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
+        });
         return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
       }
 
