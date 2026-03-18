@@ -654,20 +654,47 @@ function LandingPage({ onCheckLoan, onStaffLogin, settings }) {
 // CUSTOMER PORTAL
 // ============================================================
 function CustomerPortal({ onBack, settings }) {
-  const [ref, setRef] = useState('');
+  const [refDate, setRefDate] = useState('');   // 6-digit DDMMYY part
+  const [refNum, setRefNum] = useState('');     // 3-digit NNN part
   const [result, setResult] = useState(null); // null | 'not_found' | tx object
   const [searched, setSearched] = useState(false);
+  const refNumInput = useRef(null);
 
   const s = settings || {};
   const phone1 = s.shopPhone1 || '08165491908';
   const whatsApp = s.shopWhatsApp || '2348165491908';
 
+  const fullRef = `CIF-${refDate}-${refNum}`;
+
   const handleCheck = async () => {
-    if (!ref.trim()) return;
+    if (!refDate.trim() || !refNum.trim()) return;
+    // Basic date validation: DD must be 01-31, MM must be 01-12
+    const dd = parseInt(refDate.slice(0, 2), 10);
+    const mm = parseInt(refDate.slice(2, 4), 10);
+    if (refDate.length === 6 && (dd < 1 || dd > 31 || mm < 1 || mm > 12)) {
+      setResult('not_found');
+      setSearched(true);
+      return;
+    }
     const data = await API.get('transactions');
-    const found = Array.isArray(data) ? data.find(t => t.ref?.toUpperCase() === ref.trim().toUpperCase()) : null;
+    const found = Array.isArray(data) ? data.find(t => t.ref?.toUpperCase() === fullRef.toUpperCase()) : null;
     setResult(found || 'not_found');
     setSearched(true);
+  };
+
+  const handleDateInput = (e) => {
+    const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+    setRefDate(val);
+    setSearched(false);
+    if (val.length === 6) {
+      refNumInput.current?.focus();
+    }
+  };
+
+  const handleNumInput = (e) => {
+    const val = e.target.value.replace(/\D/g, '').slice(0, 3);
+    setRefNum(val);
+    setSearched(false);
   };
 
   const formatDateLong = (d) => {
@@ -695,12 +722,13 @@ function CustomerPortal({ onBack, settings }) {
     if (tx.status === 'closed') return { label: 'Closed — Returned', color: '#10b981' };
     if (tx.status === 'sold') return { label: 'Sold', color: '#6b7280' };
     if (tx.type === 'outright') return { label: 'Outright Purchase', color: '#8b5cf6' };
-    const days = getDaysInfo(tx);
-    if (days === null) return { label: 'Active', color: '#10b981' };
+    const daysLeft = getDaysInfo(tx);
+    if (daysLeft === null) return { label: 'Active', color: '#10b981' };
     const loanDays = tx.loanDays || 30;
     const elapsed = daysBetween(tx.dateGiven);
-    if (elapsed > loanDays + 3) return { label: 'Overdue — Sell Pending', color: '#ef4444' };
+    if (elapsed > loanDays + 3) return { label: 'Item Sold — Deadline Passed', color: '#ef4444' };
     if (elapsed > loanDays) return { label: 'Grace Period', color: '#8b5cf6' };
+    if (daysLeft <= 7) return { label: `⚠ ${daysLeft} day${daysLeft === 1 ? '' : 's'} left`, color: '#f59e0b' };
     return { label: 'Active', color: '#10b981' };
   };
 
@@ -712,7 +740,7 @@ function CustomerPortal({ onBack, settings }) {
       <div style={{ background: '#1a5f2a', padding: '24px 20px 20px' }}>
         <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.8)', fontSize: '15px', cursor: 'pointer', padding: '0 0 12px', fontWeight: 500 }}>← Back to Home</button>
         <h1 style={{ fontSize: 'clamp(20px, 5vw, 28px)', fontWeight: 800, margin: '0 0 6px' }}>Check Your Loan Status</h1>
-        <p style={{ margin: 0, opacity: 0.85, fontSize: '15px' }}>Enter the reference number from your agreement form (e.g. CIF-130326-001)</p>
+        <p style={{ margin: 0, opacity: 0.85, fontSize: '15px' }}>Type the number from your agreement form — just the digits, no need to type "CIF".</p>
       </div>
 
       <div style={{ padding: '24px 20px', maxWidth: '500px', margin: '0 auto' }}>
@@ -724,14 +752,35 @@ function CustomerPortal({ onBack, settings }) {
                 We could not find this reference number. Please check your agreement form and try again, or call us on {phone1}.
               </div>
             )}
-            <label style={{ display: 'block', fontWeight: 600, color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Reference Number</label>
-            <input
-              style={{ width: '100%', padding: '14px', borderRadius: '8px', border: '1.5px solid #2a3447', fontSize: '16px', background: '#111827', color: '#fff', boxSizing: 'border-box', marginBottom: '12px' }}
-              placeholder="e.g. CIF-130326-001"
-              value={ref}
-              onChange={e => { setRef(e.target.value); setSearched(false); }}
-              onKeyDown={e => e.key === 'Enter' && handleCheck()}
-            />
+            <label style={{ display: 'block', fontWeight: 600, color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Reference Number</label>
+            {/* Segmented reference input: CIF-[DDMMYY]-[NNN] */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}>
+              <span style={{ fontWeight: 800, fontSize: '18px', color: '#4ade80', letterSpacing: '1px', flexShrink: 0 }}>CIF</span>
+              <span style={{ fontWeight: 700, fontSize: '20px', color: '#6b7280' }}>–</span>
+              <input
+                inputMode="numeric"
+                maxLength={6}
+                style={{ flex: '3', padding: '13px 10px', borderRadius: '8px', border: '1.5px solid #2a3447', fontSize: '20px', background: '#111827', color: '#fff', textAlign: 'center', letterSpacing: '2px', minWidth: 0, fontWeight: 700 }}
+                placeholder="DDMMYY"
+                value={refDate}
+                onChange={handleDateInput}
+                onKeyDown={e => { if (e.key === 'Enter') { refDate.length === 6 ? refNumInput.current?.focus() : handleCheck(); } }}
+              />
+              <span style={{ fontWeight: 700, fontSize: '20px', color: '#6b7280' }}>–</span>
+              <input
+                ref={refNumInput}
+                inputMode="numeric"
+                maxLength={3}
+                style={{ flex: '2', padding: '13px 10px', borderRadius: '8px', border: '1.5px solid #2a3447', fontSize: '20px', background: '#111827', color: '#fff', textAlign: 'center', letterSpacing: '2px', minWidth: 0, fontWeight: 700 }}
+                placeholder="NNN"
+                value={refNum}
+                onChange={handleNumInput}
+                onKeyDown={e => e.key === 'Enter' && handleCheck()}
+              />
+            </div>
+            <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '14px', textAlign: 'center' }}>
+              Example: for reference <strong style={{ color: '#9ca3af' }}>CIF-130326-001</strong>, type <strong style={{ color: '#9ca3af' }}>130326</strong> and <strong style={{ color: '#9ca3af' }}>001</strong>
+            </div>
             <button
               onClick={handleCheck}
               style={{ width: '100%', background: '#1a5f2a', color: '#fff', border: 'none', borderRadius: '8px', padding: '14px', fontSize: '16px', fontWeight: 700, cursor: 'pointer', minHeight: '50px' }}
@@ -753,6 +802,37 @@ function CustomerPortal({ onBack, settings }) {
           const daysInfo = getDaysInfo(tx);
           const owed = calcOwedToday(tx);
           const isOverdue = daysInfo !== null && daysInfo < 0;
+          const loanDays = tx.loanDays || 30;
+          const elapsed = daysBetween(tx.dateGiven);
+          const isGrace = tx.status === 'active' && elapsed > loanDays && elapsed <= loanDays + 3;
+          const isSoldPending = tx.status === 'active' && elapsed > loanDays + 3;
+          const daysLeft = daysInfo;
+
+          const getStatusMessage = () => {
+            if (tx.status === 'closed') return null;
+            if (tx.status === 'sold') return { bg: '#1e1e1e', border: '#4b5563', textColor: '#d1d5db', msg: 'This item has been sold. The loan is now closed.' };
+            if (tx.type === 'outright') return null;
+            if (isSoldPending) return {
+              bg: '#3d1515', border: '#ef4444', textColor: '#fca5a5',
+              msg: `Your loan deadline of ${formatDateLong(tx.deadlineDate)} has passed. Your item is now considered SOLD BY YOU and PURCHASED BY US. Contact us immediately if you have questions.`
+            };
+            if (isGrace) return {
+              bg: '#2d1f4e', border: '#8b5cf6', textColor: '#c4b5fd',
+              msg: `Your loan deadline was ${formatDateLong(tx.deadlineDate)}. You are now in the grace period — please visit us or call immediately to avoid your item being sold.`
+            };
+            if (daysLeft !== null && daysLeft <= 7 && daysLeft >= 0) return {
+              bg: '#3d2600', border: '#f59e0b', textColor: '#fcd34d',
+              msg: `⚠ Only ${daysLeft} day${daysLeft === 1 ? '' : 's'} left! Your deadline is ${formatDateLong(tx.deadlineDate)}. On that day, your item will be considered SOLD BY YOU and PURCHASED BY US if not redeemed.`
+            };
+            if (daysLeft !== null && daysLeft > 0) return {
+              bg: '#0f2920', border: '#10b981', textColor: '#a7f3d0',
+              msg: `Your item is safe with us. You have ${daysLeft} day${daysLeft === 1 ? '' : 's'} remaining — your deadline is ${formatDateLong(tx.deadlineDate)}.`
+            };
+            return null;
+          };
+
+          const statusMsg = getStatusMessage();
+
           return (
             <div>
               <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', border: '1px solid #2a3447', marginBottom: '16px' }}>
@@ -787,33 +867,35 @@ function CustomerPortal({ onBack, settings }) {
                   </div>
                   <div>
                     <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '2px' }}>Return Deadline</div>
-                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{formatDateLong(tx.deadlineDate)}</div>
+                    <div style={{ fontWeight: 700, fontSize: '15px', color: isOverdue ? '#ef4444' : '#fff' }}>{formatDateLong(tx.deadlineDate)}</div>
                   </div>
                 </div>
 
-                {daysInfo !== null && tx.status === 'active' && tx.type !== 'outright' && (
-                  <div style={{ background: isOverdue ? '#3d1515' : '#1a3d22', border: `1px solid ${isOverdue ? '#ef4444' : '#1a5f2a'}`, borderRadius: '8px', padding: '12px', marginBottom: '14px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '13px', color: isOverdue ? '#fca5a5' : '#a7f3d0' }}>{isOverdue ? `${Math.abs(daysInfo)} days overdue` : `${daysInfo} days remaining`}</div>
+                {statusMsg && (
+                  <div style={{ background: statusMsg.bg, border: `1px solid ${statusMsg.border}`, borderRadius: '8px', padding: '12px 14px', marginBottom: '14px', fontSize: '14px', color: statusMsg.textColor, lineHeight: 1.5 }}>
+                    {statusMsg.msg}
                   </div>
                 )}
 
-                {tx.status === 'active' && tx.type !== 'outright' && (
+                {tx.status === 'active' && tx.type !== 'outright' && !isSoldPending && (
                   <div style={{ background: '#111827', borderRadius: '8px', padding: '14px', textAlign: 'center' }}>
                     <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '4px' }}>Total owed today</div>
                     <div style={{ fontSize: '26px', fontWeight: 800, color: isOverdue ? '#ef4444' : '#4ade80' }}>{fmtMoney(owed)}</div>
-                    <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>Updated live based on today's date</div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>Calculated live based on today's date</div>
                   </div>
                 )}
               </div>
 
-              <div style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '14px', color: '#d1d5db', border: '1px solid #2a3447' }}>
-                To pay back and collect your item, visit our shop or call <strong style={{ color: '#fff' }}>{phone1}</strong>
-              </div>
+              {!isSoldPending && tx.status !== 'sold' && (
+                <div style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '14px', color: '#d1d5db', border: '1px solid #2a3447' }}>
+                  To pay back and collect your item, visit our shop or call <strong style={{ color: '#fff' }}>{phone1}</strong>
+                </div>
+              )}
 
               <WhatsAppButton whatsAppNumber={whatsApp} style={{ marginBottom: '14px' }} />
 
               <button
-                onClick={() => { setResult(null); setSearched(false); setRef(''); }}
+                onClick={() => { setResult(null); setSearched(false); setRefDate(''); setRefNum(''); }}
                 style={{ background: 'none', border: 'none', color: '#9ca3af', fontSize: '15px', cursor: 'pointer', padding: '8px 0', textDecoration: 'underline', display: 'block', textAlign: 'center', width: '100%' }}
               >
                 ← Check another reference number

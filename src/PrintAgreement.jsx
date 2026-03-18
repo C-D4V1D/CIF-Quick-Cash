@@ -210,8 +210,8 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
     <!-- Clause 3 -->
     <div class="clause-hdr c3">3. &nbsp;THE ${loanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
     <div class="clause-body cb3">
-      You have ${loanDays} days from the Date Given above to pay back in full and collect your item.<br/>
-      <b>If ${loanDays} days pass and you have not paid, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.
+      You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your exact deadline is <b>${fmtDateLong(tx.deadlineDate)}</b>.<br/><br/>
+      <b>If the ${loanDays}th day (${fmtDateLong(tx.deadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.
     </div>
 
     <!-- Clause 4 -->
@@ -224,8 +224,8 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
   const page3 = `
   <div class="page">
     <div class="clause-body cb4">
-      <b>It is strictly YOUR responsibility to remember your return date and come back on time.</b><br/><br/>
-      As a courtesy, we may try to send an SMS or call your phone numbers before Day ${loanDays}. However, whether we reach you or not, the ${loanDays}-Day Rule will apply automatically. Failure to receive a reminder call is not a reason to dispute the purchase.
+      <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/><br/>
+      As a courtesy, we may try to send an SMS or call your phone numbers before Day ${loanDays}. However, whether we reach you or not, the ${loanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(tx.deadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
     </div>
 
     <!-- Clause 5 -->
