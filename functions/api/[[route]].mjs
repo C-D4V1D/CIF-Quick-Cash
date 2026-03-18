@@ -903,6 +903,10 @@ export async function onRequest(context) {
         // loan timeline fields
         elapsedDays, customer_due_date, internal_deadline,
         grace_end_date, sale_allowed_date, loanStatus,
+        // for_sale / sold fields
+        salePrice, saleDate, listedForSaleDate,
+        // closed (repaid) fields
+        amountRepaid, dateRepaid, daysCharged, totalFees,
       } = withTimeline;
 
       return json({
@@ -925,6 +929,15 @@ export async function onRequest(context) {
         grace_end_date,
         sale_allowed_date,
         loanStatus,
+        // for_sale / sold
+        salePrice,
+        saleDate,
+        listedForSaleDate,
+        // closed (repaid)
+        amountRepaid,
+        dateRepaid,
+        daysCharged,
+        totalFees,
       });
     }
 
