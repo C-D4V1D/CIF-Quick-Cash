@@ -66,6 +66,106 @@ const requireAdmin = (request) => {
   return auth;
 };
 
+// ============================================================
+// LOAN TIMELINE HELPERS
+// Rules:
+//   internal_deadline  = dateGiven + 30 days  (business takes ownership)
+//   grace_end_date     = dateGiven + 33 days  (end of grace period)
+//   sale_allowed_date  = dateGiven + 34 days  (earliest sale date)
+//   customer_due_date  = dateGiven + loanDays (customer's agreed repayment date)
+//
+// Status transitions (advance loans only):
+//   ACTIVE           — before customer_due_date
+//   OVERDUE          — after customer_due_date, before day 30
+//   OWNED_BY_BUSINESS — day 30 exactly
+//   GRACE_PERIOD     — days 31–33
+//   ELIGIBLE_FOR_SALE — day 34+
+// ============================================================
+
+// Add N calendar days to a YYYY-MM-DD or ISO date string; returns YYYY-MM-DD.
+const addDaysToDate = (dateStr, n) => {
+  if (!dateStr) return null;
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().split('T')[0];
+};
+
+// Return the number of whole calendar days elapsed since a date string (UTC).
+// Returns 0 if the date is today or in the future.
+const elapsedDaysSince = (dateStr) => {
+  if (!dateStr) return 0;
+  const given = new Date(dateStr);
+  if (Number.isNaN(given.getTime())) return 0;
+  const now = new Date();
+  // Truncate both to midnight UTC for a clean day comparison
+  const givenMidnight = Date.UTC(given.getUTCFullYear(), given.getUTCMonth(), given.getUTCDate());
+  const nowMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
+};
+
+// Compute the loan timeline for an advance transaction.
+// txData  — parsed JSON data from the transactions table
+// Returns an object with computed dates and the derived loanStatus string.
+const computeLoanTimeline = (txData) => {
+  // Use the date the loan was physically given (stored in the data JSON).
+  // Fall back to today if missing.
+  const baseDate = txData.dateGiven || null;
+  if (!baseDate) return null;
+
+  // Rule 1: Fixed internal milestones measured from dateGiven
+  const internal_deadline  = addDaysToDate(baseDate, 30); // business ownership begins
+  const grace_end_date     = addDaysToDate(baseDate, 33); // grace period ends
+  const sale_allowed_date  = addDaysToDate(baseDate, 34); // earliest allowed sale date
+
+  // Rule 2: Customer due date = dateGiven + agreed loan duration (loanDays).
+  // Use the stored deadlineDate if available (already computed at entry time),
+  // otherwise derive it from loanDays.
+  const loanDays = Number(txData.loanDays) || 30;
+  const customer_due_date = txData.deadlineDate || addDaysToDate(baseDate, loanDays);
+
+  // Elapsed calendar days since the loan was given
+  const elapsedDays = elapsedDaysSince(baseDate);
+
+  // Rule 3: Status transitions
+  let loanStatus;
+  if (elapsedDays >= 34) {
+    loanStatus = 'ELIGIBLE_FOR_SALE';  // day 34+ — ready for sale
+  } else if (elapsedDays >= 31) {
+    loanStatus = 'GRACE_PERIOD';       // days 31–33 — final grace period
+  } else if (elapsedDays >= 30) {
+    loanStatus = 'OWNED_BY_BUSINESS';  // day 30 — business has taken ownership
+  } else {
+    // Before day 30: check whether the customer's agreed due date has passed
+    const today = new Date().toISOString().split('T')[0];
+    if (customer_due_date && today > customer_due_date) {
+      loanStatus = 'OVERDUE';          // past customer deadline, not yet day 30
+    } else {
+      loanStatus = 'ACTIVE';           // within customer's agreed term
+    }
+  }
+
+  return {
+    elapsedDays,
+    customer_due_date,
+    internal_deadline,
+    grace_end_date,
+    sale_allowed_date,
+    loanStatus,
+  };
+};
+
+// Attach loan timeline fields to a transaction record (advance loans only).
+// Returns the original record unchanged for outright purchases and closed/sold loans.
+const withLoanTimeline = (r) => {
+  // Only compute for advance loans that are still active
+  if (!r || r.type === 'outright' || r.status === 'closed' || r.status === 'sold') return r;
+  const timeline = computeLoanTimeline(r);
+  if (!timeline) return r;
+  return { ...r, ...timeline };
+};
+
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -255,7 +355,7 @@ export async function onRequest(context) {
         const hasMore = offset + limit < Math.max(totalTransactions, totalDrafts);
 
         return json({
-          transactions: transactionsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref, status: r.status, created_at: r.created_at, updated_at: r.updated_at })),
+          transactions: transactionsRes.results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status, created_at: r.created_at, updated_at: r.updated_at })),
           drafts: draftsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })),
           pagination: {
             limit,
@@ -377,7 +477,7 @@ export async function onRequest(context) {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const { results } = await db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC').all();
-      return json(results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref, status: r.status })));
+      return json(results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status })));
     }
     if (path === 'transactions' && method === 'POST') {
       const auth = requireAuth(request);
@@ -390,6 +490,20 @@ export async function onRequest(context) {
           || (existing?.status === 'for_sale' ? new Date().toISOString() : null)
           || new Date().toISOString();
       }
+
+      // Rule 4: Prevent marking an advance loan for sale before sale_allowed_date (day 34).
+      // This also satisfies the rule that items cannot be marked as inventory before day 30,
+      // since day 34 > day 30.
+      if (tx.status === 'for_sale' && tx.type !== 'outright') {
+        const timeline = computeLoanTimeline(tx);
+        if (timeline && timeline.sale_allowed_date) {
+          const today = new Date().toISOString().split('T')[0];
+          if (today < timeline.sale_allowed_date) {
+            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day 34 onwards; business ownership begins at day 30)`, 422);
+          }
+        }
+      }
+
       await db
         .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, status = excluded.status, updated_at = datetime('now')")
         .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
@@ -427,6 +541,20 @@ export async function onRequest(context) {
           || (existing?.status === 'for_sale' ? new Date().toISOString() : null)
           || new Date().toISOString();
       }
+
+      // Rule 4: Prevent marking an advance loan for sale before sale_allowed_date (day 34).
+      // This also satisfies the rule that items cannot be marked as inventory before day 30,
+      // since day 34 > day 30.
+      if (tx.status === 'for_sale' && tx.type !== 'outright') {
+        const timeline = computeLoanTimeline(tx);
+        if (timeline && timeline.sale_allowed_date) {
+          const today = new Date().toISOString().split('T')[0];
+          if (today < timeline.sale_allowed_date) {
+            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day 34 onwards; business ownership begins at day 30)`, 422);
+          }
+        }
+      }
+
       await db
         .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
         .bind(JSON.stringify(tx), tx.status || 'active', ref)
