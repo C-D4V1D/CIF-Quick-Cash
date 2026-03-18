@@ -1023,6 +1023,12 @@ const CAPTURE_ITEM_TYPES = [
   'Generator', 'Gas Cylinder', 'Motorcycle', 'Other',
 ];
 
+// Item types that require IMEI verification (not just serial number)
+const IMEI_ITEM_TYPES = ['Smartphone', 'Tablet'];
+
+// Item types that physically cannot "power on" — skip the power-on gatekeeper
+const NON_POWERED_ITEM_TYPES = ['Gas Cylinder'];
+
 const ITEM_PHOTO_SLOTS = {
   'Smartphone': [
     'Front (Screen ON)',
@@ -1101,7 +1107,7 @@ const normalizeItemPhotos = (ip) => {
   return [];
 };
 
-const AI_PROMPT_IMEI = `Look at this image carefully. This is a photo of a phone screen showing the IMEI number (typically displayed after dialing *#06#, or visible in Settings > About Phone). Extract the IMEI number. It is a 15-digit number made up entirely of digits. Respond with ONLY the 15 digits, no spaces, no dashes, nothing else. If you cannot find a 15-digit IMEI, respond with exactly: NOT_FOUND`;
+const AI_PROMPT_IMEI = `Look at this image carefully. This is a photo of a device screen showing the IMEI number (typically displayed after dialing *#06#, or visible in Settings > About Device / About Phone / About Tablet). Extract the IMEI number. It is a 15-digit number made up entirely of digits. Respond with ONLY the 15 digits, no spaces, no dashes, nothing else. If you cannot find a 15-digit IMEI, respond with exactly: NOT_FOUND`;
 
 const AI_PROMPT_SERIAL = `Look at this image carefully. Find the serial number on the label. A serial number is usually labelled "S/N", "Serial No.", "Serial Number", or "SN:" and is a combination of letters and digits. Respond with ONLY the serial number text exactly as printed, nothing else. If you cannot find any serial number, respond with exactly: NOT_FOUND`;
 
@@ -1114,11 +1120,15 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
   const [serialAiLoading, setSerialAiLoading] = useState(false);
   const [serialAiError, setSerialAiError] = useState('');
 
-  const isPhone = tx.captureItemType === 'Smartphone';
+  const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
+  const isNonPowered = NON_POWERED_ITEM_TYPES.includes(tx.captureItemType);
   const slots = tx.captureItemType ? getPhotoSlots(tx.captureItemType) : [];
   const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
   const photoCount = photoArr.filter(Boolean).length;
   const showCaptureBody = tx.captureItemType && (tx.itemPowersOn === true || tx.partsOnly);
+
+  // For non-powered items the gatekeeper is skipped but we still need the body to appear
+  // (itemPowersOn is auto-set to true above, so showCaptureBody will be true already)
 
   const updPhoto = (idx, val) => {
     const arr = [...(Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [])];
@@ -1162,9 +1172,11 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
           style={S.select}
           value={tx.captureItemType}
           onChange={e => {
-            upd('captureItemType', e.target.value);
-            upd('requiresIMEI', e.target.value === 'Smartphone');
-            upd('itemPowersOn', null);
+            const newType = e.target.value;
+            upd('captureItemType', newType);
+            upd('requiresIMEI', IMEI_ITEM_TYPES.includes(newType));
+            // Non-powered items (e.g. Gas Cylinder) cannot be asked to "power on"
+            upd('itemPowersOn', NON_POWERED_ITEM_TYPES.includes(newType) ? true : null);
             upd('partsOnly', false);
             upd('itemPhotos', []);
             upd('imei', '');
@@ -1183,8 +1195,8 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
         ⚠ Only accept items you can confidently sell within <strong>14 days</strong> in Aguleri. If in doubt, decline politely. <strong>Do not accept jewellery, clothing, or documents.</strong>
       </div>
 
-      {/* 6A — Power-on Gatekeeper */}
-      {tx.captureItemType && (
+      {/* 6A — Power-on Gatekeeper (skipped for items that physically cannot power on) */}
+      {tx.captureItemType && !isNonPowered && (
         <div style={{ marginTop: '16px', padding: '16px', background: COLORS.bg, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
           <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '12px' }}>Does this item power on and function at a basic level?</div>
           <div style={{ display: 'flex', gap: '12px' }}>
@@ -1195,8 +1207,8 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
         </div>
       )}
 
-      {/* Parts-Only Branch */}
-      {tx.captureItemType && tx.itemPowersOn === false && !tx.partsOnly && (
+      {/* Parts-Only Branch (only for items that can power on) */}
+      {tx.captureItemType && !isNonPowered && tx.itemPowersOn === false && !tx.partsOnly && (
         <div style={{ ...S.alert('danger'), marginTop: '12px' }}>
           <div style={{ fontWeight: 700, marginBottom: '8px' }}>⚠️ Value: ₦0 (Scrap Only)</div>
           <div style={{ marginBottom: '12px' }}>This item does not power on. Do you wish to proceed with a <strong>Parts Only</strong> transaction? The maximum offer will be ₦{MAX_PARTS_ONLY_ADVANCE.toLocaleString()}.</div>
@@ -1234,14 +1246,13 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
             )}
           </div>
 
-          {/* 6C — IMEI (Smartphone) or Serial Number (all others) */}
+          {/* 6C — IMEI (Smartphone/Tablet) or Serial Number (all others) */}
           <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `2px solid ${COLORS.border}` }}>
-            {isPhone ? (
+            {requiresImei ? (
               <>
                 <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>📱 IMEI Capture</div>
                 <div style={{ ...S.alert('info'), marginBottom: '12px' }}>
-                  📱 The IMEI permanently identifies this specific device. Dial <strong>*#06#</strong> on the phone — a number will appear on screen. Take a clear close-up photo. We use the IMEI to confirm this is the exact device the customer says it is. Check that the brand and model on imei.info matches what you see on the About Phone page.
-                </div>
+                  📱 The IMEI permanently identifies this specific device. Dial <strong>*#06#</strong> on the device — a number will appear on screen. Take a clear close-up photo. We use the IMEI to confirm this is the exact device the customer says it is. Check that the brand and model on imei.info matches what you see in the device's About/Settings screen.</div>
                 <PhotoUpload label="Photo of IMEI on screen (*#06#)" value={tx.imeiPhoto} onChange={v => { upd('imeiPhoto', v); if (!v) { upd('imei', ''); upd('imeiModelMatch', false); } }} required size={130} />
                 {tx.imeiPhoto && (
                   <div style={{ marginTop: '10px' }}>
@@ -1254,7 +1265,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
                 {imeiAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{imeiAiError}</div>}
                 <Field label="IMEI Number" required style={{ marginTop: '12px' }}>
                   <input style={S.input} inputMode="numeric" value={tx.imei} onChange={e => upd('imei', e.target.value.replace(/\D/g, ''))} placeholder="15-digit IMEI — auto-filled by AI or type manually" />
-                  {!tx.imei && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>⛔ IMEI is required for smartphones.</div>}
+                  {!tx.imei && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>⛔ IMEI is required for this device.</div>}
                 </Field>
                 {tx.imei && (
                   <>
@@ -1265,7 +1276,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction }) {
                     </div>
                     <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
                       <input type="checkbox" checked={tx.imeiModelMatch} onChange={e => upd('imeiModelMatch', e.target.checked)} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
-                      <span style={{ fontSize: '13px' }}>✅ Brand and model on imei.info matches what we saw on the phone</span>
+                      <span style={{ fontSize: '13px' }}>✅ Brand and model on imei.info matches what we saw on the device</span>
                     </label>
                     {!tx.imeiModelMatch && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ You must confirm the brand and model match before proceeding.</div>}
                   </>
@@ -1503,13 +1514,13 @@ CONDITION: [detailed condition description]`;
       case 'custPhotos': return !!tx.photoCustomerHolding;
       case 'screening': return tx.screeningPurchaseLocation !== 'Other' || !!tx.screeningPurchaseLocationOther;
       case 'itemPhotos': {
-        const isPhone = tx.captureItemType === 'Smartphone';
+        const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
         const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
         const photoCount = photoArr.filter(Boolean).length;
         if (!tx.captureItemType) return false;
         if (tx.itemPowersOn !== true && !tx.partsOnly) return false;
         if (photoCount < 3) return false;
-        if (isPhone) { if (!tx.imei || !tx.imeiModelMatch) return false; }
+        if (requiresImei) { if (!tx.imei || !tx.imeiModelMatch) return false; }
         else { if (tx.serialNumberPhoto && !tx.serialNumber) return false; }
         if (tx.hasReceipt === true && !tx.receiptPhoto) return false;
         return true;
@@ -1547,7 +1558,7 @@ CONDITION: [detailed condition description]`;
         if (tx.screeningPurchaseLocation === 'Other' && !tx.screeningPurchaseLocationOther) issues.push('Please specify where the item was purchased (you selected "Other").');
         break;
       case 'itemPhotos': {
-        const isPhone = tx.captureItemType === 'Smartphone';
+        const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
         const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
         const photoCount = photoArr.filter(Boolean).length;
         if (!tx.captureItemType) {
@@ -1556,9 +1567,9 @@ CONDITION: [detailed condition description]`;
           issues.push('You must confirm whether this item powers on before proceeding.');
         } else {
           if (photoCount < 3) issues.push(`At least 3 item photos are required. You have uploaded ${photoCount} so far.`);
-          if (isPhone) {
-            if (!tx.imei) issues.push('IMEI number is required for smartphones. Upload a photo of the *#06# screen and extract with AI.');
-            if (tx.imei && !tx.imeiModelMatch) issues.push('You must confirm the brand and model on imei.info match the phone before proceeding.');
+          if (requiresImei) {
+            if (!tx.imei) issues.push('IMEI number is required. Upload a photo of the *#06# screen and extract with AI.');
+            if (tx.imei && !tx.imeiModelMatch) issues.push('You must confirm the brand and model on imei.info match the device before proceeding.');
           } else {
             if (tx.serialNumberPhoto && !tx.serialNumber) issues.push('You uploaded a serial number photo — please extract or enter the serial number before proceeding.');
           }
