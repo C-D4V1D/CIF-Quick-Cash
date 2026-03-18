@@ -717,6 +717,7 @@ function CustomerPortal({ onBack, settings }) {
   const s = settings || {};
   const phone1 = s.shopPhone1 || '08165491908';
   const whatsApp = s.shopWhatsApp || '2348165491908';
+  const shopHours = s.shopHours || 'Monday – Saturday, 8am – 6pm';
 
   const fullRef = `CIF-${refDate}-${refNum}`;
 
@@ -778,8 +779,21 @@ function CustomerPortal({ onBack, settings }) {
       saleEligibleDate.setDate(saleEligibleDate.getDate() + saleEligibleDay);
     }
 
+    // Key business milestone dates
+    const maxLoanDayDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
+    if (maxLoanDayDate) {
+      maxLoanDayDate.setHours(0, 0, 0, 0);
+      maxLoanDayDate.setDate(maxLoanDayDate.getDate() + maxLoanDays);
+    }
+    const graceEndDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
+    if (graceEndDate) {
+      graceEndDate.setHours(0, 0, 0, 0);
+      graceEndDate.setDate(graceEndDate.getDate() + maxLoanDays + graceDays);
+    }
+
     const daysUntilAgreedDue = agreedDueDate ? Math.ceil((agreedDueDate - today) / 86400000) : null;
     const daysUntilSaleEligible = saleEligibleDate ? Math.ceil((saleEligibleDate - today) / 86400000) : null;
+    const daysOverdue = daysUntilAgreedDue !== null && daysUntilAgreedDue < 0 ? Math.abs(daysUntilAgreedDue) : 0;
 
     return {
       elapsed,
@@ -787,26 +801,36 @@ function CustomerPortal({ onBack, settings }) {
       saleEligibleDay,
       agreedDueDate,
       saleEligibleDate,
+      maxLoanDayDate,
+      graceEndDate,
       daysUntilAgreedDue,
       daysUntilSaleEligible,
+      daysOverdue,
       isBeforeAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue > 0 : elapsed < agreedDueDay,
       isAfterAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue < 0 : elapsed > agreedDueDay,
       isOnAgreedDueDate: daysUntilAgreedDue === 0,
+      isOnMaxLoanDay: elapsed === maxLoanDays,
+      isInGracePeriod: elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays,
+      isLastDayOfGrace: graceDays > 0 && elapsed === maxLoanDays + graceDays,
       isGraceWindow: elapsed >= maxLoanDays + 1 && elapsed <= maxLoanDays + graceDays,
       isSaleEligible: elapsed >= saleEligibleDay,
     };
   };
 
   const getStatusBadge = (tx) => {
-    if (tx.status === 'closed') return { label: 'Closed — Returned', color: '#10b981' };
-    if (tx.status === 'sold') return { label: 'Sold', color: '#6b7280' };
+    if (tx.status === 'closed') return { label: '✅ Closed — Returned', color: '#10b981' };
+    if (tx.status === 'sold') return { label: '✅ Sold', color: '#6b7280' };
+    if (tx.status === 'for_sale') return { label: '🏷️ For Sale', color: '#374151' };
     if (tx.type === 'outright') return { label: 'Outright Purchase', color: '#8b5cf6' };
     const info = getDaysInfo(tx);
-    if (!info) return { label: 'Active Loan', color: '#10b981' };
-    if (info.isSaleEligible) return { label: 'Purchased by Business', color: '#ef4444' };
-    if (info.isGraceWindow) return { label: 'Purchased by Business', color: '#8b5cf6' };
-    if (info.isAfterAgreedDue || info.isOnAgreedDueDate) return { label: 'Overdue', color: '#f59e0b' };
-    return { label: 'Active Loan', color: '#10b981' };
+    if (!info) return { label: 'Active', color: '#10b981' };
+    if (info.isSaleEligible) return { label: '🏷️ For Sale', color: '#374151' };
+    if (info.isLastDayOfGrace) return { label: '🔴 Last Day of Grace', color: '#dc2626' };
+    if (info.isInGracePeriod) return { label: `💜 Grace Period Ends ${formatDateLong(info.graceEndDate)}`, color: '#8b5cf6' };
+    if (info.isOnMaxLoanDay) return { label: '🔴 Last Day of Ownership', color: '#dc2626' };
+    if (info.isAfterAgreedDue) return { label: `⚠️ ${info.daysOverdue} Day${info.daysOverdue !== 1 ? 's' : ''} Overdue`, color: '#f59e0b' };
+    if (info.isOnAgreedDueDate) return { label: '🔴 Due Today', color: '#ef4444' };
+    return { label: 'Active', color: '#10b981' };
   };
 
   return (
@@ -879,33 +903,151 @@ function CustomerPortal({ onBack, settings }) {
           const daysInfo = getDaysInfo(tx);
           const owed = calcOwedToday(tx);
           const agreedDueDateLabel = formatDateLong(tx.deadlineDate);
-          const saleDateLabel = formatDateLong(daysInfo?.saleEligibleDate);
           const isOverdue = !!daysInfo && (daysInfo.isAfterAgreedDue || daysInfo.isOnAgreedDueDate);
+          // Pre-compute key milestone date labels (using current settings, used for all scenarios)
+          const maxLoanDaysNum = Math.max(1, Number(s.maxLoanDays) || 30);
+          const graceDaysNum = Math.max(0, Number(s.graceDays) || 3);
+          const maxLoanDayLabel = formatDateLong(addDays(tx.dateGiven, maxLoanDaysNum));
+          const graceEndLabel = formatDateLong(addDays(tx.dateGiven, maxLoanDaysNum + graceDaysNum));
+          // Show repayment amount block for active advance loans that haven't reached sale eligibility
           const showRepaymentInfo = tx.status === 'active' && tx.type !== 'outright' && (!daysInfo || !daysInfo.isSaleEligible);
+          // Show contact block for all scenarios where customer can still repay
+          const showContactBlock = showRepaymentInfo;
 
           const getStatusMessage = () => {
-            if (tx.status === 'closed') return null;
-            if (tx.status === 'sold') return {
-              bg: '#1e1e1e', border: '#4b5563', textColor: '#d1d5db',
-              msg: `This item has been sold. Your agreed return date was ${agreedDueDateLabel}.`
-            };
-            if (tx.type === 'outright' || !daysInfo) return null;
-            if (daysInfo.isSaleEligible) return {
-              bg: '#3d1515', border: '#ef4444', textColor: '#fca5a5',
-              msg: `Your agreed return date of ${agreedDueDateLabel} has passed. Your item is now eligible for sale. Please contact us immediately if you need further information.`
-            };
-            if (daysInfo.isGraceWindow) return {
-              bg: '#3d1515', border: '#ef4444', textColor: '#fca5a5',
-              msg: `Your agreed return date of ${agreedDueDateLabel} has passed. Your item is now considered purchased by the business. Please visit or call us as soon as possible.`
-            };
-            if (daysInfo.isAfterAgreedDue || daysInfo.isOnAgreedDueDate) return {
-              bg: '#3d2600', border: '#f59e0b', textColor: '#fcd34d',
-              msg: `Your agreed return date was ${agreedDueDateLabel}. Your loan is now overdue. Please contact us as soon as possible to arrange repayment and collect your item.`
-            };
-            if (daysInfo.daysUntilAgreedDue !== null) return {
+            // Scenario 9: Closed — Returned
+            if (tx.status === 'closed') return {
               bg: '#0f2920', border: '#10b981', textColor: '#a7f3d0',
-              msg: `Your loan is active. Your agreed return date is ${agreedDueDateLabel}. Please ensure you repay on time to collect your item.`
+              msg: (
+                <>
+                  ✅ <strong>Transaction Closed</strong><br /><br />
+                  You successfully repaid your loan on <strong>{formatDateLong(tx.dateRepaid)}</strong> and collected your item.<br /><br />
+                  <strong>Summary:</strong><br />
+                  &bull; Cash advance: <strong>{fmtMoney(tx.cashAdvance)}</strong><br />
+                  &bull; Daily fee ({tx.daysCharged} day{tx.daysCharged !== 1 ? 's' : ''} × {fmtMoney(tx.dailyFee)}): <strong>{fmtMoney(tx.totalFees)}</strong><br />
+                  &bull; Total repaid: <strong>{fmtMoney(tx.amountRepaid)}</strong><br /><br />
+                  Thank you for your business! We&apos;re here whenever you need cash again.<br />
+                  <span style={{ opacity: 0.65, fontSize: '12px' }}>Agreement Ref: {tx.ref}</span>
+                </>
+              ),
             };
+
+            // Scenario 8: Sold (purchased by public)
+            if (tx.status === 'sold') return {
+              bg: '#111827', border: '#374151', textColor: '#9ca3af',
+              msg: (
+                <>
+                  ✅ <strong>Item Sold</strong><br /><br />
+                  Your item was sold to us on <strong>{maxLoanDayLabel}</strong> as per our signed agreement.<br />
+                  We subsequently sold it to the public on <strong>{formatDateLong(tx.saleDate)}</strong> for <strong>{fmtMoney(tx.salePrice)}</strong>.<br /><br />
+                  Your original loan of <strong>{fmtMoney(tx.cashAdvance)}</strong> has been fully offset. No further action is needed.<br /><br />
+                  <hr style={{ border: 'none', borderTop: '1px solid #374151', margin: '8px 0' }} />
+                  <span style={{ opacity: 0.65, fontSize: '12px' }}>Original agreement: Ref {tx.ref}</span>
+                </>
+              ),
+            };
+
+            // Scenario 7: For Sale (explicitly listed by admin or grace period expired)
+            if (tx.status === 'for_sale' || (daysInfo && daysInfo.isSaleEligible)) return {
+              bg: '#1a1a1a', border: '#374151', textColor: '#9ca3af',
+              msg: (
+                <>
+                  🏷️ <strong>Item Now for Sale</strong><br /><br />
+                  Your item was sold to us on <strong>{maxLoanDayLabel}</strong> as per our signed agreement.<br />
+                  We are currently offering it for sale to the public.{tx.salePrice ? <> The sale price is <strong>{fmtMoney(tx.salePrice)}</strong>.</> : ''}<br /><br />
+                  You <strong>no longer have ownership rights</strong> to this item. It cannot be reclaimed by you under any circumstances.<br /><br />
+                  <hr style={{ border: 'none', borderTop: '1px solid #374151', margin: '8px 0' }} />
+                  <span style={{ opacity: 0.65, fontSize: '12px' }}>If you have questions or disputes about this, please contact us in writing with your original agreement.</span>
+                </>
+              ),
+            };
+
+            if (tx.type === 'outright' || !daysInfo) return null;
+
+            // Scenario 6: Last Day of Grace Period
+            if (daysInfo.isLastDayOfGrace) return {
+              bg: '#2d0000', border: '#dc2626', textColor: '#fca5a5',
+              msg: (
+                <>
+                  🔴 <strong>FINAL CHANCE — Grace period expires TODAY.</strong><br /><br />
+                  Your item was sold to us on <strong>{maxLoanDayLabel}</strong> as per our signed agreement.<br />
+                  Today (<strong>{formatDateLong(new Date().toISOString().split('T')[0])}</strong>) is your <strong>final day</strong> to pay the full amount and collect your item.<br /><br />
+                  After today, we will list it for sale to others and you will have <strong>no further right</strong> to reclaim it.<br /><br />
+                  <strong>Amount due today: {fmtMoney(owed)}</strong><br /><br />
+                  📞 <strong>Contact us urgently: {phone1}</strong>
+                </>
+              ),
+            };
+
+            // Scenario 5: Grace Period (after max loan days, before last grace day)
+            if (daysInfo.isInGracePeriod) return {
+              bg: '#1a0a3d', border: '#8b5cf6', textColor: '#c4b5fd',
+              msg: (
+                <>
+                  💜 <strong>Grace Period Extended</strong><br /><br />
+                  Your item was sold to us on <strong>{maxLoanDayLabel}</strong> as per our signed agreement.<br />
+                  We are giving you a <strong>grace period until {graceEndLabel}</strong> to pay and collect your item. During this time, we have not listed it for sale yet.<br /><br />
+                  <strong>Important:</strong> After {graceEndLabel}, the item will be listed for sale to the public and you will lose all rights to it.<br /><br />
+                  <strong>Amount due today: {fmtMoney(owed)}</strong> (includes daily fees)<br /><br />
+                  📞 Contact us to arrange payment: <strong>{phone1}</strong>
+                </>
+              ),
+            };
+
+            // Scenario 4: Last Day of Ownership (ownership transfers today)
+            if (daysInfo.isOnMaxLoanDay) return {
+              bg: '#2d0000', border: '#dc2626', textColor: '#fca5a5',
+              msg: (
+                <>
+                  🔴 <strong>FINAL DAY — Item ownership transfers today.</strong><br /><br />
+                  Today is <strong>{formatDateLong(new Date().toISOString().split('T')[0])}</strong> — your final day to pay and collect your item.<br /><br />
+                  <strong>This is your last chance.</strong> If you do not collect your item today, it automatically becomes our property and we will sell it to others. You will lose all ownership rights.<br /><br />
+                  <strong>Amount due today: {fmtMoney(owed)}</strong><br /><br />
+                  🏪 <strong>Our shop hours:</strong> {shopHours}<br />
+                  📞 <strong>Contact us immediately: {phone1}</strong>
+                </>
+              ),
+            };
+
+            // Scenario 3: Overdue (after agreed return date, before max loan days)
+            if (daysInfo.isAfterAgreedDue) return {
+              bg: '#3d2600', border: '#f59e0b', textColor: '#fcd34d',
+              msg: (
+                <>
+                  ⚠️ <strong>Your loan is overdue.</strong><br /><br />
+                  Your agreed return date was <strong>{agreedDueDateLabel}</strong>.<br />
+                  You still have until <strong>{maxLoanDayLabel}</strong> to pay and collect your item. After that date, the item will no longer be yours to reclaim — it will become our property and we will sell it to others.<br /><br />
+                  <strong>Amount due today: {fmtMoney(owed)}</strong> (includes daily fees)<br /><br />
+                  📞 Please contact us urgently: <strong>{phone1}</strong>
+                </>
+              ),
+            };
+
+            // Scenario 2: Due Today
+            if (daysInfo.isOnAgreedDueDate) return {
+              bg: '#3d0000', border: '#ef4444', textColor: '#fca5a5',
+              msg: (
+                <>
+                  🔴 <strong>Your item is due today.</strong><br /><br />
+                  Your agreed return date is <strong>TODAY ({agreedDueDateLabel})</strong>. Please visit our shop or call us immediately to pay and collect your item.<br /><br />
+                  ⚠️ <strong>Important:</strong> You can still repay and collect your item up to <strong>{maxLoanDayLabel}</strong>. After that date, the item will move into our ownership according to the agreement.<br /><br />
+                  📞 Call us now: <strong>{phone1}</strong>
+                </>
+              ),
+            };
+
+            // Scenario 1: Active Loan
+            if (daysInfo.isBeforeAgreedDue || daysInfo.daysUntilAgreedDue !== null) return {
+              bg: '#0f2920', border: '#10b981', textColor: '#a7f3d0',
+              msg: (
+                <>
+                  ✅ Your loan is active.<br /><br />
+                  Your agreed return date is <strong>{agreedDueDateLabel}</strong>. Please ensure you repay on time to collect your item.<br /><br />
+                  ⚠️ <strong>Important:</strong> As per our signed agreement, if you do not pay and collect your item by <strong>{maxLoanDayLabel}</strong>, the item will be considered sold to us and we will sell it to others. There will be no option to reclaim it after that date.
+                </>
+              ),
+            };
+
             return null;
           };
 
@@ -964,7 +1106,7 @@ function CustomerPortal({ onBack, settings }) {
                 )}
               </div>
 
-              {showRepaymentInfo && tx.status !== 'sold' && (
+              {showContactBlock && (
                 <div style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '14px', color: '#d1d5db', border: '1px solid #2a3447' }}>
                   To pay back and collect your item, visit our shop or call <strong style={{ color: '#fff' }}>{phone1}</strong>
                 </div>
