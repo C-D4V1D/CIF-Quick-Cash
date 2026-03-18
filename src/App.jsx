@@ -2190,6 +2190,12 @@ export default function App() {
   const [showAddUser, setShowAddUser] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [txPage, setTxPage] = useState(1);
+  const [txSortKey, setTxSortKey] = useState('dateGiven');
+  const [txSortDir, setTxSortDir] = useState('desc');
+  const [txStatusFilter, setTxStatusFilter] = useState('all');
+  const [txDateFrom, setTxDateFrom] = useState('');
+  const [txDateTo, setTxDateTo] = useState('');
+  const [txTypeFilter, setTxTypeFilter] = useState('all');
   const [dbStatus, setDbStatus] = useState('checking');
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -2293,8 +2299,8 @@ export default function App() {
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
 
-  // Reset transaction table to page 1 when route, search, or list data changes
-  useEffect(() => { setTxPage(1); }, [location.pathname, searchQuery, listLoading]);
+  // Reset transaction table to page 1 when route, search, filters, or list data changes
+  useEffect(() => { setTxPage(1); }, [location.pathname, searchQuery, txStatusFilter, txDateFrom, txDateTo, txTypeFilter, txSortKey, txSortDir, listLoading]);
 
   // Auto-open wizard when navigating directly to /transactions/new
   useEffect(() => {
@@ -2336,10 +2342,45 @@ export default function App() {
   const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory - totalDistributions;
 
   const filteredTxs = useMemo(() => {
-    if (!searchQuery) return transactions;
-    const q = searchQuery.toLowerCase();
-    return transactions.filter(t => t.ref?.toLowerCase().includes(q) || t.fullName?.toLowerCase().includes(q) || t.phoneNumbers?.some(p => p?.includes(q)) || t.imei?.includes(q) || t.aiBrand?.toLowerCase().includes(q));
-  }, [transactions, searchQuery]);
+    let result = [...transactions];
+    // Text search
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(t => t.ref?.toLowerCase().includes(q) || t.fullName?.toLowerCase().includes(q) || t.phoneNumbers?.some(p => p?.includes(q)) || t.imei?.includes(q) || t.aiBrand?.toLowerCase().includes(q) || t.aiModel?.toLowerCase().includes(q));
+    }
+    // Status filter
+    if (txStatusFilter !== 'all') {
+      result = result.filter(t => t.status === txStatusFilter);
+    }
+    // Type filter
+    if (txTypeFilter !== 'all') {
+      result = result.filter(t => t.type === txTypeFilter);
+    }
+    // Date range filter
+    if (txDateFrom) {
+      const from = new Date(txDateFrom);
+      result = result.filter(t => t.dateGiven && new Date(t.dateGiven) >= from);
+    }
+    if (txDateTo) {
+      const to = new Date(txDateTo);
+      to.setHours(23, 59, 59, 999);
+      result = result.filter(t => t.dateGiven && new Date(t.dateGiven) <= to);
+    }
+    // Sort
+    result.sort((a, b) => {
+      let av, bv;
+      if (txSortKey === 'dateGiven') { av = new Date(a.dateGiven || 0); bv = new Date(b.dateGiven || 0); }
+      else if (txSortKey === 'cashAdvance') { av = a.cashAdvance || 0; bv = b.cashAdvance || 0; }
+      else if (txSortKey === 'fullName') { av = (a.fullName || '').toLowerCase(); bv = (b.fullName || '').toLowerCase(); }
+      else if (txSortKey === 'status') { av = a.status || ''; bv = b.status || ''; }
+      else if (txSortKey === 'aiBrand') { av = (a.aiBrand || '').toLowerCase(); bv = (b.aiBrand || '').toLowerCase(); }
+      else { av = a[txSortKey]; bv = b[txSortKey]; }
+      if (av < bv) return txSortDir === 'asc' ? -1 : 1;
+      if (av > bv) return txSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return result;
+  }, [transactions, searchQuery, txStatusFilter, txTypeFilter, txDateFrom, txDateTo, txSortKey, txSortDir]);
 
   if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
 
@@ -2568,10 +2609,105 @@ export default function App() {
         {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={() => setDeclineDraftModal(d)}>Decline</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
       </div>);
 
-      case 'transactions': return (<div>{listLoadingNotice}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, margin: 0 }}>📋 All Transactions</h2><input style={{ ...S.input, flex: '1 1 180px', maxWidth: '300px' }} placeholder="🔍 Search..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
-        <div style={S.card}><TxTable items={searchQuery ? filteredTxs : transactions} /></div>
-      </div>);
+      case 'transactions': {
+        const txStatusCounts = { all: transactions.length, active: 0, closed: 0, sold: 0, for_sale: 0, declined: 0 };
+        transactions.forEach(t => { if (txStatusCounts[t.status] !== undefined) txStatusCounts[t.status]++; });
+        const hasActiveFilters = searchQuery || txStatusFilter !== 'all' || txTypeFilter !== 'all' || txDateFrom || txDateTo;
+        const sortOptions = [
+          { value: 'dateGiven', label: 'Date' },
+          { value: 'cashAdvance', label: 'Amount' },
+          { value: 'fullName', label: 'Customer' },
+          { value: 'aiBrand', label: 'Item' },
+          { value: 'status', label: 'Status' },
+        ];
+        const statusChips = [
+          { key: 'all', label: 'All', color: COLORS.primary },
+          { key: 'active', label: '⏳ Active', color: '#10b981' },
+          { key: 'closed', label: '✅ Closed', color: '#6b7280' },
+          { key: 'sold', label: '💰 Sold', color: '#10b981' },
+          { key: 'for_sale', label: '🏷️ For Sale', color: '#8b5cf6' },
+          { key: 'declined', label: '❌ Declined', color: '#ef4444' },
+        ];
+        const exportCsv = () => {
+          const cols = ['Ref', 'Customer', 'Phone', 'Item Brand', 'Item Model', 'Amount (₦)', 'Date', 'Status', 'Type'];
+          const rows = filteredTxs.map(t => [
+            t.ref || '', t.fullName || '', (t.phoneNumbers || []).join('; '), t.aiBrand || '', t.aiModel || '',
+            t.cashAdvance || 0, t.dateGiven ? new Date(t.dateGiven).toLocaleDateString('en-GB') : '',
+            statusLabel(t, settings), t.type || '',
+          ]);
+          const csv = [cols, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+          const blob = new Blob([csv], { type: 'text/csv' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `transactions-${new Date().toISOString().slice(0,10)}.csv`; a.click();
+          URL.revokeObjectURL(url);
+        };
+        const chipStyle = (active, color) => ({ padding: '5px 12px', borderRadius: '999px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', border: `1.5px solid ${active ? color : COLORS.border}`, background: active ? color : '#fff', color: active ? '#fff' : COLORS.textMuted, whiteSpace: 'nowrap' });
+        const sortBtnStyle = (active) => ({ padding: '5px 10px', borderRadius: '6px', border: `1.5px solid ${active ? COLORS.primary : COLORS.border}`, background: active ? COLORS.primaryLight : '#fff', color: active ? COLORS.primary : COLORS.textMuted, fontWeight: 700, fontSize: '12px', cursor: 'pointer' });
+        return (<div>{listLoadingNotice}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, margin: 0 }}>📋 All Transactions</h2>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <button style={S.btnSm('primary')} onClick={exportCsv} title="Export filtered results to CSV">⬇ Export CSV</button>
+            </div>
+          </div>
+
+          {/* Filter & Sort Controls */}
+          <div style={{ ...S.card, marginBottom: '16px', padding: '16px 20px' }}>
+            {/* Search */}
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '14px' }}>
+              <div style={{ flex: '2 1 200px' }}>
+                <div style={S.label}>Search</div>
+                <input style={S.input} placeholder="🔍 Ref, name, phone, IMEI, brand..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+              </div>
+              <div style={{ flex: '1 1 140px' }}>
+                <div style={S.label}>Type</div>
+                <select style={S.select} value={txTypeFilter} onChange={e => setTxTypeFilter(e.target.value)}>
+                  <option value="all">All Types</option>
+                  <option value="loan">Loan</option>
+                  <option value="outright">Outright Purchase</option>
+                </select>
+              </div>
+              <div style={{ flex: '1 1 130px' }}>
+                <div style={S.label}>From Date</div>
+                <input type="date" style={S.input} value={txDateFrom} onChange={e => setTxDateFrom(e.target.value)} />
+              </div>
+              <div style={{ flex: '1 1 130px' }}>
+                <div style={S.label}>To Date</div>
+                <input type="date" style={S.input} value={txDateTo} onChange={e => setTxDateTo(e.target.value)} />
+              </div>
+              <div style={{ flex: '1 1 150px' }}>
+                <div style={S.label}>Sort By</div>
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                  <select style={{ ...S.select, flex: 1 }} value={txSortKey} onChange={e => setTxSortKey(e.target.value)}>
+                    {sortOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                  <button style={sortBtnStyle(true)} onClick={() => setTxSortDir(d => d === 'asc' ? 'desc' : 'asc')} title="Toggle sort direction">{txSortDir === 'asc' ? '↑' : '↓'}</button>
+                </div>
+              </div>
+              {hasActiveFilters && <div style={{ flex: '0 0 auto', paddingBottom: '2px' }}><button style={{ ...S.btnSm('danger'), opacity: 0.85 }} onClick={() => { setSearchQuery(''); setTxStatusFilter('all'); setTxTypeFilter('all'); setTxDateFrom(''); setTxDateTo(''); }}>✕ Clear</button></div>}
+            </div>
+
+            {/* Status chips */}
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginRight: '4px' }}>Status:</span>
+              {statusChips.map(({ key, label, color }) => (
+                <button key={key} style={chipStyle(txStatusFilter === key, color)} onClick={() => setTxStatusFilter(key)}>
+                  {label}{txStatusCounts[key] !== undefined ? ` (${txStatusCounts[key]})` : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Results summary */}
+          {hasActiveFilters && (
+            <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px', paddingLeft: '2px' }}>
+              Showing <strong>{filteredTxs.length}</strong> of <strong>{transactions.length}</strong> transactions
+            </div>
+          )}
+
+          <div style={S.card}><TxTable items={filteredTxs} /></div>
+        </div>);
+      }
 
       case 'active': return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⏳ Active Loans</h2><div style={S.card}><TxTable items={activeTxs.sort((a, b) => new Date(a.deadlineDate) - new Date(b.deadlineDate))} /></div></div>);
 
