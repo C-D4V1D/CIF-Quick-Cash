@@ -311,6 +311,21 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // AUTH: POST /api/verify-password
+    // ============================================================
+    if (path === 'verify-password' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { password } = await request.json();
+      const match = await db
+        .prepare('SELECT id FROM users WHERE id = ? AND password = ?')
+        .bind(auth.user.id, password)
+        .first();
+      if (!match) return error('Incorrect password', 401);
+      return json({ ok: true });
+    }
+
+    // ============================================================
     // AUTH: POST /api/logout
     // ============================================================
     if (path === 'logout' && method === 'POST') {

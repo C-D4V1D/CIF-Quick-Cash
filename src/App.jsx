@@ -310,6 +310,8 @@ const DEFAULT_SETTINGS = {
   // Receipt & Agreement
   agreementTermsExtra: '',
   receiptFooter: 'Thank you for your patronage!',
+  // Profit Sharing
+  staffSharePct: 10,
   // Data Management
   activityLogRetentionDays: 90,
 };
@@ -3118,6 +3120,11 @@ export default function App() {
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
+  const [pendingSettings, setPendingSettings] = useState(null);
+  const [showSettingsPwdModal, setShowSettingsPwdModal] = useState(false);
+  const [settingsPwdInput, setSettingsPwdInput] = useState('');
+  const [settingsPwdError, setSettingsPwdError] = useState('');
+  const [settingsPwdLoading, setSettingsPwdLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [txPage, setTxPage] = useState(1);
   const [txSortKey, setTxSortKey] = useState('dateGiven');
@@ -4109,8 +4116,9 @@ export default function App() {
         const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
-        const rFabian = Math.floor(rProfit * 0.10);
-        const rStakeholder = rProfit - rFabian;
+        const staffSharePct = settings.staffSharePct ?? 10;
+        const rStaff = Math.floor(rProfit * staffSharePct / 100);
+        const rStakeholder = rProfit - rStaff;
         const rCapitalDeployed = rNewTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
         const rCapitalReturned = rClosed.reduce((s, t) => s + (t.cashAdvance || 0), 0);
         const expByCategory = rExpenses.reduce((acc, e) => {
@@ -4129,14 +4137,17 @@ export default function App() {
           const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
           return { ...s, pct, share: Math.floor(rStakeholder * pct / 100) };
         });
+        const staffUsers = users.filter(u => u.active !== 0 && (u.role === 'staff' || (u.roles || []).includes('staff')));
+        const staffSharePerPerson = staffUsers.length > 0 ? Math.floor(rStaff / staffUsers.length) : 0;
         const handlePrintReport = () => printMonthReport({
           periodLabel,
           rClosed, rSold, rNewTxs, rExpenses,
           rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
-          rExpTotal, rProfit, rFabian, rStakeholder,
+          rExpTotal, rProfit, rStaff, rStakeholder,
           rCapitalDeployed, rCapitalReturned,
           serviceFee: settings.serviceFee || 1000,
           stakeholders: rStakeholders,
+          staffUsers, staffSharePct, staffSharePerPerson,
           expByCategory,
         });
         const handleExportCSV = () => {
@@ -4152,7 +4163,7 @@ export default function App() {
             `Revenue,${rRevenue}`,
             `Expenses,${rExpTotal}`,
             `Net Profit,${rProfit}`,
-            `Fabian (10%),${rFabian}`,
+            `Staff Share (${staffSharePct}%),${rStaff}`,
             `Stakeholders,${rStakeholder}`,
             '',
             'REPAYMENTS',
@@ -4227,7 +4238,7 @@ export default function App() {
               <div style={S.grid3}>
                 <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money that came in during this period — from customers repaying, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
                 <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Expenses<InfoIcon tip="Money spent to keep the business running — things like printing, transport, airtime, and stationery." /></div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
-                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Net Profit<InfoIcon tip="Income minus expenses. This is what the business actually made after paying for everything. Fabian and the investors split this." /></div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Net Profit<InfoIcon tip="Income minus expenses. This is what the business actually made after paying for everything. Staff and investors split this." /></div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
               </div>
               <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Revenue Breakdown</div>
@@ -4244,11 +4255,20 @@ export default function App() {
 
             {/* Profit distribution */}
             <div style={S.grid2}>
-              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Fabian (10%)<InfoIcon tip="Fabian's cut for running the business — 10% of the profit." /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rFabian)}</div></div>
-              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders<InfoIcon tip="The investors' share of the profit — 90% split among them based on how much each person put in." /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
+              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Staff Share ({staffSharePct}%)<InfoIcon tip={`The staff's collective share for running the business — ${staffSharePct}% of the net profit, split equally among all active staff members.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rStaff)}</div></div>
+              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders ({100 - staffSharePct}%)<InfoIcon tip={`The investors' share of the profit — ${100 - staffSharePct}% split among them based on how much each person put in.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
             </div>
             <div style={S.card}>
-              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution<InfoIcon tip="How this investor's profit share is worked out — based on how much they put in compared to everyone else combined." /></div>
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>👥 Staff Distribution<InfoIcon tip="The staff's total share split equally among all active staff members." /></div>
+              {staffUsers.length > 0 ? staffUsers.map(u => (
+                <div key={u.id} style={rowStyle}>
+                  <span><strong>{u.name}</strong> (@{u.username})</span>
+                  <strong style={{ color: rStaff >= 0 ? COLORS.accent : COLORS.danger }}>{fmtMoney(staffSharePerPerson)}</strong>
+                </div>
+              )) : <p style={{ color: COLORS.textMuted, fontSize: '13px' }}>No active staff members found.</p>}
+            </div>
+            <div style={S.card}>
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution<InfoIcon tip="How each investor's profit share is worked out — based on how much they put in compared to everyone else combined." /></div>
               {rStakeholders.map(s => (
                 <div key={s.name} style={rowStyle}>
                   <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({s.pct.toFixed(1)}%)</span>
@@ -4425,8 +4445,8 @@ export default function App() {
                   ['Margin (on sales)', 'The extra money made above the cash advance when an item is sold. E.g. if ₦5,000 was advanced and item sold for ₦7,000, margin is ₦2,000.'],
                   ['Capital Deployed', 'Total advance money given out as new loans this period. This money is out in the field.'],
                   ['Capital Returned', 'Total advance money recovered from customers who paid back their loans this period.'],
-                  ['Fabian (10%)', 'The management fee — 10% of the net profit goes to Fabian for running and managing the business.'],
-                  ['Stakeholders (90%)', 'The remaining 90% of profit is shared among investors, each getting a share based on how much capital they put into the business.'],
+                  [`Staff Share (${staffSharePct}%)`, `The staff's collective management share — ${staffSharePct}% of the net profit split equally among all active staff members for running and managing the business.`],
+                  [`Stakeholders (${100 - staffSharePct}%)`, `The remaining ${100 - staffSharePct}% of profit is shared among investors, each getting a share based on how much capital they put into the business.`],
                   ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from their capital contribution compared to the total capital. More capital = higher share.'],
                 ].map(([term, def]) => (
                   <div key={term} style={{ padding: '10px 0', borderBottom: `1px solid ${COLORS.border}` }}>
@@ -4854,10 +4874,14 @@ export default function App() {
         );
       }
 
-      case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (
-        <div>
+      case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; {
+        const es = pendingSettings ?? settings; // effective settings (pending or saved)
+        const hasUnsaved = pendingSettings !== null;
+        const updateSettings = (s) => setPendingSettings(s);
+        return (
+        <div style={{ paddingBottom: hasUnsaved ? '80px' : 0 }}>
           <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>⚙ Settings</h2>
-          <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px' }}>Manage every aspect of your business from one place. Changes save automatically.</div>
+          <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px' }}>Manage every aspect of your business from one place. Edit settings below and click <strong>Save Changes</strong> when done.</div>
 
           {/* ── 1. BUSINESS PROFILE ── */}
           <div style={S.card}>
@@ -4865,18 +4889,18 @@ export default function App() {
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Your official business identity. The name and tagline appear on agreements, receipts, and the customer portal.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Business Name<InfoIcon tip="The registered name of your business. This appears on printed agreements, customer receipts, and the public landing page." /></span>}>
-                <input style={S.input} value={settings.businessName || DEFAULT_SETTINGS.businessName} onChange={e => saveSettings({ ...settings, businessName: e.target.value })} />
+                <input style={S.input} value={es.businessName || DEFAULT_SETTINGS.businessName} onChange={e => updateSettings({ ...es, businessName: e.target.value })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Business Tagline<InfoIcon tip="A short slogan or motto shown below your business name on the landing page and receipts." /></span>}>
-                <input style={S.input} value={settings.businessTagline ?? DEFAULT_SETTINGS.businessTagline} onChange={e => saveSettings({ ...settings, businessTagline: e.target.value })} placeholder="e.g. Fast Cash, Fair Deals" />
+                <input style={S.input} value={es.businessTagline ?? DEFAULT_SETTINGS.businessTagline} onChange={e => updateSettings({ ...es, businessTagline: e.target.value })} placeholder="e.g. Fast Cash, Fair Deals" />
               </Field>
             </div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Location / Area<InfoIcon tip="The general area or town of your business. Shown in the app header and used for search fallbacks." /></span>}>
-                <input style={S.input} value={settings.location || DEFAULT_SETTINGS.location} onChange={e => saveSettings({ ...settings, location: e.target.value })} />
+                <input style={S.input} value={es.location || DEFAULT_SETTINGS.location} onChange={e => updateSettings({ ...es, location: e.target.value })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>CAC Registration Number<InfoIcon tip="Your Corporate Affairs Commission (CAC) registration number. This is printed on official agreements for compliance." /></span>}>
-                <input style={S.input} value={settings.cacRegNumber || ''} onChange={e => saveSettings({ ...settings, cacRegNumber: e.target.value })} placeholder="e.g. BN-1234567" />
+                <input style={S.input} value={es.cacRegNumber || ''} onChange={e => updateSettings({ ...es, cacRegNumber: e.target.value })} placeholder="e.g. BN-1234567" />
               </Field>
             </div>
           </div>
@@ -4885,18 +4909,18 @@ export default function App() {
           <div style={S.card}>
             <div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div>
-            <Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field>
+            <Field label="Shop Address"><textarea style={S.textarea} value={es.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => updateSettings({ ...es, shopAddress: e.target.value })} /></Field>
             <div style={S.grid2}>
-              <Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field>
-              <Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field>
+              <Field label="Phone Number 1"><input style={S.input} value={es.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => updateSettings({ ...es, shopPhone1: e.target.value })} /></Field>
+              <Field label="Phone Number 2"><input style={S.input} value={es.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => updateSettings({ ...es, shopPhone2: e.target.value })} /></Field>
             </div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>WhatsApp Number<InfoIcon tip="Type the number starting with the country code, without the + sign (e.g. 2348165491908). Customers tap this to WhatsApp us from the loan check page." /></span>}>
-              <input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" />
+              <input style={S.input} value={es.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => updateSettings({ ...es, shopWhatsApp: e.target.value })} placeholder="2348165491908" />
               <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div>
             </Field>
-            <Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field>
+            <Field label="Operating Hours"><input style={S.input} value={es.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => updateSettings({ ...es, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Google Maps Link (optional)<InfoIcon tip="Paste a Google Maps link here so customers can find the shop easily. If you leave it empty, it'll use a Google Search link instead." /></span>}>
-              <input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." />
+              <input style={S.input} value={es.shopMapsUrl || ''} onChange={e => updateSettings({ ...es, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." />
             </Field>
           </div>
 
@@ -4906,22 +4930,22 @@ export default function App() {
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Core rules that control how loans are calculated — interest rates, caps, timeframes, and fees.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Daily Interest Rate (%)<InfoIcon tip="How much we charge per day as a fee. Example: 1% on ₦10,000 means ₦100 every day the customer hasn't paid back yet." /></span>}>
-                <input style={S.input} type="number" step="0.1" min="0" max="10" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} />
+                <input style={S.input} type="number" step="0.1" min="0" max="10" value={es.interestRate} onChange={e => updateSettings({ ...es, interestRate: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Service Fee (₦)<InfoIcon tip="A flat charge we collect once at the start of every loan — on the same day we hand over the cash." /></span>}>
-                <input style={S.input} type="number" min="0" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" value={es.serviceFee} onChange={e => updateSettings({ ...es, serviceFee: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap — No Receipt (%)<InfoIcon tip="The most we can give a customer who has no receipt — as a percentage of the item's value. We give less because we can't fully verify they own it." /></span>}>
-                <input style={S.input} type="number" min="0" max="100" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" max="100" value={es.loanCapNoReceipt} onChange={e => updateSettings({ ...es, loanCapNoReceipt: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap — With Receipt (%)<InfoIcon tip="The most we can give when a customer shows a receipt — as a percentage of the item's value. We can give more because the receipt proves they bought it." /></span>}>
-                <input style={S.input} type="number" min="0" max="100" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" max="100" value={es.loanCapWithReceipt} onChange={e => updateSettings({ ...es, loanCapWithReceipt: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Loan Days<InfoIcon tip="The longest time a customer can take before they must come back to pay. The system won't let you set a loan longer than this." /></span>}>
-                <input style={S.input} type="number" min="1" max="365" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="1" max="365" value={es.maxLoanDays} onChange={e => updateSettings({ ...es, maxLoanDays: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Grace Days<InfoIcon tip="Extra days we give a customer after they go overdue, before we start selling their item. It's a last chance for them to come back." /></span>}>
-                <input style={S.input} type="number" min="0" max="30" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" max="30" value={es.graceDays} onChange={e => updateSettings({ ...es, graceDays: Number(e.target.value) })} />
               </Field>
             </div>
           </div>
@@ -4932,13 +4956,13 @@ export default function App() {
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Controls how items are priced when listed for sale after a loan defaults.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sell Price (%)<InfoIcon tip="The ideal selling price as a percentage of the item's estimated value. For example, 75% means we aim to sell a ₦100,000 item for ₦75,000." /></span>}>
-                <input style={S.input} type="number" min="10" max="100" value={settings.targetSellPct ?? DEFAULT_SETTINGS.targetSellPct} onChange={e => saveSettings({ ...settings, targetSellPct: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="10" max="100" value={es.targetSellPct ?? DEFAULT_SETTINGS.targetSellPct} onChange={e => updateSettings({ ...es, targetSellPct: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Minimum Sell Bonus (%)<InfoIcon tip="The minimum profit margin above the loan amount + fees. Ensures we don't sell at a loss even if the target price is low." /></span>}>
-                <input style={S.input} type="number" min="0" max="100" value={settings.minSellBonus ?? DEFAULT_SETTINGS.minSellBonus} onChange={e => saveSettings({ ...settings, minSellBonus: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" max="100" value={es.minSellBonus ?? DEFAULT_SETTINGS.minSellBonus} onChange={e => updateSettings({ ...es, minSellBonus: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Parts-Only Advance (₦)<InfoIcon tip="The maximum loan amount for items that don't power on (parts/scrap only). These items are worth less, so the cap is lower." /></span>}>
-                <input style={S.input} type="number" min="0" value={settings.maxPartsOnlyAdvance ?? DEFAULT_SETTINGS.maxPartsOnlyAdvance} onChange={e => saveSettings({ ...settings, maxPartsOnlyAdvance: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" value={es.maxPartsOnlyAdvance ?? DEFAULT_SETTINGS.maxPartsOnlyAdvance} onChange={e => updateSettings({ ...es, maxPartsOnlyAdvance: Number(e.target.value) })} />
               </Field>
             </div>
           </div>
@@ -4949,13 +4973,13 @@ export default function App() {
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure what happens when a customer fails to return on time — penalties, reminders, and auto-forfeiture.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Penalty Rate Multiplier<InfoIcon tip="After the grace period expires, the daily fee is multiplied by this number. For example, 1.5x means a ₦100/day fee becomes ₦150/day for overdue loans. Set to 1 for no penalty." /></span>}>
-                <input style={S.input} type="number" step="0.1" min="1" max="5" value={settings.penaltyRateMultiplier ?? DEFAULT_SETTINGS.penaltyRateMultiplier} onChange={e => saveSettings({ ...settings, penaltyRateMultiplier: Number(e.target.value) })} />
+                <input style={S.input} type="number" step="0.1" min="1" max="5" value={es.penaltyRateMultiplier ?? DEFAULT_SETTINGS.penaltyRateMultiplier} onChange={e => updateSettings({ ...es, penaltyRateMultiplier: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Contact Reminder (days)<InfoIcon tip="How often (in days) the system should flag overdue loans for a follow-up contact attempt. Set to 0 to disable." /></span>}>
-                <input style={S.input} type="number" min="0" max="30" value={settings.overdueContactReminderDays ?? DEFAULT_SETTINGS.overdueContactReminderDays} onChange={e => saveSettings({ ...settings, overdueContactReminderDays: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" max="30" value={es.overdueContactReminderDays ?? DEFAULT_SETTINGS.overdueContactReminderDays} onChange={e => updateSettings({ ...es, overdueContactReminderDays: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Auto-Forfeit Days<InfoIcon tip="Number of days after the grace period ends before the item is automatically marked as 'Ready to Sell'. Set to 0 to handle this manually (current behaviour)." /></span>}>
-                <input style={S.input} type="number" min="0" max="90" value={settings.autoForfeitDays ?? DEFAULT_SETTINGS.autoForfeitDays} onChange={e => saveSettings({ ...settings, autoForfeitDays: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" max="90" value={es.autoForfeitDays ?? DEFAULT_SETTINGS.autoForfeitDays} onChange={e => updateSettings({ ...es, autoForfeitDays: Number(e.target.value) })} />
               </Field>
             </div>
           </div>
@@ -4965,16 +4989,16 @@ export default function App() {
             <div style={S.cardTitle}>📦 Item Categories</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>The types of items your business accepts. These appear in reports and filters. <strong>Note:</strong> The transaction wizard uses a separate system list with photo/inspection mappings.</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
-              {(settings.itemCategories || DEFAULT_SETTINGS.itemCategories).map((cat, i) => (
+              {(es.itemCategories || DEFAULT_SETTINGS.itemCategories).map((cat, i) => (
                 <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '20px', background: COLORS.primaryLight, color: COLORS.primaryDark, fontSize: '13px', fontWeight: 600, border: `1px solid ${COLORS.border}` }}>
                   {cat}
-                  <button onClick={() => { const cats = [...(settings.itemCategories || DEFAULT_SETTINGS.itemCategories)]; cats.splice(i, 1); saveSettings({ ...settings, itemCategories: cats }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.danger, fontWeight: 700, fontSize: '14px', lineHeight: 1, padding: '0 2px' }} title="Remove category">×</button>
+                  <button onClick={() => { const cats = [...(es.itemCategories || DEFAULT_SETTINGS.itemCategories)]; cats.splice(i, 1); updateSettings({ ...es, itemCategories: cats }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.danger, fontWeight: 700, fontSize: '14px', lineHeight: 1, padding: '0 2px' }} title="Remove category">×</button>
                 </span>
               ))}
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <input id="newCatInput" style={{ ...S.input, flex: 1 }} placeholder="Add a new category…" onKeyDown={e => { if (e.key === 'Enter' && e.target.value.trim()) { const cats = [...(settings.itemCategories || DEFAULT_SETTINGS.itemCategories), e.target.value.trim()]; saveSettings({ ...settings, itemCategories: cats }); e.target.value = ''; } }} />
-              <button style={S.btn('primary')} onClick={() => { const inp = document.getElementById('newCatInput'); if (inp && inp.value.trim()) { const cats = [...(settings.itemCategories || DEFAULT_SETTINGS.itemCategories), inp.value.trim()]; saveSettings({ ...settings, itemCategories: cats }); inp.value = ''; } }}>+ Add</button>
+              <input id="newCatInput" style={{ ...S.input, flex: 1 }} placeholder="Add a new category…" onKeyDown={e => { if (e.key === 'Enter' && e.target.value.trim()) { const cats = [...(es.itemCategories || DEFAULT_SETTINGS.itemCategories), e.target.value.trim()]; updateSettings({ ...es, itemCategories: cats }); e.target.value = ''; } }} />
+              <button style={S.btn('primary')} onClick={() => { const inp = document.getElementById('newCatInput'); if (inp && inp.value.trim()) { const cats = [...(es.itemCategories || DEFAULT_SETTINGS.itemCategories), inp.value.trim()]; updateSettings({ ...es, itemCategories: cats }); inp.value = ''; } }}>+ Add</button>
             </div>
           </div>
 
@@ -4983,16 +5007,16 @@ export default function App() {
             <div style={S.cardTitle}>🧾 Expense Categories</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>The categories available when logging an expense. Used in the Expenses page filter and the Add Expense form.</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
-              {(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories).map((cat, i) => (
+              {(es.expenseCategories || DEFAULT_SETTINGS.expenseCategories).map((cat, i) => (
                 <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '20px', background: COLORS.accentLight, color: '#92400e', fontSize: '13px', fontWeight: 600, border: `1px solid ${COLORS.accent}33` }}>
                   {cat}
-                  <button onClick={() => { const cats = [...(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories)]; cats.splice(i, 1); saveSettings({ ...settings, expenseCategories: cats }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.danger, fontWeight: 700, fontSize: '14px', lineHeight: 1, padding: '0 2px' }} title="Remove category">×</button>
+                  <button onClick={() => { const cats = [...(es.expenseCategories || DEFAULT_SETTINGS.expenseCategories)]; cats.splice(i, 1); updateSettings({ ...es, expenseCategories: cats }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.danger, fontWeight: 700, fontSize: '14px', lineHeight: 1, padding: '0 2px' }} title="Remove category">×</button>
                 </span>
               ))}
             </div>
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <input id="newExpCatInput" style={{ ...S.input, flex: 1 }} placeholder="Add a new expense category…" onKeyDown={e => { if (e.key === 'Enter' && e.target.value.trim()) { const cats = [...(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories), e.target.value.trim()]; saveSettings({ ...settings, expenseCategories: cats }); e.target.value = ''; } }} />
-              <button style={S.btn('primary')} onClick={() => { const inp = document.getElementById('newExpCatInput'); if (inp && inp.value.trim()) { const cats = [...(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories), inp.value.trim()]; saveSettings({ ...settings, expenseCategories: cats }); inp.value = ''; } }}>+ Add</button>
+              <input id="newExpCatInput" style={{ ...S.input, flex: 1 }} placeholder="Add a new expense category…" onKeyDown={e => { if (e.key === 'Enter' && e.target.value.trim()) { const cats = [...(es.expenseCategories || DEFAULT_SETTINGS.expenseCategories), e.target.value.trim()]; updateSettings({ ...es, expenseCategories: cats }); e.target.value = ''; } }} />
+              <button style={S.btn('primary')} onClick={() => { const inp = document.getElementById('newExpCatInput'); if (inp && inp.value.trim()) { const cats = [...(es.expenseCategories || DEFAULT_SETTINGS.expenseCategories), inp.value.trim()]; updateSettings({ ...es, expenseCategories: cats }); inp.value = ''; } }}>+ Add</button>
             </div>
           </div>
 
@@ -5002,7 +5026,7 @@ export default function App() {
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Require API-verified NIN/BVN to proceed<InfoIcon tip="When turned on, staff can only move forward if the NIN or BVN check was fully successful and returned a photo. When turned off, any attempt — even a failed one — is enough to continue. Useful when the service is down." /></span>}>
               <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
-                <input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
+                <input type="checkbox" checked={!!es.requireNinVerification} onChange={e => updateSettings({ ...es, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
                 <span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span>
               </label>
             </Field>
@@ -5013,13 +5037,13 @@ export default function App() {
             <div style={S.cardTitle}>🔑 API Keys &amp; Integrations</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>External service credentials. These are stored securely and never shown in full after saving.</div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini AI API Key<InfoIcon tip="The key that turns on the AI valuation feature. You can get one for free at aistudio.google.com." /></span>}>
-              <input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" />
+              <input style={S.input} type="password" value={es.geminiApiKey} onChange={e => updateSettings({ ...es, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Leave it as default — the system will switch to a backup automatically if needed." /></span>}>
-              <input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
+              <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
-              <input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
+              <input style={S.input} type="password" value={es.ninApiKey} onChange={e => updateSettings({ ...es, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
             </Field>
           </div>
 
@@ -5028,13 +5052,13 @@ export default function App() {
             <div style={S.cardTitle}>💬 WhatsApp Message Templates</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Pre-written messages for common customer communications. Use placeholders: <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{customerName}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{ref}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{amount}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{shopPhone}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{businessName}'}</code></div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Reminder<InfoIcon tip="Sent to customers a few days before their loan is due. Helps reduce overdue rates." /></span>}>
-              <textarea style={S.textarea} value={settings.whatsappLoanReminder ?? DEFAULT_SETTINGS.whatsappLoanReminder} onChange={e => saveSettings({ ...settings, whatsappLoanReminder: e.target.value })} />
+              <textarea style={S.textarea} value={es.whatsappLoanReminder ?? DEFAULT_SETTINGS.whatsappLoanReminder} onChange={e => updateSettings({ ...es, whatsappLoanReminder: e.target.value })} />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Notice<InfoIcon tip="Sent when a customer's loan is past due. Should be firm but professional." /></span>}>
-              <textarea style={S.textarea} value={settings.whatsappOverdueNotice ?? DEFAULT_SETTINGS.whatsappOverdueNotice} onChange={e => saveSettings({ ...settings, whatsappOverdueNotice: e.target.value })} />
+              <textarea style={S.textarea} value={es.whatsappOverdueNotice ?? DEFAULT_SETTINGS.whatsappOverdueNotice} onChange={e => updateSettings({ ...es, whatsappOverdueNotice: e.target.value })} />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Pickup Ready<InfoIcon tip="Sent when a customer has paid and their item is ready for collection." /></span>}>
-              <textarea style={S.textarea} value={settings.whatsappPickupReady ?? DEFAULT_SETTINGS.whatsappPickupReady} onChange={e => saveSettings({ ...settings, whatsappPickupReady: e.target.value })} />
+              <textarea style={S.textarea} value={es.whatsappPickupReady ?? DEFAULT_SETTINGS.whatsappPickupReady} onChange={e => updateSettings({ ...es, whatsappPickupReady: e.target.value })} />
             </Field>
           </div>
 
@@ -5043,29 +5067,41 @@ export default function App() {
             <div style={S.cardTitle}>🧾 Receipt &amp; Agreement Customization</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Customize the text that appears on printed agreements and receipts.</div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Additional Agreement Terms<InfoIcon tip="Extra terms or clauses to include at the bottom of the printed loan agreement. Leave blank if you don't need any additions beyond the standard terms." /></span>}>
-              <textarea style={{ ...S.textarea, minHeight: '100px' }} value={settings.agreementTermsExtra ?? ''} onChange={e => saveSettings({ ...settings, agreementTermsExtra: e.target.value })} placeholder="e.g. Items unclaimed after 60 days become property of the business." />
+              <textarea style={{ ...S.textarea, minHeight: '100px' }} value={es.agreementTermsExtra ?? ''} onChange={e => updateSettings({ ...es, agreementTermsExtra: e.target.value })} placeholder="e.g. Items unclaimed after 60 days become property of the business." />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Receipt Footer Text<InfoIcon tip="A short message printed at the bottom of customer receipts." /></span>}>
-              <input style={S.input} value={settings.receiptFooter ?? DEFAULT_SETTINGS.receiptFooter} onChange={e => saveSettings({ ...settings, receiptFooter: e.target.value })} placeholder="Thank you for your patronage!" />
+              <input style={S.input} value={es.receiptFooter ?? DEFAULT_SETTINGS.receiptFooter} onChange={e => updateSettings({ ...es, receiptFooter: e.target.value })} placeholder="Thank you for your patronage!" />
             </Field>
           </div>
 
-          {/* ── 13. SECURITY ── */}
+          {/* ── 13. PROFIT SHARING ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>💼 Profit Sharing</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure how net profit is split between staff and investors. The remainder after the staff share goes to stakeholders.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Share (%)<InfoIcon tip="The percentage of net profit shared equally among all active staff members. The remaining percentage goes to stakeholders based on their capital contributions. Default is 10%." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" step="1" value={es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct} onChange={e => updateSettings({ ...es, staffSharePct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Stakeholders receive the remaining <strong>{100 - (es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct)}%</strong>.</div>
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 14. SECURITY ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🔒 Security &amp; Access Control</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Protect your system with login rules and session policies.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Session Timeout (minutes)<InfoIcon tip="How long a user can stay logged in without activity before being automatically logged out. Default is 480 minutes (8 hours)." /></span>}>
-                <input style={S.input} type="number" min="5" max="1440" value={settings.sessionTimeoutMinutes ?? DEFAULT_SETTINGS.sessionTimeoutMinutes} onChange={e => saveSettings({ ...settings, sessionTimeoutMinutes: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="5" max="1440" value={es.sessionTimeoutMinutes ?? DEFAULT_SETTINGS.sessionTimeoutMinutes} onChange={e => updateSettings({ ...es, sessionTimeoutMinutes: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Minimum Password Length<InfoIcon tip="The shortest password allowed when creating or updating user accounts. Longer passwords are more secure." /></span>}>
-                <input style={S.input} type="number" min="4" max="32" value={settings.minPasswordLength ?? DEFAULT_SETTINGS.minPasswordLength} onChange={e => saveSettings({ ...settings, minPasswordLength: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="4" max="32" value={es.minPasswordLength ?? DEFAULT_SETTINGS.minPasswordLength} onChange={e => updateSettings({ ...es, minPasswordLength: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Login Attempts<InfoIcon tip="How many wrong password attempts before the account is temporarily locked. Prevents brute-force attacks." /></span>}>
-                <input style={S.input} type="number" min="1" max="20" value={settings.maxLoginAttempts ?? DEFAULT_SETTINGS.maxLoginAttempts} onChange={e => saveSettings({ ...settings, maxLoginAttempts: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="1" max="20" value={es.maxLoginAttempts ?? DEFAULT_SETTINGS.maxLoginAttempts} onChange={e => updateSettings({ ...es, maxLoginAttempts: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Login Cooldown (minutes)<InfoIcon tip="How long to lock an account after exceeding the max login attempts." /></span>}>
-                <input style={S.input} type="number" min="1" max="60" value={settings.loginCooldownMinutes ?? DEFAULT_SETTINGS.loginCooldownMinutes} onChange={e => saveSettings({ ...settings, loginCooldownMinutes: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="1" max="60" value={es.loginCooldownMinutes ?? DEFAULT_SETTINGS.loginCooldownMinutes} onChange={e => updateSettings({ ...es, loginCooldownMinutes: Number(e.target.value) })} />
               </Field>
             </div>
           </div>
@@ -5076,7 +5112,7 @@ export default function App() {
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how long data is retained and manage system maintenance tasks.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Activity Log Retention (days)<InfoIcon tip="How many days of activity logs to keep in the database. Older logs are automatically cleaned up to save storage. Set to 0 to keep everything forever." /></span>}>
-                <input style={S.input} type="number" min="0" max="365" value={settings.activityLogRetentionDays ?? DEFAULT_SETTINGS.activityLogRetentionDays} onChange={e => saveSettings({ ...settings, activityLogRetentionDays: Number(e.target.value) })} />
+                <input style={S.input} type="number" min="0" max="365" value={es.activityLogRetentionDays ?? DEFAULT_SETTINGS.activityLogRetentionDays} onChange={e => updateSettings({ ...es, activityLogRetentionDays: Number(e.target.value) })} />
               </Field>
             </div>
           </div>
@@ -5086,16 +5122,70 @@ export default function App() {
             <div style={{ ...S.cardTitle, color: COLORS.danger }}>🚨 Danger Zone</div>
             <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '14px' }}>Irreversible actions. Proceed with extreme caution.</div>
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-              <button style={S.btn('danger')} onClick={() => { if (window.confirm('Reset ALL settings to factory defaults? This cannot be undone.') && window.confirm('Are you absolutely sure? This will wipe all your custom settings.')) { saveSettings({ ...DEFAULT_SETTINGS }); } }}>Reset All Settings to Defaults</button>
+              <button style={S.btn('danger')} onClick={() => { if (window.confirm('Reset ALL settings to factory defaults? This cannot be undone.') && window.confirm('Are you absolutely sure? This will wipe all your custom settings.')) { updateSettings({ ...DEFAULT_SETTINGS }); } }}>Reset All Settings to Defaults</button>
             </div>
           </div>
+
+          {/* ── STICKY SAVE BAR ── */}
+          {hasUnsaved && (
+            <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 200, background: COLORS.primaryDark, padding: '14px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', boxShadow: '0 -4px 20px rgba(0,0,0,0.25)' }}>
+              <span style={{ color: '#fff', fontSize: '14px', fontWeight: 600 }}>You have unsaved changes.</span>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button style={{ ...S.btn('outline'), color: '#fff', borderColor: 'rgba(255,255,255,0.4)', background: 'transparent' }} onClick={() => setPendingSettings(null)}>Discard</button>
+                <button style={{ ...S.btn('primary'), background: '#fff', color: COLORS.primaryDark, fontWeight: 700 }} onClick={() => { setSettingsPwdInput(''); setSettingsPwdError(''); setShowSettingsPwdModal(true); }}>Save Changes</button>
+              </div>
+            </div>
+          )}
         </div>
       );
+      }
 
       case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add User</button></div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 14px', background: COLORS.primaryLight, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>A user can hold multiple roles — for example, a staff member can also be a stakeholder. Use the <strong>Grant/Revoke Stakeholder</strong> button below to manage this without needing two accounts.</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Roles</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; const extraRoles = u.roles || []; const isAlsoStakeholder = u.role !== 'stakeholder' && extraRoles.includes('stakeholder'); const canToggleStakeholder = u.role !== 'admin' && u.role !== 'stakeholder'; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span>{extraRoles.map(r => <span key={r} style={S.badge('#8b5cf6')}>{r}</span>)}</div></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => setShowEditUser(u)}>Edit</button>{canToggleStakeholder && <button style={S.btnSm(isAlsoStakeholder ? 'danger' : 'primary')} onClick={async () => { const newRoles = isAlsoStakeholder ? extraRoles.filter(r => r !== 'stakeholder') : [...extraRoles, 'stakeholder']; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, roles: newRoles } : x)); await API.put(`users/${u.id}`, { roles: newRoles }); loadData(); }}>{isAlsoStakeholder ? '− Revoke Stakeholder' : '+ Grant Stakeholder'}</button>}<button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
 
       default: return <Navigate to="/dashboard" replace />;
     }
+  };
+
+  // Settings Password Confirmation Modal
+  const SettingsPwdModal = () => {
+    const handleConfirm = async () => {
+      if (!settingsPwdInput.trim()) { setSettingsPwdError('Please enter your password.'); return; }
+      setSettingsPwdLoading(true);
+      setSettingsPwdError('');
+      const res = await API.post('verify-password', { password: settingsPwdInput });
+      setSettingsPwdLoading(false);
+      if (res?.ok) {
+        await saveSettings(pendingSettings);
+        setPendingSettings(null);
+        setShowSettingsPwdModal(false);
+        setSettingsPwdInput('');
+      } else {
+        setSettingsPwdError(res?.error || 'Incorrect password. Please try again.');
+      }
+    };
+    return (
+      <Modal open={showSettingsPwdModal} onClose={() => { setShowSettingsPwdModal(false); setSettingsPwdError(''); }} title="Confirm Settings Changes">
+        <p style={{ fontSize: '14px', color: COLORS.text, marginBottom: '16px' }}>Enter your admin password to apply the settings changes.</p>
+        <Field label="Admin Password">
+          <input
+            style={S.input}
+            type="password"
+            autoFocus
+            value={settingsPwdInput}
+            onChange={e => setSettingsPwdInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleConfirm()}
+            placeholder="Your password"
+          />
+        </Field>
+        {settingsPwdError && <div style={{ color: COLORS.danger, fontSize: '13px', marginBottom: '10px' }}>{settingsPwdError}</div>}
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button style={S.btn('primary')} onClick={handleConfirm} disabled={settingsPwdLoading}>
+            {settingsPwdLoading ? 'Verifying…' : 'Confirm & Save'}
+          </button>
+          <button style={S.btn('outline')} onClick={() => { setShowSettingsPwdModal(false); setSettingsPwdError(''); }}>Cancel</button>
+        </div>
+      </Modal>
+    );
   };
 
   // Modals
@@ -5470,7 +5560,7 @@ export default function App() {
         </div>
       )}
 
-      <ExpModal /><CapModal /><DistModal /><DecModal /><DeclineDraftModal /><UsrModal /><EditUserModal />
+      <ExpModal /><CapModal /><DistModal /><DecModal /><DeclineDraftModal /><UsrModal /><EditUserModal /><SettingsPwdModal />
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); }} />}</Modal>
       <style>{`
         input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}

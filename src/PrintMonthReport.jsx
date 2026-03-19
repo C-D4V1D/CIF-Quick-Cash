@@ -21,10 +21,11 @@ const buildReportHTML = ({
   periodLabel,
   rClosed, rSold, rNewTxs, rExpenses,
   rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
-  rExpTotal, rProfit, rFabian, rStakeholder,
+  rExpTotal, rProfit, rStaff, rStakeholder,
   rCapitalDeployed, rCapitalReturned,
   serviceFee,
   stakeholders, // [{ name, total, pct, share }]
+  staffUsers, staffSharePct, staffSharePerPerson,
   expByCategory,
 }) => {
   const rows = (items, cols) => items.length === 0
@@ -306,14 +307,21 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
   <div class="section-hdr">🏦 Profit Distribution</div>
   <div class="dist-grid">
     <div class="dist-box">
-      <div class="dist-label">Fabian (10%)</div>
-      <div class="dist-value" style="color:#b45309">${fmtMoney(rFabian)}</div>
+      <div class="dist-label">Staff Share (${staffSharePct ?? 10}%)</div>
+      <div class="dist-value" style="color:#b45309">${fmtMoney(rStaff)}</div>
     </div>
     <div class="dist-box">
-      <div class="dist-label">Stakeholders (90%)</div>
+      <div class="dist-label">Stakeholders (${100 - (staffSharePct ?? 10)}%)</div>
       <div class="dist-value" style="color:#1A3A5C">${fmtMoney(rStakeholder)}</div>
     </div>
   </div>
+
+  ${(staffUsers && staffUsers.length > 0) ? `
+  <div style="font-size:9pt;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px">Staff Members (equal share)</div>
+  <table class="data" style="margin-top:0">
+    <thead><tr><th>Name</th><th>Username</th><th>Share</th></tr></thead>
+    <tbody>${staffUsers.map(u => `<tr><td>${esc(u.name)}</td><td>@${esc(u.username)}</td><td class="num" style="color:#b45309">${fmtMoney(staffSharePerPerson)}</td></tr>`).join('')}</tbody>
+  </table>` : ''}
 
   <table class="data" style="margin-top:10px">
     <thead>
@@ -425,8 +433,8 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
     ['Margin (on sales)', 'The extra money earned above the original advance when an item is sold. For example: advance was ₦5,000 and item sold for ₦7,000 — margin is ₦2,000 profit.'],
     ['Capital Deployed', 'The total amount of money given out as new loans in this period. This money is "in the field" — out with customers — and will return when they repay.'],
     ['Capital Returned', 'The total advance money that came back from customers who repaid their loans in this period. This money is now available to be lent out again.'],
-    ['Fabian (10%)', 'The management fee. 10% of the net profit goes to Fabian for managing the day-to-day running of the business — handling customers, agreements, collections, and operations.'],
-    ['Stakeholders (90%)', 'The remaining 90% of net profit is shared among all investors (stakeholders). Each investor gets a portion based on how much capital they contributed to the business.'],
+    [`Staff Share (${staffSharePct ?? 10}%)`, `The staff's collective share for running the business — ${staffSharePct ?? 10}% of the net profit split equally among all active staff members. This covers day-to-day operations: handling customers, agreements, collections, and operations.`],
+    [`Stakeholders (${100 - (staffSharePct ?? 10)}%)`, `The remaining ${100 - (staffSharePct ?? 10)}% of net profit is shared among all investors (stakeholders). Each investor gets a portion based on how much capital they contributed to the business.`],
     ['Stakeholder % Share', 'Each stakeholder\'s percentage is worked out by dividing their capital by the total capital invested. A person who put in more money receives a proportionally larger share of the profit.'],
   ].map(([term, def]) => `
   <div style="margin-bottom:10px;padding:8px 12px;border:1px solid #e5e7eb;background:#f8f9fa;border-left:4px solid #1A3A5C">
