@@ -285,6 +285,8 @@ const DEFAULT_SETTINGS = {
   requireNinVerification: false,
   // Item Categories
   itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other'],
+  // Expense Categories
+  expenseCategories: ['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'],
   // Business Contact & Hours
   shopAddress: 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State',
   shopPhone1: '08165491908',
@@ -4332,7 +4334,7 @@ export default function App() {
       }
 
       case 'expenses': {
-        const EXP_CATEGORIES = ['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'];
+        const EXP_CATEGORIES = settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories;
         const expQ = expSearch.trim().toLowerCase();
         const filteredExpenses = expenses
           .filter(e => {
@@ -4744,7 +4746,25 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 7. IDENTITY VERIFICATION ── */}
+          {/* ── 7. EXPENSE CATEGORIES ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🧾 Expense Categories</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>The categories available when logging an expense. Used in the Expenses page filter and the Add Expense form.</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+              {(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories).map((cat, i) => (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '20px', background: COLORS.accentLight, color: '#92400e', fontSize: '13px', fontWeight: 600, border: `1px solid ${COLORS.accent}33` }}>
+                  {cat}
+                  <button onClick={() => { const cats = [...(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories)]; cats.splice(i, 1); saveSettings({ ...settings, expenseCategories: cats }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.danger, fontWeight: 700, fontSize: '14px', lineHeight: 1, padding: '0 2px' }} title="Remove category">×</button>
+                </span>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <input id="newExpCatInput" style={{ ...S.input, flex: 1 }} placeholder="Add a new expense category…" onKeyDown={e => { if (e.key === 'Enter' && e.target.value.trim()) { const cats = [...(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories), e.target.value.trim()]; saveSettings({ ...settings, expenseCategories: cats }); e.target.value = ''; } }} />
+              <button style={S.btn('primary')} onClick={() => { const inp = document.getElementById('newExpCatInput'); if (inp && inp.value.trim()) { const cats = [...(settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories), inp.value.trim()]; saveSettings({ ...settings, expenseCategories: cats }); inp.value = ''; } }}>+ Add</button>
+            </div>
+          </div>
+
+          {/* ── 9. IDENTITY VERIFICATION ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🪪 Identity Verification Rules</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div>
@@ -4756,7 +4776,7 @@ export default function App() {
             </Field>
           </div>
 
-          {/* ── 8. API KEYS ── */}
+          {/* ── 10. API KEYS ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🔑 API Keys &amp; Integrations</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>External service credentials. These are stored securely and never shown in full after saving.</div>
@@ -4771,7 +4791,7 @@ export default function App() {
             </Field>
           </div>
 
-          {/* ── 9. WHATSAPP MESSAGE TEMPLATES ── */}
+          {/* ── 11. WHATSAPP MESSAGE TEMPLATES ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>💬 WhatsApp Message Templates</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Pre-written messages for common customer communications. Use placeholders: <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{customerName}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{ref}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{amount}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{shopPhone}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{businessName}'}</code></div>
@@ -4786,7 +4806,7 @@ export default function App() {
             </Field>
           </div>
 
-          {/* ── 10. RECEIPT & AGREEMENT ── */}
+          {/* ── 12. RECEIPT & AGREEMENT ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🧾 Receipt &amp; Agreement Customization</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Customize the text that appears on printed agreements and receipts.</div>
@@ -4798,7 +4818,7 @@ export default function App() {
             </Field>
           </div>
 
-          {/* ── 11. SECURITY ── */}
+          {/* ── 13. SECURITY ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🔒 Security &amp; Access Control</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Protect your system with login rules and session policies.</div>
@@ -4818,7 +4838,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 12. DATA MANAGEMENT ── */}
+          {/* ── 14. DATA MANAGEMENT ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🗄 Data Management</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how long data is retained and manage system maintenance tasks.</div>
@@ -4829,7 +4849,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 13. DANGER ZONE ── */}
+          {/* ── 15. DANGER ZONE ── */}
           <div style={{ ...S.card, border: `2px solid ${COLORS.danger}`, background: COLORS.dangerLight }}>
             <div style={{ ...S.cardTitle, color: COLORS.danger }}>🚨 Danger Zone</div>
             <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '14px' }}>Irreversible actions. Proceed with extreme caution.</div>
@@ -4847,7 +4867,32 @@ export default function App() {
   };
 
   // Modals
-  const ExpModal = () => { const [exp, setExp] = useState({ date: localISODate(), category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; const registeredBy = currentUser?.username || currentUser?.name || null; setExpenses(prev => [{ ...e2, id: Date.now(), registered_by: registeredBy }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
+  const ExpModal = () => {
+    const expCats = settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories;
+    const [exp, setExp] = useState({ date: localISODate(), category: expCats[0] || 'Miscellaneous', description: '', amount: '' });
+    return (
+      <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense">
+        <div style={S.grid2}>
+          <Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field>
+          <Field label="Category">
+            <select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>
+              {expCats.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+        </div>
+        <Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field>
+        <Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field>
+        <button style={S.btn('primary')} onClick={async () => {
+          const e2 = { ...exp, amount: Number(exp.amount) || 0 };
+          const registeredBy = currentUser?.username || currentUser?.name || null;
+          setExpenses(prev => [{ ...e2, id: Date.now(), registered_by: registeredBy }, ...prev]);
+          setShowAddExpense(false);
+          await API.post('expenses', e2);
+          loadData();
+        }}>Save</button>
+      </Modal>
+    );
+  };
 
   const CapModal = () => {
     const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' });
