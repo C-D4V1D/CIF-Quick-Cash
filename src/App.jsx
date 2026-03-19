@@ -3075,6 +3075,12 @@ export default function App() {
   const [reportEndYear, setReportEndYear] = useState(() => new Date().getFullYear());
   const [reportEndMonth, setReportEndMonth] = useState(() => new Date().getMonth() + 1);
   const [showAddExpense, setShowAddExpense] = useState(false);
+  const [expSearch, setExpSearch] = useState('');
+  const [expCategoryFilter, setExpCategoryFilter] = useState('all');
+  const [expSortKey, setExpSortKey] = useState('date');
+  const [expSortDir, setExpSortDir] = useState('desc');
+  const [expDateFrom, setExpDateFrom] = useState('');
+  const [expDateTo, setExpDateTo] = useState('');
   const [showAddCapital, setShowAddCapital] = useState(false);
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
   const [showAddDistribution, setShowAddDistribution] = useState(false);
@@ -4297,7 +4303,146 @@ export default function App() {
         );
       }
 
-      case 'expenses': return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🧾 Expenses</h2>{isStaff && <button style={S.btn('primary')} onClick={() => setShowAddExpense(true)}>+ Add</button>}</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Date</th><th style={S.th}>Category</th><th style={S.th}>Description</th><th style={S.th}>Amount</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead><tbody>{expenses.map((e, i) => (<tr key={i}><td style={S.td}>{fmtDate(e.date)}</td><td style={S.td}>{e.category}</td><td style={S.td}>{e.description}</td><td style={S.td}><strong>{fmtMoney(e.amount)}</strong></td>{isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm('Delete this expense entry?')) { setExpenses(prev => prev.filter(x => x.id !== e.id)); await API.del(`expenses/${e.id}`); loadData(); } }}>Delete</button></td>}</tr>))}{expenses.length === 0 && <tr><td style={S.td} colSpan={isAdmin ? 5 : 4}>None yet.</td></tr>}</tbody></table><div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total: {fmtMoney(totalExpenses)}</div></div></div>);
+      case 'expenses': {
+        const EXP_CATEGORIES = ['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'];
+        const expQ = expSearch.trim().toLowerCase();
+        const filteredExpenses = expenses
+          .filter(e => {
+            if (expCategoryFilter !== 'all' && e.category !== expCategoryFilter) return false;
+            if (expDateFrom && e.date < expDateFrom) return false;
+            if (expDateTo && e.date > expDateTo) return false;
+            if (expQ) {
+              const haystack = `${e.category} ${e.description || ''} ${e.registered_by || ''}`.toLowerCase();
+              if (!haystack.includes(expQ)) return false;
+            }
+            return true;
+          })
+          .sort((a, b) => {
+            let av, bv;
+            if (expSortKey === 'amount') { av = a.amount; bv = b.amount; }
+            else if (expSortKey === 'category') { av = a.category; bv = b.category; }
+            else { av = a.date; bv = b.date; }
+            if (av < bv) return expSortDir === 'asc' ? -1 : 1;
+            if (av > bv) return expSortDir === 'asc' ? 1 : -1;
+            return 0;
+          });
+        const filteredTotal = filteredExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+        const SortBtn = ({ col, label }) => {
+          const active = expSortKey === col;
+          return (
+            <button
+              onClick={() => { if (active) setExpSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setExpSortKey(col); setExpSortDir('desc'); } }}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.5px', color: active ? COLORS.primary : COLORS.textMuted, padding: 0, display: 'flex', alignItems: 'center', gap: '3px' }}
+            >
+              {label}{active ? (expSortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+            </button>
+          );
+        };
+        const hasFilters = expSearch || expCategoryFilter !== 'all' || expDateFrom || expDateTo;
+        return (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🧾 Expenses</h2>
+              {isStaff && <button style={S.btn('primary')} onClick={() => setShowAddExpense(true)}>+ Add</button>}
+            </div>
+
+            {/* Search & Filters */}
+            <div style={{ background: COLORS.card, borderRadius: '12px', padding: '16px', border: `1px solid ${COLORS.border}`, marginBottom: '16px' }}>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                <div style={{ flex: '1 1 200px' }}>
+                  <div style={S.label}>Search</div>
+                  <input
+                    style={S.input}
+                    placeholder="Description, category, user…"
+                    value={expSearch}
+                    onChange={e => setExpSearch(e.target.value)}
+                  />
+                </div>
+                <div style={{ flex: '1 1 160px' }}>
+                  <div style={S.label}>Category</div>
+                  <select style={S.select} value={expCategoryFilter} onChange={e => setExpCategoryFilter(e.target.value)}>
+                    <option value="all">All categories</option>
+                    {EXP_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: '1 1 130px' }}>
+                  <div style={S.label}>From</div>
+                  <input style={S.input} type="date" value={expDateFrom} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExpDateFrom(e.target.value)} />
+                </div>
+                <div style={{ flex: '1 1 130px' }}>
+                  <div style={S.label}>To</div>
+                  <input style={S.input} type="date" value={expDateTo} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExpDateTo(e.target.value)} />
+                </div>
+                {hasFilters && (
+                  <button style={{ ...S.btnSm('secondary'), alignSelf: 'flex-end', marginBottom: '1px' }} onClick={() => { setExpSearch(''); setExpCategoryFilter('all'); setExpDateFrom(''); setExpDateTo(''); }}>
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div style={S.card}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}><SortBtn col="date" label="Date" /></th>
+                    <th style={S.th}><SortBtn col="category" label="Category" /></th>
+                    <th style={S.th}>Description</th>
+                    <th style={S.th}>Registered By</th>
+                    <th style={S.th}><SortBtn col="amount" label="Amount" /></th>
+                    {isAdmin && <th style={S.th}>Actions</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredExpenses.map((e, i) => (
+                    <tr key={e.id || i}>
+                      <td style={S.td}>{fmtDate(e.date)}</td>
+                      <td style={S.td}>
+                        <span style={{ background: COLORS.accentLight, color: COLORS.warning, padding: '2px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: 600 }}>
+                          {e.category}
+                        </span>
+                      </td>
+                      <td style={S.td}>{e.description || <span style={{ color: COLORS.textMuted }}>—</span>}</td>
+                      <td style={S.td}>
+                        <span style={{ fontSize: '12px', color: COLORS.textMuted, fontWeight: 500 }}>
+                          {e.registered_by || <span style={{ color: COLORS.border }}>—</span>}
+                        </span>
+                      </td>
+                      <td style={S.td}><strong style={{ color: COLORS.danger }}>{fmtMoney(e.amount)}</strong></td>
+                      {isAdmin && (
+                        <td style={S.td}>
+                          <button style={S.btnSm('danger')} onClick={async () => {
+                            if (window.confirm('Delete this expense entry?')) {
+                              setExpenses(prev => prev.filter(x => x.id !== e.id));
+                              await API.del(`expenses/${e.id}`);
+                              loadData();
+                            }
+                          }}>Delete</button>
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                  {filteredExpenses.length === 0 && (
+                    <tr>
+                      <td style={{ ...S.td, color: COLORS.textMuted, textAlign: 'center' }} colSpan={isAdmin ? 6 : 5}>
+                        {hasFilters ? 'No expenses match your filters.' : 'No expenses recorded yet.'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              <div style={{ marginTop: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px' }}>
+                <span style={{ fontSize: '13px', color: COLORS.textMuted }}>
+                  {hasFilters ? `${filteredExpenses.length} of ${expenses.length} entries` : `${expenses.length} entries`}
+                </span>
+                <span style={{ fontWeight: 700, color: COLORS.danger }}>
+                  {hasFilters ? 'Filtered total: ' : 'Total: '}{fmtMoney(filteredTotal)}
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      }
 
       case 'declined': return (
         <div>
@@ -4522,7 +4667,7 @@ export default function App() {
   };
 
   // Modals
-  const ExpModal = () => { const [exp, setExp] = useState({ date: localISODate(), category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; setExpenses(prev => [{ ...e2, id: Date.now() }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
+  const ExpModal = () => { const [exp, setExp] = useState({ date: localISODate(), category: 'Stationery & Printing', description: '', amount: '' }); return <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense"><div style={S.grid2}><Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field><Field label="Category"><select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>{['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'].map(c => <option key={c}>{c}</option>)}</select></Field></div><Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field><Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field><button style={S.btn('primary')} onClick={async () => { const e2 = { ...exp, amount: Number(exp.amount) || 0 }; const registeredBy = currentUser?.username || currentUser?.name || null; setExpenses(prev => [{ ...e2, id: Date.now(), registered_by: registeredBy }, ...prev]); setShowAddExpense(false); await API.post('expenses', e2); loadData(); }}>Save</button></Modal>; };
 
   const CapModal = () => {
     const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' });
