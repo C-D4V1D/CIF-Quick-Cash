@@ -4163,11 +4163,15 @@ export default function App() {
         rClosed.forEach(tx => { if (tx.repaidBy) addScore(tx.repaidBy, 'repayment'); });
         // Task 3: Sale completed
         rSold.forEach(tx => { if (tx.soldBy) addScore(tx.soldBy, 'sale'); });
-        // Task 4: Contact attempts logged in period
+        // Task 4: Contact attempts logged in period — max 1 point per transaction per staff member
         transactions.forEach(tx => {
           if (!Array.isArray(tx.contactLog)) return;
+          const seenStaff = new Set();
           tx.contactLog.forEach(log => {
-            if (log.loggedBy && inPeriod(log.loggedAt || log.date)) addScore(log.loggedBy, 'contact');
+            if (log.loggedBy && inPeriod(log.loggedAt || log.date) && !seenStaff.has(log.loggedBy)) {
+              seenStaff.add(log.loggedBy);
+              addScore(log.loggedBy, 'contact');
+            }
           });
         });
         // Task 5 & 6: Bonus tasks attributed to the person who originally accepted the item

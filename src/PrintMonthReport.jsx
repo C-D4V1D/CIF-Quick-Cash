@@ -317,11 +317,19 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
   </div>
 
   ${(rStaffByTask && rStaffByTask.length > 0) ? `
-  <div style="font-size:9pt;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px">Staff Performance — ${totalTaskPoints} Total Task Points</div>
-  <table class="data" style="margin-top:0;font-size:8.5pt">
-    <thead><tr><th>Staff</th>${(taskDefs || []).map(d => `<th style="text-align:center;white-space:nowrap">${esc((taskLabels || {})[d] || d)}</th>`).join('')}<th style="text-align:center">Total</th><th style="text-align:center">Share%</th><th>Amount</th></tr></thead>
-    <tbody>${rStaffByTask.map(s => `<tr><td><strong>${esc(s.name)}</strong></td>${(taskDefs || []).map(d => `<td style="text-align:center;color:${s.scores[d] > 0 ? '#1A6B3A' : '#9ca3af'}">${s.scores[d] || '—'}</td>`).join('')}<td style="text-align:center;font-weight:700">${s.total}</td><td style="text-align:center">${s.pct.toFixed(1)}%</td><td class="num" style="color:#b45309;font-weight:700">${fmtMoney(s.share)}</td></tr>`).join('')}</tbody>
-  </table>` : '<p style="color:#6b7280;font-size:9pt">No staff task data recorded for this period.</p>'}
+  <div style="font-size:9pt;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px">Staff Distribution — ${totalTaskPoints} Total Task Points</div>
+  <table class="data" style="margin-top:0;width:100%;table-layout:fixed">
+    <colgroup><col style="width:40%"><col style="width:20%"><col style="width:20%"><col style="width:20%"></colgroup>
+    <thead><tr><th>Staff Member</th><th style="text-align:center">Task Points</th><th style="text-align:center">Share %</th><th style="text-align:right">Profit Share</th></tr></thead>
+    <tbody>${rStaffByTask.map(s => `<tr><td><strong>${esc(s.name)}</strong></td><td style="text-align:center;font-weight:700">${s.total}</td><td style="text-align:center">${s.pct.toFixed(1)}%</td><td style="text-align:right;color:#b45309;font-weight:700">${fmtMoney(s.share)}</td></tr>`).join('')}</tbody>
+  </table>
+  <div style="font-size:8.5pt;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px">Task Breakdown</div>
+  <table class="data" style="margin-top:0;width:100%;table-layout:fixed;font-size:8pt">
+    <colgroup><col style="width:22%"><col style="width:13%"><col style="width:13%"><col style="width:11%"><col style="width:13%"><col style="width:14%"><col style="width:14%"></colgroup>
+    <thead><tr><th>Staff</th><th style="text-align:center">Intake</th><th style="text-align:center">Repaymt</th><th style="text-align:center">Sale</th><th style="text-align:center">Contact</th><th style="text-align:center">@Target</th><th style="text-align:center">On-Time</th></tr></thead>
+    <tbody>${rStaffByTask.map(s => `<tr><td style="font-weight:600;word-break:break-word">${esc(s.name)}</td><td style="text-align:center;color:${s.scores.loan_intake > 0 ? '#1A6B3A' : '#9ca3af'}">${s.scores.loan_intake || '—'}</td><td style="text-align:center;color:${s.scores.repayment > 0 ? '#1A6B3A' : '#9ca3af'}">${s.scores.repayment || '—'}</td><td style="text-align:center;color:${s.scores.sale > 0 ? '#1A6B3A' : '#9ca3af'}">${s.scores.sale || '—'}</td><td style="text-align:center;color:${s.scores.contact > 0 ? '#1A6B3A' : '#9ca3af'}">${s.scores.contact || '—'}</td><td style="text-align:center;color:${s.scores.sold_at_target > 0 ? '#1A6B3A' : '#9ca3af'}">${s.scores.sold_at_target || '—'}</td><td style="text-align:center;color:${s.scores.sold_on_time > 0 ? '#1A6B3A' : '#9ca3af'}">${s.scores.sold_on_time || '—'}</td></tr>`).join('')}</tbody>
+  </table>
+  <div style="font-size:7.5pt;color:#6b7280;margin-top:5px"><em>Intake = new loan/purchase · Repaymt = repayment collected · Contact = overdue contact attempt (max 1/transaction) · @Target = sold at/above target price · On-Time = sold within deadline</em></div>` : '<p style="color:#6b7280;font-size:9pt">No staff task data recorded for this period.</p>'}
 
   <table class="data" style="margin-top:10px">
     <thead>
