@@ -1,0 +1,85 @@
+Act as a CIF Cash staff onboarding trainer.
+
+CIF Cash is a web app for managing pawn/loan/cash transactions. I need to train new staff on a
+fresh empty system with no existing data. The training must be practical, sequential, and based
+only on the real app flow.
+
+== APP OVERVIEW ==
+
+Transaction types:
+  - Cash Advance    — Customer leaves item as collateral; can redeem before deadline
+  - Outright Purchase — Customer sells item outright (no loan, no interest)
+
+User roles:
+  - Admin       — Full access (settings, users, all data)
+  - Staff       — Create/manage transactions, view loans and alerts
+  - Stakeholder — Read-only (dashboard, reports, capital/profits)
+
+11-step transaction wizard:
+  Type → ID Verify → Customer → Photos → Screening → Capture →
+  Inspection → AI Value → Offer → Agreement → Complete
+
+Key screens:
+  Dashboard, New Transaction, All Transactions, Active Loans,
+  Deadlines & Alerts, For Sale, Monthly Report, Capital & Profits,
+  Expenses, Declined Log, Activity Log, Settings (admin only), Users (admin only)
+
+Reference number format: CIF-DDMMYY-NNN  (e.g., CIF-190326-042)
+
+Loan status flow:
+  Active → Due Today → Overdue → Last Day of Ownership
+         → Grace Period → Last Day of Grace → Ready to Sell
+  Closed statuses: Returned (repaid), Sold, Declined
+
+== SETTINGS (use your live values) ==
+
+  Daily interest rate  : 1%
+  Max loan days        : 30
+  Grace period         : 3 days
+  Service fee          : ₦500 flat
+  Loan cap (no receipt): 40% of AI-estimated value
+  Loan cap (w/ receipt): 50% of AI-estimated value
+  Max parts-only advance: ₦5,000
+
+== REQUIREMENTS ==
+
+1. Output a numbered list of exactly 25 steps.
+2. Be strictly sequential — data created in earlier steps must be used in later steps.
+   For example: create a loan in step 5, repay it in step 12.
+3. Assume the system starts completely empty (no users except the default admin, no
+   transactions, no expenses).
+4. For every step that involves filling a form or selecting options, provide the exact
+   values to enter, e.g.:
+     - Customer name   : "Maria Santos"
+     - Item type       : Smartphone
+     - IMEI            : 359876543210001
+     - Loan days       : 7  (short, so later steps can simulate approaching deadlines)
+     - Cash advance    : ₦12,000
+     - Loan cap source : with receipt → cap = 50%
+5. Cover all of the following scenarios (spread across the 25 steps):
+     [x] Admin login + Settings configuration
+     [x] Creating 2-3 Staff/Stakeholder user accounts
+     [x] Cash Advance — Smartphone, with receipt, full wizard
+     [x] Cash Advance — non-powered item (Gas Cylinder), parts-only
+     [x] Outright Purchase — Laptop, no receipt
+     [x] Saving a Draft mid-wizard, then resuming and completing it
+     [x] Declining a transaction (red flag during Screening)
+     [x] Full repayment of an active loan (closed → returned)
+     [x] Creating a loan with a very short duration (3–5 days) to simulate upcoming deadlines
+     [x] Viewing Deadlines & Alerts after loans are created
+     [x] Listing an overdue item For Sale and recording a sale
+     [x] Recording two business expenses
+     [x] Viewing Capital & Profits summary
+     [x] Viewing Monthly Report
+     [x] Reviewing the Activity Log audit trail
+6. Format each step exactly as:
+
+   Step N — [Short Title]
+   What to do: [Exact actions, field names, values to enter, buttons to click]
+   Why it matters: [One or two sentences on the business reason]
+
+== EXTRA APP-SPECIFIC DETAILS ==
+
+[Paste anything here: live settings screenshots, custom item categories, expense
+ categories, WhatsApp template wording, business name, stakeholder names, or
+ any other context that will make the training steps more accurate for your shop.]
