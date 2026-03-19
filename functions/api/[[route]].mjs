@@ -334,7 +334,7 @@ export async function onRequest(context) {
 
       if (scope === 'secondary') {
         const [expensesRes, capitalRes, declinedRes, usersRes] = await Promise.all([
-          db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all(),
+          db.prepare('SELECT id, date, category, description, amount, registered_by FROM expenses ORDER BY date DESC').all(),
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, ref, customer_name AS customerName, nin_bvn AS ninBvn, item, reason, notes FROM declined_log ORDER BY date DESC').all(),
           role === 'admin'
@@ -678,16 +678,17 @@ export async function onRequest(context) {
     if (path === 'expenses' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, date, category, description, amount FROM expenses ORDER BY date DESC').all();
+      const { results } = await db.prepare('SELECT id, date, category, description, amount, registered_by FROM expenses ORDER BY date DESC').all();
       return json(results);
     }
     if (path === 'expenses' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const { date, category, description, amount } = await request.json();
+      const registeredBy = auth.user?.username || auth.user?.name || null;
       const inserted = await db
-        .prepare('INSERT INTO expenses (date, category, description, amount) VALUES (?, ?, ?, ?)')
-        .bind(date, category, description, amount)
+        .prepare('INSERT INTO expenses (date, category, description, amount, registered_by) VALUES (?, ?, ?, ?, ?)')
+        .bind(date, category, description, amount, registeredBy)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'expense', entityId: String(inserted.meta.last_row_id), description: `🧾 Expense recorded — ${category}${description ? ': ' + description : ''} — ₦${Number(amount).toLocaleString('en-NG')}` });
       return json({ success: true });
