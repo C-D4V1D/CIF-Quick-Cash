@@ -312,6 +312,7 @@ const DEFAULT_SETTINGS = {
   receiptFooter: 'Thank you for your patronage!',
   // Profit Sharing
   staffSharePct: 10,
+  targetSaleDeadlineDays: 14,
   // Data Management
   activityLogRetentionDays: 90,
 };
@@ -2948,7 +2949,7 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
 // ============================================================
 // REPAYMENT & SALE MODALS
 // ============================================================
-function RepaymentModal({ tx, settings, onClose, onSave }) {
+function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   const days = daysBetween(tx.dateGiven);
   const today = localISODate();
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
@@ -2966,12 +2967,12 @@ function RepaymentModal({ tx, settings, onClose, onSave }) {
       </div>
       <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Total Due</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item returned</span></label>
-      <div style={{ display: 'flex', gap: '12px' }}><button style={S.btn('primary')} disabled={!confirmed} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: localISODate(), daysCharged: days, totalFees, itemReturned: true })}>✅ Confirm</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+      <div style={{ display: 'flex', gap: '12px' }}><button style={S.btn('primary')} disabled={!confirmed} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: localISODate(), daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '' })}>✅ Confirm</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
   );
 }
 
-function SaleModal({ tx, settings, onClose, onSave }) {
+function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
   const maxHoldDays = (Math.max(1, Number(settings.maxLoanDays) || 30)) + (Math.max(0, Number(settings.graceDays) || 3));
   const minPrice = (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
@@ -2986,7 +2987,7 @@ function SaleModal({ tx, settings, onClose, onSave }) {
       <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
       <div style={S.grid2}><Field label="Sale Date"><input style={S.input} type="date" value={saleDate} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setSaleDate(e.target.value)} /></Field><Field label="Buyer"><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} /></Field></div>
       <div style={{ ...S.card, background: COLORS.primaryLight, textAlign: 'center', marginTop: '8px' }}><div style={S.statLabel}>Profit</div><div style={{ fontSize: '28px', fontWeight: 800, color: salePrice - tx.cashAdvance > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(salePrice - tx.cashAdvance)}</div></div>
-      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer })} disabled={salePrice < minPrice}>Record Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, soldBy: currentUser?.name || '' })} disabled={salePrice < minPrice}>Record Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
   );
 }
@@ -3678,7 +3679,7 @@ export default function App() {
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>💰 Collect Repayment</h2>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Ref: <strong>{txRef}</strong> · Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
             </div>
-            <RepaymentModal tx={tx} settings={settings} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
+            <RepaymentModal tx={tx} settings={settings} currentUser={currentUser} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
           </div>
         );
       }
@@ -3691,7 +3692,7 @@ export default function App() {
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>🏷 Record Sale</h2>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Ref: <strong>{txRef}</strong> · Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
             </div>
-            <SaleModal tx={tx} settings={settings} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
+            <SaleModal tx={tx} settings={settings} currentUser={currentUser} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
           </div>
         );
       }
@@ -4137,8 +4138,62 @@ export default function App() {
           const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
           return { ...s, pct, share: Math.floor(rStakeholder * pct / 100) };
         });
-        const staffUsers = users.filter(u => u.active !== 0 && (u.role === 'staff' || (u.roles || []).includes('staff')));
-        const staffSharePerPerson = staffUsers.length > 0 ? Math.floor(rStaff / staffUsers.length) : 0;
+        // ── TASK-BASED STAFF SCORING ──
+        // Points per task (all tasks weighted equally at 1 point each):
+        // 1. Loan Intake      – completing a new cash advance or outright purchase (completedBy)
+        // 2. Repayment        – processing a customer repayment (repaidBy)
+        // 3. Sale             – recording an item sale (soldBy)
+        // 4. Contact Logged   – logging a contact attempt on an overdue/at-risk loan (loggedBy)
+        // 5. Sold at Target   – item sold at/above targetSellPct% of estimated value (completedBy of intake)
+        // 6. Sold On Time     – item sold within targetSaleDeadlineDays of listing (completedBy of intake)
+        const targetSaleDeadlineDays = settings.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays;
+        const targetSalePct = settings.targetSellPct || 75;
+        const taskDefs = ['loan_intake', 'repayment', 'sale', 'contact', 'sold_at_target', 'sold_on_time'];
+        const taskLabels = { loan_intake: 'Loan Intake', repayment: 'Repayment', sale: 'Sale', contact: 'Contact Logged', sold_at_target: 'Sold at Target Price', sold_on_time: 'Sold Within Deadline' };
+        const scoreMap = {}; // { staffName: { loan_intake:N, repayment:N, ... } }
+        const addScore = (name, type) => {
+          if (!name?.trim()) return;
+          const k = name.trim();
+          if (!scoreMap[k]) scoreMap[k] = Object.fromEntries(taskDefs.map(d => [d, 0]));
+          scoreMap[k][type] = (scoreMap[k][type] || 0) + 1;
+        };
+        // Task 1: New loan intake
+        rNewTxs.forEach(tx => { if (tx.completedBy) addScore(tx.completedBy, 'loan_intake'); });
+        // Task 2: Repayment processed
+        rClosed.forEach(tx => { if (tx.repaidBy) addScore(tx.repaidBy, 'repayment'); });
+        // Task 3: Sale completed
+        rSold.forEach(tx => { if (tx.soldBy) addScore(tx.soldBy, 'sale'); });
+        // Task 4: Contact attempts logged in period
+        transactions.forEach(tx => {
+          if (!Array.isArray(tx.contactLog)) return;
+          tx.contactLog.forEach(log => {
+            if (log.loggedBy && inPeriod(log.loggedAt || log.date)) addScore(log.loggedBy, 'contact');
+          });
+        });
+        // Task 5 & 6: Bonus tasks attributed to the person who originally accepted the item
+        rSold.forEach(tx => {
+          if (!tx.completedBy) return;
+          // Task 5: sold at/above target price
+          if (tx.estimatedValue && tx.salePrice && (tx.salePrice / tx.estimatedValue) * 100 >= targetSalePct) {
+            addScore(tx.completedBy, 'sold_at_target');
+          }
+          // Task 6: sold within target sale deadline (using listedForSaleDate if available)
+          if (tx.listedForSaleDate && tx.saleDate) {
+            const daysTaken = Math.floor((new Date(tx.saleDate) - new Date(tx.listedForSaleDate)) / 86400000);
+            if (daysTaken >= 0 && daysTaken <= targetSaleDeadlineDays) addScore(tx.completedBy, 'sold_on_time');
+          }
+        });
+        const rStaffScores = Object.entries(scoreMap).map(([name, scores]) => {
+          const total = taskDefs.reduce((s, d) => s + scores[d], 0);
+          return { name, scores, total };
+        }).sort((a, b) => b.total - a.total);
+        const totalTaskPoints = rStaffScores.reduce((s, v) => s + v.total, 0);
+        const rStaffByTask = rStaffScores.map(s => ({
+          ...s,
+          pct: totalTaskPoints > 0 ? (s.total / totalTaskPoints * 100) : 0,
+          share: totalTaskPoints > 0 ? Math.floor(rStaff * s.total / totalTaskPoints) : 0,
+        }));
+
         const handlePrintReport = () => printMonthReport({
           periodLabel,
           rClosed, rSold, rNewTxs, rExpenses,
@@ -4147,7 +4202,8 @@ export default function App() {
           rCapitalDeployed, rCapitalReturned,
           serviceFee: settings.serviceFee || 1000,
           stakeholders: rStakeholders,
-          staffUsers, staffSharePct, staffSharePerPerson,
+          rStaffByTask, staffSharePct, totalTaskPoints,
+          taskLabels, taskDefs,
           expByCategory,
         });
         const handleExportCSV = () => {
@@ -4165,6 +4221,10 @@ export default function App() {
             `Net Profit,${rProfit}`,
             `Staff Share (${staffSharePct}%),${rStaff}`,
             `Stakeholders,${rStakeholder}`,
+            '',
+            'STAFF PERFORMANCE',
+            toCSV(['Staff','Loan Intake','Repayment','Sale','Contact Logged','Sold at Target','Sold On Time','Total Points','Share %','Amount'],
+              rStaffByTask.map(s => [s.name, s.scores.loan_intake, s.scores.repayment, s.scores.sale, s.scores.contact, s.scores.sold_at_target, s.scores.sold_on_time, s.total, s.pct.toFixed(1)+'%', s.share])),
             '',
             'REPAYMENTS',
             toCSV(['Ref','Customer','Cash Advanced','Fees Collected','Date Repaid'],
@@ -4259,13 +4319,42 @@ export default function App() {
               <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders ({100 - staffSharePct}%)<InfoIcon tip={`The investors' share of the profit — ${100 - staffSharePct}% split among them based on how much each person put in.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
             </div>
             <div style={S.card}>
-              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>👥 Staff Distribution<InfoIcon tip="The staff's total share split equally among all active staff members." /></div>
-              {staffUsers.length > 0 ? staffUsers.map(u => (
-                <div key={u.id} style={rowStyle}>
-                  <span><strong>{u.name}</strong> (@{u.username})</span>
-                  <strong style={{ color: rStaff >= 0 ? COLORS.accent : COLORS.danger }}>{fmtMoney(staffSharePerPerson)}</strong>
-                </div>
-              )) : <p style={{ color: COLORS.textMuted, fontSize: '13px' }}>No active staff members found.</p>}
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>👥 Staff Performance & Distribution<InfoIcon tip="Each staff member's profit share is based on task points earned in this period. Points are earned for: new loans, repayments, sales, contact attempts, selling at target price, and selling within the deadline." /></div>
+              {rStaffByTask.length > 0 ? (
+                <>
+                  <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Total task points this period: <strong>{totalTaskPoints}</strong></div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ ...S.table, fontSize: '12px' }}>
+                      <thead>
+                        <tr>
+                          <th style={S.th}>Staff</th>
+                          {taskDefs.map(d => <th key={d} style={{ ...S.th, fontSize: '11px', minWidth: '60px' }}>{taskLabels[d]}</th>)}
+                          <th style={S.th}>Total Pts</th>
+                          <th style={S.th}>Share %</th>
+                          <th style={S.th}>Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rStaffByTask.map(s => (
+                          <tr key={s.name}>
+                            <td style={{ ...S.td, fontWeight: 700 }}>{s.name}</td>
+                            {taskDefs.map(d => (
+                              <td key={d} style={{ ...S.td, textAlign: 'center', color: s.scores[d] > 0 ? COLORS.primary : COLORS.textMuted }}>
+                                {s.scores[d] || '—'}
+                              </td>
+                            ))}
+                            <td style={{ ...S.td, fontWeight: 700, textAlign: 'center' }}>{s.total}</td>
+                            <td style={{ ...S.td, textAlign: 'center' }}>{s.pct.toFixed(1)}%</td>
+                            <td style={{ ...S.td, fontWeight: 700, color: rStaff >= 0 ? COLORS.accent : COLORS.danger }}>{fmtMoney(s.share)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <p style={{ color: COLORS.textMuted, fontSize: '13px' }}>No staff task data for this period. Tasks are tracked when staff complete loans, repayments, sales, and contact attempts.</p>
+              )}
             </div>
             <div style={S.card}>
               <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution<InfoIcon tip="How each investor's profit share is worked out — based on how much they put in compared to everyone else combined." /></div>
@@ -4445,7 +4534,7 @@ export default function App() {
                   ['Margin (on sales)', 'The extra money made above the cash advance when an item is sold. E.g. if ₦5,000 was advanced and item sold for ₦7,000, margin is ₦2,000.'],
                   ['Capital Deployed', 'Total advance money given out as new loans this period. This money is out in the field.'],
                   ['Capital Returned', 'Total advance money recovered from customers who paid back their loans this period.'],
-                  [`Staff Share (${staffSharePct}%)`, `The staff's collective management share — ${staffSharePct}% of the net profit split equally among all active staff members for running and managing the business.`],
+                  [`Staff Share (${staffSharePct}%)`, `The staff's collective management share — ${staffSharePct}% of the net profit divided among staff based on their task performance. Each person's portion equals their task points ÷ total team task points.`],
                   [`Stakeholders (${100 - staffSharePct}%)`, `The remaining ${100 - staffSharePct}% of profit is shared among investors, each getting a share based on how much capital they put into the business.`],
                   ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from their capital contribution compared to the total capital. More capital = higher share.'],
                 ].map(([term, def]) => (
@@ -5083,6 +5172,12 @@ export default function App() {
                 <input style={S.input} type="number" min="0" max="100" step="1" value={es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct} onChange={e => updateSettings({ ...es, staffSharePct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
                 <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Stakeholders receive the remaining <strong>{100 - (es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct)}%</strong>.</div>
               </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sale Deadline (days)<InfoIcon tip="Staff earn a bonus task point for items they accepted that sell within this many days of being listed for sale. Rewards staff who do thorough valuations that result in quick sales. Default: 14 days." /></span>}>
+                <input style={S.input} type="number" min="1" max="365" value={es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} onChange={e => updateSettings({ ...es, targetSaleDeadlineDays: Number(e.target.value) })} />
+              </Field>
+            </div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '12px', padding: '10px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+              <strong>How staff shares are calculated:</strong> Each period, the staff pool ({es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct}% of net profit) is divided based on task points. Points are earned for: completing a new loan intake (+1), processing a repayment (+1), completing a sale (+1), logging a contact attempt on an overdue loan (+1), selling at or above the target price (+1 bonus), and selling within {es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} days of listing (+1 bonus). Each staff member's share = their points ÷ total points.
             </div>
           </div>
 
