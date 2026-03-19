@@ -556,66 +556,81 @@ function Field({ label, required, children, style: st }) {
 
 // ============================================================
 // INFO ICON — contextual help tooltip (hover on desktop, tap on mobile)
-// Props:
-//   tip      {string}  The help text shown in the tooltip.
-//   position {string}  Where the tooltip appears relative to the icon:
-//                      'top' (default) | 'bottom' | 'left' | 'right'
+// Tooltip uses position:fixed so it is never clipped by overflow:hidden parents.
+// Placement is computed from the icon's bounding rect and clamped to the viewport.
 // ============================================================
-function InfoIcon({ tip, position = 'top' }) {
-  const [visible, setVisible] = useState(false);
+function InfoIcon({ tip }) {
+  const [coords, setCoords] = useState(null);
   const ref = useRef();
+  const TIP_W = 240;
+  const GAP = 8;
+  const EDGE_PAD = 10;
+  const MIN_SPACE_ABOVE = 80; // px — flip tooltip below the icon if less space than this above it
+
+  const show = (e) => {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Prefer above the icon; flip below if too close to top
+    const spaceAbove = r.top;
+    const placeBelow = spaceAbove < MIN_SPACE_ABOVE;
+    const top = placeBelow ? r.bottom + GAP : r.top - GAP;
+    // Centre on the icon, then clamp to viewport edges
+    let left = r.left + r.width / 2 - TIP_W / 2;
+    left = Math.max(EDGE_PAD, Math.min(left, vw - TIP_W - EDGE_PAD));
+    setCoords({ top, left, below: placeBelow });
+  };
+
+  const hide = () => setCoords(null);
 
   useEffect(() => {
-    if (!visible) return;
-    const handleOutsideClick = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setVisible(false);
+    if (!coords) return;
+    const close = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) hide();
     };
-    document.addEventListener('mousedown', handleOutsideClick);
-    document.addEventListener('touchstart', handleOutsideClick);
+    document.addEventListener('mousedown', close);
+    document.addEventListener('touchstart', close);
     return () => {
-      document.removeEventListener('mousedown', handleOutsideClick);
-      document.removeEventListener('touchstart', handleOutsideClick);
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('touchstart', close);
     };
-  }, [visible]);
+  }, [coords]);
 
   const tooltipStyle = {
-    position: 'absolute',
-    zIndex: 9999,
+    position: 'fixed',
+    zIndex: 99999,
     background: '#1a1a2e',
     color: '#fff',
-    fontSize: '12px',
-    lineHeight: 1.5,
-    padding: '8px 11px',
-    borderRadius: '8px',
-    width: '220px',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
+    fontSize: '13px',
+    lineHeight: 1.55,
+    padding: '10px 13px',
+    borderRadius: '10px',
+    width: TIP_W + 'px',
+    boxShadow: '0 6px 24px rgba(0,0,0,0.32)',
     pointerEvents: 'none',
-    ...(position === 'top'
-      ? { bottom: 'calc(100% + 6px)', left: '50%', transform: 'translateX(-50%)' }
-      : position === 'bottom'
-      ? { top: 'calc(100% + 6px)', left: '50%', transform: 'translateX(-50%)' }
-      : position === 'left'
-      ? { right: 'calc(100% + 6px)', top: '50%', transform: 'translateY(-50%)' }
-      : { left: 'calc(100% + 6px)', top: '50%', transform: 'translateY(-50%)' }),
+    top: coords ? (coords.below ? coords.top : undefined) : undefined,
+    bottom: coords && !coords.below ? (window.innerHeight - coords.top) + 'px' : undefined,
+    left: coords ? coords.left + 'px' : undefined,
   };
 
   return (
     <span
       ref={ref}
-      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: '5px', flexShrink: 0 }}
-      onMouseEnter={() => setVisible(true)}
-      onMouseLeave={() => setVisible(false)}
-      onClick={e => { e.stopPropagation(); setVisible(v => !v); }}
+      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: '4px', flexShrink: 0 }}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onClick={e => { e.stopPropagation(); coords ? hide() : show(e); }}
     >
       <span style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: '16px', height: '16px', borderRadius: '50%',
+        width: '14px', height: '14px', borderRadius: '50%',
         background: COLORS.primaryLight, color: COLORS.primary,
-        fontSize: '10px', fontWeight: 800, cursor: 'pointer',
+        fontSize: '9px', fontWeight: 800, cursor: 'pointer',
         border: `1px solid ${COLORS.primary}`, lineHeight: 1, userSelect: 'none',
         flexShrink: 0,
       }}>ℹ</span>
-      {visible && <span style={tooltipStyle}>{tip}</span>}
+      {coords && <span style={tooltipStyle}>{tip}</span>}
     </span>
   );
 }
@@ -3023,12 +3038,12 @@ export default function App() {
       <div style={S.card}>
         <div style={S.cardTitle}>💰 Financial Summary</div>
         <div style={S.grid4}>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Estimated Value<InfoIcon tip="What the AI estimates this item would sell for second-hand. The max we can give is a percentage of this number." position="bottom" /></div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Cash Advanced<InfoIcon tip="The cash we handed to the customer when they left the item with us." position="bottom" /></div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Estimated Value<InfoIcon tip="What the AI estimates this item would sell for second-hand. The max we can give is a percentage of this number." /></div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Cash Advanced<InfoIcon tip="The cash we handed to the customer when they left the item with us." /></div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
           {tx.type === 'advance' && <>
-            <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." position="bottom" /></div><div style={S.statValue}>{daysOut}d</div></div>
+            <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div></div>
             <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
-              <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="The full amount the customer owes us today — the cash we gave them plus all the daily fees added up so far. It grows bigger every day." position="bottom" /></div>
+              <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="The full amount the customer owes us today — the cash we gave them plus all the daily fees added up so far. It grows bigger every day." /></div>
               <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
             </div>
           </>}
@@ -3049,13 +3064,13 @@ export default function App() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '12px' }}>
             {[
               { label: 'Date Given', date: tx.dateGiven, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'The day we gave the customer money and the loan started.' },
-              { label: 'Agreed Return', date: tx.deadlineDate, bg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.dangerLight : COLORS.bg, fg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text, border: customerDaysLeft !== null && customerDaysLeft <= 0 ? '#f5c6cb' : COLORS.border, tip: 'The date the customer said they'd come back to pay. Try to reach them before this date.' },
+              { label: 'Agreed Return', date: tx.deadlineDate, bg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.dangerLight : COLORS.bg, fg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text, border: customerDaysLeft !== null && customerDaysLeft <= 0 ? '#f5c6cb' : COLORS.border, tip: 'The date the customer said they\'d come back to pay. Try to reach them before this date.' },
               { label: 'Internal Deadline', date: timeline.internal_deadline, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'A private reminder date for staff — set earlier than the customer\'s return date. Start chasing the customer by this point.' },
               { label: 'Grace Period Ends', date: timeline.grace_end_date, bg: '#f3e8ff', fg: '#7c3aed', border: '#d8b4fe', tip: 'The last day of the extra time after the internal deadline. After this, we can start selling the item.' },
-              { label: 'Sale Eligible From', date: timeline.sale_allowed_date, bg: '#f0fdf4', fg: '#166534', border: '#86efac', tip: 'From this date, if the customer still hasn't paid, we're allowed to sell their item to get our money back.' },
+              { label: 'Sale Eligible From', date: timeline.sale_allowed_date, bg: '#f0fdf4', fg: '#166534', border: '#86efac', tip: 'From this date, if the customer still hasn\'t paid, we\'re allowed to sell their item to get our money back.' },
             ].filter(item => item.date).map(({ label, date, bg, fg, border, tip }) => (
               <div key={label} style={{ padding: '10px 12px', background: bg, borderRadius: '8px', border: `1px solid ${border}` }}>
-                <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px', display: 'flex', alignItems: 'center' }}>{label}<InfoIcon tip={tip} position="bottom" /></div>
+                <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px', display: 'flex', alignItems: 'center' }}>{label}<InfoIcon tip={tip} /></div>
                 <div style={{ fontSize: '13.5px', fontWeight: 700, color: fg }}>{fmtDate(date)}</div>
                 <div style={{ marginTop: '5px', display: 'inline-block', fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '20px', background: 'rgba(0,0,0,0.07)', color: fg === COLORS.text ? COLORS.textMuted : fg, letterSpacing: '0.2px' }}>{relativeDateLabel(date)}</div>
               </div>
@@ -3553,9 +3568,9 @@ export default function App() {
             <div style={S.card}>
               <div style={S.cardTitle}>💰 Financial Summary</div>
               <div style={S.grid3}>
-                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money that came in during this period — from customers repaying, selling items, and service charges." position="bottom" /></div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
-                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Expenses<InfoIcon tip="Money spent to keep the business running — things like printing, transport, airtime, and stationery." position="bottom" /></div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
-                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Net Profit<InfoIcon tip="Income minus expenses. This is what the business actually made after paying for everything. Fabian and the investors split this." position="bottom" /></div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money that came in during this period — from customers repaying, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Expenses<InfoIcon tip="Money spent to keep the business running — things like printing, transport, airtime, and stationery." /></div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Net Profit<InfoIcon tip="Income minus expenses. This is what the business actually made after paying for everything. Fabian and the investors split this." /></div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
               </div>
               <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Revenue Breakdown</div>
