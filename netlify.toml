@@ -1,9 +1,0 @@
-[build]
-  command = "npm run build"
-  publish = "dist"
-
-# SPA fallback for React Router (skip /api routes — handled by functions)
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
