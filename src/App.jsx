@@ -603,7 +603,10 @@ function InfoIcon({ tip }) {
     background: '#1a1a2e',
     color: '#fff',
     fontSize: '13px',
+    fontWeight: 400,
     lineHeight: 1.55,
+    textTransform: 'none',
+    letterSpacing: 'normal',
     padding: '10px 13px',
     borderRadius: '10px',
     width: TIP_W + 'px',
@@ -628,7 +631,7 @@ function InfoIcon({ tip }) {
         background: COLORS.primaryLight, color: COLORS.primary,
         fontSize: '9px', fontWeight: 800, cursor: 'pointer',
         border: `1px solid ${COLORS.primary}`, lineHeight: 1, userSelect: 'none',
-        flexShrink: 0,
+        flexShrink: 0, textTransform: 'none', letterSpacing: 'normal',
       }}>ℹ</span>
       {coords && <span style={tooltipStyle}>{tip}</span>}
     </span>
