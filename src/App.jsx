@@ -603,7 +603,7 @@ function WhatsAppButton({ whatsAppNumber, style: extraStyle }) {
 // ============================================================
 // LANDING PAGE
 // ============================================================
-function LandingPage({ onCheckLoan, onStaffLogin, settings }) {
+function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
   const s = settings || {};
   const phone1 = s.shopPhone1 || '08165491908';
   const phone2 = s.shopPhone2 || '09023540646';
@@ -655,10 +655,10 @@ function LandingPage({ onCheckLoan, onStaffLogin, settings }) {
             Check My Loan Status
           </button>
           <button
-            onClick={onStaffLogin}
-            style={{ background: 'transparent', color: '#fff', border: '2px solid #fff', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 600, cursor: 'pointer', minHeight: '52px' }}
+            onClick={onShop}
+            style={{ background: '#c8a84e', color: '#fff', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%' }}
           >
-            Staff / Admin Login
+            🛍 Browse Items for Sale
           </button>
         </div>
       </div>
@@ -750,8 +750,388 @@ function LandingPage({ onCheckLoan, onStaffLogin, settings }) {
 
       {/* Footer */}
       <div style={{ background: '#0a0f1a', padding: '20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
+        <div style={{ marginBottom: '10px' }}>© 2026 Christ-in-Fabian Quick Cash. All rights reserved.</div>
+        <button
+          onClick={onStaffLogin}
+          style={{ background: 'none', border: 'none', color: '#4b5563', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', padding: '4px' }}
+        >
+          Staff / Admin Login
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PUBLIC SALES PAGE
+// ============================================================
+function SalesPage({ onBack, settings }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [sortBy, setSortBy] = useState('newest');
+  const [selectedItem, setSelectedItem] = useState(null);
+  const isMobile = useMobile();
+
+  const s = settings || {};
+  const phone1 = s.shopPhone1 || '08165491908';
+  const whatsApp = s.shopWhatsApp || '2348165491908';
+  const address = s.shopAddress || 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
+  const hours = s.shopHours || 'Monday – Saturday, 8am – 6pm';
+
+  useEffect(() => {
+    const load = async () => {
+      setLoading(true);
+      const data = await API.get('shop-items');
+      if (data?.items) setItems(data.items);
+      setLoading(false);
+    };
+    load();
+  }, []);
+
+  const categories = useMemo(() => {
+    const cats = new Set(items.map(i => i.itemType));
+    return ['all', ...Array.from(cats).sort()];
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    let result = [...items];
+    if (categoryFilter !== 'all') {
+      result = result.filter(i => i.itemType === categoryFilter);
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter(i =>
+        (i.brand + ' ' + i.model + ' ' + i.itemType + ' ' + i.colour).toLowerCase().includes(q)
+      );
+    }
+    if (sortBy === 'price-low') result.sort((a, b) => (a.salePrice || 0) - (b.salePrice || 0));
+    else if (sortBy === 'price-high') result.sort((a, b) => (b.salePrice || 0) - (a.salePrice || 0));
+    // newest is default order from API
+    return result;
+  }, [items, categoryFilter, search, sortBy]);
+
+  const getWhatsAppLink = (item) => {
+    const msg = item
+      ? `Hello! I am interested in the ${item.brand} ${item.model} (${item.itemType}) listed for ${fmtMoney(item.salePrice)}. Ref: ${item.ref}. Is it still available?`
+      : 'Hello! I want to check what items you have for sale.';
+    return `https://wa.me/${whatsApp}?text=${encodeURIComponent(msg)}`;
+  };
+
+  const getCallLink = () => `tel:${phone1}`;
+
+  const itemIcon = (type) => {
+    const t = (type || '').toLowerCase();
+    if (t.includes('phone') || t.includes('smart')) return '📱';
+    if (t.includes('laptop')) return '💻';
+    if (t.includes('tablet')) return '📱';
+    if (t.includes('speaker')) return '🔊';
+    if (t.includes('power bank')) return '🔋';
+    if (t.includes('fan')) return '🌀';
+    if (t.includes('tv')) return '📺';
+    if (t.includes('generator')) return '⚡';
+    if (t.includes('gas') || t.includes('cylinder')) return '🔥';
+    return '📦';
+  };
+
+  const conditionBadge = (cond) => {
+    if (!cond) return null;
+    const c = cond.toLowerCase();
+    let color = '#6b7280';
+    if (c.includes('excellent') || c.includes('new') || c.includes('perfect')) color = '#10b981';
+    else if (c.includes('good') || c.includes('fair')) color = '#f59e0b';
+    else if (c.includes('poor') || c.includes('bad')) color = '#ef4444';
+    return { label: cond, color };
+  };
+
+  // Item detail modal
+  const ItemDetailModal = ({ item, onClose }) => {
+    if (!item) return null;
+    const badge = conditionBadge(item.condition);
+    return (
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
+        <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', maxWidth: '500px', width: '100%', maxHeight: '90vh', overflowY: 'auto', position: 'relative' }}>
+          {/* Photo */}
+          {(item.photoFront || item.photoPowerOn) ? (
+            <div style={{ width: '100%', height: '260px', background: '#f3f4f6', borderRadius: '16px 16px 0 0', overflow: 'hidden' }}>
+              <img src={item.photoFront || item.photoPowerOn} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            </div>
+          ) : (
+            <div style={{ width: '100%', height: '180px', background: 'linear-gradient(135deg, #1a5f2a, #2d7a3e)', borderRadius: '16px 16px 0 0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '64px' }}>
+              {itemIcon(item.itemType)}
+            </div>
+          )}
+
+          <div style={{ padding: '20px' }}>
+            {/* Close button */}
+            <button onClick={onClose} style={{ position: 'absolute', top: '12px', right: '12px', background: 'rgba(0,0,0,0.5)', color: '#fff', border: 'none', borderRadius: '50%', width: '36px', height: '36px', fontSize: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+
+            {/* Title */}
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>{item.itemType}</div>
+            <h2 style={{ fontSize: '22px', fontWeight: 800, margin: '0 0 4px', color: '#1a1a1a' }}>{item.brand} {item.model}</h2>
+            {item.colour && <div style={{ fontSize: '14px', color: '#6b7280', marginBottom: '12px' }}>Colour: {item.colour}</div>}
+
+            {/* Price */}
+            <div style={{ background: '#e8f5ec', borderRadius: '12px', padding: '16px', marginBottom: '16px', textAlign: 'center' }}>
+              <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>Price</div>
+              <div style={{ fontSize: '32px', fontWeight: 800, color: '#1a5f2a' }}>{item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}</div>
+            </div>
+
+            {/* Details grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+              {badge && (
+                <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>Condition</div>
+                  <div style={{ fontSize: '14px', fontWeight: 700, color: badge.color }}>{badge.label}</div>
+                </div>
+              )}
+              <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
+                <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>Ref No.</div>
+                <div style={{ fontSize: '14px', fontWeight: 700, color: '#1a1a1a' }}>{item.ref}</div>
+              </div>
+            </div>
+
+            {/* CTA Buttons */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25D366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
+                <svg width="20" height="20" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>
+                I Want to Buy This
+              </a>
+              <a href={getCallLink()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
+                📞 Call Us Now
+              </a>
+            </div>
+
+            <div style={{ textAlign: 'center', marginTop: '12px', fontSize: '13px', color: '#6b7280' }}>
+              Quote the ref number <strong>{item.ref}</strong> when you contact us
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#f8f6f1', minHeight: '100vh', color: '#1a1a1a' }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+      {/* Header */}
+      <div style={{ background: '#1a5f2a', padding: '16px 20px', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <button onClick={onBack} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
+            ← Back
+          </button>
+          <div style={{ textAlign: 'center', flex: 1 }}>
+            <div style={{ fontSize: isMobile ? '15px' : '18px', fontWeight: 800, color: '#fff' }}>🏷 Items for Sale</div>
+            <div style={{ fontSize: '12px', color: '#a7f3d0' }}>Christ-in-Fabian Quick Cash</div>
+          </div>
+          <a href={getWhatsAppLink()} target="_blank" rel="noopener noreferrer" style={{ background: '#25D366', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <svg width="16" height="16" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>
+            {isMobile ? '' : 'Chat'}
+          </a>
+        </div>
+      </div>
+
+      {/* Hero banner */}
+      <div style={{ background: 'linear-gradient(135deg, #0d3518, #1a5f2a, #2d7a3e)', padding: isMobile ? '24px 20px' : '32px 20px', textAlign: 'center', color: '#fff' }}>
+        <div style={{ maxWidth: '700px', margin: '0 auto' }}>
+          <div style={{ fontSize: '36px', marginBottom: '8px' }}>🛍</div>
+          <h1 style={{ fontSize: isMobile ? '22px' : '28px', fontWeight: 800, margin: '0 0 8px', lineHeight: 1.3 }}>Quality Items at Low Prices</h1>
+          <p style={{ fontSize: '15px', opacity: 0.9, margin: '0 0 4px' }}>
+            Phones, Laptops, TVs, Generators and more — all checked and ready
+          </p>
+          <p style={{ fontSize: '13px', opacity: 0.7, margin: 0 }}>
+            Walk into our shop or contact us on WhatsApp to buy
+          </p>
+        </div>
+      </div>
+
+      {/* How to Buy section */}
+      <div style={{ background: '#fff', borderBottom: '1px solid #e5e1d8', padding: '20px' }}>
+        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+          <h2 style={{ fontSize: '16px', fontWeight: 800, margin: '0 0 12px', color: '#1a5f2a', textAlign: 'center' }}>How to Buy — 3 Easy Steps</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '12px' }}>
+            {[
+              { num: '1', icon: '👀', title: 'See What You Like', desc: 'Look through the items below. Tap any item to see more details.' },
+              { num: '2', icon: '💬', title: 'Contact Us', desc: 'Tap "I Want to Buy This" or call us. Tell us the item ref number.' },
+              { num: '3', icon: '🤝', title: 'Come and Collect', desc: 'Visit our shop, check the item, pay, and take it home.' },
+            ].map(step => (
+              <div key={step.num} style={{ background: '#f0fdf4', borderRadius: '12px', padding: '16px', textAlign: 'center', border: '1px solid #bbf7d0' }}>
+                <div style={{ width: '32px', height: '32px', background: '#1a5f2a', color: '#fff', borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '15px', marginBottom: '8px' }}>{step.num}</div>
+                <div style={{ fontSize: '20px', marginBottom: '4px' }}>{step.icon}</div>
+                <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px', color: '#1a1a1a' }}>{step.title}</div>
+                <div style={{ fontSize: '13px', color: '#6b7280', lineHeight: 1.4 }}>{step.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Search + Filters */}
+      <div style={{ background: '#fff', borderBottom: '1px solid #e5e1d8', padding: '16px 20px', position: 'sticky', top: isMobile ? '52px' : '56px', zIndex: 50 }}>
+        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+          {/* Search bar */}
+          <div style={{ position: 'relative', marginBottom: '12px' }}>
+            <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '18px' }}>🔍</span>
+            <input
+              type="text"
+              placeholder="Search items... e.g. Samsung, iPhone, TV, Generator"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ width: '100%', padding: '12px 12px 12px 40px', borderRadius: '10px', border: '2px solid #e5e1d8', fontSize: '15px', outline: 'none', boxSizing: 'border-box', background: '#f8f6f1' }}
+            />
+          </div>
+          {/* Filter chips + sort */}
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', flex: 1 }}>
+              {categories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setCategoryFilter(cat)}
+                  style={{
+                    padding: '6px 14px', borderRadius: '20px', border: 'none',
+                    fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+                    background: categoryFilter === cat ? '#1a5f2a' : '#f3f4f6',
+                    color: categoryFilter === cat ? '#fff' : '#4b5563',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {cat === 'all' ? 'All Items' : cat}
+                </button>
+              ))}
+            </div>
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value)}
+              style={{ padding: '6px 10px', borderRadius: '8px', border: '1.5px solid #e5e1d8', fontSize: '13px', background: '#fff', cursor: 'pointer' }}
+            >
+              <option value="newest">Newest First</option>
+              <option value="price-low">Lowest Price</option>
+              <option value="price-high">Highest Price</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Items count */}
+      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '16px 20px 0' }}>
+        <div style={{ fontSize: '14px', color: '#6b7280', fontWeight: 600 }}>
+          {loading ? 'Loading items...' : `${filtered.length} item${filtered.length !== 1 ? 's' : ''} available`}
+        </div>
+      </div>
+
+      {/* Items grid */}
+      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '12px 20px 32px' }}>
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '12px' }}>🔄</div>
+            <div style={{ fontWeight: 700, fontSize: '16px', color: '#6b7280' }}>Loading items for sale...</div>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+            <div style={{ fontSize: '48px', marginBottom: '12px' }}>{items.length === 0 ? '🏪' : '🔍'}</div>
+            <div style={{ fontWeight: 700, fontSize: '18px', marginBottom: '8px', color: '#1a1a1a' }}>
+              {items.length === 0 ? 'No Items Available Right Now' : 'No items match your search'}
+            </div>
+            <div style={{ fontSize: '15px', color: '#6b7280', maxWidth: '400px', margin: '0 auto', lineHeight: 1.5, marginBottom: '20px' }}>
+              {items.length === 0
+                ? 'We don\'t have any items for sale at the moment. Check back later or contact us to ask about upcoming items.'
+                : 'Try a different search or tap "All Items" to see everything.'}
+            </div>
+            {items.length === 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '320px', margin: '0 auto' }}>
+                <a href={getWhatsAppLink()} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25D366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px' }}>
+                  <svg width="18" height="18" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>
+                  Ask Us on WhatsApp
+                </a>
+                <a href={getCallLink()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px' }}>
+                  📞 Call Us: {phone1}
+                </a>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fill, minmax(240px, 1fr))', gap: isMobile ? '10px' : '16px', marginTop: '12px' }}>
+            {filtered.map(item => {
+              const badge = conditionBadge(item.condition);
+              return (
+                <div
+                  key={item.ref}
+                  onClick={() => setSelectedItem(item)}
+                  style={{
+                    background: '#fff', borderRadius: '12px', overflow: 'hidden',
+                    border: '1px solid #e5e1d8', cursor: 'pointer',
+                    transition: 'transform 0.15s, box-shadow 0.15s',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 20px rgba(0,0,0,0.1)'; }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.06)'; }}
+                >
+                  {/* Image */}
+                  {(item.photoFront || item.photoPowerOn) ? (
+                    <div style={{ width: '100%', height: isMobile ? '140px' : '180px', background: '#f3f4f6', overflow: 'hidden' }}>
+                      <img src={item.photoFront || item.photoPowerOn} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+                    </div>
+                  ) : (
+                    <div style={{ width: '100%', height: isMobile ? '140px' : '180px', background: 'linear-gradient(135deg, #e8f5ec, #d1fae5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: isMobile ? '40px' : '48px' }}>
+                      {itemIcon(item.itemType)}
+                    </div>
+                  )}
+
+                  {/* Info */}
+                  <div style={{ padding: isMobile ? '10px' : '14px' }}>
+                    <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }}>{item.itemType}</div>
+                    <div style={{ fontWeight: 700, fontSize: isMobile ? '14px' : '15px', color: '#1a1a1a', marginBottom: '4px', lineHeight: 1.3 }}>
+                      {item.brand} {item.model}
+                    </div>
+                    {badge && (
+                      <div style={{ fontSize: '11px', fontWeight: 600, color: badge.color, marginBottom: '8px' }}>
+                        {badge.label}
+                      </div>
+                    )}
+                    <div style={{ fontSize: isMobile ? '18px' : '20px', fontWeight: 800, color: '#1a5f2a' }}>
+                      {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
+                      Tap to see details
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Contact footer */}
+      <div style={{ background: '#111827', padding: '28px 20px', color: '#fff' }}>
+        <div style={{ maxWidth: '800px', margin: '0 auto', textAlign: 'center' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 8px' }}>Want to Buy? Contact Us!</h2>
+          <p style={{ fontSize: '15px', color: '#9ca3af', margin: '0 0 20px' }}>Visit our shop or chat with us. We are happy to help.</p>
+          <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '12px', maxWidth: '500px', margin: '0 auto 20px' }}>
+            <a href={getWhatsAppLink()} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25D366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px' }}>
+              <svg width="18" height="18" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>
+              WhatsApp Us
+            </a>
+            <a href={getCallLink()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px' }}>
+              📞 Call {phone1}
+            </a>
+          </div>
+          <div style={{ background: '#1e2433', borderRadius: '12px', padding: '16px', marginBottom: '16px', border: '1px solid #2a3447', textAlign: 'left' }}>
+            <div style={{ marginBottom: '8px' }}><strong style={{ color: '#9ca3af', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Our Address</strong><div style={{ color: '#e5e7eb', fontSize: '14px', marginTop: '2px' }}>{address}</div></div>
+            <div><strong style={{ color: '#9ca3af', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Opening Hours</strong><div style={{ color: '#e5e7eb', fontSize: '14px', marginTop: '2px' }}>{hours}</div></div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ background: '#0a0f1a', padding: '16px 20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
         © 2026 Christ-in-Fabian Quick Cash. All rights reserved.
       </div>
+
+      {/* Item detail modal */}
+      {selectedItem && <ItemDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} />}
     </div>
   );
 }
@@ -2841,15 +3221,21 @@ export default function App() {
       <Routes>
         <Route path="/check-loan-status" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
         <Route path="/checkloanstatus" element={<Navigate to="/check-loan-status" replace />} />
+        <Route path="/shop" element={<SalesPage settings={settings} onBack={() => navigate('/')} />} />
         <Route path="/login" element={<LoginScreen onLogin={(u) => {
           const normalizedUser = normalizeUser(u);
           writeCache('cfc_user', normalizedUser);
           setCurrentUser(normalizedUser);
           navigate('/dashboard');
         }} />} />
-        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} />} />
+        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} onShop={() => navigate('/shop')} />} />
       </Routes>
     );
+  }
+
+  // Allow authenticated users to view the public shop page
+  if (location.pathname === '/shop') {
+    return <SalesPage settings={settings} onBack={() => navigate('/dashboard')} />;
   }
 
   // Redirect authenticated users away from public paths (including root)
