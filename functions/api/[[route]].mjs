@@ -949,6 +949,39 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // PUBLIC SHOP: GET /api/shop-items
+    // No authentication required — returns items listed for sale
+    // with only non-sensitive fields (no customer data).
+    // ============================================================
+    if (path === 'shop-items' && method === 'GET') {
+      const rows = await db.prepare(
+        "SELECT ref, data, status FROM transactions WHERE status = 'for_sale' ORDER BY updated_at DESC"
+      ).all();
+
+      const items = (rows.results || []).map(row => {
+        const d = JSON.parse(row.data);
+        // Extract only the first item photo (front) for the listing thumbnail
+        const photoFront = d.itemPhotos?.front || null;
+        const photoPowerOn = d.itemPhotos?.powerOn || null;
+        return {
+          ref: row.ref,
+          itemType: d.aiItemType || d.captureItemType || 'Item',
+          brand: d.aiBrand || '',
+          model: d.aiModel || '',
+          colour: d.aiColour || '',
+          condition: d.aiCondition || d.conditionDescription || '',
+          salePrice: d.salePrice || 0,
+          estimatedValue: d.estimatedValue || d.aiEstimatedValue || 0,
+          photoFront,
+          photoPowerOn,
+          listedDate: d.listedForSaleDate || d.updated_at || d.created_at || null,
+        };
+      });
+
+      return json({ items }, 200, { 'Cache-Control': 'public, max-age=60' });
+    }
+
+    // ============================================================
     // HEALTH CHECK: GET /api/health
     // ============================================================
     if (path === 'health' || path === '') {
