@@ -207,30 +207,43 @@ const fmtDate = (d) => {
 
 const statusColor = (tx, settings = {}) => {
   if (tx.status === 'declined') return '#6b7280';
-  if (tx.status === 'closed' || tx.status === 'sold') return '#10b981';
+  if (tx.status === 'closed') return '#10b981';
+  if (tx.status === 'sold') return '#6b7280';
   if (tx.status === 'for_sale') return '#8b5cf6';
-  const timeline = getLoanTimeline(tx, settings);
+  if (tx.type === 'outright') return '#8b5cf6';
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const elapsed = daysBetween(tx?.dateGiven);
   const customerDaysLeft = getCustomerDaysLeft(tx);
-  if (timeline.isEligibleForSale) return '#1e1e1e';
-  if (timeline.isInFinalGrace) return '#7c3aed';
-  if (customerDaysLeft !== null && customerDaysLeft <= 7 && customerDaysLeft >= 0) return '#ef4444';
-  if (customerDaysLeft !== null && customerDaysLeft <= 15 && customerDaysLeft >= 0) return '#f59e0b';
+  if (elapsed >= maxLoanDays + graceDays + 1) return '#1e1e1e';       // Ready to sell
+  if (graceDays > 0 && elapsed === maxLoanDays + graceDays) return '#dc2626'; // Last day of grace
+  if (elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays) return '#7c3aed'; // In grace period
+  if (elapsed === maxLoanDays) return '#dc2626';                       // Last day of ownership
+  if (customerDaysLeft !== null && customerDaysLeft < 0) return '#f59e0b'; // Overdue by customer agreement
+  if (customerDaysLeft !== null && customerDaysLeft === 0) return '#ef4444'; // Due today
+  if (customerDaysLeft !== null && customerDaysLeft <= 7) return '#ef4444'; // 7 days or less
+  if (customerDaysLeft !== null && customerDaysLeft <= 15) return '#f59e0b'; // 15 days or less
   return '#10b981';
 };
 
 const statusLabel = (tx, settings = {}) => {
-  if (tx.status === 'closed') return 'Closed — Returned';
-  if (tx.status === 'sold') return 'Sold';
-  if (tx.status === 'for_sale') return 'Listed for Sale';
+  if (tx.status === 'closed') return '✅ Closed — Returned';
+  if (tx.status === 'sold') return '✅ Sold';
+  if (tx.status === 'for_sale') return '🏷️ Listed for Sale';
   if (tx.status === 'declined') return 'Declined';
   if (tx.type === 'outright') return 'Outright Purchase';
-  const timeline = getLoanTimeline(tx, settings);
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const elapsed = daysBetween(tx?.dateGiven);
   const customerDaysLeft = getCustomerDaysLeft(tx);
-  if (timeline.isEligibleForSale) return 'Ready to Sell';
-  if (timeline.isInFinalGrace) return 'Final Grace Period';
-  if (customerDaysLeft !== null && customerDaysLeft <= 7 && customerDaysLeft >= 0) return `⚠ ${customerDaysLeft} days left`;
-  if (timeline.isOwnedByBusiness) return 'Owned by Business';
-  return `Active — Day ${timeline.elapsedDays}`;
+  if (elapsed >= maxLoanDays + graceDays + 1) return '🏷 Ready to Sell';
+  if (graceDays > 0 && elapsed === maxLoanDays + graceDays) return '🔴 Last Day of Grace';
+  if (elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays) return '💜 Grace Period';
+  if (elapsed === maxLoanDays) return '🔴 Last Day of Ownership';
+  if (customerDaysLeft !== null && customerDaysLeft < 0) return `⚠️ ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue`;
+  if (customerDaysLeft !== null && customerDaysLeft === 0) return '🔴 Due Today';
+  if (customerDaysLeft !== null && customerDaysLeft <= 7) return `⚠ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} left`;
+  return `Active — Day ${elapsed}`;
 };
 
 // Check whether a user holds a given role (primary or additional)
@@ -2595,6 +2608,7 @@ export default function App() {
   const [txDateFrom, setTxDateFrom] = useState('');
   const [txDateTo, setTxDateTo] = useState('');
   const [txTypeFilter, setTxTypeFilter] = useState('all');
+  const [recentTxCount, setRecentTxCount] = useState(5);
   const [dbStatus, setDbStatus] = useState('checking');
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -2858,91 +2872,198 @@ export default function App() {
   ].filter(n => n.roles.some(r => hasRole(currentUser, r)));
 
   // Render transaction detail
-  const TxDetail = ({ tx }) => (<div>
-    <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span><span style={S.badge('#6b7280')}>{tx.type === 'outright' ? 'Outright' : 'Advance'}</span><span style={S.badge(COLORS.primary)}>Ref: {tx.ref}</span></div>
-    <div style={S.grid2}>
-      <div style={S.card}><div style={S.cardTitle}>👤 Customer</div><div style={{ fontSize: '13px' }}><strong>{tx.fullName}</strong><br />{tx.address}<br />📱 {tx.phoneNumbers?.filter(Boolean).join(', ')}<br />👨‍👩‍👧 {tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}<br />🪪 {tx.idType?.toUpperCase()} — {tx.idNumber}<br /><strong>Verification:</strong> {tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠ Verification attempted, using placeholder/demo data' : '❌ Not attempted'}<br /><strong>Completed by:</strong> {tx.completedBy || tx.createdBy || 'Unknown user'}</div></div>
-      <div style={S.card}><div style={S.cardTitle}>📦 Item</div><div style={{ fontSize: '13px' }}>{tx.captureItemType && <><strong>Type:</strong> {tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}<br /></>}<strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong><br />Colour: {tx.aiColour}{tx.imei && <><br />IMEI: {tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '6px' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Model not confirmed'}</span>}</>}{tx.serialNumber && <><br />Serial: {tx.serialNumber}</>}<br />{tx.conditionDescription}</div></div>
-    </div>
-    <div style={S.card}><div style={S.cardTitle}>💰 Financials</div><div style={S.grid4}>
-      <div style={S.stat}><div style={S.statLabel}>Value</div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
-      <div style={S.stat}><div style={S.statLabel}>Cash Given</div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
-      {tx.type === 'advance' && <><div style={S.stat}><div style={S.statLabel}>Days</div><div style={S.statValue}>{daysBetween(tx.dateGiven)}d</div></div><div style={S.stat}><div style={S.statLabel}>Due Today</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(tx.cashAdvance + daysBetween(tx.dateGiven) * Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100))}</div></div></>}
-    </div>
-    {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px' }}>Repaid: {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
-    {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px', background: COLORS.accentLight, borderRadius: '8px' }}>Sold: {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} — Profit: {fmtMoney(tx.salePrice - tx.cashAdvance)}</div>}
-    </div>
-    <div style={S.card}><div style={S.cardTitle}>🧾 Screening & Notes Summary</div><div style={{ fontSize: '13px', lineHeight: 1.7 }}><div><strong>How long in use:</strong> {tx.screeningDuration ? (tx.screeningDuration === 'Other' ? `Other — ${tx.screeningDurationOther || 'unspecified'}` : tx.screeningDuration) : 'Not provided'}</div><div><strong>Where purchased:</strong> {tx.screeningPurchaseLocation ? (tx.screeningPurchaseLocation === 'Other' ? `Other — ${tx.screeningPurchaseLocationOther || 'unspecified'}` : tx.screeningPurchaseLocationOther ? `${tx.screeningPurchaseLocation} (${tx.screeningPurchaseLocationOther})` : tx.screeningPurchaseLocation) : 'Not provided'}</div><div><strong>Registered in customer name:</strong> {tx.screeningRegistered || 'Not provided'}</div><div><strong>Other users on device:</strong> {tx.screeningOthersUsing || 'Not provided'}</div><div><strong>Red flag from screening:</strong> {tx.screeningRedFlag ? '🚩 Yes' : 'No'}</div><div><strong>Staff notes:</strong> {tx.notes || 'No notes captured.'}</div></div></div>
-    <div style={S.card}>
-      <div style={S.cardTitle}>📸 Photos</div>
-      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        {[
-          tx.ninPhoto,
-          tx.photoCustomerHolding,
-          tx.photoCustomerID,
-          ...(normalizeItemPhotos(tx.itemPhotos)),
-          tx.imeiPhoto,
-          tx.serialNumberPhoto,
-          tx.receiptPhoto,
-          tx.photoSigning,
-          tx.photoSealedPkg,
-        ]
-          .filter(Boolean)
-          .map((p, i) => (
-            <button
-              key={i}
-              onClick={() => setZoomedPhoto(p)}
-              style={{
-                border: 'none',
-                padding: 0,
-                background: 'transparent',
-                cursor: 'zoom-in',
-                borderRadius: '8px',
-                overflow: 'hidden'
-              }}
-              title="Tap to view full image"
-            >
-              <img
-                src={p}
-                alt={`Transaction photo ${i + 1}`}
-                style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }}
-                onError={e => {
-                  e.currentTarget.onerror = null;
-                  e.currentTarget.style.background = '#fee2e2';
-                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E";
-                }}
-              />
-            </button>
-          ))}
+  const TxDetail = ({ tx }) => {
+    const timeline = tx.type === 'advance' ? getLoanTimeline(tx, settings) : null;
+    const customerDaysLeft = tx.type === 'advance' ? getCustomerDaysLeft(tx) : null;
+    const dailyInterest = tx.cashAdvance ? Math.floor((tx.cashAdvance * (settings.interestRate || 1)) / 100) : 0;
+    const daysOut = timeline ? timeline.elapsedDays : 0;
+    const amountDueToday = tx.cashAdvance ? tx.cashAdvance + daysOut * dailyInterest : 0;
+    const row = (label, value, color) => (value !== null && value !== undefined && value !== '') ? (
+      <div style={{ display: 'grid', gridTemplateColumns: '165px 1fr', gap: '8px', padding: '6px 0', borderBottom: `1px solid ${COLORS.border}`, fontSize: '13px', alignItems: 'start' }}>
+        <div style={{ fontWeight: 600, color: COLORS.textMuted, fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.3px', paddingTop: '2px' }}>{label}</div>
+        <div style={{ color: color || COLORS.text }}>{value}</div>
       </div>
-      <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
-    </div>
-    <div style={S.card}>
-      <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>📋 Contact Log</span>
-        {tx.status === 'active' && isStaff && (
-          <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>+ Log Contact Attempt</button>
+    ) : null;
+    return (<div>
+      {/* ── Header ── */}
+      <div style={{ marginBottom: '20px' }}>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+          <span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span>
+          <span style={S.badge('#6b7280')}>{tx.type === 'outright' ? '📦 Outright Purchase' : '💳 Cash Advance'}</span>
+          <span style={{ ...S.badge(COLORS.primary), letterSpacing: '0.5px' }}>Ref: {tx.ref}</span>
+        </div>
+        <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '12px', color: COLORS.textMuted, lineHeight: 1.9 }}>
+          {tx.created_at && <span>🕐 Created: <strong style={{ color: COLORS.text }}>{new Date(tx.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong></span>}
+          <span>📅 Date Given: <strong style={{ color: COLORS.text }}>{fmtDate(tx.dateGiven)}</strong></span>
+          {tx.type === 'advance' && tx.deadlineDate && <span>⏰ Agreed Return: <strong style={{ color: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text }}>{fmtDate(tx.deadlineDate)}</strong></span>}
+          <span>👤 By: <strong style={{ color: COLORS.text }}>{tx.completedBy || tx.createdBy || 'Unknown'}</strong></span>
+        </div>
+      </div>
+
+      {/* ── Customer & Item ── */}
+      <div style={S.grid2}>
+        <div style={S.card}>
+          <div style={S.cardTitle}>👤 Customer</div>
+          {row('Full Name', <strong>{tx.fullName}</strong>)}
+          {row('Address', tx.address)}
+          {row('Phone(s)', tx.phoneNumbers?.filter(Boolean).join(', '))}
+          {tx.familyName && row('Emergency Contact', `${tx.familyName} (${tx.familyRelation || 'N/A'}) — ${tx.familyPhone || ''}`)}
+          {row('ID Type', tx.idType?.toUpperCase())}
+          {row('ID Number', tx.idNumber)}
+          {row('NIN Verification', tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠️ Attempted (placeholder data)' : '❌ Not attempted')}
+          {row('Processed By', tx.completedBy || tx.createdBy)}
+        </div>
+        <div style={S.card}>
+          <div style={S.cardTitle}>📦 Item</div>
+          {tx.captureItemType && row('Category', <>{tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
+          {row('Identified As', [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' '))}
+          {row('Colour', tx.aiColour)}
+          {row('Condition', tx.aiCondition)}
+          {tx.imei && row('IMEI', <>{tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: tx.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
+          {tx.serialNumber && row('Serial No.', tx.serialNumber)}
+          {tx.conditionDescription && row('Condition Notes', tx.conditionDescription)}
+          {tx.hasReceipt != null && row('Receipt', tx.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
+        </div>
+      </div>
+
+      {/* ── Financial Summary ── */}
+      <div style={S.card}>
+        <div style={S.cardTitle}>💰 Financial Summary</div>
+        <div style={S.grid4}>
+          <div style={S.stat}><div style={S.statLabel}>Estimated Value</div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
+          <div style={S.stat}><div style={S.statLabel}>Cash Advanced</div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
+          {tx.type === 'advance' && <>
+            <div style={S.stat}><div style={S.statLabel}>Days Outstanding</div><div style={S.statValue}>{daysOut}d</div></div>
+            <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
+              <div style={S.statLabel}>Amount Due Today</div>
+              <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
+            </div>
+          </>}
+        </div>
+        {tx.type === 'advance' && (
+          <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
+            Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(settings.serviceFee) > 0 && <> · Service fee: <strong>{fmtMoney(settings.serviceFee)}</strong></>}
+          </div>
+        )}
+        {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
+        {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>{tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}</div>}
+      </div>
+
+      {/* ── Loan Timeline (advance only) ── */}
+      {tx.type === 'advance' && timeline && (
+        <div style={S.card}>
+          <div style={S.cardTitle}>📅 Loan Timeline</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '12px' }}>
+            {[
+              { label: 'Date Given', date: tx.dateGiven, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border },
+              { label: 'Agreed Return', date: tx.deadlineDate, bg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.dangerLight : COLORS.bg, fg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text, border: customerDaysLeft !== null && customerDaysLeft <= 0 ? '#f5c6cb' : COLORS.border },
+              { label: 'Internal Deadline', date: timeline.internal_deadline, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border },
+              { label: 'Grace Period Ends', date: timeline.grace_end_date, bg: '#f3e8ff', fg: '#7c3aed', border: '#d8b4fe' },
+              { label: 'Sale Eligible From', date: timeline.sale_allowed_date, bg: '#f0fdf4', fg: '#166534', border: '#86efac' },
+            ].filter(item => item.date).map(({ label, date, bg, fg, border }) => (
+              <div key={label} style={{ padding: '10px 12px', background: bg, borderRadius: '8px', border: `1px solid ${border}` }}>
+                <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>{label}</div>
+                <div style={{ fontSize: '13.5px', fontWeight: 700, color: fg }}>{fmtDate(date)}</div>
+              </div>
+            ))}
+          </div>
+          {customerDaysLeft !== null && (
+            <div style={{ padding: '10px 12px', background: customerDaysLeft < 0 ? COLORS.dangerLight : customerDaysLeft === 0 ? COLORS.dangerLight : customerDaysLeft <= 7 ? '#fef3c7' : COLORS.primaryLight, borderRadius: '8px', fontSize: '13px', color: customerDaysLeft <= 0 ? COLORS.danger : customerDaysLeft <= 7 ? '#92400e' : COLORS.primary, fontWeight: 600 }}>
+              {customerDaysLeft < 0 ? `⚠️ Customer is ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue on their agreed return date.` : customerDaysLeft === 0 ? '🔴 Customer return is due today.' : `⏰ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} remaining until customer's agreed return date.`}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Screening & Notes ── */}
+      <div style={S.card}>
+        <div style={S.cardTitle}>🧾 Screening & Notes</div>
+        {row('Duration in Use', tx.screeningDuration ? (tx.screeningDuration === 'Other' ? `Other — ${tx.screeningDurationOther || 'unspecified'}` : tx.screeningDuration) : null)}
+        {row('Where Purchased', tx.screeningPurchaseLocation ? (tx.screeningPurchaseLocation === 'Other' ? `Other — ${tx.screeningPurchaseLocationOther || 'unspecified'}` : tx.screeningPurchaseLocationOther ? `${tx.screeningPurchaseLocation} (${tx.screeningPurchaseLocationOther})` : tx.screeningPurchaseLocation) : null)}
+        {row('Registered in Customer Name', tx.screeningRegistered)}
+        {row('Other Users on Device', tx.screeningOthersUsing)}
+        {row('Red Flag Detected', tx.screeningRedFlag ? '🚩 Yes — Review required' : '✅ None', tx.screeningRedFlag ? COLORS.danger : '#166534')}
+        {tx.notes && row('Staff Notes', tx.notes)}
+        {!tx.screeningDuration && !tx.screeningPurchaseLocation && !tx.screeningRegistered && !tx.screeningOthersUsing && !tx.notes && (
+          <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No screening data captured.</div>
         )}
       </div>
-      {(tx.contactLog?.length > 0) ? (
-        <div>
-          {[...tx.contactLog].reverse().map((entry, i) => (
-            <div key={i} style={{ padding: '10px 0', borderBottom: i < tx.contactLog.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
-                <span style={{ ...S.badge(OUTCOME_COLORS[entry.result] || '#6b7280'), fontSize: '12px' }}>{CONTACT_OUTCOME_LABEL[entry.result] || entry.result}</span>
-                <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{entry.date} {entry.time}</span>
-              </div>
-              {entry.notes && <div style={{ fontSize: '13px', marginTop: '4px' }}>{entry.notes}</div>}
-              <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>Logged by {entry.loggedBy}</div>
-            </div>
-          ))}
+
+      {/* ── Photos ── */}
+      <div style={S.card}>
+        <div style={S.cardTitle}>📸 Photos</div>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+          {[
+            tx.ninPhoto,
+            tx.photoCustomerHolding,
+            tx.photoCustomerID,
+            ...(normalizeItemPhotos(tx.itemPhotos)),
+            tx.imeiPhoto,
+            tx.serialNumberPhoto,
+            tx.receiptPhoto,
+            tx.photoSigning,
+            tx.photoSealedPkg,
+          ]
+            .filter(Boolean)
+            .map((p, i) => (
+              <button
+                key={i}
+                onClick={() => setZoomedPhoto(p)}
+                style={{
+                  border: 'none',
+                  padding: 0,
+                  background: 'transparent',
+                  cursor: 'zoom-in',
+                  borderRadius: '8px',
+                  overflow: 'hidden'
+                }}
+                title="Tap to view full image"
+              >
+                <img
+                  src={p}
+                  alt={`Transaction photo ${i + 1}`}
+                  style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }}
+                  onError={e => {
+                    e.currentTarget.onerror = null;
+                    e.currentTarget.style.background = '#fee2e2';
+                    e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E";
+                  }}
+                />
+              </button>
+            ))}
         </div>
-      ) : (
-        <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No contact attempts logged yet.{tx.status === 'active' && ' Use the button above to record a call attempt.'}</div>
-      )}
-    </div>
-    <button style={S.btn('outline')} onClick={() => setViewingTx(null)}>← Back</button>
-  </div>);
+        <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
+      </div>
+
+      {/* ── Contact Log ── */}
+      <div style={S.card}>
+        <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>📋 Contact Log</span>
+          {tx.status === 'active' && isStaff && (
+            <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>+ Log Contact Attempt</button>
+          )}
+        </div>
+        {(tx.contactLog?.length > 0) ? (
+          <div>
+            {[...tx.contactLog].reverse().map((entry, i) => (
+              <div key={i} style={{ padding: '10px 0', borderBottom: i < tx.contactLog.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
+                  <span style={{ ...S.badge(OUTCOME_COLORS[entry.result] || '#6b7280'), fontSize: '12px' }}>{CONTACT_OUTCOME_LABEL[entry.result] || entry.result}</span>
+                  <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{entry.date} {entry.time}</span>
+                </div>
+                {entry.notes && <div style={{ fontSize: '13px', marginTop: '4px' }}>{entry.notes}</div>}
+                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>Logged by {entry.loggedBy}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No contact attempts logged yet.{tx.status === 'active' && ' Use the button above to record a call attempt.'}</div>
+        )}
+      </div>
+
+      <button style={S.btn('outline')} onClick={() => setViewingTx(null)}>← Back</button>
+    </div>);
+  };
 
   const PhotoViewer = () => {
     if (!zoomedPhoto) return null;
@@ -3000,7 +3121,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><strong>{tx.ref}</strong></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => setViewingTx(tx)}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -3025,7 +3146,7 @@ export default function App() {
           <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={S.statLabel}>Ready to Sell</div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
-        <div style={S.card}><div style={S.cardTitle}>Recent Transactions</div><TxTable items={transactions.slice(0, 10)} /></div>
+        <div style={S.card}><div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}><span>Recent Transactions</span><select value={recentTxCount} onChange={e => setRecentTxCount(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: '6px', border: `1.5px solid ${COLORS.border}`, fontSize: '12px', fontWeight: 600, color: COLORS.primaryDark, background: '#fff', cursor: 'pointer' }}>{[3, 5, 10, 15, 20].map(n => <option key={n} value={n}>Show {n}</option>)}</select></div><TxTable items={transactions.slice(0, recentTxCount)} /></div>
         {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={() => setDeclineDraftModal(d)}>Decline</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
       </div>);
 
@@ -3042,11 +3163,11 @@ export default function App() {
         ];
         const statusChips = [
           { key: 'all', label: 'All', color: COLORS.primary },
-          { key: 'active', label: '⏳ Active', color: '#10b981' },
-          { key: 'closed', label: '✅ Closed', color: '#6b7280' },
-          { key: 'sold', label: '💰 Sold', color: '#10b981' },
+          { key: 'active', label: '⏳ Active Loans', color: '#10b981' },
           { key: 'for_sale', label: '🏷️ For Sale', color: '#8b5cf6' },
-          { key: 'declined', label: '❌ Declined', color: '#ef4444' },
+          { key: 'closed', label: '✅ Closed', color: '#10b981' },
+          { key: 'sold', label: '💰 Sold', color: '#6b7280' },
+          { key: 'declined', label: '❌ Declined', color: '#6b7280' },
         ];
         const exportCsv = () => {
           const cols = ['Ref', 'Customer', 'Phone', 'Item Brand', 'Item Model', 'Amount (₦)', 'Date', 'Status', 'Type'];
