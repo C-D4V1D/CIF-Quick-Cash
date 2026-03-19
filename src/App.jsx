@@ -718,6 +718,24 @@ function WhatsAppButton({ whatsAppNumber, style: extraStyle }) {
 }
 
 // ============================================================
+// PARTNERSHIP FOOTNOTE — shown on all public & logged-in pages
+// dark=true for pre-login pages (dark background),
+// dark=false (default) for the post-login light-themed area
+// ============================================================
+function PartnershipFootnote({ dark = false }) {
+  const textMain  = dark ? '#6b7280' : COLORS.textMuted;
+  const textBold  = dark ? '#9ca3af' : COLORS.text;
+  const dotColor  = dark ? '#6b7280' : COLORS.textMuted;
+  return (
+    <div style={{ fontSize: '11px', color: textMain, textAlign: 'center', lineHeight: 1.6, letterSpacing: '0.1px' }}>
+      <span>A joint venture between <strong style={{ color: textBold }}>Christ-in-Fabian</strong> &amp; <strong style={{ color: textBold }}>Vido Hub</strong></span>
+      <span style={{ margin: '0 6px', color: dotColor, opacity: 0.5 }}>·</span>
+      <span>Platform developed &amp; managed by <strong style={{ color: textBold }}>Vido Hub</strong></span>
+    </div>
+  );
+}
+
+// ============================================================
 // LANDING PAGE
 // ============================================================
 function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
@@ -868,6 +886,7 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
       {/* Footer */}
       <div style={{ background: '#0a0f1a', padding: '20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
         <div style={{ marginBottom: '10px' }}>© 2026 Christ-in-Fabian Quick Cash. All rights reserved.</div>
+        <div style={{ marginBottom: '12px' }}><PartnershipFootnote dark /></div>
         <button
           onClick={onStaffLogin}
           style={{ background: 'none', border: 'none', color: '#4b5563', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', padding: '4px' }}
@@ -1244,7 +1263,8 @@ function SalesPage({ onBack, settings }) {
 
       {/* Footer */}
       <div style={{ background: '#0a0f1a', padding: '16px 20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
-        © 2026 Christ-in-Fabian Quick Cash. All rights reserved.
+        <div style={{ marginBottom: '8px' }}>© 2026 Christ-in-Fabian Quick Cash. All rights reserved.</div>
+        <PartnershipFootnote dark />
       </div>
 
       {/* Item detail modal */}
@@ -1672,6 +1692,11 @@ function CustomerPortal({ onBack, settings }) {
             </div>
           );
         })()}
+      </div>
+      {/* Footer */}
+      <div style={{ background: '#0a0f1a', padding: '16px 20px', textAlign: 'center', fontSize: '12px', color: '#4b5563', lineHeight: 1.6 }}>
+        <div style={{ marginBottom: '6px', color: '#6b7280' }}>© 2026 Christ-in-Fabian Quick Cash. All rights reserved.</div>
+        <PartnershipFootnote dark />
       </div>
     </div>
   );
@@ -5638,6 +5663,9 @@ export default function App() {
         <div style={{ ...S.mainContent, padding: isMobile ? '16px' : '24px', maxHeight: isMobile ? 'none' : 'calc(100vh - 56px)', paddingBottom: isMobile ? '80px' : '24px' }}>
           {renderPage()}
           <PhotoViewer />
+          <div style={{ marginTop: '40px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}`, textAlign: 'center' }}>
+            <PartnershipFootnote />
+          </div>
         </div>
       </div>
 
