@@ -297,7 +297,7 @@ const PAGE_PATHS = {
   declined: '/declined',
   settings: '/admin/settings',
   users: '/admin/users',
-  activity: '/activity-log',
+  activity: '/activity',
 };
 
 const PAGE_FROM_PATH = Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]) => [v, k]));
@@ -2839,20 +2839,27 @@ export default function App() {
   if (!currentUser) {
     return (
       <Routes>
-        <Route path="/checkloanstatus" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/check-loan-status" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/checkloanstatus" element={<Navigate to="/check-loan-status" replace />} />
         <Route path="/login" element={<LoginScreen onLogin={(u) => {
           const normalizedUser = normalizeUser(u);
           writeCache('cfc_user', normalizedUser);
           setCurrentUser(normalizedUser);
           navigate('/dashboard');
         }} />} />
-        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/checkloanstatus')} onStaffLogin={() => navigate('/login')} />} />
+        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} />} />
       </Routes>
     );
   }
 
   // Redirect authenticated users away from public paths (including root)
-  if (['/', '/login', '/checkloanstatus'].includes(location.pathname)) {
+  if (['/', '/login', '/checkloanstatus', '/check-loan-status'].includes(location.pathname)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  // Redirect authenticated users from unknown paths to dashboard
+  const knownAuthPaths = Object.values(PAGE_PATHS);
+  if (!knownAuthPaths.includes(location.pathname)) {
     return <Navigate to="/dashboard" replace />;
   }
 
