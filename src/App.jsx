@@ -138,6 +138,23 @@ const addDays = (dateStr, daysToAdd) => {
   return date.toISOString().split('T')[0];
 };
 
+// Returns a short human-readable label for how far a date is from today (Nigeria time).
+// e.g. "Today", "Yesterday", "Tomorrow", "5 days ago", "In 10 days".
+const relativeDateLabel = (dateStr) => {
+  if (!dateStr) return '';
+  const given = new Date(dateStr);
+  if (Number.isNaN(given.getTime())) return '';
+  const nowNigeria = new Date(localISODate());
+  const givenMidnight = Date.UTC(given.getUTCFullYear(), given.getUTCMonth(), given.getUTCDate());
+  const nowMidnight   = Date.UTC(nowNigeria.getUTCFullYear(), nowNigeria.getUTCMonth(), nowNigeria.getUTCDate());
+  const diff = Math.floor((nowMidnight - givenMidnight) / 86400000); // positive = past
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  if (diff === -1) return 'Tomorrow';
+  if (diff > 1) return `${diff} day${diff !== 1 ? 's' : ''} ago`;
+  return `In ${Math.abs(diff)} days`;
+};
+
 // settings is optional — falls back to safe defaults when not yet loaded.
 const getLoanTimeline = (tx, settings = {}) => {
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
@@ -2963,6 +2980,7 @@ export default function App() {
               <div key={label} style={{ padding: '10px 12px', background: bg, borderRadius: '8px', border: `1px solid ${border}` }}>
                 <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>{label}</div>
                 <div style={{ fontSize: '13.5px', fontWeight: 700, color: fg }}>{fmtDate(date)}</div>
+                <div style={{ marginTop: '5px', display: 'inline-block', fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '20px', background: 'rgba(0,0,0,0.07)', color: fg === COLORS.text ? COLORS.textMuted : fg, letterSpacing: '0.2px' }}>{relativeDateLabel(date)}</div>
               </div>
             ))}
           </div>
