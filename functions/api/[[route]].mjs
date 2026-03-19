@@ -84,6 +84,12 @@ const requireAdmin = (request) => {
 // Defaults: maxLoanDays=30, graceDays=3  (matches DEFAULT_SETTINGS)
 // ============================================================
 
+// Returns today's date as a YYYY-MM-DD string in Nigeria time (WAT = UTC+1).
+// Cloudflare Workers run in UTC, so we must derive the Nigeria calendar date
+// explicitly to avoid misclassifying loans during the midnight–01:00 WAT window.
+const todayNigeria = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Lagos' }).format(new Date());
+
 // Add N calendar days to a YYYY-MM-DD or ISO date string; returns YYYY-MM-DD.
 const addDaysToDate = (dateStr, n) => {
   if (!dateStr) return null;
@@ -94,16 +100,17 @@ const addDaysToDate = (dateStr, n) => {
   return d.toISOString().split('T')[0];
 };
 
-// Return the number of whole calendar days elapsed since a date string (UTC).
+// Return the number of whole calendar days elapsed since a date string (Nigeria time).
 // Returns 0 if the date is today or in the future.
 const elapsedDaysSince = (dateStr) => {
   if (!dateStr) return 0;
   const given = new Date(dateStr);
   if (Number.isNaN(given.getTime())) return 0;
-  const now = new Date();
-  // Truncate both to midnight UTC for a clean day comparison
+  // Compare against Nigeria calendar date so status transitions happen at
+  // Nigeria midnight (WAT = UTC+1), not UTC midnight.
+  const nowNigeria = new Date(todayNigeria());
   const givenMidnight = Date.UTC(given.getUTCFullYear(), given.getUTCMonth(), given.getUTCDate());
-  const nowMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const nowMidnight   = Date.UTC(nowNigeria.getUTCFullYear(), nowNigeria.getUTCMonth(), nowNigeria.getUTCDate());
   return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
@@ -150,7 +157,7 @@ const computeLoanTimeline = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) =
     loanStatus = 'OWNED_BY_BUSINESS';   // ownership day
   } else {
     // Before ownership: check whether the customer's agreed due date has passed
-    const today = new Date().toISOString().split('T')[0];
+    const today = todayNigeria();
     if (customer_due_date && today > customer_due_date) {
       loanStatus = 'OVERDUE';           // past customer deadline, not yet owned
     } else {
@@ -522,7 +529,7 @@ export async function onRequest(context) {
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
         const timeline = computeLoanTimeline(tx, loanCfg);
         if (timeline && timeline.sale_allowed_date) {
-          const today = new Date().toISOString().split('T')[0];
+          const today = todayNigeria();
           if (today < timeline.sale_allowed_date) {
             return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
           }
@@ -574,7 +581,7 @@ export async function onRequest(context) {
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
         const timeline = computeLoanTimeline(tx, loanCfg);
         if (timeline && timeline.sale_allowed_date) {
-          const today = new Date().toISOString().split('T')[0];
+          const today = todayNigeria();
           if (today < timeline.sale_allowed_date) {
             return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
           }
