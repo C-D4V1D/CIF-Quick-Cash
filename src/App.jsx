@@ -554,6 +554,90 @@ function Field({ label, required, children, style: st }) {
   return (<div style={{ marginBottom: '14px', ...st }}><label style={S.label}>{label} {required && <span style={{ color: COLORS.danger }}>*</span>}</label>{children}</div>);
 }
 
+// ============================================================
+// INFO ICON — contextual help tooltip (hover on desktop, tap on mobile)
+// Tooltip uses position:fixed so it is never clipped by overflow:hidden parents.
+// Placement is computed from the icon's bounding rect and clamped to the viewport.
+// ============================================================
+function InfoIcon({ tip }) {
+  const [coords, setCoords] = useState(null);
+  const ref = useRef();
+  const TIP_W = 240;
+  const GAP = 8;
+  const EDGE_PAD = 10;
+  const MIN_SPACE_ABOVE = 80; // px — flip tooltip below the icon if less space than this above it
+
+  const show = (e) => {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Prefer above the icon; flip below if too close to top
+    const spaceAbove = r.top;
+    const placeBelow = spaceAbove < MIN_SPACE_ABOVE;
+    const top = placeBelow ? r.bottom + GAP : r.top - GAP;
+    // Centre on the icon, then clamp to viewport edges
+    let left = r.left + r.width / 2 - TIP_W / 2;
+    left = Math.max(EDGE_PAD, Math.min(left, vw - TIP_W - EDGE_PAD));
+    setCoords({ top, left, below: placeBelow });
+  };
+
+  const hide = () => setCoords(null);
+
+  useEffect(() => {
+    if (!coords) return;
+    const close = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) hide();
+    };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('touchstart', close);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('touchstart', close);
+    };
+  }, [coords]);
+
+  const tooltipStyle = {
+    position: 'fixed',
+    zIndex: 99999,
+    background: '#1a1a2e',
+    color: '#fff',
+    fontSize: '13px',
+    fontWeight: 400,
+    lineHeight: 1.55,
+    textTransform: 'none',
+    letterSpacing: 'normal',
+    padding: '10px 13px',
+    borderRadius: '10px',
+    width: TIP_W + 'px',
+    boxShadow: '0 6px 24px rgba(0,0,0,0.32)',
+    pointerEvents: 'none',
+    top: coords ? (coords.below ? coords.top : undefined) : undefined,
+    bottom: coords && !coords.below ? (window.innerHeight - coords.top) + 'px' : undefined,
+    left: coords ? coords.left + 'px' : undefined,
+  };
+
+  return (
+    <span
+      ref={ref}
+      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: '4px', flexShrink: 0 }}
+      onMouseEnter={show}
+      onMouseLeave={hide}
+      onClick={e => { e.stopPropagation(); coords ? hide() : show(e); }}
+    >
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: '14px', height: '14px', borderRadius: '50%',
+        background: COLORS.primaryLight, color: COLORS.primary,
+        fontSize: '9px', fontWeight: 800, cursor: 'pointer',
+        border: `1px solid ${COLORS.primary}`, lineHeight: 1, userSelect: 'none',
+        flexShrink: 0, textTransform: 'none', letterSpacing: 'normal',
+      }}>ℹ</span>
+      {coords && <span style={tooltipStyle}>{tip}</span>}
+    </span>
+  );
+}
+
 function Modal({ open, onClose, title, children, wide }) {
   const isMobile = useMobile();
   if (!open) return null;
@@ -1695,7 +1779,7 @@ function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
       <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>❓ Screening Questions</h3>
       <div style={S.alert('info')}>📋 Ask these questions calmly and select the closest answer from the dropdown. If anything feels wrong, tick the Red Flag box.</div>
 
-      <Field label="How long have you had this item?" required>
+      <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>How long have you had this item?<InfoIcon tip="If they've had it less than 6 months, be extra careful. A short ownership time together with other strange answers can be a sign the item was stolen." /></span>} required>
         <select style={S.select} value={tx.screeningDuration} onChange={e => { upd('screeningDuration', e.target.value); if (e.target.value !== 'Other') upd('screeningDurationOther', ''); }}>
           <option value="">— Select —</option>
           {DURATION_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
@@ -1705,7 +1789,7 @@ function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
         )}
       </Field>
 
-      <Field label="Where did you buy it?" required>
+      <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Where did you buy it?<InfoIcon tip="Market or online purchases are harder to trace. If the customer seems unsure or keeps changing their answer, that's a warning sign." /></span>} required>
         <select style={S.select} value={tx.screeningPurchaseLocation} onChange={e => { upd('screeningPurchaseLocation', e.target.value); if (e.target.value !== 'Other') upd('screeningPurchaseLocationOther', ''); }}>
           <option value="">— Select —</option>
           {PURCHASE_LOCATION_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
@@ -1721,7 +1805,7 @@ function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
         )}
       </Field>
 
-      <Field label="Is this item registered in your name?" required>
+      <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Is this item registered in your name?<InfoIcon tip="For phones, the SIM and IMEI should match who they say they are. Pick 'N/A' for things like fans or speakers that don't need to be registered to anyone." /></span>} required>
         <select style={S.select} value={tx.screeningRegistered} onChange={e => upd('screeningRegistered', e.target.value)}>
           <option value="">— Select —</option>
           <option value="Yes">Yes</option>
@@ -1730,7 +1814,7 @@ function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
         </select>
       </Field>
 
-      <Field label="Has anyone (or is anyone) else used/using this item with you?" required>
+      <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Has anyone (or is anyone) else used/using this item with you?<InfoIcon tip="If someone else also uses the item (like a boss or partner), make sure this customer actually has permission to hand it over as a pledge." /></span>} required>
         <select style={S.select} value={tx.screeningOthersUsing} onChange={e => upd('screeningOthersUsing', e.target.value)}>
           <option value="">— Select —</option>
           {OTHERS_USING_OPTIONS.map(o => <option key={o} value={o}>{o}</option>)}
@@ -1741,6 +1825,7 @@ function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
         <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
           <input type="checkbox" checked={tx.screeningRedFlag} onChange={e => upd('screeningRedFlag', e.target.checked)} style={{ width: '20px', height: '20px' }} />
           <span style={{ fontSize: '14px', fontWeight: 700, color: COLORS.danger }}>🚩 RED FLAG — Something feels wrong (Decline Customer)</span>
+          <InfoIcon tip="Tick this if something just feels off — like they're nervous, their story keeps changing, or the item looks suspicious. The system will quietly turn down the transaction without telling the customer why." />
         </label>
         {tx.screeningRedFlag && (
           <div style={{ marginTop: '14px' }}>
@@ -2051,7 +2136,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
       <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📷 Item Capture</h3>
 
       {/* 6A — Item Type */}
-      <Field label="Item Type" required>
+      <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Item Type<InfoIcon tip="Pick the type that best matches the item. This decides which photos to take, what to check during inspection, and whether an IMEI number is needed." /></span>} required>
         <select
           style={S.select}
           value={tx.captureItemType}
@@ -2191,7 +2276,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
 
           {/* 6D — Receipt */}
           <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `2px solid ${COLORS.border}` }}>
-            <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>🧾 Original Purchase Receipt</div>
+            <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px', display: 'flex', alignItems: 'center' }}>🧾 Original Purchase Receipt<InfoIcon tip="A receipt shows the customer bought it properly, so we can offer more money. No receipt means we give less, just to be safe." /></div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Does the customer have the original purchase receipt?</div>
             <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
               <button style={{ ...S.btn(tx.hasReceipt === true ? 'primary' : 'outline'), flex: 1, justifyContent: 'center' }} onClick={() => upd('hasReceipt', true)}>✅ Yes — Has Receipt</button>
@@ -2280,9 +2365,10 @@ function InspectionStep({ tx, upd }) {
 
       {/* Staff Notes */}
       <div style={{ marginTop: '4px' }}>
-        <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px' }}>
+        <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '6px', display: 'flex', alignItems: 'center' }}>
           📝 Staff Notes
           {anyUnticked && <span style={{ color: COLORS.danger, fontWeight: 700 }}> *</span>}
+          <InfoIcon tip="Only staff can see this. Write down anything odd you noticed — strange smells, loose parts, battery issues, missing accessories, or why you skipped any checklist item." />
         </div>
         <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>
           Write anything extra you noticed that is not captured above. Examples: &quot;Customer says battery drains in 3 hours.&quot; / &quot;One key sticks slightly.&quot; / &quot;TV remote is missing — customer says they never had one.&quot; / &quot;Generator started on second pull.&quot; This is a private internal record.
@@ -2657,7 +2743,7 @@ CONDITION: [detailed condition description]`;
     switch (sid) {
       case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
 
-      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label="ID Type" required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={`${tx.idType.toUpperCase()} Number`} required><input style={S.input} inputMode="numeric" value={tx.idNumber} onChange={e => upd('idNumber', e.target.value.replace(/\D/g, ''))} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerificationAttempted && !ninLoading && <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + (tx.ninVerified ? COLORS.primary : COLORS.warning) }} alt="NIN/BVN Photo" />}<div style={{ flex: 1 }}><div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('NIN photo did not match')}>NIN photo did not match</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer could not provide valid ID')}>Customer could not provide valid ID</button></div></div></div>);
+      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>ID Type<InfoIcon tip="NIN is the first choice — the customer dials *346# on their own phone to get it. BVN (from their bank) is a backup, but it won't give us their home address." /></span>} required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{tx.idType.toUpperCase()} Number<InfoIcon tip={`The customer's ${tx.idType === 'nin' ? '11-digit ID number from the government. They find it by dialling *346# on their own phone.' : '11-digit number tied to their bank account. Use this if the NIN check fails.'}`} /></span>} required><input style={S.input} inputMode="numeric" value={tx.idNumber} onChange={e => upd('idNumber', e.target.value.replace(/\D/g, ''))} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerificationAttempted && !ninLoading && <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + (tx.ninVerified ? COLORS.primary : COLORS.warning) }} alt="NIN/BVN Photo" />}<div style={{ flex: 1 }}><div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('NIN photo did not match')}>NIN photo did not match</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer could not provide valid ID')}>Customer could not provide valid ID</button></div></div></div>);
 
       case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value.replace(/\D/g, ''); upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[1]} onChange={e => { const val = e.target.value.replace(/\D/g, ''); const n = [...tx.phoneNumbers]; n[1] = val; upd('phoneNumbers', n); if (!val) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required><input style={S.input} inputMode="numeric" value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value.replace(/\D/g, ''))} placeholder="e.g. 08099887766" /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
@@ -2676,12 +2762,12 @@ CONDITION: [detailed condition description]`;
 
       case 'inspection': return (<InspectionStep tx={tx} upd={upd} />);
 
-      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label="Estimated Resale Value (₦)" required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label="Condition Description" required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button></div></div></div>);
+      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number, so make sure it looks right. Use your own knowledge to double-check what the AI says." /></span>} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Condition Description<InfoIcon tip="Write what the item looks like right now — scratches, cracks, dents, anything missing, etc. This goes on the agreement form and protects us if the customer later claims we damaged it." /></span>} required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button></div></div></div>);
 
 
       case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
 
-      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={S.statLabel}>Resale Value</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={S.statLabel}>Max ({capPct}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={S.statLabel}>Daily Fee ({settings.interestRate}%)</div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label="Loan Days"><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label="Deadline"><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect.</div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item not acceptable as collateral')}>Item not acceptable as collateral</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
+      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum advance is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={`The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div></div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label="Date Given" required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}<div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect. <InfoIcon tip="Collect this flat fee from the customer today, on top of the cash you're giving them. Tick the box on the last step once you've collected it." /></div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item not acceptable as collateral')}>Item not acceptable as collateral</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>Print Agreement</strong> — a filled-in form will open in a new window ready to print. Load plain paper in your printer, click the Print button in that window, and it prints both the Business Copy and Customer Copy with all the transaction data already filled in. Read every clause aloud to the customer. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
       <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
@@ -3341,12 +3427,12 @@ export default function App() {
       <div style={S.card}>
         <div style={S.cardTitle}>💰 Financial Summary</div>
         <div style={S.grid4}>
-          <div style={S.stat}><div style={S.statLabel}>Estimated Value</div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
-          <div style={S.stat}><div style={S.statLabel}>Cash Advanced</div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Estimated Value<InfoIcon tip="What the AI estimates this item would sell for second-hand. The max we can give is a percentage of this number." /></div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Cash Advanced<InfoIcon tip="The cash we handed to the customer when they left the item with us." /></div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
           {tx.type === 'advance' && <>
-            <div style={S.stat}><div style={S.statLabel}>Days Outstanding</div><div style={S.statValue}>{daysOut}d</div></div>
+            <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div></div>
             <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
-              <div style={S.statLabel}>Amount Due Today</div>
+              <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="The full amount the customer owes us today — the cash we gave them plus all the daily fees added up so far. It grows bigger every day." /></div>
               <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
             </div>
           </>}
@@ -3366,14 +3452,14 @@ export default function App() {
           <div style={S.cardTitle}>📅 Loan Timeline</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '12px' }}>
             {[
-              { label: 'Date Given', date: tx.dateGiven, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border },
-              { label: 'Agreed Return', date: tx.deadlineDate, bg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.dangerLight : COLORS.bg, fg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text, border: customerDaysLeft !== null && customerDaysLeft <= 0 ? '#f5c6cb' : COLORS.border },
-              { label: 'Internal Deadline', date: timeline.internal_deadline, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border },
-              { label: 'Grace Period Ends', date: timeline.grace_end_date, bg: '#f3e8ff', fg: '#7c3aed', border: '#d8b4fe' },
-              { label: 'Sale Eligible From', date: timeline.sale_allowed_date, bg: '#f0fdf4', fg: '#166534', border: '#86efac' },
-            ].filter(item => item.date).map(({ label, date, bg, fg, border }) => (
+              { label: 'Date Given', date: tx.dateGiven, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'The day we gave the customer money and the loan started.' },
+              { label: 'Agreed Return', date: tx.deadlineDate, bg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.dangerLight : COLORS.bg, fg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text, border: customerDaysLeft !== null && customerDaysLeft <= 0 ? '#f5c6cb' : COLORS.border, tip: 'The date the customer said they\'d come back to pay. Try to reach them before this date.' },
+              { label: 'Internal Deadline', date: timeline.internal_deadline, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'A private reminder date for staff — set earlier than the customer\'s return date. Start chasing the customer by this point.' },
+              { label: 'Grace Period Ends', date: timeline.grace_end_date, bg: '#f3e8ff', fg: '#7c3aed', border: '#d8b4fe', tip: 'The last day of the extra time after the internal deadline. After this, we can start selling the item.' },
+              { label: 'Sale Eligible From', date: timeline.sale_allowed_date, bg: '#f0fdf4', fg: '#166534', border: '#86efac', tip: 'From this date, if the customer still hasn\'t paid, we\'re allowed to sell their item to get our money back.' },
+            ].filter(item => item.date).map(({ label, date, bg, fg, border, tip }) => (
               <div key={label} style={{ padding: '10px 12px', background: bg, borderRadius: '8px', border: `1px solid ${border}` }}>
-                <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>{label}</div>
+                <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px', display: 'flex', alignItems: 'center' }}>{label}<InfoIcon tip={tip} /></div>
                 <div style={{ fontSize: '13.5px', fontWeight: 700, color: fg }}>{fmtDate(date)}</div>
                 <div style={{ marginTop: '5px', display: 'inline-block', fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '20px', background: 'rgba(0,0,0,0.07)', color: fg === COLORS.text ? COLORS.textMuted : fg, letterSpacing: '0.2px' }}>{relativeDateLabel(date)}</div>
               </div>
@@ -3596,12 +3682,12 @@ export default function App() {
       case 'dashboard': return (<div>{listLoadingNotice}
         <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📊 Dashboard</h2>
         <div style={S.grid4}>
-          <div style={S.stat}><div style={S.statLabel}>Available Lending Capital</div><div style={S.statValue}>{fmtMoney(availableLendingCapital)}</div></div>
-          <div style={S.stat}><div style={S.statLabel}>Capital Out</div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
-          <div style={S.stat}><div style={S.statLabel}>Active Loans</div><div style={S.statValue}>{activeTxs.length}</div></div>
-          <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
-          <div style={{ ...S.stat, background: inGracePeriod.length > 0 ? '#f3e8ff' : COLORS.primaryLight }}><div style={S.statLabel}>In Grace Period</div><div style={{ ...S.statValue, color: inGracePeriod.length > 0 ? '#7c3aed' : COLORS.primary }}>{inGracePeriod.length}</div></div>
-          <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={S.statLabel}>Ready to Sell</div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Available Lending Capital<InfoIcon tip="The money we have available to give out as new loans right now. It's what's left after taking away everything that's already out or paid out." /></div><div style={S.statValue}>{fmtMoney(availableLendingCapital)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital Out<InfoIcon tip="The total cash that's currently with customers who haven't paid back yet." /></div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Active Loans<InfoIcon tip="How many customers still have active loans — they took money but haven't come back yet." /></div><div style={S.statValue}>{activeTxs.length}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money the business has ever earned — from daily fees, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
+          <div style={{ ...S.stat, background: inGracePeriod.length > 0 ? '#f3e8ff' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>In Grace Period<InfoIcon tip="Customers who are overdue but we haven't listed their item for sale yet. We're giving them a little more time." /></div><div style={{ ...S.statValue, color: inGracePeriod.length > 0 ? '#7c3aed' : COLORS.primary }}>{inGracePeriod.length}</div></div>
+          <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Ready to Sell<InfoIcon tip="Items where the customer ran out of time. We can now sell these to get our money back." /></div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}><span>Recent Transactions</span><select value={recentTxCount} onChange={e => setRecentTxCount(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: '6px', border: `1.5px solid ${COLORS.border}`, fontSize: '12px', fontWeight: 600, color: COLORS.primaryDark, background: '#fff', cursor: 'pointer' }}>{[3, 5, 10, 15, 20].map(n => <option key={n} value={n}>Show {n}</option>)}</select></div><TxTable items={transactions.slice(0, recentTxCount)} /></div>
@@ -3715,13 +3801,13 @@ export default function App() {
 
       case 'deadlines': {
         
-        const AlertGroup = ({ title, items, color, icon }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color }}>{icon} {title} ({items.length})</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button><button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button></div></div>))}</div>);
+        const AlertGroup = ({ title, items, color, icon, infoTip }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color, display: 'flex', alignItems: 'center' }}>{icon} {title} ({items.length}){infoTip && <InfoIcon tip={infoTip} />}</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button><button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button></div></div>))}</div>);
         const inGrace = inGracePeriod;
         const upcoming7 = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
           return daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
         });
-        return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
+        return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" infoTip="These items have passed the final deadline. We can now sell them to get back the money we gave out." /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" infoTip="These customers are overdue but we haven't started selling their item yet. Call them now — once the grace period ends we can start selling." /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" infoTip="These customers have 7 days or less before their deadline. Start calling them now." />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
       }
 
       case 'forSale': { const sellable = [...forSaleTxs, ...readyToSell]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} showDaysListed /></div></div>); }
@@ -3871,30 +3957,30 @@ export default function App() {
             <div style={S.card}>
               <div style={S.cardTitle}>💰 Financial Summary</div>
               <div style={S.grid3}>
-                <div style={S.stat}><div style={S.statLabel}>Revenue</div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
-                <div style={S.stat}><div style={S.statLabel}>Expenses</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
-                <div style={S.stat}><div style={S.statLabel}>Net Profit</div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money that came in during this period — from customers repaying, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Expenses<InfoIcon tip="Money spent to keep the business running — things like printing, transport, airtime, and stationery." /></div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Net Profit<InfoIcon tip="Income minus expenses. This is what the business actually made after paying for everything. Fabian and the investors split this." /></div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
               </div>
               <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Revenue Breakdown</div>
-                <div style={rowStyle}><span>Repayment fees ({rClosed.length} loan{rClosed.length !== 1 ? 's' : ''})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rRepaymentFees)}</strong></div>
-                <div style={rowStyle}><span>Sales proceeds ({rSold.length} item{rSold.length !== 1 ? 's' : ''})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rSalesRevenue)}</strong></div>
-                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Service fees ({rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''} × {fmtMoney(settings.serviceFee || 1000)})</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rServiceFees)}</strong></div>
+                <div style={rowStyle}><span>Repayment fees ({rClosed.length} loan{rClosed.length !== 1 ? 's' : ''})<InfoIcon tip="The daily fees we collect when a customer comes back to pay and pick up their item." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rRepaymentFees)}</strong></div>
+                <div style={rowStyle}><span>Sales proceeds ({rSold.length} item{rSold.length !== 1 ? 's' : ''})<InfoIcon tip="Money from selling items that customers didn't come back to collect before their time ran out." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rSalesRevenue)}</strong></div>
+                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Service fees ({rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''} × {fmtMoney(settings.serviceFee || 1000)})<InfoIcon tip="A flat fee collected once at the very start of a new loan, before any daily charges start." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rServiceFees)}</strong></div>
               </div>
               <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Capital Flow</div>
-                <div style={rowStyle}><span>Capital deployed (new loans)</span><strong style={{ color: COLORS.danger }}>{fmtMoney(rCapitalDeployed)}</strong></div>
-                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Capital returned (repayments)</span><strong style={{ color: COLORS.primary }}>{fmtMoney(rCapitalReturned)}</strong></div>
+                <div style={rowStyle}><span>Capital deployed (new loans)<InfoIcon tip="The total cash handed out as loans this period. This money is with customers and will come back when they repay." /></span><strong style={{ color: COLORS.danger }}>{fmtMoney(rCapitalDeployed)}</strong></div>
+                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Capital returned (repayments)<InfoIcon tip="The total loan amount (not including fees) that customers paid back this period." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rCapitalReturned)}</strong></div>
               </div>
             </div>
 
             {/* Profit distribution */}
             <div style={S.grid2}>
-              <div style={S.card}><div style={S.cardTitle}>Fabian (10%)</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rFabian)}</div></div>
-              <div style={S.card}><div style={S.cardTitle}>Stakeholders</div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
+              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Fabian (10%)<InfoIcon tip="Fabian's cut for running the business — 10% of the profit." /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rFabian)}</div></div>
+              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders<InfoIcon tip="The investors' share of the profit — 90% split among them based on how much each person put in." /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
             </div>
             <div style={S.card}>
-              <div style={S.cardTitle}>📊 Stakeholder Distribution</div>
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution<InfoIcon tip="How this investor's profit share is worked out — based on how much they put in compared to everyone else combined." /></div>
               {rStakeholders.map(s => (
                 <div key={s.name} style={rowStyle}>
                   <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({s.pct.toFixed(1)}%)</span>
@@ -4108,21 +4194,21 @@ export default function App() {
 
             {/* Available for Lending */}
             <div style={{ ...S.card, borderLeft: `4px solid ${availableLendingCapital >= 0 ? COLORS.primary : COLORS.danger}`, marginBottom: '16px' }}>
-              <div style={S.cardTitle}>💰 Available for Lending</div>
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>💰 Available for Lending<InfoIcon tip="The money available right now to give out as new loans. It's the total invested and earned, minus everything that's already out or paid out." /></div>
               <div style={{ fontSize: '28px', fontWeight: 800, color: availableLendingCapital >= 0 ? COLORS.primary : COLORS.danger, marginBottom: '16px' }}>{fmtMoney(availableLendingCapital)}</div>
               <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>How this is calculated</div>
-              <div style={capRowStyle}><span>Total capital invested</span><strong>+ {fmtMoney(totalCapital)}</strong></div>
-              <div style={capRowStyle}><span>All-time profit (revenue − expenses)</span><strong style={{ color: netProfit >= 0 ? COLORS.primary : COLORS.danger }}>+ {fmtMoney(netProfit)}</strong></div>
-              <div style={capRowStyle}><span>Money out on active loans</span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalOut)}</strong></div>
-              <div style={capRowStyle}><span>Capital in for-sale inventory</span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalInForSaleInventory)}</strong></div>
-              <div style={{ ...capRowStyle, borderBottom: 'none' }}><span>Profit already distributed to stakeholders</span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalDistributions)}</strong></div>
+              <div style={capRowStyle}><span>Total capital invested<InfoIcon tip="The total amount all investors have put into the business so far." /></span><strong>+ {fmtMoney(totalCapital)}</strong></div>
+              <div style={capRowStyle}><span>All-time profit (revenue − expenses)<InfoIcon tip="All the profit the business has made since it started. This goes back into the money we can lend out." /></span><strong style={{ color: netProfit >= 0 ? COLORS.primary : COLORS.danger }}>+ {fmtMoney(netProfit)}</strong></div>
+              <div style={capRowStyle}><span>Money out on active loans<InfoIcon tip="Money that's currently with customers who haven't paid back yet. We can't lend it out again until they return it." /></span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalOut)}</strong></div>
+              <div style={capRowStyle}><span>Capital in for-sale inventory<InfoIcon tip="Money stuck in items we're trying to sell. We get this back once the item is sold." /></span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalInForSaleInventory)}</strong></div>
+              <div style={{ ...capRowStyle, borderBottom: 'none' }}><span>Profit already distributed to stakeholders<InfoIcon tip="Profit that was already shared out to investors and has left the business." /></span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalDistributions)}</strong></div>
             </div>
 
             {/* Capital table */}
             <div style={S.card}>
-              <div style={S.cardTitle}>📥 Stakeholder Capital</div>
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📥 Stakeholder Capital<InfoIcon tip="How much each investor has put in. The more they put in, the bigger their share of the profit." /></div>
               <table style={S.table}>
-                <thead><tr><th style={S.th}>Name</th><th style={S.th}>Total Capital</th><th style={S.th}>Share %</th><th style={S.th}>History</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead>
+                <thead><tr><th style={S.th}>Name</th><th style={S.th}>Total Capital</th><th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Share %<InfoIcon tip="This person's percentage of the total money invested. Their profit is worked out from this number." /></div></th><th style={S.th}>History</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead>
                 <tbody>
                   {capByName.map((s, i) => {
                     const pct = totalCapital > 0 ? (s.total / totalCapital * 100).toFixed(1) : '0.0';
@@ -4361,7 +4447,73 @@ export default function App() {
         );
       }
 
-      case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2><div style={S.card}><div style={S.cardTitle}>Business Parameters</div><div style={S.grid2}><Field label="Daily Interest Rate (%)"><input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} /></Field><Field label="Service Fee (₦)"><input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} /></Field><Field label="Loan Cap No Receipt (%)"><input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} /></Field><Field label="Loan Cap With Receipt (%)"><input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} /></Field><Field label="Max Loan Days"><input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} /></Field><Field label="Grace Days"><input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} /></Field></div></div><div style={S.card}><div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div><Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field><div style={S.grid2}><Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field><Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field></div><Field label="WhatsApp Number"><input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" /><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div></Field><Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field><Field label="Google Maps Link (optional)"><input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." /></Field></div><div style={S.card}><div style={S.cardTitle}>🔑 API Keys</div><Field label="Gemini AI API Key"><input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" /></Field><Field label="Gemini Model"><input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} /></Field><Field label="NIN/BVN API Key"><input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" /></Field></div><div style={S.card}><div style={S.cardTitle}>🪪 Identity Verification Rules</div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div><Field label="Require API-verified NIN/BVN to proceed"><label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}><input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} /><span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span></label></Field></div></div>);
+      case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (
+        <div>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2>
+          <div style={S.card}>
+            <div style={S.cardTitle}>Business Parameters</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Daily Interest Rate (%)<InfoIcon tip="How much we charge per day as a fee. Example: 1% on ₦10,000 means ₦100 every day the customer hasn't paid back yet." /></span>}>
+                <input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Service Fee (₦)<InfoIcon tip="A flat charge we collect once at the start of every loan — on the same day we hand over the cash." /></span>}>
+                <input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap No Receipt (%)<InfoIcon tip="The most we can give a customer who has no receipt — as a percentage of the item's value. We give less because we can't fully verify they own it." /></span>}>
+                <input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap With Receipt (%)<InfoIcon tip="The most we can give when a customer shows a receipt — as a percentage of the item's value. We can give more because the receipt proves they bought it." /></span>}>
+                <input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Loan Days<InfoIcon tip="The longest time a customer can take before they must come back to pay. The system won't let you set a loan longer than this." /></span>}>
+                <input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Grace Days<InfoIcon tip="Extra days we give a customer after they go overdue, before we start selling their item. It's a last chance for them to come back." /></span>}>
+                <input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} />
+              </Field>
+            </div>
+          </div>
+          <div style={S.card}>
+            <div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div>
+            <Field label="Shop Address"><textarea style={S.textarea} value={settings.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => saveSettings({ ...settings, shopAddress: e.target.value })} /></Field>
+            <div style={S.grid2}>
+              <Field label="Phone Number 1"><input style={S.input} value={settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => saveSettings({ ...settings, shopPhone1: e.target.value })} /></Field>
+              <Field label="Phone Number 2"><input style={S.input} value={settings.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => saveSettings({ ...settings, shopPhone2: e.target.value })} /></Field>
+            </div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>WhatsApp Number<InfoIcon tip="Type the number starting with the country code, without the + sign (e.g. 2348165491908). Customers tap this to WhatsApp us from the loan check page." /></span>}>
+              <input style={S.input} value={settings.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => saveSettings({ ...settings, shopWhatsApp: e.target.value })} placeholder="2348165491908" />
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div>
+            </Field>
+            <Field label="Operating Hours"><input style={S.input} value={settings.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => saveSettings({ ...settings, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Google Maps Link (optional)<InfoIcon tip="Paste a Google Maps link here so customers can find the shop easily. If you leave it empty, it'll use a Google Search link instead." /></span>}>
+              <input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." />
+            </Field>
+          </div>
+          <div style={S.card}>
+            <div style={S.cardTitle}>🔑 API Keys</div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini AI API Key<InfoIcon tip="The key that turns on the AI valuation feature. You can get one for free at aistudio.google.com." /></span>}>
+              <input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Leave it as default — the system will switch to a backup automatically if needed." /></span>}>
+              <input style={S.input} value={settings.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => saveSettings({ ...settings, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
+              <input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
+            </Field>
+          </div>
+          <div style={S.card}>
+            <div style={S.cardTitle}>🪪 Identity Verification Rules</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Require API-verified NIN/BVN to proceed<InfoIcon tip="When turned on, staff can only move forward if the NIN or BVN check was fully successful and returned a photo. When turned off, any attempt — even a failed one — is enough to continue. Useful when the service is down." /></span>}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
+                <span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span>
+              </label>
+            </Field>
+          </div>
+        </div>
+      );
 
       case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add User</button></div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 14px', background: COLORS.primaryLight, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>A user can hold multiple roles — for example, a staff member can also be a stakeholder. Use the <strong>Grant/Revoke Stakeholder</strong> button below to manage this without needing two accounts.</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Roles</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; const extraRoles = u.roles || []; const isAlsoStakeholder = u.role !== 'stakeholder' && extraRoles.includes('stakeholder'); const canToggleStakeholder = u.role !== 'admin' && u.role !== 'stakeholder'; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span>{extraRoles.map(r => <span key={r} style={S.badge('#8b5cf6')}>{r}</span>)}</div></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => setShowEditUser(u)}>Edit</button>{canToggleStakeholder && <button style={S.btnSm(isAlsoStakeholder ? 'danger' : 'primary')} onClick={async () => { const newRoles = isAlsoStakeholder ? extraRoles.filter(r => r !== 'stakeholder') : [...extraRoles, 'stakeholder']; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, roles: newRoles } : x)); await API.put(`users/${u.id}`, { roles: newRoles }); loadData(); }}>{isAlsoStakeholder ? '− Revoke Stakeholder' : '+ Grant Stakeholder'}</button>}<button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
 
