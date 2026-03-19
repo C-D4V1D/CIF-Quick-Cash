@@ -92,36 +92,37 @@ const normalizeUser = (user) => {
 };
 
 // --- UTILITY FUNCTIONS ---
+// Nigeria's IANA timezone identifier (WAT = UTC+1).
+const NIGERIA_TZ = 'Africa/Lagos';
+
 const genRef = () => {
-  const d = new Date();
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: NIGERIA_TZ, day: '2-digit', month: '2-digit', year: '2-digit',
+  }).formatToParts(new Date());
+  const dd   = parts.find(p => p.type === 'day').value;
+  const mm   = parts.find(p => p.type === 'month').value;
+  const yy   = parts.find(p => p.type === 'year').value;
   const rand = String(Math.floor(Math.random() * 999) + 1).padStart(3, '0');
   return `CIF-${dd}${mm}${yy}-${rand}`;
 };
 
-// Returns today's date as a YYYY-MM-DD string in the device's local timezone.
+// Returns today's date as a YYYY-MM-DD string in Nigeria time (WAT = UTC+1).
 // Using toISOString() would give the UTC date, which can be a different calendar
-// day for users in UTC+ timezones (e.g. Nigeria WAT = UTC+1).
-const localISODate = () => {
-  const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-};
+// day (e.g. between midnight and 1 am Nigeria time). Using 'Africa/Lagos' ensures
+// the correct calendar date regardless of the device's own timezone setting.
+const localISODate = () =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: NIGERIA_TZ }).format(new Date());
 
-// Returns the number of whole UTC calendar days elapsed since dateStr (YYYY-MM-DD or ISO).
-// Uses UTC midnight arithmetic to stay consistent with the server-side elapsedDaysSince()
-// and to avoid local-timezone shifts that can make a day-boundary fall on the wrong date.
+// Returns the number of whole calendar days elapsed since dateStr (YYYY-MM-DD or ISO)
+// using Nigeria midnight (WAT = UTC+1) so that day transitions happen at the correct
+// time for Nigerian users. Mirrors the server-side elapsedDaysSince() helper.
 const daysBetween = (dateStr) => {
   if (!dateStr) return 0;
   const given = new Date(dateStr);
   if (Number.isNaN(given.getTime())) return 0;
-  const now = new Date();
+  const nowNigeria = new Date(localISODate()); // Nigeria calendar date as UTC midnight
   const givenMidnight = Date.UTC(given.getUTCFullYear(), given.getUTCMonth(), given.getUTCDate());
-  const nowMidnight   = Date.UTC(now.getUTCFullYear(),   now.getUTCMonth(),   now.getUTCDate());
+  const nowMidnight   = Date.UTC(nowNigeria.getUTCFullYear(), nowNigeria.getUTCMonth(), nowNigeria.getUTCDate());
   return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
@@ -173,10 +174,10 @@ const withLoanTimelines = (items = [], settings = {}) => items.map(tx => withLoa
 const getCustomerDaysLeft = (tx) => {
   const dueDate = tx?.deadlineDate || tx?.customer_due_date;
   if (!dueDate) return null;
-  const today = new Date();
+  // Use Nigeria calendar date for "today" so the comparison is always in WAT,
+  // regardless of the device's own timezone setting.
+  const today    = new Date(localISODate());
   const deadline = new Date(dueDate);
-  today.setHours(0, 0, 0, 0);
-  deadline.setHours(0, 0, 0, 0);
   return Math.ceil((deadline - today) / 86400000);
 };
 
@@ -202,7 +203,7 @@ const fmtMoney = (n) => {
 
 const fmtDate = (d) => {
   if (!d) return '';
-  return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: NIGERIA_TZ });
 };
 
 const statusColor = (tx, settings = {}) => {
@@ -785,7 +786,7 @@ function CustomerPortal({ onBack, settings }) {
 
   const formatDateLong = (d) => {
     if (!d) return '';
-    return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    return new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: NIGERIA_TZ });
   };
 
   const calcOwedToday = (tx) => {
@@ -801,25 +802,21 @@ function CustomerPortal({ onBack, settings }) {
     const elapsed = daysBetween(tx.dateGiven);
     const agreedDueDay = Math.max(0, Number(tx.loanDays) || maxLoanDays);
     const saleEligibleDay = maxLoanDays + graceDays + 1;
-    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const today = new Date(localISODate()); // Nigeria calendar date, parsed as UTC midnight
     const agreedDueDate = tx.deadlineDate ? new Date(tx.deadlineDate) : null;
-    if (agreedDueDate) agreedDueDate.setHours(0, 0, 0, 0);
     const saleEligibleDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
     if (saleEligibleDate) {
-      saleEligibleDate.setHours(0, 0, 0, 0);
-      saleEligibleDate.setDate(saleEligibleDate.getDate() + saleEligibleDay);
+      saleEligibleDate.setUTCDate(saleEligibleDate.getUTCDate() + saleEligibleDay);
     }
 
     // Key business milestone dates
     const maxLoanDayDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
     if (maxLoanDayDate) {
-      maxLoanDayDate.setHours(0, 0, 0, 0);
-      maxLoanDayDate.setDate(maxLoanDayDate.getDate() + maxLoanDays);
+      maxLoanDayDate.setUTCDate(maxLoanDayDate.getUTCDate() + maxLoanDays);
     }
     const graceEndDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
     if (graceEndDate) {
-      graceEndDate.setHours(0, 0, 0, 0);
-      graceEndDate.setDate(graceEndDate.getDate() + maxLoanDays + graceDays);
+      graceEndDate.setUTCDate(graceEndDate.getUTCDate() + maxLoanDays + graceDays);
     }
 
     const daysUntilAgreedDue = agreedDueDate ? Math.ceil((agreedDueDate - today) / 86400000) : null;
@@ -2507,9 +2504,11 @@ const OUTCOME_COLORS = {
 };
 
 function ContactLogModal({ tx, onClose, onSave, currentUser }) {
-  const now = new Date();
   const [date, setDate] = useState(localISODate());
-  const [time, setTime] = useState(now.toTimeString().slice(0, 5));
+  const [time, setTime] = useState(() => {
+    const tp = new Intl.DateTimeFormat('en-GB', { timeZone: NIGERIA_TZ, hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+    return `${tp.find(p => p.type === 'hour').value}:${tp.find(p => p.type === 'minute').value}`;
+  });
   const [result, setResult] = useState('no_answer');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -3173,7 +3172,7 @@ export default function App() {
           const cols = ['Ref', 'Customer', 'Phone', 'Item Brand', 'Item Model', 'Amount (₦)', 'Date', 'Status', 'Type'];
           const rows = filteredTxs.map(t => [
             t.ref || '', t.fullName || '', (t.phoneNumbers || []).join('; '), t.aiBrand || '', t.aiModel || '',
-            t.cashAdvance || 0, t.dateGiven ? new Date(t.dateGiven).toLocaleDateString('en-GB') : '',
+            t.cashAdvance || 0, t.dateGiven ? new Date(t.dateGiven).toLocaleDateString('en-GB', { timeZone: NIGERIA_TZ }) : '',
             statusLabel(t, settings), t.type || '',
           ]);
           const csv = [cols, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -3867,8 +3866,8 @@ export default function App() {
             </div>
             {activityLogs.length === 0 && !activityLoading && <div style={S.card}><p style={{ color: COLORS.textMuted }}>No matching events found.</p></div>}
             {Object.entries(grouped).map(([dateKey, entries]) => {
-              const d = new Date(dateKey); const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
-              const label = d.toDateString() === today.toDateString() ? 'Today' : d.toDateString() === yesterday.toDateString() ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+              const todayNGA = localISODate(); const yesterdayNGA = addDays(todayNGA, -1);
+              const label = dateKey === todayNGA ? 'Today' : dateKey === yesterdayNGA ? 'Yesterday' : new Date(dateKey).toLocaleDateString('en-GB', { timeZone: NIGERIA_TZ, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
               return (
                 <div key={dateKey} style={{ marginBottom: '24px' }}>
                   <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px', paddingLeft: '4px' }}>{label}</div>
@@ -3876,7 +3875,7 @@ export default function App() {
                     {entries.map((a, i) => (
                       <div key={a.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px 16px', borderBottom: i < entries.length - 1 ? `1px solid ${COLORS.border}` : 'none', borderLeft: `3px solid ${actColor(a)}` }}>
                         <div style={{ flexShrink: 0, minWidth: '54px' }}>
-                          <div style={{ fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'nowrap' }}>{new Date(a.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                          <div style={{ fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'nowrap' }}>{new Date(a.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: NIGERIA_TZ })}</div>
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: '14px', fontWeight: 500, wordBreak: 'break-word' }}>{a.description || `${a.action} ${a.entity_type}`}</div>
