@@ -297,10 +297,13 @@ const PAGE_PATHS = {
   declined: '/declined',
   settings: '/admin/settings',
   users: '/admin/users',
-  activity: '/activity-log',
+  activity: '/activity',
 };
 
 const PAGE_FROM_PATH = Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]) => [v, k]));
+const txDetailPath = (ref) => `/transactions/${encodeURIComponent(ref)}`;
+const txRepayPath = (ref) => `/transactions/${encodeURIComponent(ref)}/collect`;
+const txSellPath  = (ref) => `/transactions/${encodeURIComponent(ref)}/sell`;
 
 const ACTIVITY_PAGE_SIZE = 50;
 
@@ -2600,9 +2603,6 @@ export default function App() {
   const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
-  const [viewingTx, setViewingTx] = useState(null);
-  const [repayingTx, setRepayingTx] = useState(null);
-  const [sellingTx, setSellingTx] = useState(null);
   const [loggingContactTx, setLoggingContactTx] = useState(null);
   const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
@@ -2839,20 +2839,29 @@ export default function App() {
   if (!currentUser) {
     return (
       <Routes>
-        <Route path="/checkloanstatus" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/check-loan-status" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/checkloanstatus" element={<Navigate to="/check-loan-status" replace />} />
         <Route path="/login" element={<LoginScreen onLogin={(u) => {
           const normalizedUser = normalizeUser(u);
           writeCache('cfc_user', normalizedUser);
           setCurrentUser(normalizedUser);
           navigate('/dashboard');
         }} />} />
-        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/checkloanstatus')} onStaffLogin={() => navigate('/login')} />} />
+        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} />} />
       </Routes>
     );
   }
 
   // Redirect authenticated users away from public paths (including root)
-  if (['/', '/login', '/checkloanstatus'].includes(location.pathname)) {
+  if (['/', '/login', '/checkloanstatus', '/check-loan-status'].includes(location.pathname)) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  // Redirect authenticated users from unknown paths to dashboard
+  const knownAuthPaths = Object.values(PAGE_PATHS);
+  const txSubUrlMatch = location.pathname.match(/^\/transactions\/(?!new$)([^/]+)(\/collect|\/sell)?$/);
+  const isTxSubPageUrl = !!txSubUrlMatch;
+  if (!knownAuthPaths.includes(location.pathname) && !isTxSubPageUrl) {
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -3078,7 +3087,15 @@ export default function App() {
         )}
       </div>
 
-      <button style={S.btn('outline')} onClick={() => setViewingTx(null)}>← Back</button>
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' }}>
+        <button style={S.btn('outline')} onClick={() => navigate(-1)}>← Back</button>
+        {tx.status === 'active' && isStaff && (
+          <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
+        )}
+        {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && (
+          <button style={S.btn('danger')} onClick={() => navigate(txSellPath(tx.ref))}>🏷 Record Sale</button>
+        )}
+      </div>
     </div>);
   };
 
@@ -3127,7 +3144,45 @@ export default function App() {
   const renderPage = () => {
     const page = PAGE_FROM_PATH[location.pathname] || 'dashboard';
     const listLoadingNotice = listLoading ? (<div style={{ ...S.alert('info'), marginBottom: '16px' }}>⏳ Transactions and drafts are still loading in the background...</div>) : null;
-    if (viewingTx) return <TxDetail tx={viewingTx} />;
+
+    // Transaction sub-pages: /transactions/:ref, /transactions/:ref/collect, /transactions/:ref/sell
+    if (isTxSubPageUrl) {
+      const txRef = decodeURIComponent(txSubUrlMatch[1]);
+      const subPage = txSubUrlMatch[2]; // '/collect', '/sell', or undefined
+      const tx = transactions.find(t => t.ref === txRef);
+      if (!tx) {
+        if (listLoading) return <div style={{ textAlign: 'center', padding: '40px', color: COLORS.textMuted }}>⏳ Loading transaction...</div>;
+        return (<div style={S.card}><p style={{ color: COLORS.textMuted }}>Transaction <strong>{txRef}</strong> not found.</p><button style={S.btn('outline')} onClick={() => navigate(PAGE_PATHS.transactions)}>← Back to Transactions</button></div>);
+      }
+      if (subPage === '/collect') {
+        if (!isStaff || tx.status !== 'active') return <Navigate to={txDetailPath(txRef)} replace />;
+        return (
+          <div>
+            <div style={{ marginBottom: '20px' }}>
+              <button style={S.btn('outline')} onClick={() => navigate(txDetailPath(txRef))}>← Back to Transaction</button>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>💰 Collect Repayment</h2>
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Ref: <strong>{txRef}</strong> · Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
+            </div>
+            <RepaymentModal tx={tx} settings={settings} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
+          </div>
+        );
+      }
+      if (subPage === '/sell') {
+        if (!isStaff || (tx.status !== 'for_sale' && !(tx.status === 'active' && tx.isEligibleForSale))) return <Navigate to={txDetailPath(txRef)} replace />;
+        return (
+          <div>
+            <div style={{ marginBottom: '20px' }}>
+              <button style={S.btn('outline')} onClick={() => navigate(txDetailPath(txRef))}>← Back to Transaction</button>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>🏷 Record Sale</h2>
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Ref: <strong>{txRef}</strong> · Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
+            </div>
+            <SaleModal tx={tx} settings={settings} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
+          </div>
+        );
+      }
+      // No sub-page segment → transaction detail
+      return <TxDetail tx={tx} />;
+    }
 
     const TX_PAGE_SIZE = 25;
     const TxTable = ({ items, showActions = true, showDaysListed = false }) => {
@@ -3138,7 +3193,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => setViewingTx(tx)}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => setSellingTx(tx)}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -3274,7 +3329,7 @@ export default function App() {
 
       case 'deadlines': {
         
-        const AlertGroup = ({ title, items, color, icon }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color }}>{icon} {title} ({items.length})</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => setViewingTx(tx)}>View</button><button style={S.btnSm('accent')} onClick={() => setRepayingTx(tx)}>Collect</button></div></div>))}</div>);
+        const AlertGroup = ({ title, items, color, icon }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color }}>{icon} {title} ({items.length})</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button><button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button></div></div>))}</div>);
         const inGrace = inGracePeriod;
         const upcoming7 = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
@@ -3799,7 +3854,7 @@ export default function App() {
                     <td style={{ ...S.td, fontSize: '12px' }}>
                       {d.ref
                         ? linkedTx
-                          ? (<button style={{ background: 'none', border: 'none', color: COLORS.primary, cursor: 'pointer', padding: 0, fontSize: '12px', textDecoration: 'underline', fontWeight: 600 }} onClick={() => setViewingTx(linkedTx)}>{d.ref}</button>)
+                          ? (<button style={{ background: 'none', border: 'none', color: COLORS.primary, cursor: 'pointer', padding: 0, fontSize: '12px', textDecoration: 'underline', fontWeight: 600 }} onClick={() => navigate(txDetailPath(linkedTx.ref))}>{d.ref}</button>)
                           : (<span style={{ color: COLORS.textMuted }}>{d.ref}</span>)
                         : '—'}
                     </td>
@@ -4200,7 +4255,6 @@ export default function App() {
       navigate(PAGE_PATHS.newTransaction);
     } else {
       navigate(item.path);
-      setViewingTx(null);
     }
   };
 
@@ -4277,9 +4331,7 @@ export default function App() {
       )}
 
       <ExpModal /><CapModal /><DistModal /><DecModal /><DeclineDraftModal /><UsrModal /><EditUserModal />
-      <Modal open={!!repayingTx} onClose={() => setRepayingTx(null)} title="Record Repayment">{repayingTx && <RepaymentModal tx={repayingTx} settings={settings} onClose={() => setRepayingTx(null)} onSave={async (tx) => { await saveTx(tx); setRepayingTx(null); loadData(); }} />}</Modal>
-      <Modal open={!!sellingTx} onClose={() => setSellingTx(null)} title="Record Sale" wide>{sellingTx && <SaleModal tx={sellingTx} settings={settings} onClose={() => setSellingTx(null)} onSave={async (tx) => { await saveTx(tx); setSellingTx(null); loadData(); }} />}</Modal>
-      <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); setViewingTx(tx); }} />}</Modal>
+      <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); }} />}</Modal>
       <style>{`
         input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}
         ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}
