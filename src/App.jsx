@@ -3724,6 +3724,8 @@ export default function App() {
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money the business has ever earned — from daily fees, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
           <div style={{ ...S.stat, background: inGracePeriod.length > 0 ? '#f3e8ff' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>In Grace Period<InfoIcon tip="Customers who are overdue but we haven't listed their item for sale yet. We're giving them a little more time." /></div><div style={{ ...S.statValue, color: inGracePeriod.length > 0 ? '#7c3aed' : COLORS.primary }}>{inGracePeriod.length}</div></div>
           <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Ready to Sell<InfoIcon tip="Items where the customer ran out of time. We can now sell these to get our money back." /></div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
+          {(() => { const overdueLoans = activeTxs.filter(t => { const dl = getCustomerDaysLeft(t); return dl !== null && dl < 0; }); const overdueCapital = overdueLoans.reduce((s, t) => s + (t.cashAdvance || 0), 0); return overdueLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef2f2' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Overdue Capital<InfoIcon tip="Total cash advanced for loans where the customer has passed their agreed return date. This capital needs urgent recovery." /></div><div style={{ ...S.statValue, color: '#dc2626' }}>{fmtMoney(overdueCapital)}</div><div style={{ fontSize: '11px', color: '#991b1b', marginTop: '2px' }}>{overdueLoans.length} loan{overdueLoans.length !== 1 ? 's' : ''} overdue</div></div>) : null; })()}
+          {(() => { const dueTodayLoans = activeTxs.filter(t => getCustomerDaysLeft(t) === 0); return dueTodayLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef3c7' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Due Today<InfoIcon tip="Loans where the customer agreed to return today. Follow up to ensure they come in." /></div><div style={{ ...S.statValue, color: '#92400e' }}>{dueTodayLoans.length}</div></div>) : null; })()}
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}><span>Recent Transactions</span><select value={recentTxCount} onChange={e => setRecentTxCount(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: '6px', border: `1.5px solid ${COLORS.border}`, fontSize: '12px', fontWeight: 600, color: COLORS.primaryDark, background: '#fff', cursor: 'pointer' }}>{[3, 5, 10, 15, 20].map(n => <option key={n} value={n}>Show {n}</option>)}</select></div><TxTable items={transactions.slice(0, recentTxCount)} /></div>
@@ -3836,14 +3838,205 @@ export default function App() {
       case 'active': return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⏳ Active Loans</h2><div style={S.card}><TxTable items={activeTxs.sort((a, b) => new Date(a.deadlineDate) - new Date(b.deadlineDate))} /></div></div>);
 
       case 'deadlines': {
-        
-        const AlertGroup = ({ title, items, color, icon, infoTip }) => items.length > 0 && (<div style={{ ...S.card, borderLeft: `4px solid ${color}` }}><div style={{ ...S.cardTitle, color, display: 'flex', alignItems: 'center' }}>{icon} {title} ({items.length}){infoTip && <InfoIcon tip={infoTip} />}</div>{items.map(tx => (<div key={tx.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{tx.ref}</strong> — {tx.fullName} — {tx.aiBrand} {tx.aiModel} — {fmtMoney(tx.cashAdvance)}<br /><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Phone: {tx.phoneNumbers?.[0]} | Deadline: {fmtDate(tx.deadlineDate)}</span></div><div style={{ display: 'flex', gap: '6px' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button><button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button></div></div>))}</div>);
+        // --- Helper: compute penalty / total owed for a loan ---
+        const computeTotalOwed = (tx) => {
+          const elapsed = daysBetween(tx.dateGiven);
+          const dailyFee = Number(tx.dailyFee) || 0;
+          const cashAdvance = Number(tx.cashAdvance) || 0;
+          const maxLD = Math.max(1, Number(settings.maxLoanDays) || 30);
+          const gd = Math.max(0, Number(settings.graceDays) || 3);
+          const penaltyMult = Number(settings.penaltyRateMultiplier) || 1.5;
+          const normalDays = Math.min(elapsed, maxLD);
+          const overdueDays = Math.max(0, elapsed - maxLD);
+          const normalFees = normalDays * dailyFee;
+          const penaltyFees = overdueDays * dailyFee * penaltyMult;
+          return { cashAdvance, normalFees, penaltyFees, totalOwed: cashAdvance + normalFees + penaltyFees, overdueDays };
+        };
+
+        // --- Helper: build WhatsApp send link for a specific loan ---
+        const getAlertWhatsAppLink = (tx, templateType) => {
+          const phone = tx.phoneNumbers?.[0]?.replace(/\D/g, '') || '';
+          const waPhone = phone.startsWith('0') ? '234' + phone.slice(1) : phone;
+          if (!waPhone) return null;
+          const customerDaysLeft = getCustomerDaysLeft(tx);
+          const daysOverdue = customerDaysLeft !== null && customerDaysLeft < 0 ? Math.abs(customerDaysLeft) : 0;
+          const daysLeft = customerDaysLeft !== null && customerDaysLeft > 0 ? customerDaysLeft : 0;
+          let template = '';
+          if (templateType === 'reminder') {
+            template = (settings.whatsappLoanReminder || DEFAULT_SETTINGS.whatsappLoanReminder);
+          } else {
+            template = (settings.whatsappOverdueNotice || DEFAULT_SETTINGS.whatsappOverdueNotice);
+          }
+          const msg = template
+            .replace('{customerName}', tx.fullName || 'Customer')
+            .replace('{ref}', tx.ref)
+            .replace('{amount}', fmtMoney(tx.cashAdvance))
+            .replace('{daysLeft}', String(daysLeft))
+            .replace('{daysOverdue}', String(daysOverdue))
+            .replace('{shopPhone}', settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1)
+            .replace('{businessName}', settings.businessName || DEFAULT_SETTINGS.businessName);
+          return `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
+        };
+
+        // --- Filter categories ---
         const inGrace = inGracePeriod;
+        const overdue = activeTxs.filter(t => {
+          const daysLeft = getCustomerDaysLeft(t);
+          const tl = getLoanTimeline(t, settings);
+          return daysLeft !== null && daysLeft < 0 && !tl.isOwnedByBusiness;
+        });
+        const dueToday = activeTxs.filter(t => {
+          const daysLeft = getCustomerDaysLeft(t);
+          return daysLeft !== null && daysLeft === 0;
+        });
         const upcoming7 = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
           return daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
         });
-        return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2><AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" infoTip="These items have passed the final deadline. We can now sell them to get back the money we gave out." /><AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" infoTip="These customers are overdue but we haven't started selling their item yet. Call them now — once the grace period ends we can start selling." /><AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" infoTip="These customers have 7 days or less before their deadline. Start calling them now." />{readyToSell.length + inGrace.length + upcoming7.length === 0 && <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! ✅</p></div>}</div>);
+        const upcoming14 = activeTxs.filter(t => {
+          const daysLeft = getCustomerDaysLeft(t);
+          return daysLeft !== null && daysLeft > 7 && daysLeft <= 14;
+        });
+
+        // --- Summary stats ---
+        const totalAlerts = readyToSell.length + inGrace.length + overdue.length + dueToday.length + upcoming7.length + upcoming14.length;
+        const totalAtRisk = [...readyToSell, ...inGrace, ...overdue, ...dueToday].reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const totalPenalties = [...readyToSell, ...inGrace, ...overdue].reduce((s, t) => s + computeTotalOwed(t).penaltyFees, 0);
+
+        // --- Enhanced AlertGroup component ---
+        const AlertGroup = ({ title, items, color, icon, infoTip, templateType, defaultExpanded }) => {
+          const [expanded, setExpanded] = useState(defaultExpanded !== false);
+          const [sortBy, setSortBy] = useState('deadline'); // deadline | amount | days
+          if (items.length === 0) return null;
+          const sorted = [...items].sort((a, b) => {
+            if (sortBy === 'amount') return (b.cashAdvance || 0) - (a.cashAdvance || 0);
+            if (sortBy === 'days') return daysBetween(b.dateGiven) - daysBetween(a.dateGiven);
+            return new Date(a.deadlineDate || a.customer_due_date || 0) - new Date(b.deadlineDate || b.customer_due_date || 0);
+          });
+          const groupTotal = items.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+          return (
+            <div style={{ ...S.card, borderLeft: `4px solid ${color}`, marginBottom: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
+                <div style={{ ...S.cardTitle, color, display: 'flex', alignItems: 'center', margin: 0 }}>
+                  {icon} {title} ({items.length}) — {fmtMoney(groupTotal)}
+                  {infoTip && <InfoIcon tip={infoTip} />}
+                </div>
+                <span style={{ fontSize: '18px', color: COLORS.textMuted, transform: expanded ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }}>▼</span>
+              </div>
+              {expanded && (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
+                    <span style={{ fontSize: '11px', color: COLORS.textMuted, alignSelf: 'center' }}>Sort:</span>
+                    {[{ k: 'deadline', l: 'Deadline' }, { k: 'amount', l: 'Amount' }, { k: 'days', l: 'Days Elapsed' }].map(o => (
+                      <button key={o.k} onClick={(e) => { e.stopPropagation(); setSortBy(o.k); }} style={{ padding: '3px 8px', borderRadius: '4px', border: `1px solid ${sortBy === o.k ? color : COLORS.border}`, background: sortBy === o.k ? color + '15' : 'transparent', color: sortBy === o.k ? color : COLORS.textMuted, fontSize: '11px', fontWeight: 600, cursor: 'pointer' }}>{o.l}</button>
+                    ))}
+                  </div>
+                  {sorted.map(tx => {
+                    const owed = computeTotalOwed(tx);
+                    const customerDaysLeft = getCustomerDaysLeft(tx);
+                    const waLink = getAlertWhatsAppLink(tx, templateType || (customerDaysLeft > 0 ? 'reminder' : 'overdue'));
+                    return (
+                      <div key={tx.ref} style={{ padding: '10px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px' }}>
+                          <div style={{ flex: 1, minWidth: '200px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              <strong style={{ fontSize: '13px' }}>{tx.ref}</strong>
+                              <span style={{ fontSize: '13px' }}>{tx.fullName}</span>
+                            </div>
+                            <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
+                              {tx.aiBrand} {tx.aiModel} — Advanced: {fmtMoney(tx.cashAdvance)}
+                            </div>
+                            <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
+                              Phone: {tx.phoneNumbers?.[0] || 'N/A'} | Deadline: {fmtDate(tx.deadlineDate || tx.customer_due_date)}
+                              {customerDaysLeft !== null && customerDaysLeft < 0 && (
+                                <span style={{ color: '#dc2626', fontWeight: 700 }}> ({Math.abs(customerDaysLeft)} day{Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue)</span>
+                              )}
+                              {customerDaysLeft !== null && customerDaysLeft === 0 && (
+                                <span style={{ color: '#dc2626', fontWeight: 700 }}> (Due today!)</span>
+                              )}
+                              {customerDaysLeft !== null && customerDaysLeft > 0 && (
+                                <span style={{ color: '#f59e0b', fontWeight: 600 }}> ({customerDaysLeft} day{customerDaysLeft !== 1 ? 's' : ''} left)</span>
+                              )}
+                            </div>
+                            {owed.penaltyFees > 0 && (
+                              <div style={{ fontSize: '12px', marginTop: '4px', padding: '4px 8px', background: '#fef2f2', borderRadius: '4px', display: 'inline-block' }}>
+                                <span style={{ color: '#991b1b', fontWeight: 600 }}>Total owed: {fmtMoney(owed.totalOwed)}</span>
+                                <span style={{ color: '#dc2626', fontSize: '11px', marginLeft: '6px' }}>(incl. {fmtMoney(owed.penaltyFees)} penalty)</span>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                            {waLink && (
+                              <a href={waLink} target="_blank" rel="noopener noreferrer" style={{ ...S.btnSm('primary'), background: '#25D366', borderColor: '#25D366', color: '#fff', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px' }}>
+                                WhatsApp
+                              </a>
+                            )}
+                            {tx.phoneNumbers?.[0] && (
+                              <a href={`tel:${tx.phoneNumbers[0]}`} style={{ ...S.btnSm('outline'), textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px' }}>
+                                Call
+                              </a>
+                            )}
+                            <button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>
+                            <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        return (
+          <div>
+            {listLoadingNotice}
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2>
+
+            {/* Summary statistics bar */}
+            <div style={{ ...S.grid4, marginBottom: '20px' }}>
+              <div style={{ ...S.stat, background: totalAlerts > 0 ? '#fef3c7' : COLORS.primaryLight }}>
+                <div style={S.statLabel}>Total Alerts</div>
+                <div style={{ ...S.statValue, color: totalAlerts > 0 ? '#92400e' : COLORS.primary }}>{totalAlerts}</div>
+              </div>
+              <div style={{ ...S.stat, background: totalAtRisk > 0 ? '#fee2e2' : COLORS.primaryLight }}>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital at Risk<InfoIcon tip="Total cash advanced for all overdue, grace period, due today, and ready-to-sell loans. This money needs to be recovered." /></div>
+                <div style={{ ...S.statValue, color: totalAtRisk > 0 ? '#dc2626' : COLORS.primary }}>{fmtMoney(totalAtRisk)}</div>
+              </div>
+              <div style={{ ...S.stat, background: totalPenalties > 0 ? '#fef3c7' : COLORS.primaryLight }}>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Accrued Penalties<InfoIcon tip="Total penalty fees accumulated on overdue loans based on the penalty rate multiplier setting." /></div>
+                <div style={{ ...S.statValue, color: totalPenalties > 0 ? '#92400e' : COLORS.primary }}>{fmtMoney(totalPenalties)}</div>
+              </div>
+              <div style={S.stat}>
+                <div style={S.statLabel}>Needs Action</div>
+                <div style={{ ...S.statValue, color: (readyToSell.length + dueToday.length) > 0 ? '#dc2626' : COLORS.primary }}>{readyToSell.length + dueToday.length}</div>
+              </div>
+            </div>
+
+            <AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" templateType="overdue" defaultExpanded={true}
+              infoTip="These items have passed the final deadline. We can now sell them to get back the money we gave out." />
+
+            <AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" templateType="overdue" defaultExpanded={true}
+              infoTip="These customers are overdue but we haven't started selling their item yet. Call them now — once the grace period ends we can start selling." />
+
+            <AlertGroup title="OVERDUE" items={overdue} color="#dc2626" icon="⚠️" templateType="overdue" defaultExpanded={true}
+              infoTip="These customers have passed their agreed return date but the business ownership deadline hasn't been reached yet. Contact them immediately." />
+
+            <AlertGroup title="DUE TODAY" items={dueToday} color="#ef4444" icon="🔴" templateType="reminder" defaultExpanded={true}
+              infoTip="These loans are due today! The customer agreed to come in today. Make sure to follow up." />
+
+            <AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" templateType="reminder" defaultExpanded={true}
+              infoTip="These customers have 7 days or less before their deadline. Start calling them now." />
+
+            <AlertGroup title="8–14 DAYS" items={upcoming14} color="#3b82f6" icon="📋" templateType="reminder" defaultExpanded={false}
+              infoTip="These customers have 8 to 14 days left. Good to give them an early reminder." />
+
+            {totalAlerts === 0 && (
+              <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! No alerts or upcoming deadlines.</p></div>
+            )}
+          </div>
+        );
       }
 
       case 'forSale': { const sellable = [...forSaleTxs, ...readyToSell]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} showDaysListed /></div></div>); }
