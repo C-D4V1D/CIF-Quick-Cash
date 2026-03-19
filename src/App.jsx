@@ -269,19 +269,47 @@ const hasRole = (u, r) => u?.role === r || (u?.roles || []).includes(r);
 
 // --- DEFAULT DATA ---
 const DEFAULT_SETTINGS = {
+  // Business Profile
   businessName: 'Christ-in-Fabian Quick Cash',
+  businessTagline: 'Fast Cash, Fair Deals',
   location: 'Aguleri Junction, Anambra State, Nigeria',
+  cacRegNumber: '',
+  // Loan Parameters
   interestRate: 1, loanCapNoReceipt: 40, loanCapWithReceipt: 50,
   graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
-  targetSellPct: 75, minSellBonus: 20, geminiApiKey: '', geminiModel: 'gemini-2.5-flash', ninApiKey: '',
+  // Sales Configuration
+  targetSellPct: 75, minSellBonus: 20, maxPartsOnlyAdvance: 5000,
+  // AI & API Keys
+  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', ninApiKey: '',
+  // Identity Verification
   requireNinVerification: false,
+  // Item Categories
   itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other'],
+  // Business Contact & Hours
   shopAddress: 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State',
   shopPhone1: '08165491908',
   shopPhone2: '09023540646',
   shopWhatsApp: '2348165491908',
   shopHours: 'Monday – Saturday, 8am – 6pm',
   shopMapsUrl: '',
+  // Overdue & Penalty Rules
+  autoForfeitDays: 0,
+  overdueContactReminderDays: 2,
+  penaltyRateMultiplier: 1.5,
+  // Security
+  sessionTimeoutMinutes: 480,
+  minPasswordLength: 6,
+  maxLoginAttempts: 5,
+  loginCooldownMinutes: 15,
+  // WhatsApp Message Templates
+  whatsappLoanReminder: 'Hello {customerName}, this is a reminder that your loan (Ref: {ref}) of ₦{amount} is due in {daysLeft} day(s). Please visit our shop to make payment. Thank you!',
+  whatsappOverdueNotice: 'Dear {customerName}, your loan (Ref: {ref}) of ₦{amount} is now {daysOverdue} day(s) overdue. Please come in immediately to avoid your item being listed for sale. Contact us: {shopPhone}',
+  whatsappPickupReady: 'Hello {customerName}, your item is ready for pickup at our shop. Please bring your agreement form and valid ID. Ref: {ref}. Thank you for choosing {businessName}!',
+  // Receipt & Agreement
+  agreementTermsExtra: '',
+  receiptFooter: 'Thank you for your patronage!',
+  // Data Management
+  activityLogRetentionDays: 90,
 };
 
 const PAGE_PATHS = {
@@ -1938,7 +1966,7 @@ const DEFAULT_PHOTO_SLOTS = ['Front', 'Back', 'Left', 'Right', 'Top/Label', 'Wor
 // they intentionally use DEFAULT_PHOTO_SLOTS (6-slot generic layout).
 const getPhotoSlots = (itemType) => ITEM_PHOTO_SLOTS[itemType] || DEFAULT_PHOTO_SLOTS;
 
-// Maximum cash offer for a Parts-Only (non-functional) item
+// Maximum cash offer for a Parts-Only (non-functional) item (default; overridden by settings.maxPartsOnlyAdvance)
 const MAX_PARTS_ONLY_ADVANCE = 5000;
 
 // Inspection checklists per item type (Step 7)
@@ -2180,9 +2208,9 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
       {tx.captureItemType && !isNonPowered && tx.itemPowersOn === false && !tx.partsOnly && (
         <div style={{ ...S.alert('danger'), marginTop: '12px' }}>
           <div style={{ fontWeight: 700, marginBottom: '8px' }}>⚠️ Value: ₦0 (Scrap Only)</div>
-          <div style={{ marginBottom: '12px' }}>This item does not power on. Do you wish to proceed with a <strong>Parts Only</strong> transaction? The maximum offer will be ₦{MAX_PARTS_ONLY_ADVANCE.toLocaleString()}.</div>
+          <div style={{ marginBottom: '12px' }}>This item does not power on. Do you wish to proceed with a <strong>Parts Only</strong> transaction? The maximum offer will be ₦{(settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE).toLocaleString()}.</div>
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-            <button style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }} onClick={() => { upd('partsOnly', true); upd('estimatedValue', 0); onJumpToOffer(); }}>Yes — Proceed as Parts Only (Max ₦{MAX_PARTS_ONLY_ADVANCE.toLocaleString()})</button>
+            <button style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }} onClick={() => { upd('partsOnly', true); upd('estimatedValue', 0); onJumpToOffer(); }}>Yes — Proceed as Parts Only (Max ₦{(settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE).toLocaleString()})</button>
             <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={onEndTransaction}>No — End Transaction</button>
           </div>
         </div>
@@ -2570,7 +2598,7 @@ CONDITION: [detailed condition description]`;
   };
 
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
-  const maxAdvance = tx.partsOnly ? MAX_PARTS_ONLY_ADVANCE : Math.floor((tx.estimatedValue || 0) * capPct / 100);
+  const maxAdvance = tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100);
   const dailyFeeCalc = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
 
   const canProceed = () => {
@@ -4594,30 +4622,32 @@ export default function App() {
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (
         <div>
-          <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⚙ Settings</h2>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>⚙ Settings</h2>
+          <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px' }}>Manage every aspect of your business from one place. Changes save automatically.</div>
+
+          {/* ── 1. BUSINESS PROFILE ── */}
           <div style={S.card}>
-            <div style={S.cardTitle}>Business Parameters</div>
+            <div style={S.cardTitle}>🏢 Business Profile</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Your official business identity. The name and tagline appear on agreements, receipts, and the customer portal.</div>
             <div style={S.grid2}>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Daily Interest Rate (%)<InfoIcon tip="How much we charge per day as a fee. Example: 1% on ₦10,000 means ₦100 every day the customer hasn't paid back yet." /></span>}>
-                <input style={S.input} type="number" step="0.1" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} />
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Business Name<InfoIcon tip="The registered name of your business. This appears on printed agreements, customer receipts, and the public landing page." /></span>}>
+                <input style={S.input} value={settings.businessName || DEFAULT_SETTINGS.businessName} onChange={e => saveSettings({ ...settings, businessName: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Service Fee (₦)<InfoIcon tip="A flat charge we collect once at the start of every loan — on the same day we hand over the cash." /></span>}>
-                <input style={S.input} type="number" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} />
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Business Tagline<InfoIcon tip="A short slogan or motto shown below your business name on the landing page and receipts." /></span>}>
+                <input style={S.input} value={settings.businessTagline ?? DEFAULT_SETTINGS.businessTagline} onChange={e => saveSettings({ ...settings, businessTagline: e.target.value })} placeholder="e.g. Fast Cash, Fair Deals" />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap No Receipt (%)<InfoIcon tip="The most we can give a customer who has no receipt — as a percentage of the item's value. We give less because we can't fully verify they own it." /></span>}>
-                <input style={S.input} type="number" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} />
+            </div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Location / Area<InfoIcon tip="The general area or town of your business. Shown in the app header and used for search fallbacks." /></span>}>
+                <input style={S.input} value={settings.location || DEFAULT_SETTINGS.location} onChange={e => saveSettings({ ...settings, location: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap With Receipt (%)<InfoIcon tip="The most we can give when a customer shows a receipt — as a percentage of the item's value. We can give more because the receipt proves they bought it." /></span>}>
-                <input style={S.input} type="number" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} />
-              </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Loan Days<InfoIcon tip="The longest time a customer can take before they must come back to pay. The system won't let you set a loan longer than this." /></span>}>
-                <input style={S.input} type="number" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} />
-              </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Grace Days<InfoIcon tip="Extra days we give a customer after they go overdue, before we start selling their item. It's a last chance for them to come back." /></span>}>
-                <input style={S.input} type="number" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} />
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>CAC Registration Number<InfoIcon tip="Your Corporate Affairs Commission (CAC) registration number. This is printed on official agreements for compliance." /></span>}>
+                <input style={S.input} value={settings.cacRegNumber || ''} onChange={e => saveSettings({ ...settings, cacRegNumber: e.target.value })} placeholder="e.g. BN-1234567" />
               </Field>
             </div>
           </div>
+
+          {/* ── 2. BUSINESS CONTACT & HOURS ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div>
@@ -4635,8 +4665,101 @@ export default function App() {
               <input style={S.input} value={settings.shopMapsUrl || ''} onChange={e => saveSettings({ ...settings, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." />
             </Field>
           </div>
+
+          {/* ── 3. LOAN PARAMETERS ── */}
           <div style={S.card}>
-            <div style={S.cardTitle}>🔑 API Keys</div>
+            <div style={S.cardTitle}>💰 Loan Parameters</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Core rules that control how loans are calculated — interest rates, caps, timeframes, and fees.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Daily Interest Rate (%)<InfoIcon tip="How much we charge per day as a fee. Example: 1% on ₦10,000 means ₦100 every day the customer hasn't paid back yet." /></span>}>
+                <input style={S.input} type="number" step="0.1" min="0" max="10" value={settings.interestRate} onChange={e => saveSettings({ ...settings, interestRate: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Service Fee (₦)<InfoIcon tip="A flat charge we collect once at the start of every loan — on the same day we hand over the cash." /></span>}>
+                <input style={S.input} type="number" min="0" value={settings.serviceFee} onChange={e => saveSettings({ ...settings, serviceFee: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap — No Receipt (%)<InfoIcon tip="The most we can give a customer who has no receipt — as a percentage of the item's value. We give less because we can't fully verify they own it." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" value={settings.loanCapNoReceipt} onChange={e => saveSettings({ ...settings, loanCapNoReceipt: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap — With Receipt (%)<InfoIcon tip="The most we can give when a customer shows a receipt — as a percentage of the item's value. We can give more because the receipt proves they bought it." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" value={settings.loanCapWithReceipt} onChange={e => saveSettings({ ...settings, loanCapWithReceipt: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Loan Days<InfoIcon tip="The longest time a customer can take before they must come back to pay. The system won't let you set a loan longer than this." /></span>}>
+                <input style={S.input} type="number" min="1" max="365" value={settings.maxLoanDays} onChange={e => saveSettings({ ...settings, maxLoanDays: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Grace Days<InfoIcon tip="Extra days we give a customer after they go overdue, before we start selling their item. It's a last chance for them to come back." /></span>}>
+                <input style={S.input} type="number" min="0" max="30" value={settings.graceDays} onChange={e => saveSettings({ ...settings, graceDays: Number(e.target.value) })} />
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 4. SALES CONFIGURATION ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🏷 Sales Configuration</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Controls how items are priced when listed for sale after a loan defaults.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sell Price (%)<InfoIcon tip="The ideal selling price as a percentage of the item's estimated value. For example, 75% means we aim to sell a ₦100,000 item for ₦75,000." /></span>}>
+                <input style={S.input} type="number" min="10" max="100" value={settings.targetSellPct ?? DEFAULT_SETTINGS.targetSellPct} onChange={e => saveSettings({ ...settings, targetSellPct: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Minimum Sell Bonus (%)<InfoIcon tip="The minimum profit margin above the loan amount + fees. Ensures we don't sell at a loss even if the target price is low." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" value={settings.minSellBonus ?? DEFAULT_SETTINGS.minSellBonus} onChange={e => saveSettings({ ...settings, minSellBonus: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Parts-Only Advance (₦)<InfoIcon tip="The maximum loan amount for items that don't power on (parts/scrap only). These items are worth less, so the cap is lower." /></span>}>
+                <input style={S.input} type="number" min="0" value={settings.maxPartsOnlyAdvance ?? DEFAULT_SETTINGS.maxPartsOnlyAdvance} onChange={e => saveSettings({ ...settings, maxPartsOnlyAdvance: Number(e.target.value) })} />
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 5. OVERDUE & PENALTY RULES ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>⚠ Overdue &amp; Penalty Rules</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure what happens when a customer fails to return on time — penalties, reminders, and auto-forfeiture.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Penalty Rate Multiplier<InfoIcon tip="After the grace period expires, the daily fee is multiplied by this number. For example, 1.5x means a ₦100/day fee becomes ₦150/day for overdue loans. Set to 1 for no penalty." /></span>}>
+                <input style={S.input} type="number" step="0.1" min="1" max="5" value={settings.penaltyRateMultiplier ?? DEFAULT_SETTINGS.penaltyRateMultiplier} onChange={e => saveSettings({ ...settings, penaltyRateMultiplier: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Contact Reminder (days)<InfoIcon tip="How often (in days) the system should flag overdue loans for a follow-up contact attempt. Set to 0 to disable." /></span>}>
+                <input style={S.input} type="number" min="0" max="30" value={settings.overdueContactReminderDays ?? DEFAULT_SETTINGS.overdueContactReminderDays} onChange={e => saveSettings({ ...settings, overdueContactReminderDays: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Auto-Forfeit Days<InfoIcon tip="Number of days after the grace period ends before the item is automatically marked as 'Ready to Sell'. Set to 0 to handle this manually (current behaviour)." /></span>}>
+                <input style={S.input} type="number" min="0" max="90" value={settings.autoForfeitDays ?? DEFAULT_SETTINGS.autoForfeitDays} onChange={e => saveSettings({ ...settings, autoForfeitDays: Number(e.target.value) })} />
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 6. ITEM CATEGORIES ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>📦 Item Categories</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>The types of items your business accepts. These appear in reports and filters. <strong>Note:</strong> The transaction wizard uses a separate system list with photo/inspection mappings.</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '12px' }}>
+              {(settings.itemCategories || DEFAULT_SETTINGS.itemCategories).map((cat, i) => (
+                <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 12px', borderRadius: '20px', background: COLORS.primaryLight, color: COLORS.primaryDark, fontSize: '13px', fontWeight: 600, border: `1px solid ${COLORS.border}` }}>
+                  {cat}
+                  <button onClick={() => { const cats = [...(settings.itemCategories || DEFAULT_SETTINGS.itemCategories)]; cats.splice(i, 1); saveSettings({ ...settings, itemCategories: cats }); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.danger, fontWeight: 700, fontSize: '14px', lineHeight: 1, padding: '0 2px' }} title="Remove category">×</button>
+                </span>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <input id="newCatInput" style={{ ...S.input, flex: 1 }} placeholder="Add a new category…" onKeyDown={e => { if (e.key === 'Enter' && e.target.value.trim()) { const cats = [...(settings.itemCategories || DEFAULT_SETTINGS.itemCategories), e.target.value.trim()]; saveSettings({ ...settings, itemCategories: cats }); e.target.value = ''; } }} />
+              <button style={S.btn('primary')} onClick={() => { const inp = document.getElementById('newCatInput'); if (inp && inp.value.trim()) { const cats = [...(settings.itemCategories || DEFAULT_SETTINGS.itemCategories), inp.value.trim()]; saveSettings({ ...settings, itemCategories: cats }); inp.value = ''; } }}>+ Add</button>
+            </div>
+          </div>
+
+          {/* ── 7. IDENTITY VERIFICATION ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🪪 Identity Verification Rules</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Require API-verified NIN/BVN to proceed<InfoIcon tip="When turned on, staff can only move forward if the NIN or BVN check was fully successful and returned a photo. When turned off, any attempt — even a failed one — is enough to continue. Useful when the service is down." /></span>}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
+                <span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span>
+              </label>
+            </Field>
+          </div>
+
+          {/* ── 8. API KEYS ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🔑 API Keys &amp; Integrations</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>External service credentials. These are stored securely and never shown in full after saving.</div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini AI API Key<InfoIcon tip="The key that turns on the AI valuation feature. You can get one for free at aistudio.google.com." /></span>}>
               <input style={S.input} type="password" value={settings.geminiApiKey} onChange={e => saveSettings({ ...settings, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" />
             </Field>
@@ -4647,15 +4770,72 @@ export default function App() {
               <input style={S.input} type="password" value={settings.ninApiKey} onChange={e => saveSettings({ ...settings, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
             </Field>
           </div>
+
+          {/* ── 9. WHATSAPP MESSAGE TEMPLATES ── */}
           <div style={S.card}>
-            <div style={S.cardTitle}>🪪 Identity Verification Rules</div>
-            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how strictly NIN/BVN verification is enforced during the transaction wizard.</div>
-            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Require API-verified NIN/BVN to proceed<InfoIcon tip="When turned on, staff can only move forward if the NIN or BVN check was fully successful and returned a photo. When turned off, any attempt — even a failed one — is enough to continue. Useful when the service is down." /></span>}>
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
-                <input type="checkbox" checked={!!settings.requireNinVerification} onChange={e => saveSettings({ ...settings, requireNinVerification: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
-                <span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span>
-              </label>
+            <div style={S.cardTitle}>💬 WhatsApp Message Templates</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Pre-written messages for common customer communications. Use placeholders: <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{customerName}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{ref}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{amount}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{shopPhone}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{businessName}'}</code></div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Reminder<InfoIcon tip="Sent to customers a few days before their loan is due. Helps reduce overdue rates." /></span>}>
+              <textarea style={S.textarea} value={settings.whatsappLoanReminder ?? DEFAULT_SETTINGS.whatsappLoanReminder} onChange={e => saveSettings({ ...settings, whatsappLoanReminder: e.target.value })} />
             </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Notice<InfoIcon tip="Sent when a customer's loan is past due. Should be firm but professional." /></span>}>
+              <textarea style={S.textarea} value={settings.whatsappOverdueNotice ?? DEFAULT_SETTINGS.whatsappOverdueNotice} onChange={e => saveSettings({ ...settings, whatsappOverdueNotice: e.target.value })} />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Pickup Ready<InfoIcon tip="Sent when a customer has paid and their item is ready for collection." /></span>}>
+              <textarea style={S.textarea} value={settings.whatsappPickupReady ?? DEFAULT_SETTINGS.whatsappPickupReady} onChange={e => saveSettings({ ...settings, whatsappPickupReady: e.target.value })} />
+            </Field>
+          </div>
+
+          {/* ── 10. RECEIPT & AGREEMENT ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🧾 Receipt &amp; Agreement Customization</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Customize the text that appears on printed agreements and receipts.</div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Additional Agreement Terms<InfoIcon tip="Extra terms or clauses to include at the bottom of the printed loan agreement. Leave blank if you don't need any additions beyond the standard terms." /></span>}>
+              <textarea style={{ ...S.textarea, minHeight: '100px' }} value={settings.agreementTermsExtra ?? ''} onChange={e => saveSettings({ ...settings, agreementTermsExtra: e.target.value })} placeholder="e.g. Items unclaimed after 60 days become property of the business." />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Receipt Footer Text<InfoIcon tip="A short message printed at the bottom of customer receipts." /></span>}>
+              <input style={S.input} value={settings.receiptFooter ?? DEFAULT_SETTINGS.receiptFooter} onChange={e => saveSettings({ ...settings, receiptFooter: e.target.value })} placeholder="Thank you for your patronage!" />
+            </Field>
+          </div>
+
+          {/* ── 11. SECURITY ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🔒 Security &amp; Access Control</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Protect your system with login rules and session policies.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Session Timeout (minutes)<InfoIcon tip="How long a user can stay logged in without activity before being automatically logged out. Default is 480 minutes (8 hours)." /></span>}>
+                <input style={S.input} type="number" min="5" max="1440" value={settings.sessionTimeoutMinutes ?? DEFAULT_SETTINGS.sessionTimeoutMinutes} onChange={e => saveSettings({ ...settings, sessionTimeoutMinutes: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Minimum Password Length<InfoIcon tip="The shortest password allowed when creating or updating user accounts. Longer passwords are more secure." /></span>}>
+                <input style={S.input} type="number" min="4" max="32" value={settings.minPasswordLength ?? DEFAULT_SETTINGS.minPasswordLength} onChange={e => saveSettings({ ...settings, minPasswordLength: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Login Attempts<InfoIcon tip="How many wrong password attempts before the account is temporarily locked. Prevents brute-force attacks." /></span>}>
+                <input style={S.input} type="number" min="1" max="20" value={settings.maxLoginAttempts ?? DEFAULT_SETTINGS.maxLoginAttempts} onChange={e => saveSettings({ ...settings, maxLoginAttempts: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Login Cooldown (minutes)<InfoIcon tip="How long to lock an account after exceeding the max login attempts." /></span>}>
+                <input style={S.input} type="number" min="1" max="60" value={settings.loginCooldownMinutes ?? DEFAULT_SETTINGS.loginCooldownMinutes} onChange={e => saveSettings({ ...settings, loginCooldownMinutes: Number(e.target.value) })} />
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 12. DATA MANAGEMENT ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🗄 Data Management</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how long data is retained and manage system maintenance tasks.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Activity Log Retention (days)<InfoIcon tip="How many days of activity logs to keep in the database. Older logs are automatically cleaned up to save storage. Set to 0 to keep everything forever." /></span>}>
+                <input style={S.input} type="number" min="0" max="365" value={settings.activityLogRetentionDays ?? DEFAULT_SETTINGS.activityLogRetentionDays} onChange={e => saveSettings({ ...settings, activityLogRetentionDays: Number(e.target.value) })} />
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 13. DANGER ZONE ── */}
+          <div style={{ ...S.card, border: `2px solid ${COLORS.danger}`, background: COLORS.dangerLight }}>
+            <div style={{ ...S.cardTitle, color: COLORS.danger }}>🚨 Danger Zone</div>
+            <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '14px' }}>Irreversible actions. Proceed with extreme caution.</div>
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <button style={S.btn('danger')} onClick={() => { if (window.confirm('Reset ALL settings to factory defaults? This cannot be undone.') && window.confirm('Are you absolutely sure? This will wipe all your custom settings.')) { saveSettings({ ...DEFAULT_SETTINGS }); } }}>Reset All Settings to Defaults</button>
+            </div>
           </div>
         </div>
       );
