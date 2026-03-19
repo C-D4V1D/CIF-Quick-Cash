@@ -5449,6 +5449,11 @@ export default function App() {
         <div style={{ ...S.mainContent, padding: isMobile ? '16px' : '24px', maxHeight: isMobile ? 'none' : 'calc(100vh - 56px)', paddingBottom: isMobile ? '80px' : '24px' }}>
           {renderPage()}
           <PhotoViewer />
+          <div style={{ marginTop: '40px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}`, textAlign: 'center', fontSize: '11px', color: COLORS.textMuted, lineHeight: 1.6, letterSpacing: '0.1px' }}>
+            <span>CIF Quick Cash is a joint venture between <strong style={{ color: COLORS.text }}>Christ-in-Fabian</strong> &amp; <strong style={{ color: COLORS.text }}>Vido Hub</strong>.</span>
+            <span style={{ margin: '0 6px', opacity: 0.4 }}>·</span>
+            <span>Platform developed &amp; managed by <strong style={{ color: COLORS.text }}>Vido Hub</strong>.</span>
+          </div>
         </div>
       </div>
 
