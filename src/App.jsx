@@ -3879,29 +3879,61 @@ export default function App() {
         };
 
         // --- Filter categories ---
-        const inGrace = inGracePeriod;
+        // Each loan must appear in exactly one group based on where it is in the timeline.
+        const maxLD = Math.max(1, Number(settings.maxLoanDays) || 30);
+        const gd = Math.max(0, Number(settings.graceDays) || 3);
+
+        // Ready to sell: past grace period entirely (elapsedDays >= maxLoanDays + graceDays + 1)
+        // (readyToSell is already computed above from activeTxs.filter(t => t.isEligibleForSale))
+
+        // Grace period last day: elapsedDays === maxLoanDays + graceDays
+        const graceLastDay = activeTxs.filter(t => {
+          const elapsed = daysBetween(t.dateGiven);
+          return elapsed === maxLD + gd && !t.isEligibleForSale;
+        });
+
+        // Grace period (excluding last day): elapsedDays >= maxLoanDays + 1 AND < maxLoanDays + graceDays
+        const inGrace = activeTxs.filter(t => {
+          const elapsed = daysBetween(t.dateGiven);
+          return elapsed >= maxLD + 1 && elapsed < maxLD + gd;
+        });
+
+        // Internal deadline day (last day of ownership): elapsedDays === maxLoanDays exactly
+        const lastDayOwnership = activeTxs.filter(t => {
+          const elapsed = daysBetween(t.dateGiven);
+          return elapsed === maxLD;
+        });
+
+        // Overdue: customer missed agreed return date but business doesn't own item yet
+        // (between customer_due_date and internal deadline)
         const overdue = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
-          const tl = getLoanTimeline(t, settings);
-          return daysLeft !== null && daysLeft < 0 && !tl.isOwnedByBusiness;
+          const elapsed = daysBetween(t.dateGiven);
+          return daysLeft !== null && daysLeft < 0 && elapsed < maxLD;
         });
+
+        // Due today: customer agreed to return today
         const dueToday = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
           return daysLeft !== null && daysLeft === 0;
         });
+
+        // 7 days or less
         const upcoming7 = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
           return daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
         });
+
+        // 8–14 days
         const upcoming14 = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
           return daysLeft !== null && daysLeft > 7 && daysLeft <= 14;
         });
 
         // --- Summary stats ---
-        const totalAlerts = readyToSell.length + inGrace.length + overdue.length + dueToday.length + upcoming7.length + upcoming14.length;
-        const totalAtRisk = [...readyToSell, ...inGrace, ...overdue, ...dueToday].reduce((s, t) => s + (t.cashAdvance || 0), 0);
-        const totalPenalties = [...readyToSell, ...inGrace, ...overdue].reduce((s, t) => s + computeTotalOwed(t).penaltyFees, 0);
+        const allCritical = [...readyToSell, ...graceLastDay, ...inGrace, ...lastDayOwnership, ...overdue, ...dueToday];
+        const totalAlerts = allCritical.length + upcoming7.length + upcoming14.length;
+        const totalAtRisk = allCritical.reduce((s, t) => s + (t.cashAdvance || 0), 0);
 
         // --- Enhanced AlertGroup component ---
         const AlertGroup = ({ title, items, color, icon, infoTip, templateType, defaultExpanded }) => {
@@ -3992,45 +4024,52 @@ export default function App() {
         return (
           <div>
             {listLoadingNotice}
-            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '8px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px', lineHeight: '1.5' }}>
+              This page shows every active loan that needs your attention, sorted by urgency from most critical at the top.
+              Use it to know who to call, who to follow up with, and which items are ready to sell.
+              The WhatsApp and Call buttons let you contact customers directly.
+            </p>
 
             {/* Summary statistics bar */}
-            <div style={{ ...S.grid4, marginBottom: '20px' }}>
+            <div style={{ ...S.grid3, marginBottom: '20px' }}>
               <div style={{ ...S.stat, background: totalAlerts > 0 ? '#fef3c7' : COLORS.primaryLight }}>
                 <div style={S.statLabel}>Total Alerts</div>
                 <div style={{ ...S.statValue, color: totalAlerts > 0 ? '#92400e' : COLORS.primary }}>{totalAlerts}</div>
               </div>
               <div style={{ ...S.stat, background: totalAtRisk > 0 ? '#fee2e2' : COLORS.primaryLight }}>
-                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital at Risk<InfoIcon tip="Total cash advanced for all overdue, grace period, due today, and ready-to-sell loans. This money needs to be recovered." /></div>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital at Risk<InfoIcon tip="Total cash we gave out for all loans on this page that are due today, overdue, at the ownership deadline, in grace, or ready to sell. This is money we need to recover." /></div>
                 <div style={{ ...S.statValue, color: totalAtRisk > 0 ? '#dc2626' : COLORS.primary }}>{fmtMoney(totalAtRisk)}</div>
               </div>
-              <div style={{ ...S.stat, background: totalPenalties > 0 ? '#fef3c7' : COLORS.primaryLight }}>
-                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Accrued Penalties<InfoIcon tip="Total penalty fees accumulated on overdue loans based on the penalty rate multiplier setting." /></div>
-                <div style={{ ...S.statValue, color: totalPenalties > 0 ? '#92400e' : COLORS.primary }}>{fmtMoney(totalPenalties)}</div>
-              </div>
               <div style={S.stat}>
-                <div style={S.statLabel}>Needs Action</div>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Needs Action<InfoIcon tip="Loans that need immediate action today — items ready to sell plus loans due today." /></div>
                 <div style={{ ...S.statValue, color: (readyToSell.length + dueToday.length) > 0 ? '#dc2626' : COLORS.primary }}>{readyToSell.length + dueToday.length}</div>
               </div>
             </div>
 
             <AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" templateType="overdue" defaultExpanded={true}
-              infoTip="These items have passed the final deadline. We can now sell them to get back the money we gave out." />
+              infoTip="These items have passed the final grace period. We can now sell them to get back the money we gave out." />
+
+            <AlertGroup title="GRACE PERIOD — LAST DAY" items={graceLastDay} color="#dc2626" icon="🔴" templateType="overdue" defaultExpanded={true}
+              infoTip="This is the very last day of the grace period for these loans. After today, their items become eligible for sale. Last chance to call them!" />
 
             <AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" templateType="overdue" defaultExpanded={true}
-              infoTip="These customers are overdue but we haven't started selling their item yet. Call them now — once the grace period ends we can start selling." />
+              infoTip="We now own these items but we're giving the customer a few extra days before selling. Call them urgently — once the grace period ends we can start selling." />
 
-            <AlertGroup title="OVERDUE" items={overdue} color="#dc2626" icon="⚠️" templateType="overdue" defaultExpanded={true}
-              infoTip="These customers have passed their agreed return date but the business ownership deadline hasn't been reached yet. Contact them immediately." />
+            <AlertGroup title="LAST DAY OF OWNERSHIP" items={lastDayOwnership} color="#b91c1c" icon="🚨" templateType="overdue" defaultExpanded={true}
+              infoTip="Today is the internal deadline — the business takes full ownership of these items today. After today they enter the grace period. Call these customers now!" />
 
-            <AlertGroup title="DUE TODAY" items={dueToday} color="#ef4444" icon="🔴" templateType="reminder" defaultExpanded={true}
-              infoTip="These loans are due today! The customer agreed to come in today. Make sure to follow up." />
+            <AlertGroup title="OVERDUE" items={overdue} color="#f59e0b" icon="⚠️" templateType="overdue" defaultExpanded={true}
+              infoTip="These customers missed the date they agreed to come back, but we haven't reached the internal deadline yet so we don't own the item. Contact them to come pay." />
 
-            <AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#f59e0b" icon="📅" templateType="reminder" defaultExpanded={true}
-              infoTip="These customers have 7 days or less before their deadline. Start calling them now." />
+            <AlertGroup title="DUE TODAY" items={dueToday} color="#ef4444" icon="📍" templateType="reminder" defaultExpanded={true}
+              infoTip="These customers agreed to come in and pay today. Follow up to make sure they show up." />
+
+            <AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#ea580c" icon="📅" templateType="reminder" defaultExpanded={true}
+              infoTip="These customers have 7 days or less before their agreed return date. Start calling them now so they don't forget." />
 
             <AlertGroup title="8–14 DAYS" items={upcoming14} color="#3b82f6" icon="📋" templateType="reminder" defaultExpanded={false}
-              infoTip="These customers have 8 to 14 days left. Good to give them an early reminder." />
+              infoTip="These customers have 8 to 14 days left. Good time to send an early reminder." />
 
             {totalAlerts === 0 && (
               <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! No alerts or upcoming deadlines.</p></div>
