@@ -280,7 +280,11 @@ const DEFAULT_SETTINGS = {
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, maxPartsOnlyAdvance: 5000,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', cloudVisionApiKey: '', ninApiKey: '',
+  // API Free Tier Limits (adjustable in case Google changes them)
+  geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
+  geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
+  visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
   // Identity Verification
   requireNinVerification: false,
   // Item Categories
@@ -341,6 +345,90 @@ const txSellPath  = (ref) => `/transactions/${encodeURIComponent(ref)}/sell`;
 const ACTIVITY_PAGE_SIZE = 50;
 
 // ============================================================
+// API USAGE TRACKING (stays within free tier limits)
+// ============================================================
+const API_USAGE_KEY = 'cifcash_api_usage';
+
+const getApiUsage = () => {
+  try {
+    const raw = localStorage.getItem(API_USAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch { return {}; }
+};
+
+const saveApiUsage = (usage) => {
+  try { localStorage.setItem(API_USAGE_KEY, JSON.stringify(usage)); } catch {}
+};
+
+const getTodayKey = () => new Date().toISOString().slice(0, 10); // "2026-03-20"
+const getMonthKey = () => new Date().toISOString().slice(0, 7);  // "2026-03"
+
+const trackGeminiCall = () => {
+  const usage = getApiUsage();
+  const today = getTodayKey();
+  if (!usage.gemini) usage.gemini = {};
+  if (!usage.gemini[today]) usage.gemini[today] = { count: 0, timestamps: [] };
+  usage.gemini[today].count++;
+  // Track last 10 timestamps for RPM calculation
+  usage.gemini[today].timestamps.push(Date.now());
+  if (usage.gemini[today].timestamps.length > 50) usage.gemini[today].timestamps = usage.gemini[today].timestamps.slice(-50);
+  // Clean up old days (keep last 7)
+  const keys = Object.keys(usage.gemini).sort();
+  if (keys.length > 7) { for (const k of keys.slice(0, -7)) delete usage.gemini[k]; }
+  saveApiUsage(usage);
+};
+
+const trackVisionCall = (imageCount = 1) => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  if (!usage.vision) usage.vision = {};
+  if (!usage.vision[month]) usage.vision[month] = 0;
+  usage.vision[month] += imageCount;
+  // Clean up old months (keep last 3)
+  const keys = Object.keys(usage.vision).sort();
+  if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.vision[k]; }
+  saveApiUsage(usage);
+};
+
+const getGeminiUsageToday = () => {
+  const usage = getApiUsage();
+  const today = getTodayKey();
+  return (usage.gemini?.[today]?.count) || 0;
+};
+
+const getGeminiRpm = () => {
+  const usage = getApiUsage();
+  const today = getTodayKey();
+  const timestamps = usage.gemini?.[today]?.timestamps || [];
+  const oneMinAgo = Date.now() - 60000;
+  return timestamps.filter(t => t > oneMinAgo).length;
+};
+
+const getVisionUsageThisMonth = () => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  return (usage.vision?.[month]) || 0;
+};
+
+const checkGeminiLimit = (settings) => {
+  const dailyLimit = settings.geminiDailyLimit || 100;
+  const rpmLimit = settings.geminiRpmLimit || 5;
+  const usedToday = getGeminiUsageToday();
+  const rpm = getGeminiRpm();
+  if (usedToday >= dailyLimit) return { blocked: true, reason: `Gemini daily limit reached (${usedToday}/${dailyLimit}). Resets at midnight. Use manual mode or wait until tomorrow.` };
+  if (rpm >= rpmLimit) return { blocked: true, reason: `Gemini rate limit reached (${rpm}/${rpmLimit} per minute). Please wait 30-60 seconds and try again.` };
+  return { blocked: false, remaining: dailyLimit - usedToday };
+};
+
+const checkVisionLimit = (settings) => {
+  const monthlyLimit = settings.visionMonthlyLimit || 1000;
+  const usedThisMonth = getVisionUsageThisMonth();
+  if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `Cloud Vision monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets next month. AI will use Gemini only.` };
+  return { blocked: false, remaining: monthlyLimit - usedThisMonth };
+};
+
+// ============================================================
 // GEMINI AI INTEGRATION
 // ============================================================
 const FALLBACK_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
@@ -375,6 +463,21 @@ const imageToGeminiInlineData = async (img) => {
   return { mime_type: mime, data };
 };
 
+// Extract the actual response text from Gemini, skipping thinking/thought parts
+const extractGeminiText = (data) => {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!parts || !Array.isArray(parts)) return null;
+  // Find the first non-thought text part (thinking models return thought: true for reasoning parts)
+  for (const part of parts) {
+    if (part.text && !part.thought) return part.text;
+  }
+  // Fallback: if all parts are thoughts or no thought flag exists, use the last text part
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].text) return parts[i].text;
+  }
+  return null;
+};
+
 const callGeminiAI = async (apiKey, model, images, promptText) => {
   if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
   try {
@@ -389,20 +492,141 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts }] })
-      });
+      trackGeminiCall();
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      // For thinking models (2.5-pro), set a low thinking budget to reduce latency
+      const isThinkingModel = modelName.includes('pro');
+      const body = { contents: [{ parts }] };
+      if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      let resp = await fetch(url, options);
+      // Retry once on transient errors (429/500/502/503)
+      if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
+        await new Promise(r => setTimeout(r, 2000));
+        trackGeminiCall();
+        resp = await fetch(url, options);
+      }
       const data = await resp.json().catch(() => null);
-      if (data?.candidates?.[0]?.content?.parts?.[0]?.text) return { text: data.candidates[0].content.parts[0].text, model: modelName };
+      const responseText = extractGeminiText(data);
+      if (responseText) return { text: responseText, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
-      const modelUnavailable = errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const isTransient = [429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
       const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
       if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
     }
 
     return { error: `No supported Gemini model was available for this API key. Tried: ${modelCandidates.join(', ')}.` };
+  } catch (e) { return { error: e.message }; }
+};
+
+// Gemini AI call with Google Search grounding (for real-time price lookups)
+const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
+  if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
+  try {
+    const preferredModel = (model || '').trim() || DEFAULT_SETTINGS.geminiModel;
+    const modelCandidates = [preferredModel, ...FALLBACK_GEMINI_MODELS]
+      .filter(Boolean)
+      .filter((m, idx, arr) => arr.indexOf(m) === idx);
+    const parts = [{ text: promptText }];
+    for (const img of (images || [])) {
+      const inlineData = await imageToGeminiInlineData(img);
+      if (inlineData) parts.push({ inline_data: inlineData });
+    }
+
+    for (const modelName of modelCandidates) {
+      trackGeminiCall();
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const isThinkingModel = modelName.includes('pro');
+      const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
+      if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      let resp = await fetch(url, options);
+      // Retry once on transient errors (429/500/502/503)
+      if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
+        await new Promise(r => setTimeout(r, 2000));
+        trackGeminiCall();
+        resp = await fetch(url, options);
+      }
+      const data = await resp.json().catch(() => null);
+      const responseText = extractGeminiText(data);
+      if (responseText) return { text: responseText, model: modelName };
+
+      const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
+      const isTransient = [429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
+      if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
+    }
+
+    return { error: `No supported Gemini model was available for this API key. Tried: ${modelCandidates.join(', ')}.` };
+  } catch (e) { return { error: e.message }; }
+};
+
+// Google Cloud Vision API — reverse image search for item identification
+const callCloudVision = async (apiKey, imageData) => {
+  if (!apiKey) return { error: 'No Cloud Vision API key set.' };
+  try {
+    // imageData can be a data URI or a URL
+    let request;
+    if (imageData.startsWith('data:')) {
+      const base64 = imageData.split(',')[1] || '';
+      request = { image: { content: base64 }, features: [
+        { type: 'LOGO_DETECTION', maxResults: 5 },
+        { type: 'LABEL_DETECTION', maxResults: 15 },
+        { type: 'TEXT_DETECTION', maxResults: 5 },
+        { type: 'WEB_DETECTION', maxResults: 10 },
+        { type: 'OBJECT_LOCALIZATION', maxResults: 5 }
+      ] };
+    } else {
+      // Fetch and convert URL to base64
+      const resp = await fetch(imageData);
+      if (!resp.ok) return { error: 'Failed to load image for Vision analysis.' };
+      const blob = await resp.blob();
+      const base64 = await toBase64(blob);
+      request = { image: { content: base64 }, features: [
+        { type: 'LOGO_DETECTION', maxResults: 5 },
+        { type: 'LABEL_DETECTION', maxResults: 15 },
+        { type: 'TEXT_DETECTION', maxResults: 5 },
+        { type: 'WEB_DETECTION', maxResults: 10 },
+        { type: 'OBJECT_LOCALIZATION', maxResults: 5 }
+      ] };
+    }
+
+    trackVisionCall(1);
+    const resp = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: [request] })
+    });
+    const data = await resp.json().catch(() => null);
+    if (data?.error) return { error: data.error.message || 'Cloud Vision request failed.' };
+    const result = data?.responses?.[0];
+    if (!result) return { error: 'Cloud Vision returned no results.' };
+
+    // Extract useful information
+    const logos = (result.logoAnnotations || []).map(l => l.description).filter(Boolean);
+    const labels = (result.labelAnnotations || []).map(l => `${l.description} (${Math.round((l.score || 0) * 100)}%)`).filter(Boolean);
+    const texts = (result.textAnnotations || []).slice(0, 1).map(t => t.description).filter(Boolean);
+    const webEntities = (result.webDetection?.webEntities || []).filter(e => e.description && (e.score || 0) > 0.3).map(e => `${e.description} (${Math.round((e.score || 0) * 100)}%)`);
+    const bestGuess = (result.webDetection?.bestGuessLabels || []).map(l => l.label).filter(Boolean);
+    const pagesWithMatch = (result.webDetection?.pagesWithMatchingImages || []).slice(0, 5).map(p => p.pageTitle || p.url).filter(Boolean);
+
+    return {
+      logos,
+      labels,
+      texts: texts[0] || '',
+      webEntities,
+      bestGuess,
+      pagesWithMatch,
+      summary: [
+        bestGuess.length > 0 ? `Best guess: ${bestGuess.join(', ')}` : '',
+        logos.length > 0 ? `Logos: ${logos.join(', ')}` : '',
+        webEntities.length > 0 ? `Web matches: ${webEntities.slice(0, 5).join(', ')}` : '',
+        pagesWithMatch.length > 0 ? `Found on: ${pagesWithMatch.slice(0, 3).join('; ')}` : '',
+        texts[0] ? `Text detected on device: ${texts[0].substring(0, 500)}` : '',
+      ].filter(Boolean).join('\n')
+    };
   } catch (e) { return { error: e.message }; }
 };
 
@@ -1932,31 +2156,30 @@ const NON_POWERED_ITEM_TYPES = ['Gas Cylinder'];
 
 const ITEM_PHOTO_SLOTS = {
   'Smartphone': [
+    'About Phone/Settings',
     'Front (Screen ON)',
     'Back Panel',
     'Left Edge',
     'Right Edge',
-    'Top Edge',
     'Bottom Edge',
-    'About Phone/Locks',
+    'Locks/Security',
   ],
   'Laptop': [
-    'Closed Lid',
+    'Specs/Model Label',
     'Keyboard & Trackpad',
+    'Closed Lid',
     'Bottom Panel',
-    'Left Ports',
-    'Right Ports',
+    'Left/Right Ports',
     'Power Charger',
-    'Specs & Battery',
+    'Battery Health',
   ],
   'Tablet': [
+    'About Tablet/Settings',
     'Front (Screen ON)',
     'Back Panel',
     'Left Edge',
     'Right Edge',
-    'Top Edge',
     'Bottom Edge',
-    'About Tablet',
   ],
   'Motorcycle': [
     'Full Right Side',
@@ -1967,8 +2190,8 @@ const ITEM_PHOTO_SLOTS = {
     'Seat & Tail',
   ],
   'Generator': [
+    'Nameplate/Model Label',
     'Full Unit Front',
-    'Nameplate',
     'Fuel Tank',
     'Engine Side',
     'Output Sockets',
@@ -1983,15 +2206,15 @@ const ITEM_PHOTO_SLOTS = {
     'Full Cylinder Back',
   ],
   'Flat-Screen TV': [
+    'Model Label/Back Sticker',
     'Screen ON',
     'Back Panel',
     'HDMI/AV Ports',
     'Remote Control',
-    'Model Label',
     'Side Profile',
   ],
 };
-const DEFAULT_PHOTO_SLOTS = ['Front', 'Back', 'Left', 'Right', 'Top/Label', 'Working (Power ON)'];
+const DEFAULT_PHOTO_SLOTS = ['Brand/Model Label', 'Front', 'Back', 'Left/Right Side', 'Top/Bottom', 'Working (Power ON)'];
 // Bluetooth Speaker, Power Bank, Electric Fan (Standing/Desk) are not listed above;
 // they intentionally use DEFAULT_PHOTO_SLOTS (6-slot generic layout).
 const getPhotoSlots = (itemType) => ITEM_PHOTO_SLOTS[itemType] || DEFAULT_PHOTO_SLOTS;
@@ -2252,7 +2475,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
           <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `2px solid ${COLORS.border}` }}>
             <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '4px' }}>📸 Item Photos</div>
             <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
-              Take photos in <strong>good light near a window</strong>. Minimum <strong>3 photos</strong> required ({slots.length} slots for this item type). Capture exterior first, then settings/specs screens last.
+              Take photos in <strong>good light near a window</strong>. Minimum <strong>3 photos</strong> required ({slots.length} slots for this item type). <strong>Photo 1 must be the brand/model label</strong> — this helps the AI identify the exact model. Then capture exterior and working condition.
             </div>
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
               {slots.map((slotLabel, i) => (
@@ -2472,7 +2695,12 @@ const EMPTY_TX = {
   captureItemType: '', itemPowersOn: null, partsOnly: false,
   itemPhotos: [],
   inspectionChecklist: {}, inspectionNotes: '',
-  aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiCondition: '', aiEstimatedValue: '', aiRawResponse: '', requiresIMEI: false,
+  aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiKeySpecs: '', aiConfidence: '', aiSpecsUnreadable: '',
+  aiCondition: '', aiEstimatedValue: '', aiNewMarketPrice: '', aiPriceBasis: '', aiPriceRangeLow: '', aiPriceRangeHigh: '', aiValuationConfidence: '',
+  aiVisionUsed: false, aiVisionLabels: '', aiModelVerified: '',
+  aiRawResponse: '', aiRawResponse2: '', aiRawResponse3: '',
+  aiRun1Done: false, aiRun2Done: false, aiRun3Done: false, aiManualMode: false,
+  requiresIMEI: false,
   imei: '', imeiPhoto: null, imeiModelMatch: false, serialNumber: '', serialNumberPhoto: null,
   hasReceipt: null, receiptPhoto: null,
   screeningDuration: '', screeningDurationOther: '', screeningPurchaseLocation: '', screeningPurchaseLocationOther: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
@@ -2491,6 +2719,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     return { ...base, itemPhotos: normalizeItemPhotos(base.itemPhotos) };
   });
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiLoadingPhase, setAiLoadingPhase] = useState(''); // 'run1', 'run2', 'run3'
   const [ninLoading, setNinLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [ninError, setNinError] = useState('');
@@ -2598,33 +2827,313 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     setNinLoading(false);
   };
 
-  // AI Valuation
-  const handleAIValuation = async () => {
-    setAiLoading(true); setAiError('');
-    const photos = (Array.isArray(tx.itemPhotos) ? tx.itemPhotos : []).filter(Boolean);
-    if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); return; }
-    const prompt = `I am running a second-hand item shop in Aguleri, Anambra State, Nigeria. I have uploaded photos of an item. Please do the following:
-1. Identify the exact item type, brand, model, colour, and specifications from the photos.
-2. Give me the current realistic second-hand resale price in Nigerian Naira (₦) for Aguleri or similar towns in Anambra State. Give ONLY the number.
-3. Describe the physical condition in detail: note all visible damage, wear, scratches, dents, cracks, and any cosmetic or functional issues. Keep it under 5 sentences.
-RESPOND IN THIS EXACT FORMAT (no markdown):
-ITEM_TYPE: [type]
-BRAND: [brand]
-MODEL: [model]
-COLOUR: [colour]
-ESTIMATED_VALUE: [number only, no symbol]
-CONDITION: [detailed condition description]`;
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt);
-    if (result.error) { setAiError(result.error); }
-    else {
-      const text = result.text; upd('aiRawResponse', text);
-      const parse = (key) => { const m = text.match(new RegExp(`${key}:\\s*(.+?)(?:\\n|$)`, 'i')); return m ? m[1].trim() : ''; };
-      upd('aiItemType', parse('ITEM_TYPE')); upd('aiBrand', parse('BRAND')); upd('aiModel', parse('MODEL')); upd('aiColour', parse('COLOUR'));
-      upd('aiCondition', parse('CONDITION')); upd('conditionDescription', parse('CONDITION'));
-      const val = parse('ESTIMATED_VALUE').replace(/[^0-9]/g, '');
-      upd('aiEstimatedValue', val); upd('estimatedValue', Number(val) || 0);
-    }
+  // AI Analysis Engine — 3 Sequential Runs
+  const getPhotos = () => (Array.isArray(tx.itemPhotos) ? tx.itemPhotos : []).filter(Boolean);
+  // Parse a KEY: value field from AI response. Handles:
+  // - Numbered prefixes: "1. KEY:" or "1) KEY:" or "1 KEY:"
+  // - Multi-line values: captures until next KEY_LIKE_THIS: pattern or end of text
+  // - Collapses newlines into spaces
+  const aiParseField = (text, key) => {
+    const pattern = new RegExp(`(?:^|\\n)\\s*(?:\\d+[.)\\s]*)?${key}:\\s*(.+?)(?=\\n\\s*(?:\\d+[.)\\s]*)?[A-Z][A-Z_]+:|$)`, 'is');
+    const m = text.match(pattern);
+    return m ? m[1].trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ') : '';
+  };
+  const AI_TIMEOUT = 120000; // 120s timeout per AI call (Pro thinking models need more time)
+
+  const callWithTimeout = (fn, timeout) => Promise.race([
+    fn(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('AI request timed out. Please try again or enter details manually.')), timeout))
+  ]);
+
+  const switchToManualMode = (errorMsg) => {
+    upd('aiManualMode', true);
+    setAiError(errorMsg || 'AI failed. Please enter all details manually.');
     setAiLoading(false);
+    setAiLoadingPhase('');
+  };
+
+  // RUN 1: Item Identification & Spec Verification
+  // Strategy: Gemini first. If confidence is 100%, done. Otherwise, if Cloud Vision API key
+  // is configured, run reverse image search to get additional context, then re-ask Gemini
+  // with the Vision data to improve accuracy.
+  const handleAIRun1 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run1'); setAiError(''); upd('aiModelVerified', '');
+    // Check API usage limits before making calls
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+    const photos = getPhotos();
+    if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); setAiLoadingPhase(''); return; }
+    const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
+    const basePrompt = (visionContext) => `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words.
+${visionContext ? `\nADDITIONAL CONTEXT FROM IMAGE ANALYSIS AND WEB SEARCH (use this to confirm or correct your identification — pay special attention to any "Text detected on device" as it may contain the exact model number):\n${visionContext}\n` : ''}
+IMPORTANT: Look carefully at ALL text visible on the item — labels, stickers, printed text on the body, capacity markings (e.g. mAh for power banks), serial number plates, About screens, spec sheets. The model name/number is often printed directly on the device.
+
+CRITICAL INSTRUCTION: Reply in this exact format (no numbered prefixes, no markdown, no extra text):
+
+AI_ITEM_TYPE: [what the item is]
+BRAND: [brand name]
+MODEL: [exact model name or number as printed on the device]
+KEY_SPECS: [the most important specs that affect resale value — keep it under 12 words]
+COLOUR: [colour(s)]
+CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
+
+If text on the device is blurry, unreadable, or missing, you MUST ALSO include this line BEFORE the other fields:
+SPECS_UNREADABLE: [List exactly what you cannot read and why (very concise)]
+
+Then still reply with ALL 6 fields above with your best guess based on what you can see in the photos and any internet research. Your CONFIDENCE score should reflect how certain you are about the MODEL and KEY_SPECS.`;
+
+    const parseGeminiResult = (text) => {
+      const specsUnreadable = aiParseField(text, 'SPECS_UNREADABLE');
+      if (specsUnreadable) upd('aiSpecsUnreadable', specsUnreadable);
+      upd('aiItemType', aiParseField(text, 'AI_ITEM_TYPE') || tx.captureItemType);
+      upd('aiBrand', aiParseField(text, 'BRAND'));
+      upd('aiModel', aiParseField(text, 'MODEL'));
+      upd('aiKeySpecs', aiParseField(text, 'KEY_SPECS'));
+      upd('aiColour', aiParseField(text, 'COLOUR'));
+      const confidence = aiParseField(text, 'CONFIDENCE');
+      upd('aiConfidence', confidence);
+      return { confidence, specsUnreadable };
+    };
+
+    try {
+      const hasVisionKey = !!(settings.cloudVisionApiKey || '').trim();
+      let visionContext = '';
+
+      // Step 1: Run Cloud Vision FIRST (if configured) for OCR + web detection
+      // Vision provides OCR text, logo detection, and web entity matching that
+      // significantly improves Gemini's ability to identify exact model numbers
+      const visionCheck = checkVisionLimit(settings);
+      if (hasVisionKey && !visionCheck.blocked) {
+        setAiLoadingPhase('run1_vision');
+        const visionPhotos = photos.slice(0, 2);
+        const visionResults = [];
+        const allVisionLabels = [];
+        for (const photo of visionPhotos) {
+          const vr = await callWithTimeout(() => callCloudVision(settings.cloudVisionApiKey, photo), 30000);
+          if (!vr.error && vr.summary) visionResults.push(vr.summary);
+          if (!vr.error) {
+            allVisionLabels.push(...(vr.bestGuess || []), ...(vr.logos || []), ...((vr.webEntities || []).slice(0, 3).map(e => e.split(' (')[0])));
+          }
+        }
+        const uniqueLabels = [...new Set(allVisionLabels.filter(Boolean))];
+        if (uniqueLabels.length > 0) upd('aiVisionLabels', uniqueLabels.join(', '));
+        if (visionResults.length > 0) {
+          upd('aiVisionUsed', true);
+          visionContext = visionResults.join('\n---\n');
+        }
+      }
+
+      // Step 2: Gemini with Vision context (or without if no Vision key)
+      setAiLoadingPhase('run1');
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      upd('aiRawResponse', result.text);
+      const { confidence } = parseGeminiResult(result.text);
+
+      // Step 3: ALWAYS verify model via Google Search grounding
+      // Gemini can be 98% confident but still hallucinate the model number.
+      // This step searches the internet to confirm the model exists and corrects it if needed.
+      setAiLoadingPhase('run1_verify');
+      const identBrand = aiParseField(result.text, 'BRAND');
+      const identModel = aiParseField(result.text, 'MODEL');
+      const identItemType = aiParseField(result.text, 'AI_ITEM_TYPE');
+      const identKeySpecs = aiParseField(result.text, 'KEY_SPECS');
+
+      const verifyPrompt = `You are verifying a product identification for a second-hand shop in Nigeria.
+
+The AI identified this item from photos:
+- Item type: ${identItemType}
+- Brand: ${identBrand}
+- Model: ${identModel}
+- Key specs: ${identKeySpecs}
+${visionContext ? `\nImage analysis context:\n${visionContext}\n` : ''}
+YOUR TASK: Search the internet for "${identBrand} ${identModel}" and verify ALL of these:
+1. Does "${identBrand} ${identModel}" exist as a real product?
+2. Is it a ${identItemType}? (Not a different type of product from the same brand)
+3. Do the specs match? (${identKeySpecs})
+
+If ALL 3 checks pass: confirm the identification and return the same details.
+If ANY check fails (model doesn't exist, OR it exists but is a different product type, OR the specs don't match): search for the correct ${identBrand} ${identItemType} model that matches these specs: ${identKeySpecs}. Look at product databases, review sites, and retailer listings. Compare search results with the photos.
+
+CRITICAL: The model name/number must be a REAL product that exists AND must match the item type and specs. Do not guess or make up model numbers.
+
+Reply in this exact format (no markdown, no extra text):
+
+AI_ITEM_TYPE: ${identItemType}
+BRAND: [confirmed or corrected brand]
+MODEL: [the VERIFIED real model name/number]
+KEY_SPECS: [confirmed or corrected specs — under 12 words]
+COLOUR: [colour]
+CONFIDENCE: [your confidence now, as percentage]
+MODEL_VERIFIED: [YES if you confirmed it exists with matching type and specs, CORRECTED if you found a different model, UNVERIFIED if you could not confirm]`;
+
+      const geminiCheck2 = checkGeminiLimit(settings);
+      if (!geminiCheck2.blocked) {
+        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, verifyPrompt), AI_TIMEOUT);
+        if (!result2.error && result2.text) {
+          const verifyStatus = aiParseField(result2.text, 'MODEL_VERIFIED');
+          if (verifyStatus) {
+            upd('aiRawResponse', result2.text);
+            parseGeminiResult(result2.text);
+            upd('aiModelVerified', verifyStatus);
+          }
+        }
+      }
+
+      upd('aiRun1Done', true);
+    } catch (e) {
+      switchToManualMode(e.message);
+      return;
+    }
+    setAiLoading(false); setAiLoadingPhase('');
+  };
+
+  // RUN 2: Condition Description
+  const handleAIRun2 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run2'); setAiError('');
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+    const photos = getPhotos();
+    // Build inspection results text
+    const checklist = INSPECTION_CHECKLISTS[tx.captureItemType] || [];
+    const checkedMap = tx.inspectionChecklist || {};
+    const inspResults = checklist.map(item => `${checkedMap[item] ? '✅' : '❌'} ${item}`).join('\n');
+    const staffNotes = (tx.inspectionNotes || '').trim() || 'None';
+    const prompt = `You are a second-hand shop assistant in Aguleri, Anambra Nigeria. Look at all the photos of this ${tx.aiItemType || tx.captureItemType} — ${tx.aiBrand || 'Unknown brand'} — ${tx.aiModel || 'Unknown model'}.
+Also read the inspection checklist results and staff notes below.
+
+Write a condition description in TWO parts joined into one flowing paragraph:
+
+PART A (from photos — write this FIRST, about 240 characters):
+Describe what you can SEE in the photos — scratches, dents, cracks, screen condition, body wear, missing parts, colour fading, stains, bent edges, etc. Only mention issues that affect how much we can sell it for.
+
+PART B (from inspection & staff notes — write this SECOND, about 160 characters):
+Summarize the key findings from the checklist and notes — which checks failed, what the staff noticed during hands-on testing, any functional issues.
+
+Rules:
+- Combine both parts into ONE paragraph, no line breaks, no bullet points
+- Maximum 400 characters total
+- Use simple everyday English — no big grammar words
+- Do not repeat yourself
+- Focus only on things that affect resale price
+
+Inspection results:
+${inspResults}
+
+Staff notes: ${staffNotes}
+
+Reply with the condition description only. Nothing else.`;
+    try {
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      // Post-process: sanitize newlines, collapse spaces, enforce 400 char limit
+      let text = (result.text || '').trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ');
+      if (text.length > 400) text = text.substring(0, 397) + '...';
+      upd('aiRawResponse2', result.text);
+      upd('aiCondition', text);
+      upd('conditionDescription', text);
+      upd('aiRun2Done', true);
+    } catch (e) {
+      switchToManualMode(e.message);
+      return;
+    }
+    setAiLoading(false); setAiLoadingPhase('');
+  };
+
+  // RUN 3: Resale Valuation (with Google Search grounding)
+  const handleAIRun3 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run3'); setAiError('');
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+    const photos = getPhotos();
+    const conditionText = tx.conditionDescription || tx.aiCondition || '';
+    const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 14 days.
+
+CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices in other currencies, convert them to Naira at the current exchange rate.
+
+Item details:
+* Type: ${tx.aiItemType || tx.captureItemType || 'Unknown'}
+* Brand and model: ${tx.aiBrand || 'Unknown'} ${tx.aiModel || 'Unknown'}
+* Colour: ${tx.aiColour || 'Unknown'}
+* Specs: ${tx.aiKeySpecs || 'Not available'}
+* Condition: ${conditionText || '(assess from the photos)'}
+
+Instructions:
+1. Search Jumia.com.ng and Konga.com or similar Nigerian online stores for the BRAND NEW retail price of this exact model in Nigeria TODAY. (If this is a generic/unbranded Chinese item, search for equivalent items with similar specs).
+
+2. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities.
+
+CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
+- Sort all listings for this item by price from lowest to highest
+- Throw away the cheapest 20% of listings — these are usually scam bait
+- From the remaining 80%, find the MEDIAN price (the middle value, not the average)
+- Use this median as your base for the used price
+
+3. Use those prices as your base. Then adjust for:
+   - The item condition described above${conditionText ? '' : ' (also look at the photos)'}
+   - Current supply/demand — if this item is very common in resale markets, price competitively; if rare, price slightly higher
+   - Age of the model — older models lose value faster
+
+IMPORTANT PRICING CONTEXT:
+- Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
+- We need to sell this item within 14 days, so price it to move — but do NOT undervalue it. We want the best realistic price a buyer will pay within 2 weeks, not a desperate clearance price.
+- Second-hand items in good working condition typically sell for 50-75% of brand new price. Items in fair condition sell for 35-55% of brand new price.
+- Do NOT lowball. If the brand new price is ₦50,000 and the item is in good condition, the used price should be around ₦25,000-₦37,500 — not ₦10,000.
+
+4. Give me the realistic price we can sell this item for in Aguleri within 14 days. This should be a fair market price — not inflated, not deflated.
+
+5. Use simple everyday English. No big words.
+
+Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
+ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
+PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
+NEW_MARKET_PRICE: [number only — the brand new price in Nigeria, or 0 if not found]
+PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
+VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if you found real price data, lower if you had to estimate]`;
+    try {
+      const result = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      const text = result.text;
+      upd('aiRawResponse3', text);
+      const estimatedVal = aiParseField(text, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
+      upd('aiEstimatedValue', estimatedVal);
+      upd('estimatedValue', Number(estimatedVal) || 0);
+      upd('aiPriceBasis', aiParseField(text, 'PRICE_BASIS'));
+      upd('aiNewMarketPrice', aiParseField(text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, ''));
+      // Parse PRICE_RANGE: handles "45000-60000", "₦45,000 to ₦60,000", "45000 – 60000"
+      const rangeRaw = aiParseField(text, 'PRICE_RANGE');
+      const rangeCleaned = rangeRaw.replace(/[₦NGN,\s]/gi, '');
+      const rangeMatch = rangeCleaned.match(/(\d+)\s*(?:[-–—]|to)\s*(\d+)/i);
+      if (rangeMatch) {
+        const low = Number(rangeMatch[1]);
+        const high = Number(rangeMatch[2]);
+        upd('aiPriceRangeLow', String(Math.min(low, high)));
+        upd('aiPriceRangeHigh', String(Math.max(low, high)));
+      }
+      upd('aiValuationConfidence', aiParseField(text, 'VALUATION_CONFIDENCE'));
+
+      // Post-parse sanity checks — warning only, staff can still proceed
+      const val = Number(estimatedVal) || 0;
+      const parsedLow = Number(rangeMatch?.[1]) || 0;
+      const parsedHigh = Number(rangeMatch?.[2]) || 0;
+      const warnings = [];
+      if (val > 0 && (val < 1000 || val > 5000000)) {
+        warnings.push(`AI estimated ₦${val.toLocaleString()} — this seems unusual. Please verify manually.`);
+      }
+      if (parsedLow > 0 && parsedHigh > 0 && parsedHigh > parsedLow * 5) {
+        warnings.push('Price range spread is very wide — estimate may be unreliable.');
+      }
+      if (warnings.length > 0) setAiError('Warning: ' + warnings.join(' '));
+      // Clamp estimated value within price range
+      if (val > 0 && parsedHigh > 0 && val > parsedHigh) upd('estimatedValue', parsedHigh);
+      if (val > 0 && parsedLow > 0 && val < parsedLow) upd('estimatedValue', parsedLow);
+
+      upd('aiRun3Done', true);
+    } catch (e) {
+      switchToManualMode(e.message);
+      return;
+    }
+    setAiLoading(false); setAiLoadingPhase('');
   };
 
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
@@ -2657,7 +3166,7 @@ CONDITION: [detailed condition description]`;
         if (anyUnticked && !(tx.inspectionNotes || '').trim()) return false;
         return true;
       }
-      case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.estimatedValue > 0);
+      case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.aiBrand && tx.estimatedValue > 0 && (tx.conditionDescription || tx.aiCondition));
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
       case 'agreement': return !!tx.photoSigning;
       default: return true;
@@ -2719,7 +3228,12 @@ CONDITION: [detailed condition description]`;
         break;
       }
       case 'aiValuation':
-        if (!tx.partsOnly && !(tx.aiItemType && tx.estimatedValue > 0)) issues.push('You must run AI Valuation and confirm the item type and value before proceeding.');
+        if (!tx.partsOnly) {
+          if (!tx.aiItemType) issues.push('Item type is required. Run AI identification or enter it manually.');
+          if (!tx.aiBrand) issues.push('Brand is required. Run AI identification or enter it manually.');
+          if (!tx.estimatedValue || tx.estimatedValue <= 0) issues.push('Estimated resale value is required. Run AI valuation or enter it manually.');
+          if (!(tx.conditionDescription || tx.aiCondition)) issues.push('Condition description is required. Run AI condition check or enter it manually.');
+        }
         break;
       case 'offer':
         if (!tx.cashAdvance) issues.push('You must enter the cash advance amount before proceeding.');
@@ -2820,7 +3334,148 @@ CONDITION: [detailed condition description]`;
 
       case 'inspection': return (<InspectionStep tx={tx} upd={upd} />);
 
-      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number, so make sure it looks right. Use your own knowledge to double-check what the AI says." /></span>} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Condition Description<InfoIcon tip="Write what the item looks like right now — scratches, cracks, dents, anything missing, etc. This goes on the agreement form and protects us if the customer later claims we damaged it." /></span>} required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button></div></div></div>);
+      case 'aiValuation': return (<div>
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🧠 AI Analysis Engine</h3>
+
+        {tx.partsOnly ? (
+          <div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>
+        ) : (<>
+          {/* Manual mode warning */}
+          {tx.aiManualMode && (
+            <div style={{ ...S.alert('danger'), marginBottom: '16px', border: '2px solid ' + COLORS.danger }}>
+              ⚠️ <strong>AI failed or timed out.</strong> Please enter all item details manually. You can retry any AI step using the buttons below.
+            </div>
+          )}
+
+          <div style={S.alert('info')}>📋 Run each AI step in order. Wait for each result before proceeding to the next. You can edit any field after each step.</div>
+          {/* API Usage Indicator */}
+          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>
+            <span>Gemini: {getGeminiUsageToday()}/{settings.geminiDailyLimit || 100} today</span>
+            {settings.cloudVisionApiKey && <span>Vision: {getVisionUsageThisMonth()}/{settings.visionMonthlyLimit || 1000} this month</span>}
+          </div>
+
+          {/* ══════════════ RUN 1: Item Identification ══════════════ */}
+          <div style={{ border: `2px solid ${tx.aiRun1Done ? COLORS.primary : COLORS.border}`, borderRadius: '12px', padding: '16px', marginTop: '16px', background: tx.aiRun1Done ? COLORS.primaryLight : '#fff' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '20px' }}>{tx.aiRun1Done ? '✅' : '1️⃣'}</span>
+              <span style={{ fontWeight: 700, fontSize: '14px' }}>Item Identification & Spec Verification</span>
+              {tx.aiConfidence && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', background: parseInt(tx.aiConfidence) >= 80 ? '#dcfce7' : parseInt(tx.aiConfidence) >= 50 ? '#fef3c7' : '#fde8e6', color: parseInt(tx.aiConfidence) >= 80 ? '#166534' : parseInt(tx.aiConfidence) >= 50 ? '#92400e' : COLORS.danger }}>Confidence: {tx.aiConfidence}</span>}
+              {tx.aiModelVerified && <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', marginLeft: '4px', background: tx.aiModelVerified === 'YES' ? '#dcfce7' : tx.aiModelVerified === 'CORRECTED' ? '#fef3c7' : '#fde8e6', color: tx.aiModelVerified === 'YES' ? '#166534' : tx.aiModelVerified === 'CORRECTED' ? '#92400e' : COLORS.danger }}>{tx.aiModelVerified === 'YES' ? '✓ Model verified' : tx.aiModelVerified === 'CORRECTED' ? '⚠ Model corrected' : '? Unverified'}</span>}
+            </div>
+            <button style={S.btn('primary')} onClick={handleAIRun1} disabled={aiLoading}>
+              {aiLoading && aiLoadingPhase === 'run1' ? '⏳ Identifying Item...' :
+               aiLoading && aiLoadingPhase === 'run1_vision' ? '⏳ Running reverse image search...' :
+               aiLoading && aiLoadingPhase === 'run1_verify' ? '⏳ Verifying model online...' :
+               tx.aiRun1Done ? '🔄 Re-run Identification' : '🤖 Identify Item with AI'}
+            </button>
+            {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
+            {tx.aiSpecsUnreadable && <div style={{ ...S.alert('warning'), marginTop: '8px' }}>⚠️ <strong>Specs unreadable:</strong> {tx.aiSpecsUnreadable}</div>}
+            {tx.aiVisionUsed && <div style={{ ...S.alert('info'), marginTop: '8px' }}>🔍 <strong>Cloud Vision used</strong> — reverse image search helped refine identification.{tx.aiVisionLabels && <span style={{ display: 'block', fontSize: '11px', marginTop: '4px', color: COLORS.textMuted }}>Detected: {tx.aiVisionLabels}</span>}</div>}
+
+            {/* Editable fields — always visible */}
+            <div style={{ ...S.grid2, marginTop: '12px' }}>
+              <Field label="Item Type" required>
+                <input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" />
+              </Field>
+              <Field label="Brand" required>
+                <input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" />
+              </Field>
+              <Field label="Model" required>
+                <input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" />
+              </Field>
+              <Field label="Colour">
+                <input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" />
+              </Field>
+            </div>
+            <Field label="Key Specs">
+              <input style={S.input} value={tx.aiKeySpecs} onChange={e => upd('aiKeySpecs', e.target.value)} placeholder="e.g. 128GB, 6GB RAM, 6.6-inch display" />
+            </Field>
+            {tx.aiRawResponse && <details style={{ marginTop: '8px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse}</div></details>}
+          </div>
+
+          {/* ══════════════ RUN 2: Condition Description ══════════════ */}
+          <div style={{ border: `2px solid ${tx.aiRun2Done ? COLORS.primary : COLORS.border}`, borderRadius: '12px', padding: '16px', marginTop: '16px', background: tx.aiRun2Done ? COLORS.primaryLight : '#fff', opacity: (!tx.aiRun1Done && !tx.aiManualMode) ? 0.5 : 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '20px' }}>{tx.aiRun2Done ? '✅' : '2️⃣'}</span>
+              <span style={{ fontWeight: 700, fontSize: '14px' }}>Condition Description</span>
+            </div>
+            <button style={S.btn('primary')} onClick={handleAIRun2} disabled={aiLoading || (!tx.aiRun1Done && !tx.aiManualMode && !tx.aiItemType)}>
+              {aiLoading && aiLoadingPhase === 'run2' ? '⏳ Generating Description...' : tx.aiRun2Done ? '🔄 Re-generate Description' : '📝 Generate Condition Description'}
+            </button>
+            {aiError && !aiLoading && tx.aiRun1Done && !tx.aiRun2Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
+
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Condition Description<InfoIcon tip="Write what the item looks like right now — scratches, cracks, dents, anything missing, etc. This goes on the agreement form and protects us if the customer later claims we damaged it." /></span>} required>
+              <textarea style={{ ...S.textarea, minHeight: '80px' }} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" maxLength={400} />
+              {(tx.conditionDescription || tx.aiCondition) && <div style={{ fontSize: '11px', color: COLORS.textMuted, textAlign: 'right', marginTop: '2px' }}>{(tx.conditionDescription || tx.aiCondition).length}/400 characters</div>}
+            </Field>
+            {tx.aiRawResponse2 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse2}</div></details>}
+          </div>
+
+          {/* ══════════════ RUN 3: Resale Valuation ══════════════ */}
+          <div style={{ border: `2px solid ${tx.aiRun3Done ? COLORS.primary : COLORS.border}`, borderRadius: '12px', padding: '16px', marginTop: '16px', background: tx.aiRun3Done ? COLORS.primaryLight : '#fff', opacity: (!tx.aiRun2Done && !tx.aiManualMode) ? 0.5 : 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '20px' }}>{tx.aiRun3Done ? '✅' : '3️⃣'}</span>
+              <span style={{ fontWeight: 700, fontSize: '14px' }}>Resale Valuation</span>
+              {tx.aiValuationConfidence && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', background: parseInt(tx.aiValuationConfidence) >= 80 ? '#dcfce7' : parseInt(tx.aiValuationConfidence) >= 50 ? '#fef3c7' : '#fde8e6', color: parseInt(tx.aiValuationConfidence) >= 80 ? '#166534' : parseInt(tx.aiValuationConfidence) >= 50 ? '#92400e' : COLORS.danger }}>Confidence: {tx.aiValuationConfidence}</span>}
+              {tx.aiRun3Done && !tx.aiValuationConfidence && <span style={{ marginLeft: 'auto', fontSize: '11px', color: COLORS.textMuted }}>Powered by Google Search</span>}
+            </div>
+            <button style={{ ...S.btn('primary'), background: '#e67e22' }} onClick={handleAIRun3} disabled={aiLoading || (!tx.aiRun2Done && !tx.aiManualMode && !tx.aiItemType)}>
+              {aiLoading && aiLoadingPhase === 'run3' ? '⏳ Searching Market Prices...' : tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Market Price'}
+            </button>
+            {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
+
+            {/* Price range display */}
+            {tx.aiRun3Done && tx.aiPriceRangeLow && tx.aiPriceRangeHigh && (
+              <div style={{ marginTop: '12px', padding: '12px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', color: COLORS.textMuted }}>Price Range</span>
+                  {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && <span style={{ fontSize: '11px', color: COLORS.textMuted }}>New price: {fmtMoney(Number(tx.aiNewMarketPrice))}</span>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>{fmtMoney(Number(tx.aiPriceRangeLow))}</span>
+                  <div style={{ flex: 1, height: '8px', background: '#e5e7eb', borderRadius: '4px', position: 'relative' }}>
+                    {(() => {
+                      const low = Number(tx.aiPriceRangeLow) || 0;
+                      const high = Number(tx.aiPriceRangeHigh) || 1;
+                      const val = Number(tx.estimatedValue) || 0;
+                      const pct = high > low ? Math.min(100, Math.max(0, ((val - low) / (high - low)) * 100)) : 50;
+                      return <div style={{ position: 'absolute', left: `${pct}%`, top: '-4px', width: '16px', height: '16px', borderRadius: '50%', background: COLORS.primary, border: '2px solid #fff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', transform: 'translateX(-50%)' }} />;
+                    })()}
+                  </div>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>{fmtMoney(Number(tx.aiPriceRangeHigh))}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Price basis — shown below the range */}
+            {tx.aiPriceBasis && (
+              <div style={{ marginTop: '8px', padding: '10px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '12px', color: COLORS.text }}>
+                <strong>How this price was calculated:</strong> {tx.aiPriceBasis}
+              </div>
+            )}
+
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
+                let val = Number(e.target.value) || 0;
+                const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
+                if (maxPrice > 0 && val > maxPrice) val = maxPrice;
+                upd('estimatedValue', val);
+              }} placeholder="e.g. 85000" />
+              {Number(tx.aiPriceRangeHigh) > 0 && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>Maximum allowed: {fmtMoney(Number(tx.aiPriceRangeHigh))}</div>}
+            </Field>
+            {tx.aiRawResponse3 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3}</div></details>}
+          </div>
+        </>)}
+
+        {/* End transaction options */}
+        <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
+          <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button>
+            <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button>
+          </div>
+        </div>
+      </div>);
 
 
       case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
@@ -3484,11 +4139,18 @@ export default function App() {
           {tx.captureItemType && row('Category', <>{tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
           {row('Identified As', [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' '))}
           {row('Colour', tx.aiColour)}
+          {tx.aiKeySpecs && row('Key Specs', tx.aiKeySpecs)}
+          {tx.aiConfidence && row('AI Confidence', tx.aiConfidence)}
           {row('Condition', tx.aiCondition)}
           {tx.imei && row('IMEI', <>{tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: tx.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
           {tx.serialNumber && row('Serial No.', tx.serialNumber)}
           {tx.conditionDescription && row('Condition Notes', tx.conditionDescription)}
           {tx.hasReceipt != null && row('Receipt', tx.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
+          {tx.aiPriceBasis && row('Price Basis', tx.aiPriceBasis)}
+          {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
+          {tx.aiPriceRangeLow && tx.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(tx.aiPriceRangeLow))} — ${fmtMoney(Number(tx.aiPriceRangeHigh))}`)}
+          {tx.aiValuationConfidence && row('Valuation Confidence', tx.aiValuationConfidence)}
+          {tx.aiVisionUsed && row('Cloud Vision', 'Used for identification')}
         </div>
       </div>
 
@@ -5160,9 +5822,35 @@ export default function App() {
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Leave it as default — the system will switch to a backup automatically if needed." /></span>}>
               <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
             </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Google Cloud Vision API Key<InfoIcon tip="Optional. Used for reverse image search when Gemini cannot clearly identify the item model or specs. Get one from console.cloud.google.com — enable the Cloud Vision API, then create an API key. If not set, only Gemini will be used for identification." /></span>}>
+              <input style={S.input} type="password" value={es.cloudVisionApiKey || ''} onChange={e => updateSettings({ ...es, cloudVisionApiKey: e.target.value })} placeholder="From console.cloud.google.com (optional)" />
+            </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
               <input style={S.input} type="password" value={es.ninApiKey} onChange={e => updateSettings({ ...es, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
             </Field>
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>API Free Tier Limits</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Set these to match Google's free tier limits. The system will block API calls when limits are reached to prevent billing. Adjust if Google changes their free tier.</div>
+              <div style={S.grid3}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Daily Limit<InfoIcon tip="Maximum Gemini API calls per day. Free tier: Pro=100, Flash=250, Flash-Lite=1000. Each AI run uses 1-2 calls, so ~20-50 transactions/day with Pro." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.geminiDailyLimit ?? DEFAULT_SETTINGS.geminiDailyLimit} onChange={e => updateSettings({ ...es, geminiDailyLimit: Number(e.target.value) || DEFAULT_SETTINGS.geminiDailyLimit })} />
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini RPM Limit<InfoIcon tip="Maximum Gemini calls per minute. Free tier: Pro=5, Flash=10, Flash-Lite=15. Prevents rate-limit errors from Google." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit} onChange={e => updateSettings({ ...es, geminiRpmLimit: Number(e.target.value) || DEFAULT_SETTINGS.geminiRpmLimit })} />
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Vision Monthly Limit<InfoIcon tip="Maximum Cloud Vision images per month. Free tier: 1,000 images/month. Each transaction uses up to 2 images for Vision analysis." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.visionMonthlyLimit ?? DEFAULT_SETTINGS.visionMonthlyLimit} onChange={e => updateSettings({ ...es, visionMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.visionMonthlyLimit })} />
+                </Field>
+              </div>
+              <div style={{ ...S.card, background: COLORS.bg, padding: '12px', marginTop: '10px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px' }}>Current Usage</div>
+                <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '12px' }}>
+                  <div>Gemini today: <strong>{getGeminiUsageToday()}</strong> / {es.geminiDailyLimit ?? DEFAULT_SETTINGS.geminiDailyLimit}</div>
+                  <div>Gemini RPM: <strong>{getGeminiRpm()}</strong> / {es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit}</div>
+                  <div>Vision this month: <strong>{getVisionUsageThisMonth()}</strong> / {es.visionMonthlyLimit ?? DEFAULT_SETTINGS.visionMonthlyLimit}</div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* ── 11. WHATSAPP MESSAGE TEMPLATES ── */}
