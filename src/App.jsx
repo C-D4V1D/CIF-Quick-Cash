@@ -406,6 +406,41 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
   } catch (e) { return { error: e.message }; }
 };
 
+// Gemini AI call with Google Search grounding (for real-time price lookups)
+const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
+  if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
+  try {
+    const preferredModel = (model || '').trim() || DEFAULT_SETTINGS.geminiModel;
+    const modelCandidates = [preferredModel, ...FALLBACK_GEMINI_MODELS]
+      .filter(Boolean)
+      .filter((m, idx, arr) => arr.indexOf(m) === idx);
+    const parts = [{ text: promptText }];
+    for (const img of (images || [])) {
+      const inlineData = await imageToGeminiInlineData(img);
+      if (inlineData) parts.push({ inline_data: inlineData });
+    }
+
+    for (const modelName of modelCandidates) {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          tools: [{ google_search: {} }]
+        })
+      });
+      const data = await resp.json().catch(() => null);
+      if (data?.candidates?.[0]?.content?.parts?.[0]?.text) return { text: data.candidates[0].content.parts[0].text, model: modelName };
+
+      const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
+      const modelUnavailable = errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
+      if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
+    }
+
+    return { error: `No supported Gemini model was available for this API key. Tried: ${modelCandidates.join(', ')}.` };
+  } catch (e) { return { error: e.message }; }
+};
+
 // ============================================================
 // STYLES
 // ============================================================
@@ -2472,7 +2507,11 @@ const EMPTY_TX = {
   captureItemType: '', itemPowersOn: null, partsOnly: false,
   itemPhotos: [],
   inspectionChecklist: {}, inspectionNotes: '',
-  aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiCondition: '', aiEstimatedValue: '', aiRawResponse: '', requiresIMEI: false,
+  aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiKeySpecs: '', aiConfidence: '', aiSpecsUnreadable: '',
+  aiCondition: '', aiEstimatedValue: '', aiNewMarketPrice: '', aiPriceBasis: '', aiPriceRangeLow: '', aiPriceRangeHigh: '',
+  aiRawResponse: '', aiRawResponse2: '', aiRawResponse3: '',
+  aiRun1Done: false, aiRun2Done: false, aiRun3Done: false, aiManualMode: false,
+  requiresIMEI: false,
   imei: '', imeiPhoto: null, imeiModelMatch: false, serialNumber: '', serialNumberPhoto: null,
   hasReceipt: null, receiptPhoto: null,
   screeningDuration: '', screeningDurationOther: '', screeningPurchaseLocation: '', screeningPurchaseLocationOther: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
@@ -2491,6 +2530,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     return { ...base, itemPhotos: normalizeItemPhotos(base.itemPhotos) };
   });
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiLoadingPhase, setAiLoadingPhase] = useState(''); // 'run1', 'run2', 'run3'
   const [ninLoading, setNinLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [ninError, setNinError] = useState('');
@@ -2598,33 +2638,165 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     setNinLoading(false);
   };
 
-  // AI Valuation
-  const handleAIValuation = async () => {
-    setAiLoading(true); setAiError('');
-    const photos = (Array.isArray(tx.itemPhotos) ? tx.itemPhotos : []).filter(Boolean);
-    if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); return; }
-    const prompt = `I am running a second-hand item shop in Aguleri, Anambra State, Nigeria. I have uploaded photos of an item. Please do the following:
-1. Identify the exact item type, brand, model, colour, and specifications from the photos.
-2. Give me the current realistic second-hand resale price in Nigerian Naira (₦) for Aguleri or similar towns in Anambra State. Give ONLY the number.
-3. Describe the physical condition in detail: note all visible damage, wear, scratches, dents, cracks, and any cosmetic or functional issues. Keep it under 5 sentences.
-RESPOND IN THIS EXACT FORMAT (no markdown):
-ITEM_TYPE: [type]
-BRAND: [brand]
-MODEL: [model]
-COLOUR: [colour]
-ESTIMATED_VALUE: [number only, no symbol]
-CONDITION: [detailed condition description]`;
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt);
-    if (result.error) { setAiError(result.error); }
-    else {
-      const text = result.text; upd('aiRawResponse', text);
-      const parse = (key) => { const m = text.match(new RegExp(`${key}:\\s*(.+?)(?:\\n|$)`, 'i')); return m ? m[1].trim() : ''; };
-      upd('aiItemType', parse('ITEM_TYPE')); upd('aiBrand', parse('BRAND')); upd('aiModel', parse('MODEL')); upd('aiColour', parse('COLOUR'));
-      upd('aiCondition', parse('CONDITION')); upd('conditionDescription', parse('CONDITION'));
-      const val = parse('ESTIMATED_VALUE').replace(/[^0-9]/g, '');
-      upd('aiEstimatedValue', val); upd('estimatedValue', Number(val) || 0);
-    }
+  // AI Analysis Engine — 3 Sequential Runs
+  const getPhotos = () => (Array.isArray(tx.itemPhotos) ? tx.itemPhotos : []).filter(Boolean);
+  const aiParseField = (text, key) => { const m = text.match(new RegExp(`${key}:\\s*(.+?)(?:\\n|$)`, 'i')); return m ? m[1].trim() : ''; };
+  const AI_TIMEOUT = 60000; // 60s timeout per AI call
+
+  const callWithTimeout = (fn, timeout) => Promise.race([
+    fn(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('AI request timed out. Please try again or enter details manually.')), timeout))
+  ]);
+
+  const switchToManualMode = (errorMsg) => {
+    upd('aiManualMode', true);
+    setAiError(errorMsg || 'AI failed. Please enter all details manually.');
     setAiLoading(false);
+    setAiLoadingPhase('');
+  };
+
+  // RUN 1: Item Identification & Spec Verification
+  const handleAIRun1 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run1'); setAiError('');
+    const photos = getPhotos();
+    if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); setAiLoadingPhase(''); return; }
+    const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
+    const prompt = `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words. Give your answer in this exact format only (no extra text):
+
+CRITICAL INSTRUCTION: If the 'About' screen or spec sticker is readable, reply in this exact format:
+
+1. AI_ITEM_TYPE: [what the item is]
+2. BRAND: [brand name]
+3. MODEL: [model name or number] (KEY_SPECS: [the most important specs that affect value — keep it under 12 words])
+4. COLOUR: [colour(s)]
+5. CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
+
+But if the spec sticker or About screen is blurry, unreadable, or missing, YOU MUST REPLY WITH:
+SPECS_UNREADABLE: [List exactly what you cannot read and why (very concise)]
+
+Then still reply the 5 answers with what you believe about the item based on what you have analysed and identified from the photos (you can also search the internet based on content of the photos if necessary) and give your confidence score as a percentage.`;
+    try {
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      const text = result.text;
+      upd('aiRawResponse', text);
+      const specsUnreadable = aiParseField(text, 'SPECS_UNREADABLE');
+      if (specsUnreadable) upd('aiSpecsUnreadable', specsUnreadable);
+      upd('aiItemType', aiParseField(text, 'AI_ITEM_TYPE') || tx.captureItemType);
+      upd('aiBrand', aiParseField(text, 'BRAND'));
+      // Parse MODEL and KEY_SPECS — format: "Model Name (KEY_SPECS: specs here)"
+      const modelRaw = aiParseField(text, 'MODEL');
+      const specsMatch = modelRaw.match(/\(?\s*KEY_SPECS:\s*(.+?)\s*\)?$/i);
+      if (specsMatch) {
+        upd('aiModel', modelRaw.replace(/\(?\s*KEY_SPECS:.+$/i, '').trim());
+        upd('aiKeySpecs', specsMatch[1].trim());
+      } else {
+        upd('aiModel', modelRaw);
+        upd('aiKeySpecs', aiParseField(text, 'KEY_SPECS'));
+      }
+      upd('aiColour', aiParseField(text, 'COLOUR'));
+      upd('aiConfidence', aiParseField(text, 'CONFIDENCE'));
+      upd('aiRun1Done', true);
+    } catch (e) {
+      switchToManualMode(e.message);
+      return;
+    }
+    setAiLoading(false); setAiLoadingPhase('');
+  };
+
+  // RUN 2: Condition Description
+  const handleAIRun2 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run2'); setAiError('');
+    const photos = getPhotos();
+    // Build inspection results text
+    const checklist = INSPECTION_CHECKLISTS[tx.captureItemType] || [];
+    const checkedMap = tx.inspectionChecklist || {};
+    const inspResults = checklist.map(item => `${checkedMap[item] ? '✅' : '❌'} ${item}`).join('\n');
+    const staffNotes = (tx.inspectionNotes || '').trim() || 'None';
+    const prompt = `You are a second-hand shop assistant in Aguleri, Anambra Nigeria. Look at all the photos of this ${tx.aiItemType || tx.captureItemType} — ${tx.aiBrand || 'Unknown brand'} — ${tx.aiModel || 'Unknown model'}.
+Also read the inspection checklist results and staff notes below.
+
+Write a short, honest condition description of this item. Focus only on things that will affect how much we can sell it for. Use simple everyday words — no big English. Do not repeat yourself. Maximum 350 characters.
+
+Inspection results:
+${inspResults}
+
+Staff notes: ${staffNotes}
+
+Reply with the condition description only. Nothing else.`;
+    try {
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      const text = (result.text || '').trim();
+      upd('aiRawResponse2', text);
+      upd('aiCondition', text);
+      upd('conditionDescription', text);
+      upd('aiRun2Done', true);
+    } catch (e) {
+      switchToManualMode(e.message);
+      return;
+    }
+    setAiLoading(false); setAiLoadingPhase('');
+  };
+
+  // RUN 3: Resale Valuation (with Google Search grounding)
+  const handleAIRun3 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run3'); setAiError('');
+    const photos = getPhotos();
+    const prompt = `You are helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item in our local market TODAY.
+
+Item details:
+* Type: ${tx.aiItemType || tx.captureItemType || 'Unknown'}
+* Brand and model: ${tx.aiBrand || 'Unknown'} ${tx.aiModel || 'Unknown'}
+* Colour: ${tx.aiColour || 'Unknown'}
+* Specs: ${tx.aiKeySpecs || 'Not available'}
+* Condition: (look at the photos to assess condition)
+
+Instructions:
+1. Search Jumia.com.ng and Konga.com or similar online stores for the BRAND NEW price. (If this is a generic/unbranded Chinese item, skip this step and use local market averages).
+2. Search the internet for the current selling price of this exact item on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale websites. Look for listings in Anambra State or nearby states if available.
+
+CRITICAL ANTI-SCAM RULE: Ignore the lowest 20% of Jiji.ng prices — these are usually scams or bait listings. Find the true, realistic median used price.
+
+3. Use those prices as your base. Then adjust for:
+   - The item condition from the analyzed photos
+   - The fact that Aguleri is a smaller market than Lagos or Enugu (less demand, so prices are slightly lower)
+   - Current supply/demand trends — if this item is very common in resale markets, price competitively; if rare, price can be slightly higher
+   - Age of the model — older models lose value faster
+   - Season and timing — some items sell better in certain periods
+
+4. Give me the realistic price we can sell this item for TODAY in Aguleri or Awka. This must be a price that a buyer would actually pay, not a wishful price.
+
+5. Use simple everyday English. No big words.
+
+Reply in this exact format only (no extra text):
+ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
+PRICE_BASIS: [2 to 3 short sentences explaining what prices you found online and how you arrived at this number]
+NEW_MARKET_PRICE: [number only — the brand new price, or 0 if not found]
+PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]`;
+    try {
+      const result = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      const text = result.text;
+      upd('aiRawResponse3', text);
+      const estimatedVal = aiParseField(text, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
+      upd('aiEstimatedValue', estimatedVal);
+      upd('estimatedValue', Number(estimatedVal) || 0);
+      upd('aiPriceBasis', aiParseField(text, 'PRICE_BASIS'));
+      upd('aiNewMarketPrice', aiParseField(text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, ''));
+      // Parse PRICE_RANGE: "45000-60000" or "45000 - 60000"
+      const rangeRaw = aiParseField(text, 'PRICE_RANGE');
+      const rangeMatch = rangeRaw.match(/(\d[\d,]*)\s*[-–—]\s*(\d[\d,]*)/);
+      if (rangeMatch) {
+        upd('aiPriceRangeLow', rangeMatch[1].replace(/,/g, ''));
+        upd('aiPriceRangeHigh', rangeMatch[2].replace(/,/g, ''));
+      }
+      upd('aiRun3Done', true);
+    } catch (e) {
+      switchToManualMode(e.message);
+      return;
+    }
+    setAiLoading(false); setAiLoadingPhase('');
   };
 
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
@@ -2657,7 +2829,7 @@ CONDITION: [detailed condition description]`;
         if (anyUnticked && !(tx.inspectionNotes || '').trim()) return false;
         return true;
       }
-      case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.estimatedValue > 0);
+      case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.aiBrand && tx.estimatedValue > 0 && (tx.conditionDescription || tx.aiCondition));
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
       case 'agreement': return !!tx.photoSigning;
       default: return true;
@@ -2719,7 +2891,12 @@ CONDITION: [detailed condition description]`;
         break;
       }
       case 'aiValuation':
-        if (!tx.partsOnly && !(tx.aiItemType && tx.estimatedValue > 0)) issues.push('You must run AI Valuation and confirm the item type and value before proceeding.');
+        if (!tx.partsOnly) {
+          if (!tx.aiItemType) issues.push('Item type is required. Run AI identification or enter it manually.');
+          if (!tx.aiBrand) issues.push('Brand is required. Run AI identification or enter it manually.');
+          if (!tx.estimatedValue || tx.estimatedValue <= 0) issues.push('Estimated resale value is required. Run AI valuation or enter it manually.');
+          if (!(tx.conditionDescription || tx.aiCondition)) issues.push('Condition description is required. Run AI condition check or enter it manually.');
+        }
         break;
       case 'offer':
         if (!tx.cashAdvance) issues.push('You must enter the cash advance amount before proceeding.');
@@ -2820,7 +2997,137 @@ CONDITION: [detailed condition description]`;
 
       case 'inspection': return (<InspectionStep tx={tx} upd={upd} />);
 
-      case 'aiValuation': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🤖 AI Item Valuation</h3>{tx.partsOnly ? (<div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>) : (<><div style={S.alert('info')}>📋 Click <strong>Run AI Valuation</strong> after uploading photos. Wait for the result, then check the figures are reasonable before proceeding. You can edit any field manually if needed.</div><button style={S.btn('primary')} onClick={handleAIValuation} disabled={aiLoading}>{aiLoading ? '⏳ Analyzing...' : '🤖 Run AI Valuation'}</button>{aiError && <div style={{ ...S.alert('danger'), marginTop: '12px' }}>{aiError}</div>}{tx.aiRawResponse && <div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '120px', overflow: 'auto' }}><strong>Raw AI:</strong><br />{tx.aiRawResponse}</div>}<div style={{ ...S.grid2, marginTop: '16px' }}><Field label="Item Type" required><input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" /></Field><Field label="Brand" required><input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" /></Field><Field label="Model" required><input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" /></Field><Field label="Colour"><input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" /></Field></div><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number, so make sure it looks right. Use your own knowledge to double-check what the AI says." /></span>} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue} onChange={e => upd('estimatedValue', Number(e.target.value))} placeholder="e.g. 85000" /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Condition Description<InfoIcon tip="Write what the item looks like right now — scratches, cracks, dents, anything missing, etc. This goes on the agreement form and protects us if the customer later claims we damaged it." /></span>} required><textarea style={S.textarea} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" /></Field></>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button></div></div></div>);
+      case 'aiValuation': return (<div>
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🧠 AI Analysis Engine</h3>
+
+        {tx.partsOnly ? (
+          <div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>
+        ) : (<>
+          {/* Manual mode warning */}
+          {tx.aiManualMode && (
+            <div style={{ ...S.alert('danger'), marginBottom: '16px', border: '2px solid ' + COLORS.danger }}>
+              ⚠️ <strong>AI failed or timed out.</strong> Please enter all item details manually. You can retry any AI step using the buttons below.
+            </div>
+          )}
+
+          <div style={S.alert('info')}>📋 Run each AI step in order. Wait for each result before proceeding to the next. You can edit any field after each step.</div>
+
+          {/* ══════════════ RUN 1: Item Identification ══════════════ */}
+          <div style={{ border: `2px solid ${tx.aiRun1Done ? COLORS.primary : COLORS.border}`, borderRadius: '12px', padding: '16px', marginTop: '16px', background: tx.aiRun1Done ? COLORS.primaryLight : '#fff' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '20px' }}>{tx.aiRun1Done ? '✅' : '1️⃣'}</span>
+              <span style={{ fontWeight: 700, fontSize: '14px' }}>Item Identification & Spec Verification</span>
+              {tx.aiConfidence && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', background: parseInt(tx.aiConfidence) >= 80 ? '#dcfce7' : parseInt(tx.aiConfidence) >= 50 ? '#fef3c7' : '#fde8e6', color: parseInt(tx.aiConfidence) >= 80 ? '#166534' : parseInt(tx.aiConfidence) >= 50 ? '#92400e' : COLORS.danger }}>Confidence: {tx.aiConfidence}</span>}
+            </div>
+            <button style={S.btn('primary')} onClick={handleAIRun1} disabled={aiLoading}>
+              {aiLoading && aiLoadingPhase === 'run1' ? '⏳ Identifying Item...' : tx.aiRun1Done ? '🔄 Re-run Identification' : '🤖 Identify Item with AI'}
+            </button>
+            {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
+            {tx.aiSpecsUnreadable && <div style={{ ...S.alert('warning'), marginTop: '8px' }}>⚠️ <strong>Specs unreadable:</strong> {tx.aiSpecsUnreadable}</div>}
+
+            {/* Editable fields — always visible */}
+            <div style={{ ...S.grid2, marginTop: '12px' }}>
+              <Field label="Item Type" required>
+                <input style={S.input} value={tx.aiItemType} onChange={e => upd('aiItemType', e.target.value)} placeholder="e.g. Smartphone" />
+              </Field>
+              <Field label="Brand" required>
+                <input style={S.input} value={tx.aiBrand} onChange={e => upd('aiBrand', e.target.value)} placeholder="e.g. Samsung" />
+              </Field>
+              <Field label="Model" required>
+                <input style={S.input} value={tx.aiModel} onChange={e => upd('aiModel', e.target.value)} placeholder="e.g. Galaxy A14" />
+              </Field>
+              <Field label="Colour">
+                <input style={S.input} value={tx.aiColour} onChange={e => upd('aiColour', e.target.value)} placeholder="e.g. Black" />
+              </Field>
+            </div>
+            <Field label="Key Specs">
+              <input style={S.input} value={tx.aiKeySpecs} onChange={e => upd('aiKeySpecs', e.target.value)} placeholder="e.g. 128GB, 6GB RAM, 6.6-inch display" />
+            </Field>
+            {tx.aiRawResponse && <details style={{ marginTop: '8px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse}</div></details>}
+          </div>
+
+          {/* ══════════════ RUN 2: Condition Description ══════════════ */}
+          <div style={{ border: `2px solid ${tx.aiRun2Done ? COLORS.primary : COLORS.border}`, borderRadius: '12px', padding: '16px', marginTop: '16px', background: tx.aiRun2Done ? COLORS.primaryLight : '#fff', opacity: (!tx.aiRun1Done && !tx.aiManualMode) ? 0.5 : 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '20px' }}>{tx.aiRun2Done ? '✅' : '2️⃣'}</span>
+              <span style={{ fontWeight: 700, fontSize: '14px' }}>Condition Description</span>
+            </div>
+            <button style={S.btn('primary')} onClick={handleAIRun2} disabled={aiLoading || (!tx.aiRun1Done && !tx.aiManualMode && !tx.aiItemType)}>
+              {aiLoading && aiLoadingPhase === 'run2' ? '⏳ Generating Description...' : tx.aiRun2Done ? '🔄 Re-generate Description' : '📝 Generate Condition Description'}
+            </button>
+            {aiError && !aiLoading && tx.aiRun1Done && !tx.aiRun2Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
+
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Condition Description<InfoIcon tip="Write what the item looks like right now — scratches, cracks, dents, anything missing, etc. This goes on the agreement form and protects us if the customer later claims we damaged it." /></span>} required>
+              <textarea style={{ ...S.textarea, minHeight: '80px' }} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" maxLength={350} />
+              {(tx.conditionDescription || tx.aiCondition) && <div style={{ fontSize: '11px', color: COLORS.textMuted, textAlign: 'right', marginTop: '2px' }}>{(tx.conditionDescription || tx.aiCondition).length}/350 characters</div>}
+            </Field>
+            {tx.aiRawResponse2 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse2}</div></details>}
+          </div>
+
+          {/* ══════════════ RUN 3: Resale Valuation ══════════════ */}
+          <div style={{ border: `2px solid ${tx.aiRun3Done ? COLORS.primary : COLORS.border}`, borderRadius: '12px', padding: '16px', marginTop: '16px', background: tx.aiRun3Done ? COLORS.primaryLight : '#fff', opacity: (!tx.aiRun2Done && !tx.aiManualMode) ? 0.5 : 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <span style={{ fontSize: '20px' }}>{tx.aiRun3Done ? '✅' : '3️⃣'}</span>
+              <span style={{ fontWeight: 700, fontSize: '14px' }}>Resale Valuation</span>
+              {tx.aiRun3Done && <span style={{ marginLeft: 'auto', fontSize: '11px', color: COLORS.textMuted }}>Powered by Google Search</span>}
+            </div>
+            <button style={{ ...S.btn('primary'), background: '#e67e22' }} onClick={handleAIRun3} disabled={aiLoading || (!tx.aiRun2Done && !tx.aiManualMode && !tx.aiItemType)}>
+              {aiLoading && aiLoadingPhase === 'run3' ? '⏳ Searching Market Prices...' : tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Market Price'}
+            </button>
+            {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
+
+            {/* Price range display */}
+            {tx.aiRun3Done && tx.aiPriceRangeLow && tx.aiPriceRangeHigh && (
+              <div style={{ marginTop: '12px', padding: '12px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', color: COLORS.textMuted }}>Price Range</span>
+                  {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && <span style={{ fontSize: '11px', color: COLORS.textMuted }}>New price: {fmtMoney(Number(tx.aiNewMarketPrice))}</span>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>{fmtMoney(Number(tx.aiPriceRangeLow))}</span>
+                  <div style={{ flex: 1, height: '8px', background: '#e5e7eb', borderRadius: '4px', position: 'relative' }}>
+                    {(() => {
+                      const low = Number(tx.aiPriceRangeLow) || 0;
+                      const high = Number(tx.aiPriceRangeHigh) || 1;
+                      const val = Number(tx.estimatedValue) || 0;
+                      const pct = high > low ? Math.min(100, Math.max(0, ((val - low) / (high - low)) * 100)) : 50;
+                      return <div style={{ position: 'absolute', left: `${pct}%`, top: '-4px', width: '16px', height: '16px', borderRadius: '50%', background: COLORS.primary, border: '2px solid #fff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', transform: 'translateX(-50%)' }} />;
+                    })()}
+                  </div>
+                  <span style={{ fontSize: '13px', fontWeight: 600 }}>{fmtMoney(Number(tx.aiPriceRangeHigh))}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Price basis — shown below the range */}
+            {tx.aiPriceBasis && (
+              <div style={{ marginTop: '8px', padding: '10px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '12px', color: COLORS.text }}>
+                <strong>How this price was calculated:</strong> {tx.aiPriceBasis}
+              </div>
+            )}
+
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
+                let val = Number(e.target.value) || 0;
+                const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
+                if (maxPrice > 0 && val > maxPrice) val = maxPrice;
+                upd('estimatedValue', val);
+              }} placeholder="e.g. 85000" />
+              {Number(tx.aiPriceRangeHigh) > 0 && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>Maximum allowed: {fmtMoney(Number(tx.aiPriceRangeHigh))}</div>}
+            </Field>
+            {tx.aiRawResponse3 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3}</div></details>}
+          </div>
+        </>)}
+
+        {/* End transaction options */}
+        <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
+          <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item in poor or heavily damaged condition')}>Item in poor or heavily damaged condition</button>
+            <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Item appeared modified')}>Item appeared modified</button>
+          </div>
+        </div>
+      </div>);
 
 
       case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
@@ -3484,11 +3791,16 @@ export default function App() {
           {tx.captureItemType && row('Category', <>{tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
           {row('Identified As', [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' '))}
           {row('Colour', tx.aiColour)}
+          {tx.aiKeySpecs && row('Key Specs', tx.aiKeySpecs)}
+          {tx.aiConfidence && row('AI Confidence', tx.aiConfidence)}
           {row('Condition', tx.aiCondition)}
           {tx.imei && row('IMEI', <>{tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: tx.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
           {tx.serialNumber && row('Serial No.', tx.serialNumber)}
           {tx.conditionDescription && row('Condition Notes', tx.conditionDescription)}
           {tx.hasReceipt != null && row('Receipt', tx.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
+          {tx.aiPriceBasis && row('Price Basis', tx.aiPriceBasis)}
+          {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
+          {tx.aiPriceRangeLow && tx.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(tx.aiPriceRangeLow))} — ${fmtMoney(Number(tx.aiPriceRangeHigh))}`)}
         </div>
       </div>
 
