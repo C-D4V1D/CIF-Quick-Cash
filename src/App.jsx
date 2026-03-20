@@ -2697,7 +2697,7 @@ const EMPTY_TX = {
   inspectionChecklist: {}, inspectionNotes: '',
   aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiKeySpecs: '', aiConfidence: '', aiSpecsUnreadable: '',
   aiCondition: '', aiEstimatedValue: '', aiNewMarketPrice: '', aiPriceBasis: '', aiPriceRangeLow: '', aiPriceRangeHigh: '', aiValuationConfidence: '',
-  aiVisionUsed: false, aiVisionLabels: '',
+  aiVisionUsed: false, aiVisionLabels: '', aiModelVerified: '',
   aiRawResponse: '', aiRawResponse2: '', aiRawResponse3: '',
   aiRun1Done: false, aiRun2Done: false, aiRun3Done: false, aiManualMode: false,
   requiresIMEI: false,
@@ -2857,7 +2857,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   // is configured, run reverse image search to get additional context, then re-ask Gemini
   // with the Vision data to improve accuracy.
   const handleAIRun1 = async () => {
-    setAiLoading(true); setAiLoadingPhase('run1'); setAiError('');
+    setAiLoading(true); setAiLoadingPhase('run1'); setAiError(''); upd('aiModelVerified', '');
     // Check API usage limits before making calls
     const geminiCheck = checkGeminiLimit(settings);
     if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
@@ -2930,15 +2930,50 @@ Then still reply with ALL 6 fields above with your best guess based on what you 
       upd('aiRawResponse', result.text);
       const { confidence } = parseGeminiResult(result.text);
 
-      // Step 3: If confidence is low, retry with Google Search grounding
-      // so Gemini can look up the product online to verify/correct the model
-      const confNum = parseInt(confidence) || 0;
-      if (confNum < 85) {
-        setAiLoadingPhase('run1_refine');
-        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
+      // Step 3: ALWAYS verify model via Google Search grounding
+      // Gemini can be 98% confident but still hallucinate the model number.
+      // This step searches the internet to confirm the model exists and corrects it if needed.
+      setAiLoadingPhase('run1_verify');
+      const identBrand = aiParseField(result.text, 'BRAND');
+      const identModel = aiParseField(result.text, 'MODEL');
+      const identItemType = aiParseField(result.text, 'AI_ITEM_TYPE');
+      const identKeySpecs = aiParseField(result.text, 'KEY_SPECS');
+
+      const verifyPrompt = `You are verifying a product identification for a second-hand shop in Nigeria.
+
+The AI identified this item from photos:
+- Item type: ${identItemType}
+- Brand: ${identBrand}
+- Model: ${identModel}
+- Key specs: ${identKeySpecs}
+${visionContext ? `\nImage analysis context:\n${visionContext}\n` : ''}
+YOUR TASK: Search the internet to verify if "${identBrand} ${identModel}" is a real product that actually exists.
+
+If it IS a real product: confirm the identification and return the same details.
+If it is NOT a real product or you cannot find it: search for the correct ${identBrand} ${identItemType} model that best matches the specs (${identKeySpecs}) and the image analysis context above. Look at product databases, review sites, and retailer listings.
+
+CRITICAL: The model name/number must be a REAL product that exists. Do not guess or make up model numbers.
+
+Reply in this exact format (no markdown, no extra text):
+
+AI_ITEM_TYPE: ${identItemType}
+BRAND: [confirmed or corrected brand]
+MODEL: [the VERIFIED real model name/number]
+KEY_SPECS: [confirmed or corrected specs — under 12 words]
+COLOUR: [colour]
+CONFIDENCE: [your confidence now, as percentage]
+MODEL_VERIFIED: [YES if you confirmed it exists, CORRECTED if you found a different model, UNVERIFIED if you could not confirm]`;
+
+      const geminiCheck2 = checkGeminiLimit(settings);
+      if (!geminiCheck2.blocked) {
+        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, verifyPrompt), AI_TIMEOUT);
         if (!result2.error && result2.text) {
-          upd('aiRawResponse', result2.text);
-          parseGeminiResult(result2.text);
+          const verifyStatus = aiParseField(result2.text, 'MODEL_VERIFIED');
+          if (verifyStatus) {
+            upd('aiRawResponse', result2.text);
+            parseGeminiResult(result2.text);
+            upd('aiModelVerified', verifyStatus);
+          }
         }
       }
 
@@ -3322,11 +3357,12 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               <span style={{ fontSize: '20px' }}>{tx.aiRun1Done ? '✅' : '1️⃣'}</span>
               <span style={{ fontWeight: 700, fontSize: '14px' }}>Item Identification & Spec Verification</span>
               {tx.aiConfidence && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', background: parseInt(tx.aiConfidence) >= 80 ? '#dcfce7' : parseInt(tx.aiConfidence) >= 50 ? '#fef3c7' : '#fde8e6', color: parseInt(tx.aiConfidence) >= 80 ? '#166534' : parseInt(tx.aiConfidence) >= 50 ? '#92400e' : COLORS.danger }}>Confidence: {tx.aiConfidence}</span>}
+              {tx.aiModelVerified && <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', marginLeft: '4px', background: tx.aiModelVerified === 'YES' ? '#dcfce7' : tx.aiModelVerified === 'CORRECTED' ? '#fef3c7' : '#fde8e6', color: tx.aiModelVerified === 'YES' ? '#166534' : tx.aiModelVerified === 'CORRECTED' ? '#92400e' : COLORS.danger }}>{tx.aiModelVerified === 'YES' ? '✓ Model verified' : tx.aiModelVerified === 'CORRECTED' ? '⚠ Model corrected' : '? Unverified'}</span>}
             </div>
             <button style={S.btn('primary')} onClick={handleAIRun1} disabled={aiLoading}>
               {aiLoading && aiLoadingPhase === 'run1' ? '⏳ Identifying Item...' :
                aiLoading && aiLoadingPhase === 'run1_vision' ? '⏳ Running reverse image search...' :
-               aiLoading && aiLoadingPhase === 'run1_refine' ? '⏳ Refining with Vision data...' :
+               aiLoading && aiLoadingPhase === 'run1_verify' ? '⏳ Verifying model online...' :
                tx.aiRun1Done ? '🔄 Re-run Identification' : '🤖 Identify Item with AI'}
             </button>
             {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
