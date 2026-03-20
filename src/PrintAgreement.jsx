@@ -21,7 +21,9 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
   const familyLine = [tx.familyName, tx.familyRelation ? `(${tx.familyRelation})` : '', tx.familyPhone]
     .filter(Boolean).join('  —  ');
   const itemLine = [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' / ');
-  const colourCondition = [tx.aiColour, tx.conditionDescription].filter(Boolean).join('  —  ');
+  // Sanitize condition for HTML: strip newlines, escape HTML entities
+  const safeCondition = (tx.conditionDescription || '').replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/[<>"&]/g, c => ({'<':'&lt;','>':'&gt;','"':'&quot;','&':'&amp;'}[c]));
+  const colourCondition = [tx.aiColour, safeCondition].filter(Boolean).join('  —  ');
   const serialImei = [tx.imei && `IMEI: ${tx.imei}`, tx.serialNumber && `S/N: ${tx.serialNumber}`]
     .filter(Boolean).join('     ');
   const interestRate = settings.interestRate || 1;

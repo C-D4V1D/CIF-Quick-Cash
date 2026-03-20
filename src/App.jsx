@@ -389,15 +389,20 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts }] })
-      });
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }] }) };
+      let resp = await fetch(url, options);
+      // Retry once on transient errors (429/500/502/503)
+      if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
+        await new Promise(r => setTimeout(r, 2000));
+        resp = await fetch(url, options);
+      }
       const data = await resp.json().catch(() => null);
       if (data?.candidates?.[0]?.content?.parts?.[0]?.text) return { text: data.candidates[0].content.parts[0].text, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
-      const modelUnavailable = errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const isTransient = [429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
       const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
       if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
     }
@@ -421,18 +426,20 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          tools: [{ google_search: {} }]
-        })
-      });
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }], tools: [{ google_search: {} }] }) };
+      let resp = await fetch(url, options);
+      // Retry once on transient errors (429/500/502/503)
+      if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
+        await new Promise(r => setTimeout(r, 2000));
+        resp = await fetch(url, options);
+      }
       const data = await resp.json().catch(() => null);
       if (data?.candidates?.[0]?.content?.parts?.[0]?.text) return { text: data.candidates[0].content.parts[0].text, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
-      const modelUnavailable = errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const isTransient = [429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
       const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
       if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
     }
@@ -454,7 +461,7 @@ const callCloudVision = async (apiKey, imageData) => {
         { type: 'LABEL_DETECTION', maxResults: 15 },
         { type: 'TEXT_DETECTION', maxResults: 5 },
         { type: 'WEB_DETECTION', maxResults: 10 },
-        { type: 'PRODUCT_SEARCH', maxResults: 5 }
+        { type: 'OBJECT_LOCALIZATION', maxResults: 5 }
       ] };
     } else {
       // Fetch and convert URL to base64
@@ -467,7 +474,7 @@ const callCloudVision = async (apiKey, imageData) => {
         { type: 'LABEL_DETECTION', maxResults: 15 },
         { type: 'TEXT_DETECTION', maxResults: 5 },
         { type: 'WEB_DETECTION', maxResults: 10 },
-        { type: 'PRODUCT_SEARCH', maxResults: 5 }
+        { type: 'OBJECT_LOCALIZATION', maxResults: 5 }
       ] };
     }
 
@@ -2705,7 +2712,15 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
 
   // AI Analysis Engine — 3 Sequential Runs
   const getPhotos = () => (Array.isArray(tx.itemPhotos) ? tx.itemPhotos : []).filter(Boolean);
-  const aiParseField = (text, key) => { const m = text.match(new RegExp(`${key}:\\s*(.+?)(?:\\n|$)`, 'i')); return m ? m[1].trim() : ''; };
+  // Parse a KEY: value field from AI response. Handles:
+  // - Numbered prefixes: "1. KEY:" or "1) KEY:" or "1 KEY:"
+  // - Multi-line values: captures until next KEY_LIKE_THIS: pattern or end of text
+  // - Collapses newlines into spaces
+  const aiParseField = (text, key) => {
+    const pattern = new RegExp(`(?:^|\\n)\\s*(?:\\d+[.)\\s]*)?${key}:\\s*(.+?)(?=\\n\\s*(?:\\d+[.)\\s]*)?[A-Z][A-Z_]+:|$)`, 'is');
+    const m = text.match(pattern);
+    return m ? m[1].trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ') : '';
+  };
   const AI_TIMEOUT = 60000; // 60s timeout per AI call
 
   const callWithTimeout = (fn, timeout) => Promise.race([
@@ -2729,35 +2744,29 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     const photos = getPhotos();
     if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); setAiLoadingPhase(''); return; }
     const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
-    const basePrompt = (visionContext) => `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words. Give your answer in this exact format only (no extra text):
+    const basePrompt = (visionContext) => `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words.
 ${visionContext ? `\nADDITIONAL CONTEXT FROM REVERSE IMAGE SEARCH (use this to confirm or correct your identification):\n${visionContext}\n` : ''}
-CRITICAL INSTRUCTION: If the 'About' screen or spec sticker is readable, reply in this exact format:
+CRITICAL INSTRUCTION: If the 'About' screen or spec sticker is readable, reply in this exact format (no numbered prefixes, no markdown, no extra text):
 
-1. AI_ITEM_TYPE: [what the item is]
-2. BRAND: [brand name]
-3. MODEL: [model name or number] (KEY_SPECS: [the most important specs that affect value — keep it under 12 words])
-4. COLOUR: [colour(s)]
-5. CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
+AI_ITEM_TYPE: [what the item is]
+BRAND: [brand name]
+MODEL: [model name or number]
+KEY_SPECS: [the most important specs that affect resale value — keep it under 12 words]
+COLOUR: [colour(s)]
+CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
 
-But if the spec sticker or About screen is blurry, unreadable, or missing, YOU MUST REPLY WITH:
+But if the spec sticker or About screen is blurry, unreadable, or missing, you MUST ALSO include this line BEFORE the other fields:
 SPECS_UNREADABLE: [List exactly what you cannot read and why (very concise)]
 
-Then still reply the 5 answers with what you believe about the item based on what you have analysed and identified from the photos (you can also search the internet based on content of the photos if necessary) and give your confidence score as a percentage.`;
+Then still reply with ALL 6 fields above with your best guess based on what you can see in the photos and any internet research. Your CONFIDENCE score should reflect how certain you are about the MODEL and KEY_SPECS.`;
 
     const parseGeminiResult = (text) => {
       const specsUnreadable = aiParseField(text, 'SPECS_UNREADABLE');
       if (specsUnreadable) upd('aiSpecsUnreadable', specsUnreadable);
       upd('aiItemType', aiParseField(text, 'AI_ITEM_TYPE') || tx.captureItemType);
       upd('aiBrand', aiParseField(text, 'BRAND'));
-      const modelRaw = aiParseField(text, 'MODEL');
-      const specsMatch = modelRaw.match(/\(?\s*KEY_SPECS:\s*(.+?)\s*\)?$/i);
-      if (specsMatch) {
-        upd('aiModel', modelRaw.replace(/\(?\s*KEY_SPECS:.+$/i, '').trim());
-        upd('aiKeySpecs', specsMatch[1].trim());
-      } else {
-        upd('aiModel', modelRaw);
-        upd('aiKeySpecs', aiParseField(text, 'KEY_SPECS'));
-      }
+      upd('aiModel', aiParseField(text, 'MODEL'));
+      upd('aiKeySpecs', aiParseField(text, 'KEY_SPECS'));
       upd('aiColour', aiParseField(text, 'COLOUR'));
       const confidence = aiParseField(text, 'CONFIDENCE');
       upd('aiConfidence', confidence);
@@ -2781,12 +2790,18 @@ Then still reply the 5 answers with what you believe about the item based on wha
         // Use the first 2 photos for Vision (front + back/label are most useful)
         const visionPhotos = photos.slice(0, 2);
         const visionResults = [];
+        const allVisionLabels = [];
         for (const photo of visionPhotos) {
           const vr = await callWithTimeout(() => callCloudVision(settings.cloudVisionApiKey, photo), 30000);
           if (!vr.error && vr.summary) visionResults.push(vr.summary);
-          // Store labels for display
-          if (!vr.error && vr.labels) upd('aiVisionLabels', (vr.bestGuess || []).concat(vr.logos || []).concat((vr.webEntities || []).slice(0, 3)).join(', '));
+          // Accumulate labels from all photos (deduplicate later)
+          if (!vr.error) {
+            allVisionLabels.push(...(vr.bestGuess || []), ...(vr.logos || []), ...((vr.webEntities || []).slice(0, 3).map(e => e.split(' (')[0])));
+          }
         }
+        // Deduplicate and store accumulated labels
+        const uniqueLabels = [...new Set(allVisionLabels.filter(Boolean))];
+        if (uniqueLabels.length > 0) upd('aiVisionLabels', uniqueLabels.join(', '));
 
         if (visionResults.length > 0) {
           upd('aiVisionUsed', true);
@@ -2821,9 +2836,20 @@ Then still reply the 5 answers with what you believe about the item based on wha
     const prompt = `You are a second-hand shop assistant in Aguleri, Anambra Nigeria. Look at all the photos of this ${tx.aiItemType || tx.captureItemType} — ${tx.aiBrand || 'Unknown brand'} — ${tx.aiModel || 'Unknown model'}.
 Also read the inspection checklist results and staff notes below.
 
-Write a short, honest condition description of this item. Focus only on things that will affect how much we can sell it for. Use simple everyday words — no big English. Do not repeat yourself. Maximum 400 characters.
+Write a condition description in TWO parts joined into one flowing paragraph:
 
-IMPORTANT: About 60% of your description should come from what you can SEE in the photos — scratches, dents, cracks, screen condition, body wear, missing parts, colour fading, etc. The remaining 40% should come from the inspection checklist results and staff notes below — failed checks, issues staff noticed during hands-on testing, etc.
+PART A (from photos — write this FIRST, about 240 characters):
+Describe what you can SEE in the photos — scratches, dents, cracks, screen condition, body wear, missing parts, colour fading, stains, bent edges, etc. Only mention issues that affect how much we can sell it for.
+
+PART B (from inspection & staff notes — write this SECOND, about 160 characters):
+Summarize the key findings from the checklist and notes — which checks failed, what the staff noticed during hands-on testing, any functional issues.
+
+Rules:
+- Combine both parts into ONE paragraph, no line breaks, no bullet points
+- Maximum 400 characters total
+- Use simple everyday English — no big grammar words
+- Do not repeat yourself
+- Focus only on things that affect resale price
 
 Inspection results:
 ${inspResults}
@@ -2834,8 +2860,10 @@ Reply with the condition description only. Nothing else.`;
     try {
       const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
-      const text = (result.text || '').trim();
-      upd('aiRawResponse2', text);
+      // Post-process: sanitize newlines, collapse spaces, enforce 400 char limit
+      let text = (result.text || '').trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ');
+      if (text.length > 400) text = text.substring(0, 397) + '...';
+      upd('aiRawResponse2', result.text);
       upd('aiCondition', text);
       upd('conditionDescription', text);
       upd('aiRun2Done', true);
@@ -2850,38 +2878,48 @@ Reply with the condition description only. Nothing else.`;
   const handleAIRun3 = async () => {
     setAiLoading(true); setAiLoadingPhase('run3'); setAiError('');
     const photos = getPhotos();
+    const conditionText = tx.conditionDescription || tx.aiCondition || '';
     const prompt = `You are helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item in our local market TODAY.
+
+CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices listed in other currencies, convert them to Naira at the current exchange rate.
 
 Item details:
 * Type: ${tx.aiItemType || tx.captureItemType || 'Unknown'}
 * Brand and model: ${tx.aiBrand || 'Unknown'} ${tx.aiModel || 'Unknown'}
 * Colour: ${tx.aiColour || 'Unknown'}
 * Specs: ${tx.aiKeySpecs || 'Not available'}
-* Condition: (look at the photos to assess condition)
+* Condition: ${conditionText || '(assess from the photos)'}
 
 Instructions:
-1. Search Jumia.com.ng and Konga.com or similar online stores for the BRAND NEW price. (If this is a generic/unbranded Chinese item, skip this step and use local market averages).
+1. Search Jumia.com.ng and Konga.com or similar Nigerian online stores for the BRAND NEW price of this exact model. (If this is a generic/unbranded Chinese item, skip this step and use local market averages).
+
 2. Search the internet for the current selling price of this exact item on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale websites. Look for listings in Anambra State or nearby states if available.
 
-CRITICAL ANTI-SCAM RULE: Ignore the lowest 20% of Jiji.ng prices — these are usually scams or bait listings. Find the true, realistic median used price.
+CRITICAL ANTI-SCAM RULE: When looking at Jiji.ng prices:
+- Sort all listings for this item by price from lowest to highest
+- Throw away the cheapest 20% of listings — these are usually scam bait
+- From the remaining 80%, find the MEDIAN price (the middle value, not the average)
+- Use this median as your base for the used price
 
 3. Use those prices as your base. Then adjust for:
-   - The item condition from the analyzed photos
-   - The fact that Aguleri is a smaller market than Lagos or Enugu (less demand, so prices are slightly lower)
-   - Current supply/demand trends — if this item is very common in resale markets, price competitively; if rare, price can be slightly higher
+   - The item condition described above${conditionText ? '' : ' (also look at the photos)'}
+   - The fact that Aguleri is a smaller market than Lagos or Enugu (less demand, prices typically 10-20% lower than Lagos)
+   - Current supply/demand — if this item is very common in resale markets, price competitively; if rare, price slightly higher
    - Age of the model — older models lose value faster
    - Season and timing — some items sell better in certain periods
 
-4. Give me the realistic price we can sell this item for TODAY in Aguleri or Awka. This must be a price that a buyer would actually pay, not a wishful price.
+4. Give me the realistic price we can sell this item for TODAY in Aguleri or Awka. This must be a price a buyer would actually pay today — not a hopeful price, not a clearance price.
+
+SANITY CHECK: Second-hand item resale values in Aguleri typically range from about 2,000 (cheap accessories like power banks) to 3,000,000 (high-end generators or motorcycles). If your estimate falls outside this range, double-check your research.
 
 5. Use simple everyday English. No big words.
 
-Reply in this exact format only (no extra text):
+Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
 PRICE_BASIS: [2 to 3 short sentences explaining what prices you found online and how you arrived at this number]
 NEW_MARKET_PRICE: [number only — the brand new price, or 0 if not found]
 PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
-VALUATION_CONFIDENCE: [your confidence score as a percentage, e.g. 85% — based on how much real price data you found and how reliable your estimate is]`;
+VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if you found real price data, lower if you had to estimate]`;
     try {
       const result = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
@@ -2892,14 +2930,34 @@ VALUATION_CONFIDENCE: [your confidence score as a percentage, e.g. 85% — based
       upd('estimatedValue', Number(estimatedVal) || 0);
       upd('aiPriceBasis', aiParseField(text, 'PRICE_BASIS'));
       upd('aiNewMarketPrice', aiParseField(text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, ''));
-      // Parse PRICE_RANGE: "45000-60000" or "45000 - 60000"
+      // Parse PRICE_RANGE: handles "45000-60000", "₦45,000 to ₦60,000", "45000 – 60000"
       const rangeRaw = aiParseField(text, 'PRICE_RANGE');
-      const rangeMatch = rangeRaw.match(/(\d[\d,]*)\s*[-–—]\s*(\d[\d,]*)/);
+      const rangeCleaned = rangeRaw.replace(/[₦NGN,\s]/gi, '');
+      const rangeMatch = rangeCleaned.match(/(\d+)\s*(?:[-–—]|to)\s*(\d+)/i);
       if (rangeMatch) {
-        upd('aiPriceRangeLow', rangeMatch[1].replace(/,/g, ''));
-        upd('aiPriceRangeHigh', rangeMatch[2].replace(/,/g, ''));
+        const low = Number(rangeMatch[1]);
+        const high = Number(rangeMatch[2]);
+        upd('aiPriceRangeLow', String(Math.min(low, high)));
+        upd('aiPriceRangeHigh', String(Math.max(low, high)));
       }
       upd('aiValuationConfidence', aiParseField(text, 'VALUATION_CONFIDENCE'));
+
+      // Post-parse sanity checks — warning only, staff can still proceed
+      const val = Number(estimatedVal) || 0;
+      const parsedLow = Number(rangeMatch?.[1]) || 0;
+      const parsedHigh = Number(rangeMatch?.[2]) || 0;
+      const warnings = [];
+      if (val > 0 && (val < 1000 || val > 5000000)) {
+        warnings.push(`AI estimated ₦${val.toLocaleString()} — this seems unusual. Please verify manually.`);
+      }
+      if (parsedLow > 0 && parsedHigh > 0 && parsedHigh > parsedLow * 5) {
+        warnings.push('Price range spread is very wide — estimate may be unreliable.');
+      }
+      if (warnings.length > 0) setAiError('Warning: ' + warnings.join(' '));
+      // Clamp estimated value within price range
+      if (val > 0 && parsedHigh > 0 && val > parsedHigh) upd('estimatedValue', parsedHigh);
+      if (val > 0 && parsedLow > 0 && val < parsedLow) upd('estimatedValue', parsedLow);
+
       upd('aiRun3Done', true);
     } catch (e) {
       switchToManualMode(e.message);
