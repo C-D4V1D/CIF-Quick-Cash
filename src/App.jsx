@@ -280,7 +280,7 @@ const DEFAULT_SETTINGS = {
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, maxPartsOnlyAdvance: 5000,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', cloudVisionApiKey: '', ninApiKey: '',
   // Identity Verification
   requireNinVerification: false,
   // Item Categories
@@ -438,6 +438,70 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
     }
 
     return { error: `No supported Gemini model was available for this API key. Tried: ${modelCandidates.join(', ')}.` };
+  } catch (e) { return { error: e.message }; }
+};
+
+// Google Cloud Vision API — reverse image search for item identification
+const callCloudVision = async (apiKey, imageData) => {
+  if (!apiKey) return { error: 'No Cloud Vision API key set.' };
+  try {
+    // imageData can be a data URI or a URL
+    let request;
+    if (imageData.startsWith('data:')) {
+      const base64 = imageData.split(',')[1] || '';
+      request = { image: { content: base64 }, features: [
+        { type: 'LOGO_DETECTION', maxResults: 5 },
+        { type: 'LABEL_DETECTION', maxResults: 15 },
+        { type: 'TEXT_DETECTION', maxResults: 5 },
+        { type: 'WEB_DETECTION', maxResults: 10 },
+        { type: 'PRODUCT_SEARCH', maxResults: 5 }
+      ] };
+    } else {
+      // Fetch and convert URL to base64
+      const resp = await fetch(imageData);
+      if (!resp.ok) return { error: 'Failed to load image for Vision analysis.' };
+      const blob = await resp.blob();
+      const base64 = await toBase64(blob);
+      request = { image: { content: base64 }, features: [
+        { type: 'LOGO_DETECTION', maxResults: 5 },
+        { type: 'LABEL_DETECTION', maxResults: 15 },
+        { type: 'TEXT_DETECTION', maxResults: 5 },
+        { type: 'WEB_DETECTION', maxResults: 10 },
+        { type: 'PRODUCT_SEARCH', maxResults: 5 }
+      ] };
+    }
+
+    const resp = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: [request] })
+    });
+    const data = await resp.json().catch(() => null);
+    if (data?.error) return { error: data.error.message || 'Cloud Vision request failed.' };
+    const result = data?.responses?.[0];
+    if (!result) return { error: 'Cloud Vision returned no results.' };
+
+    // Extract useful information
+    const logos = (result.logoAnnotations || []).map(l => l.description).filter(Boolean);
+    const labels = (result.labelAnnotations || []).map(l => `${l.description} (${Math.round((l.score || 0) * 100)}%)`).filter(Boolean);
+    const texts = (result.textAnnotations || []).slice(0, 1).map(t => t.description).filter(Boolean);
+    const webEntities = (result.webDetection?.webEntities || []).filter(e => e.description && (e.score || 0) > 0.3).map(e => `${e.description} (${Math.round((e.score || 0) * 100)}%)`);
+    const bestGuess = (result.webDetection?.bestGuessLabels || []).map(l => l.label).filter(Boolean);
+    const pagesWithMatch = (result.webDetection?.pagesWithMatchingImages || []).slice(0, 5).map(p => p.pageTitle || p.url).filter(Boolean);
+
+    return {
+      logos,
+      labels,
+      texts: texts[0] || '',
+      webEntities,
+      bestGuess,
+      pagesWithMatch,
+      summary: [
+        bestGuess.length > 0 ? `Best guess: ${bestGuess.join(', ')}` : '',
+        logos.length > 0 ? `Logos: ${logos.join(', ')}` : '',
+        webEntities.length > 0 ? `Web matches: ${webEntities.slice(0, 5).join(', ')}` : '',
+        pagesWithMatch.length > 0 ? `Found on: ${pagesWithMatch.slice(0, 3).join('; ')}` : '',
+      ].filter(Boolean).join('\n')
+    };
   } catch (e) { return { error: e.message }; }
 };
 
@@ -2508,7 +2572,8 @@ const EMPTY_TX = {
   itemPhotos: [],
   inspectionChecklist: {}, inspectionNotes: '',
   aiItemType: '', aiBrand: '', aiModel: '', aiColour: '', aiKeySpecs: '', aiConfidence: '', aiSpecsUnreadable: '',
-  aiCondition: '', aiEstimatedValue: '', aiNewMarketPrice: '', aiPriceBasis: '', aiPriceRangeLow: '', aiPriceRangeHigh: '',
+  aiCondition: '', aiEstimatedValue: '', aiNewMarketPrice: '', aiPriceBasis: '', aiPriceRangeLow: '', aiPriceRangeHigh: '', aiValuationConfidence: '',
+  aiVisionUsed: false, aiVisionLabels: '',
   aiRawResponse: '', aiRawResponse2: '', aiRawResponse3: '',
   aiRun1Done: false, aiRun2Done: false, aiRun3Done: false, aiManualMode: false,
   requiresIMEI: false,
@@ -2656,13 +2721,16 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   };
 
   // RUN 1: Item Identification & Spec Verification
+  // Strategy: Gemini first. If confidence is 100%, done. Otherwise, if Cloud Vision API key
+  // is configured, run reverse image search to get additional context, then re-ask Gemini
+  // with the Vision data to improve accuracy.
   const handleAIRun1 = async () => {
     setAiLoading(true); setAiLoadingPhase('run1'); setAiError('');
     const photos = getPhotos();
     if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); setAiLoadingPhase(''); return; }
     const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
-    const prompt = `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words. Give your answer in this exact format only (no extra text):
-
+    const basePrompt = (visionContext) => `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words. Give your answer in this exact format only (no extra text):
+${visionContext ? `\nADDITIONAL CONTEXT FROM REVERSE IMAGE SEARCH (use this to confirm or correct your identification):\n${visionContext}\n` : ''}
 CRITICAL INSTRUCTION: If the 'About' screen or spec sticker is readable, reply in this exact format:
 
 1. AI_ITEM_TYPE: [what the item is]
@@ -2675,16 +2743,12 @@ But if the spec sticker or About screen is blurry, unreadable, or missing, YOU M
 SPECS_UNREADABLE: [List exactly what you cannot read and why (very concise)]
 
 Then still reply the 5 answers with what you believe about the item based on what you have analysed and identified from the photos (you can also search the internet based on content of the photos if necessary) and give your confidence score as a percentage.`;
-    try {
-      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
-      if (result.error) { switchToManualMode(result.error); return; }
-      const text = result.text;
-      upd('aiRawResponse', text);
+
+    const parseGeminiResult = (text) => {
       const specsUnreadable = aiParseField(text, 'SPECS_UNREADABLE');
       if (specsUnreadable) upd('aiSpecsUnreadable', specsUnreadable);
       upd('aiItemType', aiParseField(text, 'AI_ITEM_TYPE') || tx.captureItemType);
       upd('aiBrand', aiParseField(text, 'BRAND'));
-      // Parse MODEL and KEY_SPECS — format: "Model Name (KEY_SPECS: specs here)"
       const modelRaw = aiParseField(text, 'MODEL');
       const specsMatch = modelRaw.match(/\(?\s*KEY_SPECS:\s*(.+?)\s*\)?$/i);
       if (specsMatch) {
@@ -2695,7 +2759,48 @@ Then still reply the 5 answers with what you believe about the item based on wha
         upd('aiKeySpecs', aiParseField(text, 'KEY_SPECS'));
       }
       upd('aiColour', aiParseField(text, 'COLOUR'));
-      upd('aiConfidence', aiParseField(text, 'CONFIDENCE'));
+      const confidence = aiParseField(text, 'CONFIDENCE');
+      upd('aiConfidence', confidence);
+      return { confidence, specsUnreadable };
+    };
+
+    try {
+      // First pass: Gemini only
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt('')), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      upd('aiRawResponse', result.text);
+      const { confidence } = parseGeminiResult(result.text);
+
+      // Check if Gemini is 100% confident — if so, no need for Cloud Vision
+      const confNum = parseInt(confidence) || 0;
+      const hasVisionKey = !!(settings.cloudVisionApiKey || '').trim();
+
+      if (confNum < 100 && hasVisionKey) {
+        // Gemini is not fully confident — use Cloud Vision for reverse image search
+        setAiLoadingPhase('run1_vision');
+        // Use the first 2 photos for Vision (front + back/label are most useful)
+        const visionPhotos = photos.slice(0, 2);
+        const visionResults = [];
+        for (const photo of visionPhotos) {
+          const vr = await callWithTimeout(() => callCloudVision(settings.cloudVisionApiKey, photo), 30000);
+          if (!vr.error && vr.summary) visionResults.push(vr.summary);
+          // Store labels for display
+          if (!vr.error && vr.labels) upd('aiVisionLabels', (vr.bestGuess || []).concat(vr.logos || []).concat((vr.webEntities || []).slice(0, 3)).join(', '));
+        }
+
+        if (visionResults.length > 0) {
+          upd('aiVisionUsed', true);
+          const visionContext = visionResults.join('\n---\n');
+          // Second pass: Gemini with Vision context
+          setAiLoadingPhase('run1_refine');
+          const result2 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
+          if (!result2.error && result2.text) {
+            upd('aiRawResponse', result2.text);
+            parseGeminiResult(result2.text);
+          }
+        }
+      }
+
       upd('aiRun1Done', true);
     } catch (e) {
       switchToManualMode(e.message);
@@ -2716,7 +2821,9 @@ Then still reply the 5 answers with what you believe about the item based on wha
     const prompt = `You are a second-hand shop assistant in Aguleri, Anambra Nigeria. Look at all the photos of this ${tx.aiItemType || tx.captureItemType} — ${tx.aiBrand || 'Unknown brand'} — ${tx.aiModel || 'Unknown model'}.
 Also read the inspection checklist results and staff notes below.
 
-Write a short, honest condition description of this item. Focus only on things that will affect how much we can sell it for. Use simple everyday words — no big English. Do not repeat yourself. Maximum 350 characters.
+Write a short, honest condition description of this item. Focus only on things that will affect how much we can sell it for. Use simple everyday words — no big English. Do not repeat yourself. Maximum 400 characters.
+
+IMPORTANT: About 60% of your description should come from what you can SEE in the photos — scratches, dents, cracks, screen condition, body wear, missing parts, colour fading, etc. The remaining 40% should come from the inspection checklist results and staff notes below — failed checks, issues staff noticed during hands-on testing, etc.
 
 Inspection results:
 ${inspResults}
@@ -2773,7 +2880,8 @@ Reply in this exact format only (no extra text):
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
 PRICE_BASIS: [2 to 3 short sentences explaining what prices you found online and how you arrived at this number]
 NEW_MARKET_PRICE: [number only — the brand new price, or 0 if not found]
-PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]`;
+PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
+VALUATION_CONFIDENCE: [your confidence score as a percentage, e.g. 85% — based on how much real price data you found and how reliable your estimate is]`;
     try {
       const result = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
@@ -2791,6 +2899,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-600
         upd('aiPriceRangeLow', rangeMatch[1].replace(/,/g, ''));
         upd('aiPriceRangeHigh', rangeMatch[2].replace(/,/g, ''));
       }
+      upd('aiValuationConfidence', aiParseField(text, 'VALUATION_CONFIDENCE'));
       upd('aiRun3Done', true);
     } catch (e) {
       switchToManualMode(e.message);
@@ -3020,10 +3129,14 @@ PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-600
               {tx.aiConfidence && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', background: parseInt(tx.aiConfidence) >= 80 ? '#dcfce7' : parseInt(tx.aiConfidence) >= 50 ? '#fef3c7' : '#fde8e6', color: parseInt(tx.aiConfidence) >= 80 ? '#166534' : parseInt(tx.aiConfidence) >= 50 ? '#92400e' : COLORS.danger }}>Confidence: {tx.aiConfidence}</span>}
             </div>
             <button style={S.btn('primary')} onClick={handleAIRun1} disabled={aiLoading}>
-              {aiLoading && aiLoadingPhase === 'run1' ? '⏳ Identifying Item...' : tx.aiRun1Done ? '🔄 Re-run Identification' : '🤖 Identify Item with AI'}
+              {aiLoading && aiLoadingPhase === 'run1' ? '⏳ Identifying Item...' :
+               aiLoading && aiLoadingPhase === 'run1_vision' ? '⏳ Running reverse image search...' :
+               aiLoading && aiLoadingPhase === 'run1_refine' ? '⏳ Refining with Vision data...' :
+               tx.aiRun1Done ? '🔄 Re-run Identification' : '🤖 Identify Item with AI'}
             </button>
             {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
             {tx.aiSpecsUnreadable && <div style={{ ...S.alert('warning'), marginTop: '8px' }}>⚠️ <strong>Specs unreadable:</strong> {tx.aiSpecsUnreadable}</div>}
+            {tx.aiVisionUsed && <div style={{ ...S.alert('info'), marginTop: '8px' }}>🔍 <strong>Cloud Vision used</strong> — reverse image search helped refine identification.{tx.aiVisionLabels && <span style={{ display: 'block', fontSize: '11px', marginTop: '4px', color: COLORS.textMuted }}>Detected: {tx.aiVisionLabels}</span>}</div>}
 
             {/* Editable fields — always visible */}
             <div style={{ ...S.grid2, marginTop: '12px' }}>
@@ -3058,8 +3171,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-600
             {aiError && !aiLoading && tx.aiRun1Done && !tx.aiRun2Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
 
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Condition Description<InfoIcon tip="Write what the item looks like right now — scratches, cracks, dents, anything missing, etc. This goes on the agreement form and protects us if the customer later claims we damaged it." /></span>} required>
-              <textarea style={{ ...S.textarea, minHeight: '80px' }} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" maxLength={350} />
-              {(tx.conditionDescription || tx.aiCondition) && <div style={{ fontSize: '11px', color: COLORS.textMuted, textAlign: 'right', marginTop: '2px' }}>{(tx.conditionDescription || tx.aiCondition).length}/350 characters</div>}
+              <textarea style={{ ...S.textarea, minHeight: '80px' }} value={tx.conditionDescription || tx.aiCondition} onChange={e => upd('conditionDescription', e.target.value)} placeholder="AI-generated condition + your own observations" maxLength={400} />
+              {(tx.conditionDescription || tx.aiCondition) && <div style={{ fontSize: '11px', color: COLORS.textMuted, textAlign: 'right', marginTop: '2px' }}>{(tx.conditionDescription || tx.aiCondition).length}/400 characters</div>}
             </Field>
             {tx.aiRawResponse2 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse2}</div></details>}
           </div>
@@ -3069,7 +3182,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-600
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
               <span style={{ fontSize: '20px' }}>{tx.aiRun3Done ? '✅' : '3️⃣'}</span>
               <span style={{ fontWeight: 700, fontSize: '14px' }}>Resale Valuation</span>
-              {tx.aiRun3Done && <span style={{ marginLeft: 'auto', fontSize: '11px', color: COLORS.textMuted }}>Powered by Google Search</span>}
+              {tx.aiValuationConfidence && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', background: parseInt(tx.aiValuationConfidence) >= 80 ? '#dcfce7' : parseInt(tx.aiValuationConfidence) >= 50 ? '#fef3c7' : '#fde8e6', color: parseInt(tx.aiValuationConfidence) >= 80 ? '#166534' : parseInt(tx.aiValuationConfidence) >= 50 ? '#92400e' : COLORS.danger }}>Confidence: {tx.aiValuationConfidence}</span>}
+              {tx.aiRun3Done && !tx.aiValuationConfidence && <span style={{ marginLeft: 'auto', fontSize: '11px', color: COLORS.textMuted }}>Powered by Google Search</span>}
             </div>
             <button style={{ ...S.btn('primary'), background: '#e67e22' }} onClick={handleAIRun3} disabled={aiLoading || (!tx.aiRun2Done && !tx.aiManualMode && !tx.aiItemType)}>
               {aiLoading && aiLoadingPhase === 'run3' ? '⏳ Searching Market Prices...' : tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Market Price'}
@@ -3801,6 +3915,8 @@ export default function App() {
           {tx.aiPriceBasis && row('Price Basis', tx.aiPriceBasis)}
           {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
           {tx.aiPriceRangeLow && tx.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(tx.aiPriceRangeLow))} — ${fmtMoney(Number(tx.aiPriceRangeHigh))}`)}
+          {tx.aiValuationConfidence && row('Valuation Confidence', tx.aiValuationConfidence)}
+          {tx.aiVisionUsed && row('Cloud Vision', 'Used for identification')}
         </div>
       </div>
 
@@ -5471,6 +5587,9 @@ export default function App() {
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Leave it as default — the system will switch to a backup automatically if needed." /></span>}>
               <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Google Cloud Vision API Key<InfoIcon tip="Optional. Used for reverse image search when Gemini cannot clearly identify the item model or specs. Get one from console.cloud.google.com — enable the Cloud Vision API, then create an API key. If not set, only Gemini will be used for identification." /></span>}>
+              <input style={S.input} type="password" value={es.cloudVisionApiKey || ''} onChange={e => updateSettings({ ...es, cloudVisionApiKey: e.target.value })} placeholder="From console.cloud.google.com (optional)" />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
               <input style={S.input} type="password" value={es.ninApiKey} onChange={e => updateSettings({ ...es, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
