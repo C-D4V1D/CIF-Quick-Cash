@@ -507,6 +507,7 @@ const callCloudVision = async (apiKey, imageData) => {
         logos.length > 0 ? `Logos: ${logos.join(', ')}` : '',
         webEntities.length > 0 ? `Web matches: ${webEntities.slice(0, 5).join(', ')}` : '',
         pagesWithMatch.length > 0 ? `Found on: ${pagesWithMatch.slice(0, 3).join('; ')}` : '',
+        texts[0] ? `Text detected on device: ${texts[0].substring(0, 500)}` : '',
       ].filter(Boolean).join('\n')
     };
   } catch (e) { return { error: e.message }; }
@@ -2745,17 +2746,19 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); setAiLoadingPhase(''); return; }
     const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
     const basePrompt = (visionContext) => `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words.
-${visionContext ? `\nADDITIONAL CONTEXT FROM REVERSE IMAGE SEARCH (use this to confirm or correct your identification):\n${visionContext}\n` : ''}
-CRITICAL INSTRUCTION: If the 'About' screen or spec sticker is readable, reply in this exact format (no numbered prefixes, no markdown, no extra text):
+${visionContext ? `\nADDITIONAL CONTEXT FROM IMAGE ANALYSIS AND WEB SEARCH (use this to confirm or correct your identification — pay special attention to any "Text detected on device" as it may contain the exact model number):\n${visionContext}\n` : ''}
+IMPORTANT: Look carefully at ALL text visible on the item — labels, stickers, printed text on the body, capacity markings (e.g. mAh for power banks), serial number plates, About screens, spec sheets. The model name/number is often printed directly on the device.
+
+CRITICAL INSTRUCTION: Reply in this exact format (no numbered prefixes, no markdown, no extra text):
 
 AI_ITEM_TYPE: [what the item is]
 BRAND: [brand name]
-MODEL: [model name or number]
+MODEL: [exact model name or number as printed on the device]
 KEY_SPECS: [the most important specs that affect resale value — keep it under 12 words]
 COLOUR: [colour(s)]
 CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
 
-But if the spec sticker or About screen is blurry, unreadable, or missing, you MUST ALSO include this line BEFORE the other fields:
+If text on the device is blurry, unreadable, or missing, you MUST ALSO include this line BEFORE the other fields:
 SPECS_UNREADABLE: [List exactly what you cannot read and why (very concise)]
 
 Then still reply with ALL 6 fields above with your best guess based on what you can see in the photos and any internet research. Your CONFIDENCE score should reflect how certain you are about the MODEL and KEY_SPECS.`;
@@ -2774,45 +2777,48 @@ Then still reply with ALL 6 fields above with your best guess based on what you 
     };
 
     try {
-      // First pass: Gemini only
-      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt('')), AI_TIMEOUT);
-      if (result.error) { switchToManualMode(result.error); return; }
-      upd('aiRawResponse', result.text);
-      const { confidence } = parseGeminiResult(result.text);
-
-      // Check if Gemini is 100% confident — if so, no need for Cloud Vision
-      const confNum = parseInt(confidence) || 0;
       const hasVisionKey = !!(settings.cloudVisionApiKey || '').trim();
+      let visionContext = '';
 
-      if (confNum < 100 && hasVisionKey) {
-        // Gemini is not fully confident — use Cloud Vision for reverse image search
+      // Step 1: Run Cloud Vision FIRST (if configured) for OCR + web detection
+      // Vision provides OCR text, logo detection, and web entity matching that
+      // significantly improves Gemini's ability to identify exact model numbers
+      if (hasVisionKey) {
         setAiLoadingPhase('run1_vision');
-        // Use the first 2 photos for Vision (front + back/label are most useful)
         const visionPhotos = photos.slice(0, 2);
         const visionResults = [];
         const allVisionLabels = [];
         for (const photo of visionPhotos) {
           const vr = await callWithTimeout(() => callCloudVision(settings.cloudVisionApiKey, photo), 30000);
           if (!vr.error && vr.summary) visionResults.push(vr.summary);
-          // Accumulate labels from all photos (deduplicate later)
           if (!vr.error) {
             allVisionLabels.push(...(vr.bestGuess || []), ...(vr.logos || []), ...((vr.webEntities || []).slice(0, 3).map(e => e.split(' (')[0])));
           }
         }
-        // Deduplicate and store accumulated labels
         const uniqueLabels = [...new Set(allVisionLabels.filter(Boolean))];
         if (uniqueLabels.length > 0) upd('aiVisionLabels', uniqueLabels.join(', '));
-
         if (visionResults.length > 0) {
           upd('aiVisionUsed', true);
-          const visionContext = visionResults.join('\n---\n');
-          // Second pass: Gemini with Vision context
-          setAiLoadingPhase('run1_refine');
-          const result2 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
-          if (!result2.error && result2.text) {
-            upd('aiRawResponse', result2.text);
-            parseGeminiResult(result2.text);
-          }
+          visionContext = visionResults.join('\n---\n');
+        }
+      }
+
+      // Step 2: Gemini with Vision context (or without if no Vision key)
+      setAiLoadingPhase('run1');
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
+      if (result.error) { switchToManualMode(result.error); return; }
+      upd('aiRawResponse', result.text);
+      const { confidence } = parseGeminiResult(result.text);
+
+      // Step 3: If confidence is low, retry with Google Search grounding
+      // so Gemini can look up the product online to verify/correct the model
+      const confNum = parseInt(confidence) || 0;
+      if (confNum < 85) {
+        setAiLoadingPhase('run1_refine');
+        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
+        if (!result2.error && result2.text) {
+          upd('aiRawResponse', result2.text);
+          parseGeminiResult(result2.text);
         }
       }
 
