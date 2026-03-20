@@ -2947,12 +2947,15 @@ The AI identified this item from photos:
 - Model: ${identModel}
 - Key specs: ${identKeySpecs}
 ${visionContext ? `\nImage analysis context:\n${visionContext}\n` : ''}
-YOUR TASK: Search the internet to verify if "${identBrand} ${identModel}" is a real product that actually exists.
+YOUR TASK: Search the internet for "${identBrand} ${identModel}" and verify ALL of these:
+1. Does "${identBrand} ${identModel}" exist as a real product?
+2. Is it a ${identItemType}? (Not a different type of product from the same brand)
+3. Do the specs match? (${identKeySpecs})
 
-If it IS a real product: confirm the identification and return the same details.
-If it is NOT a real product or you cannot find it: search for the correct ${identBrand} ${identItemType} model that best matches the specs (${identKeySpecs}) and the image analysis context above. Look at product databases, review sites, and retailer listings.
+If ALL 3 checks pass: confirm the identification and return the same details.
+If ANY check fails (model doesn't exist, OR it exists but is a different product type, OR the specs don't match): search for the correct ${identBrand} ${identItemType} model that matches these specs: ${identKeySpecs}. Look at product databases, review sites, and retailer listings. Compare search results with the photos.
 
-CRITICAL: The model name/number must be a REAL product that exists. Do not guess or make up model numbers.
+CRITICAL: The model name/number must be a REAL product that exists AND must match the item type and specs. Do not guess or make up model numbers.
 
 Reply in this exact format (no markdown, no extra text):
 
@@ -2962,7 +2965,7 @@ MODEL: [the VERIFIED real model name/number]
 KEY_SPECS: [confirmed or corrected specs — under 12 words]
 COLOUR: [colour]
 CONFIDENCE: [your confidence now, as percentage]
-MODEL_VERIFIED: [YES if you confirmed it exists, CORRECTED if you found a different model, UNVERIFIED if you could not confirm]`;
+MODEL_VERIFIED: [YES if you confirmed it exists with matching type and specs, CORRECTED if you found a different model, UNVERIFIED if you could not confirm]`;
 
       const geminiCheck2 = checkGeminiLimit(settings);
       if (!geminiCheck2.blocked) {
