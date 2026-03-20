@@ -3633,6 +3633,12 @@ export default function App() {
         {tx.status === 'active' && isStaff && (
           <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
         )}
+        {tx.status === 'active' && tx.isEligibleForSale && isStaff && (
+          <button style={S.btn('accent')} onClick={async () => { if (window.confirm('List this item in the public shop?')) { await saveTx({ ...tx, status: 'for_sale' }); loadData(); } }}>🏪 List in Shop</button>
+        )}
+        {tx.status === 'for_sale' && isStaff && (
+          <button style={S.btn('outline')} onClick={async () => { if (window.confirm('Remove this item from the public shop?')) { await saveTx({ ...tx, status: 'active', listedForSaleDate: null }); loadData(); } }}>✕ Unlist</button>
+        )}
         {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && (
           <button style={S.btn('danger')} onClick={() => navigate(txSellPath(tx.ref))}>🏷 Record Sale</button>
         )}
