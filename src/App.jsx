@@ -281,6 +281,10 @@ const DEFAULT_SETTINGS = {
   targetSellPct: 75, minSellBonus: 20, maxPartsOnlyAdvance: 5000,
   // AI & API Keys
   geminiApiKey: '', geminiModel: 'gemini-2.5-flash', cloudVisionApiKey: '', ninApiKey: '',
+  // API Free Tier Limits (adjustable in case Google changes them)
+  geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
+  geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
+  visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
   // Identity Verification
   requireNinVerification: false,
   // Item Categories
@@ -341,6 +345,90 @@ const txSellPath  = (ref) => `/transactions/${encodeURIComponent(ref)}/sell`;
 const ACTIVITY_PAGE_SIZE = 50;
 
 // ============================================================
+// API USAGE TRACKING (stays within free tier limits)
+// ============================================================
+const API_USAGE_KEY = 'cifcash_api_usage';
+
+const getApiUsage = () => {
+  try {
+    const raw = localStorage.getItem(API_USAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch { return {}; }
+};
+
+const saveApiUsage = (usage) => {
+  try { localStorage.setItem(API_USAGE_KEY, JSON.stringify(usage)); } catch {}
+};
+
+const getTodayKey = () => new Date().toISOString().slice(0, 10); // "2026-03-20"
+const getMonthKey = () => new Date().toISOString().slice(0, 7);  // "2026-03"
+
+const trackGeminiCall = () => {
+  const usage = getApiUsage();
+  const today = getTodayKey();
+  if (!usage.gemini) usage.gemini = {};
+  if (!usage.gemini[today]) usage.gemini[today] = { count: 0, timestamps: [] };
+  usage.gemini[today].count++;
+  // Track last 10 timestamps for RPM calculation
+  usage.gemini[today].timestamps.push(Date.now());
+  if (usage.gemini[today].timestamps.length > 50) usage.gemini[today].timestamps = usage.gemini[today].timestamps.slice(-50);
+  // Clean up old days (keep last 7)
+  const keys = Object.keys(usage.gemini).sort();
+  if (keys.length > 7) { for (const k of keys.slice(0, -7)) delete usage.gemini[k]; }
+  saveApiUsage(usage);
+};
+
+const trackVisionCall = (imageCount = 1) => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  if (!usage.vision) usage.vision = {};
+  if (!usage.vision[month]) usage.vision[month] = 0;
+  usage.vision[month] += imageCount;
+  // Clean up old months (keep last 3)
+  const keys = Object.keys(usage.vision).sort();
+  if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.vision[k]; }
+  saveApiUsage(usage);
+};
+
+const getGeminiUsageToday = () => {
+  const usage = getApiUsage();
+  const today = getTodayKey();
+  return (usage.gemini?.[today]?.count) || 0;
+};
+
+const getGeminiRpm = () => {
+  const usage = getApiUsage();
+  const today = getTodayKey();
+  const timestamps = usage.gemini?.[today]?.timestamps || [];
+  const oneMinAgo = Date.now() - 60000;
+  return timestamps.filter(t => t > oneMinAgo).length;
+};
+
+const getVisionUsageThisMonth = () => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  return (usage.vision?.[month]) || 0;
+};
+
+const checkGeminiLimit = (settings) => {
+  const dailyLimit = settings.geminiDailyLimit || 100;
+  const rpmLimit = settings.geminiRpmLimit || 5;
+  const usedToday = getGeminiUsageToday();
+  const rpm = getGeminiRpm();
+  if (usedToday >= dailyLimit) return { blocked: true, reason: `Gemini daily limit reached (${usedToday}/${dailyLimit}). Resets at midnight. Use manual mode or wait until tomorrow.` };
+  if (rpm >= rpmLimit) return { blocked: true, reason: `Gemini rate limit reached (${rpm}/${rpmLimit} per minute). Please wait 30-60 seconds and try again.` };
+  return { blocked: false, remaining: dailyLimit - usedToday };
+};
+
+const checkVisionLimit = (settings) => {
+  const monthlyLimit = settings.visionMonthlyLimit || 1000;
+  const usedThisMonth = getVisionUsageThisMonth();
+  if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `Cloud Vision monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets next month. AI will use Gemini only.` };
+  return { blocked: false, remaining: monthlyLimit - usedThisMonth };
+};
+
+// ============================================================
 // GEMINI AI INTEGRATION
 // ============================================================
 const FALLBACK_GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
@@ -375,6 +463,21 @@ const imageToGeminiInlineData = async (img) => {
   return { mime_type: mime, data };
 };
 
+// Extract the actual response text from Gemini, skipping thinking/thought parts
+const extractGeminiText = (data) => {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!parts || !Array.isArray(parts)) return null;
+  // Find the first non-thought text part (thinking models return thought: true for reasoning parts)
+  for (const part of parts) {
+    if (part.text && !part.thought) return part.text;
+  }
+  // Fallback: if all parts are thoughts or no thought flag exists, use the last text part
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i].text) return parts[i].text;
+  }
+  return null;
+};
+
 const callGeminiAI = async (apiKey, model, images, promptText) => {
   if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
   try {
@@ -389,16 +492,23 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
+      trackGeminiCall();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }] }) };
+      // For thinking models (2.5-pro), set a low thinking budget to reduce latency
+      const isThinkingModel = modelName.includes('pro');
+      const body = { contents: [{ parts }] };
+      if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       let resp = await fetch(url, options);
       // Retry once on transient errors (429/500/502/503)
       if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
         await new Promise(r => setTimeout(r, 2000));
+        trackGeminiCall();
         resp = await fetch(url, options);
       }
       const data = await resp.json().catch(() => null);
-      if (data?.candidates?.[0]?.content?.parts?.[0]?.text) return { text: data.candidates[0].content.parts[0].text, model: modelName };
+      const responseText = extractGeminiText(data);
+      if (responseText) return { text: responseText, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
       const isTransient = [429, 500, 502, 503].includes(resp.status);
@@ -426,16 +536,22 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
+      trackGeminiCall();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }], tools: [{ google_search: {} }] }) };
+      const isThinkingModel = modelName.includes('pro');
+      const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
+      if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       let resp = await fetch(url, options);
       // Retry once on transient errors (429/500/502/503)
       if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
         await new Promise(r => setTimeout(r, 2000));
+        trackGeminiCall();
         resp = await fetch(url, options);
       }
       const data = await resp.json().catch(() => null);
-      if (data?.candidates?.[0]?.content?.parts?.[0]?.text) return { text: data.candidates[0].content.parts[0].text, model: modelName };
+      const responseText = extractGeminiText(data);
+      if (responseText) return { text: responseText, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
       const isTransient = [429, 500, 502, 503].includes(resp.status);
@@ -478,6 +594,7 @@ const callCloudVision = async (apiKey, imageData) => {
       ] };
     }
 
+    trackVisionCall(1);
     const resp = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requests: [request] })
@@ -2721,7 +2838,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     const m = text.match(pattern);
     return m ? m[1].trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ') : '';
   };
-  const AI_TIMEOUT = 60000; // 60s timeout per AI call
+  const AI_TIMEOUT = 120000; // 120s timeout per AI call (Pro thinking models need more time)
 
   const callWithTimeout = (fn, timeout) => Promise.race([
     fn(),
@@ -2741,6 +2858,9 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   // with the Vision data to improve accuracy.
   const handleAIRun1 = async () => {
     setAiLoading(true); setAiLoadingPhase('run1'); setAiError('');
+    // Check API usage limits before making calls
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
     const photos = getPhotos();
     if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); setAiLoadingPhase(''); return; }
     const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
@@ -2782,7 +2902,8 @@ Then still reply with ALL 6 fields above with your best guess based on what you 
       // Step 1: Run Cloud Vision FIRST (if configured) for OCR + web detection
       // Vision provides OCR text, logo detection, and web entity matching that
       // significantly improves Gemini's ability to identify exact model numbers
-      if (hasVisionKey) {
+      const visionCheck = checkVisionLimit(settings);
+      if (hasVisionKey && !visionCheck.blocked) {
         setAiLoadingPhase('run1_vision');
         const visionPhotos = photos.slice(0, 2);
         const visionResults = [];
@@ -2832,6 +2953,8 @@ Then still reply with ALL 6 fields above with your best guess based on what you 
   // RUN 2: Condition Description
   const handleAIRun2 = async () => {
     setAiLoading(true); setAiLoadingPhase('run2'); setAiError('');
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
     const photos = getPhotos();
     // Build inspection results text
     const checklist = INSPECTION_CHECKLISTS[tx.captureItemType] || [];
@@ -2882,6 +3005,8 @@ Reply with the condition description only. Nothing else.`;
   // RUN 3: Resale Valuation (with Google Search grounding)
   const handleAIRun3 = async () => {
     setAiLoading(true); setAiLoadingPhase('run3'); setAiError('');
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
     const photos = getPhotos();
     const conditionText = tx.conditionDescription || tx.aiCondition || '';
     const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 14 days.
@@ -3185,6 +3310,11 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           )}
 
           <div style={S.alert('info')}>📋 Run each AI step in order. Wait for each result before proceeding to the next. You can edit any field after each step.</div>
+          {/* API Usage Indicator */}
+          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>
+            <span>Gemini: {getGeminiUsageToday()}/{settings.geminiDailyLimit || 100} today</span>
+            {settings.cloudVisionApiKey && <span>Vision: {getVisionUsageThisMonth()}/{settings.visionMonthlyLimit || 1000} this month</span>}
+          </div>
 
           {/* ══════════════ RUN 1: Item Identification ══════════════ */}
           <div style={{ border: `2px solid ${tx.aiRun1Done ? COLORS.primary : COLORS.border}`, borderRadius: '12px', padding: '16px', marginTop: '16px', background: tx.aiRun1Done ? COLORS.primaryLight : '#fff' }}>
@@ -5659,6 +5789,29 @@ export default function App() {
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
               <input style={S.input} type="password" value={es.ninApiKey} onChange={e => updateSettings({ ...es, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
             </Field>
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>API Free Tier Limits</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Set these to match Google's free tier limits. The system will block API calls when limits are reached to prevent billing. Adjust if Google changes their free tier.</div>
+              <div style={S.grid3}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Daily Limit<InfoIcon tip="Maximum Gemini API calls per day. Free tier: Pro=100, Flash=250, Flash-Lite=1000. Each AI run uses 1-2 calls, so ~20-50 transactions/day with Pro." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.geminiDailyLimit ?? DEFAULT_SETTINGS.geminiDailyLimit} onChange={e => updateSettings({ ...es, geminiDailyLimit: Number(e.target.value) || DEFAULT_SETTINGS.geminiDailyLimit })} />
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini RPM Limit<InfoIcon tip="Maximum Gemini calls per minute. Free tier: Pro=5, Flash=10, Flash-Lite=15. Prevents rate-limit errors from Google." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit} onChange={e => updateSettings({ ...es, geminiRpmLimit: Number(e.target.value) || DEFAULT_SETTINGS.geminiRpmLimit })} />
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Vision Monthly Limit<InfoIcon tip="Maximum Cloud Vision images per month. Free tier: 1,000 images/month. Each transaction uses up to 2 images for Vision analysis." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.visionMonthlyLimit ?? DEFAULT_SETTINGS.visionMonthlyLimit} onChange={e => updateSettings({ ...es, visionMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.visionMonthlyLimit })} />
+                </Field>
+              </div>
+              <div style={{ ...S.card, background: COLORS.bg, padding: '12px', marginTop: '10px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px' }}>Current Usage</div>
+                <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '12px' }}>
+                  <div>Gemini today: <strong>{getGeminiUsageToday()}</strong> / {es.geminiDailyLimit ?? DEFAULT_SETTINGS.geminiDailyLimit}</div>
+                  <div>Gemini RPM: <strong>{getGeminiRpm()}</strong> / {es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit}</div>
+                  <div>Vision this month: <strong>{getVisionUsageThisMonth()}</strong> / {es.visionMonthlyLimit ?? DEFAULT_SETTINGS.visionMonthlyLimit}</div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* ── 11. WHATSAPP MESSAGE TEMPLATES ── */}
