@@ -2039,31 +2039,30 @@ const NON_POWERED_ITEM_TYPES = ['Gas Cylinder'];
 
 const ITEM_PHOTO_SLOTS = {
   'Smartphone': [
+    'About Phone/Settings',
     'Front (Screen ON)',
     'Back Panel',
     'Left Edge',
     'Right Edge',
-    'Top Edge',
     'Bottom Edge',
-    'About Phone/Locks',
+    'Locks/Security',
   ],
   'Laptop': [
-    'Closed Lid',
+    'Specs/Model Label',
     'Keyboard & Trackpad',
+    'Closed Lid',
     'Bottom Panel',
-    'Left Ports',
-    'Right Ports',
+    'Left/Right Ports',
     'Power Charger',
-    'Specs & Battery',
+    'Battery Health',
   ],
   'Tablet': [
+    'About Tablet/Settings',
     'Front (Screen ON)',
     'Back Panel',
     'Left Edge',
     'Right Edge',
-    'Top Edge',
     'Bottom Edge',
-    'About Tablet',
   ],
   'Motorcycle': [
     'Full Right Side',
@@ -2074,8 +2073,8 @@ const ITEM_PHOTO_SLOTS = {
     'Seat & Tail',
   ],
   'Generator': [
+    'Nameplate/Model Label',
     'Full Unit Front',
-    'Nameplate',
     'Fuel Tank',
     'Engine Side',
     'Output Sockets',
@@ -2090,15 +2089,15 @@ const ITEM_PHOTO_SLOTS = {
     'Full Cylinder Back',
   ],
   'Flat-Screen TV': [
+    'Model Label/Back Sticker',
     'Screen ON',
     'Back Panel',
     'HDMI/AV Ports',
     'Remote Control',
-    'Model Label',
     'Side Profile',
   ],
 };
-const DEFAULT_PHOTO_SLOTS = ['Front', 'Back', 'Left', 'Right', 'Top/Label', 'Working (Power ON)'];
+const DEFAULT_PHOTO_SLOTS = ['Brand/Model Label', 'Front', 'Back', 'Left/Right Side', 'Top/Bottom', 'Working (Power ON)'];
 // Bluetooth Speaker, Power Bank, Electric Fan (Standing/Desk) are not listed above;
 // they intentionally use DEFAULT_PHOTO_SLOTS (6-slot generic layout).
 const getPhotoSlots = (itemType) => ITEM_PHOTO_SLOTS[itemType] || DEFAULT_PHOTO_SLOTS;
@@ -2359,7 +2358,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
           <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `2px solid ${COLORS.border}` }}>
             <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '4px' }}>📸 Item Photos</div>
             <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
-              Take photos in <strong>good light near a window</strong>. Minimum <strong>3 photos</strong> required ({slots.length} slots for this item type). Capture exterior first, then settings/specs screens last.
+              Take photos in <strong>good light near a window</strong>. Minimum <strong>3 photos</strong> required ({slots.length} slots for this item type). <strong>Photo 1 must be the brand/model label</strong> — this helps the AI identify the exact model. Then capture exterior and working condition.
             </div>
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
               {slots.map((slotLabel, i) => (
@@ -2885,9 +2884,9 @@ Reply with the condition description only. Nothing else.`;
     setAiLoading(true); setAiLoadingPhase('run3'); setAiError('');
     const photos = getPhotos();
     const conditionText = tx.conditionDescription || tx.aiCondition || '';
-    const prompt = `You are helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item in our local market TODAY.
+    const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 14 days.
 
-CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices listed in other currencies, convert them to Naira at the current exchange rate.
+CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices in other currencies, convert them to Naira at the current exchange rate.
 
 Item details:
 * Type: ${tx.aiItemType || tx.captureItemType || 'Unknown'}
@@ -2897,11 +2896,11 @@ Item details:
 * Condition: ${conditionText || '(assess from the photos)'}
 
 Instructions:
-1. Search Jumia.com.ng and Konga.com or similar Nigerian online stores for the BRAND NEW price of this exact model. (If this is a generic/unbranded Chinese item, skip this step and use local market averages).
+1. Search Jumia.com.ng and Konga.com or similar Nigerian online stores for the BRAND NEW retail price of this exact model in Nigeria TODAY. (If this is a generic/unbranded Chinese item, search for equivalent items with similar specs).
 
-2. Search the internet for the current selling price of this exact item on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale websites. Look for listings in Anambra State or nearby states if available.
+2. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities.
 
-CRITICAL ANTI-SCAM RULE: When looking at Jiji.ng prices:
+CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
 - Sort all listings for this item by price from lowest to highest
 - Throw away the cheapest 20% of listings — these are usually scam bait
 - From the remaining 80%, find the MEDIAN price (the middle value, not the average)
@@ -2909,21 +2908,23 @@ CRITICAL ANTI-SCAM RULE: When looking at Jiji.ng prices:
 
 3. Use those prices as your base. Then adjust for:
    - The item condition described above${conditionText ? '' : ' (also look at the photos)'}
-   - The fact that Aguleri is a smaller market than Lagos or Enugu (less demand, prices typically 10-20% lower than Lagos)
    - Current supply/demand — if this item is very common in resale markets, price competitively; if rare, price slightly higher
    - Age of the model — older models lose value faster
-   - Season and timing — some items sell better in certain periods
 
-4. Give me the realistic price we can sell this item for TODAY in Aguleri or Awka. This must be a price a buyer would actually pay today — not a hopeful price, not a clearance price.
+IMPORTANT PRICING CONTEXT:
+- Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
+- We need to sell this item within 14 days, so price it to move — but do NOT undervalue it. We want the best realistic price a buyer will pay within 2 weeks, not a desperate clearance price.
+- Second-hand items in good working condition typically sell for 50-75% of brand new price. Items in fair condition sell for 35-55% of brand new price.
+- Do NOT lowball. If the brand new price is ₦50,000 and the item is in good condition, the used price should be around ₦25,000-₦37,500 — not ₦10,000.
 
-SANITY CHECK: Second-hand item resale values in Aguleri typically range from about 2,000 (cheap accessories like power banks) to 3,000,000 (high-end generators or motorcycles). If your estimate falls outside this range, double-check your research.
+4. Give me the realistic price we can sell this item for in Aguleri within 14 days. This should be a fair market price — not inflated, not deflated.
 
 5. Use simple everyday English. No big words.
 
 Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
-PRICE_BASIS: [2 to 3 short sentences explaining what prices you found online and how you arrived at this number]
-NEW_MARKET_PRICE: [number only — the brand new price, or 0 if not found]
+PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
+NEW_MARKET_PRICE: [number only — the brand new price in Nigeria, or 0 if not found]
 PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
 VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if you found real price data, lower if you had to estimate]`;
     try {
