@@ -970,31 +970,72 @@ export async function onRequest(context) {
     // with only non-sensitive fields (no customer data).
     // ============================================================
     if (path === 'shop-items' && method === 'GET') {
-      const rows = await db.prepare(
-        "SELECT ref, data, status FROM transactions WHERE status = 'for_sale' ORDER BY updated_at DESC"
-      ).all();
+      const settingsRow = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      const cfg = settingsRow ? JSON.parse(settingsRow.value) : {};
+      const maxSoldHistory = Math.max(0, Number(cfg.shopMaxSoldHistoryItems) || 8);
+
+      const [rows, soldRows] = await Promise.all([
+        db.prepare("SELECT ref, data FROM transactions WHERE status = 'for_sale' ORDER BY updated_at DESC").all(),
+        db.prepare("SELECT ref, data FROM transactions WHERE status = 'sold' ORDER BY updated_at DESC LIMIT ?").bind(maxSoldHistory).all(),
+      ]);
+
+      // Extract visible item photos, respecting hiddenPhotoIndexes set by staff
+      const extractPhotos = (d) => {
+        const raw = Array.isArray(d.itemPhotos)
+          ? d.itemPhotos
+          : (d.itemPhotos && typeof d.itemPhotos === 'object'
+              ? [d.itemPhotos.front, d.itemPhotos.back, d.itemPhotos.left, d.itemPhotos.right, d.itemPhotos.powerOn, d.itemPhotos.aboutPage, ...(d.itemPhotos.corners || [])]
+              : []);
+        const hidden = Array.isArray(d.hiddenPhotoIndexes) ? d.hiddenPhotoIndexes : [];
+        return raw.filter((p, i) => p && !hidden.includes(i));
+      };
 
       const items = (rows.results || []).map(row => {
         const d = JSON.parse(row.data);
-        // Extract only the first item photo (front) for the listing thumbnail
-        const photoFront = d.itemPhotos?.front || null;
-        const photoPowerOn = d.itemPhotos?.powerOn || null;
+        const photos = extractPhotos(d);
         return {
           ref: row.ref,
+          shopId: d.shopId || null,
           itemType: d.aiItemType || d.captureItemType || 'Item',
           brand: d.aiBrand || '',
           model: d.aiModel || '',
           colour: d.aiColour || '',
-          condition: d.aiCondition || d.conditionDescription || '',
+          condition: d.shopCondition || d.aiCondition || d.conditionDescription || '',
           salePrice: d.salePrice || 0,
+          // itemNewPrice: explicitly set by staff during listing.
+          // Falls back to aiNewMarketPrice from AI Run 3 valuation if not set.
+          itemNewPrice: d.itemNewPrice > 0 ? d.itemNewPrice : (Number(d.aiNewMarketPrice) > 0 ? Number(d.aiNewMarketPrice) : null),
           estimatedValue: d.estimatedValue || d.aiEstimatedValue || 0,
-          photoFront,
-          photoPowerOn,
+          photos,
+          photoFront: photos[0] || null,
+          // For legacy transactions with object-format itemPhotos, expose powerOn photo as fallback thumbnail
+          photoPowerOn: (!Array.isArray(d.itemPhotos) && d.itemPhotos?.powerOn) ? d.itemPhotos.powerOn : null,
           listedDate: d.listedForSaleDate || d.updated_at || d.created_at || null,
+          shopNote: d.shopListingNote || '',
+          inspectionNotes: d.inspectionNotes || '',
+          // Device identifiers — shown publicly to help buyers verify authenticity
+          imei: d.imei || null,
+          serialNumber: d.serialNumber || null,
         };
       });
 
-      return json({ items }, 200, { 'Cache-Control': 'public, max-age=60' });
+      const soldItems = cfg.shopShowSoldHistory !== false
+        ? (soldRows.results || []).map(row => {
+            const d = JSON.parse(row.data);
+            const photos = extractPhotos(d);
+            return {
+              ref: row.ref,
+              itemType: d.aiItemType || d.captureItemType || 'Item',
+              brand: d.aiBrand || '',
+              model: d.aiModel || '',
+              salePrice: d.salePrice || 0,
+              saleDate: d.saleDate || null,
+              photoFront: photos[0] || null,
+            };
+          })
+        : [];
+
+      return json({ items, soldItems }, 200, { 'Cache-Control': 'public, max-age=60' });
     }
 
     // ============================================================
