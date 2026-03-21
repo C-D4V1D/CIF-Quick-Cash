@@ -279,6 +279,8 @@ const DEFAULT_SETTINGS = {
   graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, maxPartsOnlyAdvance: 5000,
+  priceDropEnabled: false, priceDropIntervalDays: 3,
+  shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
   geminiApiKey: '', geminiModel: 'gemini-2.5-flash', ninApiKey: '',
   // Identity Verification
@@ -908,6 +910,7 @@ function SalesPage({ onBack, settings }) {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [sortBy, setSortBy] = useState('newest');
   const [selectedItem, setSelectedItem] = useState(null);
+  const [soldItems, setSoldItems] = useState([]);
   const isMobile = useMobile();
 
   const s = settings || {};
@@ -921,6 +924,7 @@ function SalesPage({ onBack, settings }) {
       setLoading(true);
       const data = await API.get('shop-items');
       if (data?.items) setItems(data.items);
+      if (data?.soldItems) setSoldItems(data.soldItems);
       setLoading(false);
     };
     load();
@@ -981,67 +985,84 @@ function SalesPage({ onBack, settings }) {
     return { label: cond, color };
   };
 
-  // Item detail modal
+  // Item detail modal — FINN-style with photo carousel
   const ItemDetailModal = ({ item, onClose }) => {
     if (!item) return null;
+    const [photoIdx, setPhotoIdx] = useState(0);
+    const photos = item.photos?.length > 0 ? item.photos : item.photoFront ? [item.photoFront] : [];
     const badge = conditionBadge(item.condition);
     return (
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
-        <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', maxWidth: '500px', width: '100%', maxHeight: '90vh', overflowY: 'auto', position: 'relative' }}>
-          {/* Photo */}
-          {(item.photoFront || item.photoPowerOn) ? (
-            <div style={{ width: '100%', height: '260px', background: '#f3f4f6', borderRadius: '16px 16px 0 0', overflow: 'hidden' }}>
-              <img src={item.photoFront || item.photoPowerOn} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-            </div>
-          ) : (
-            <div style={{ width: '100%', height: '180px', background: 'linear-gradient(135deg, #1a5f2a, #2d7a3e)', borderRadius: '16px 16px 0 0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '64px' }}>
-              {itemIcon(item.itemType)}
-            </div>
-          )}
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.82)', zIndex: 1000, overflowY: 'auto', display: 'flex', alignItems: isMobile ? 'flex-end' : 'center', justifyContent: 'center' }}>
+        <div onClick={e => e.stopPropagation()} style={{ background: '#fff', maxWidth: isMobile ? '100%' : '880px', width: '100%', margin: isMobile ? '0' : '32px auto', borderRadius: isMobile ? '16px 16px 0 0' : '16px', minHeight: isMobile ? '80vh' : 'auto', display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: 'hidden', position: 'relative' }}>
 
-          <div style={{ padding: '20px' }}>
-            {/* Close button */}
-            <button onClick={onClose} style={{ position: 'absolute', top: '12px', right: '12px', background: 'rgba(0,0,0,0.5)', color: '#fff', border: 'none', borderRadius: '50%', width: '36px', height: '36px', fontSize: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
+          {/* Close button */}
+          <button onClick={onClose} style={{ position: 'absolute', top: '12px', right: '12px', background: 'rgba(0,0,0,0.55)', color: '#fff', border: 'none', borderRadius: '50%', width: '34px', height: '34px', fontSize: '17px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>✕</button>
 
-            {/* Title */}
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>{item.itemType}</div>
-            <h2 style={{ fontSize: '22px', fontWeight: 800, margin: '0 0 4px', color: '#1a1a1a' }}>{item.brand} {item.model}</h2>
-            {item.colour && <div style={{ fontSize: '14px', color: '#6b7280', marginBottom: '12px' }}>Colour: {item.colour}</div>}
-
-            {/* Price */}
-            <div style={{ background: '#e8f5ec', borderRadius: '12px', padding: '16px', marginBottom: '16px', textAlign: 'center' }}>
-              <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>Price</div>
-              <div style={{ fontSize: '32px', fontWeight: 800, color: '#1a5f2a' }}>{item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}</div>
-            </div>
-
-            {/* Details grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-              {badge && (
-                <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>Condition</div>
-                  <div style={{ fontSize: '14px', fontWeight: 700, color: badge.color }}>{badge.label}</div>
-                </div>
+          {/* LEFT: Photo Section */}
+          <div style={{ flex: isMobile ? 'none' : '0 0 50%', background: '#f3f4f6', display: 'flex', flexDirection: 'column' }}>
+            {/* Main photo */}
+            <div style={{ position: 'relative', height: isMobile ? '280px' : '390px', background: '#e5e7eb', overflow: 'hidden' }}>
+              {photos.length > 0 ? (
+                <img src={photos[photoIdx]} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#f3f4f6' }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
+              ) : (
+                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '72px', background: 'linear-gradient(135deg, #e8f5ec, #d1fae5)' }}>{itemIcon(item.itemType)}</div>
               )}
-              <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>Ref No.</div>
-                <div style={{ fontSize: '14px', fontWeight: 700, color: '#1a1a1a' }}>{item.ref}</div>
-              </div>
+              {photos.length > 1 && <div style={{ position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: '20px', padding: '3px 12px', fontSize: '12px', fontWeight: 600, pointerEvents: 'none' }}>{photoIdx + 1}/{photos.length}</div>}
+              {photos.length > 1 && <>
+                <button onClick={e => { e.stopPropagation(); setPhotoIdx(i => (i - 1 + photos.length) % photos.length); }} style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)', width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '22px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>‹</button>
+                <button onClick={e => { e.stopPropagation(); setPhotoIdx(i => (i + 1) % photos.length); }} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '22px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>›</button>
+              </>}
             </div>
+            {/* Thumbnail strip */}
+            {photos.length > 1 && (
+              <div style={{ display: 'flex', gap: '6px', padding: '10px', overflowX: 'auto', background: '#f9fafb', borderTop: '1px solid #e5e7eb' }}>
+                {photos.map((p, i) => (
+                  <button key={i} onClick={() => setPhotoIdx(i)} style={{ flex: '0 0 58px', height: '58px', border: `2px solid ${i === photoIdx ? '#1a5f2a' : 'transparent'}`, borderRadius: '6px', overflow: 'hidden', padding: 0, cursor: 'pointer', background: '#fff', transition: 'border-color 0.15s' }}>
+                    <img src={p} alt={`Photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { e.currentTarget.onerror = null; }} />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* RIGHT: Info Section */}
+          <div style={{ flex: 1, padding: '24px 22px', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '1.2px', marginBottom: '6px' }}>For Sale · {item.itemType}</div>
+            <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: 800, margin: '0 0 10px', color: '#111', lineHeight: 1.2, paddingRight: '30px' }}>{item.brand} {item.model}</h2>
+
+            {/* Price — large & bold */}
+            <div style={{ fontSize: isMobile ? '34px' : '40px', fontWeight: 900, color: '#1a5f2a', marginBottom: '18px', lineHeight: 1, letterSpacing: '-0.5px' }}>
+              {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us for price'}
+            </div>
+
+            {/* Spec chips */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginBottom: '16px' }}>
+              {badge && <span style={{ padding: '5px 12px', borderRadius: '999px', border: '1.5px solid #e5e7eb', fontSize: '13px', fontWeight: 600, color: badge.color }}>Condition: <strong>{badge.label}</strong></span>}
+              {item.brand && <span style={{ padding: '5px 12px', borderRadius: '999px', border: '1.5px solid #e5e7eb', fontSize: '13px', fontWeight: 500, color: '#374151' }}>Brand: <strong>{item.brand}</strong></span>}
+              {item.colour && <span style={{ padding: '5px 12px', borderRadius: '999px', border: '1.5px solid #e5e7eb', fontSize: '13px', fontWeight: 500, color: '#374151' }}>Colour: <strong>{item.colour}</strong></span>}
+            </div>
+
+            {/* Shop note */}
+            {item.shopNote && (
+              <div style={{ background: '#f8f6f1', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px', fontSize: '14px', color: '#374151', lineHeight: 1.6, border: '1px solid #e5e1d8' }}>
+                {item.shopNote}
+              </div>
+            )}
+
+            <div style={{ height: '1px', background: '#f3f4f6', margin: '0 0 14px' }} />
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '14px' }}>Ref: <strong style={{ color: '#374151' }}>{item.ref}</strong> · Quote this when contacting us</div>
 
             {/* CTA Buttons */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25D366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
+              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#25D366', color: '#fff', padding: '15px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
                 <svg width="20" height="20" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>
                 I Want to Buy This
               </a>
-              <a href={getCallLink()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
+              <a href={getCallLink()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#1a5f2a', color: '#fff', padding: '15px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
                 📞 Call Us Now
               </a>
             </div>
-
-            <div style={{ textAlign: 'center', marginTop: '12px', fontSize: '13px', color: '#6b7280' }}>
-              Quote the ref number <strong>{item.ref}</strong> when you contact us
-            </div>
+            <div style={{ fontSize: '12px', color: '#9ca3af', textAlign: 'center', marginTop: '12px' }}>Visit our shop or contact us to inspect before buying</div>
           </div>
         </div>
       </div>
@@ -1217,20 +1238,15 @@ function SalesPage({ onBack, settings }) {
 
                   {/* Info */}
                   <div style={{ padding: isMobile ? '10px' : '14px' }}>
-                    <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }}>{item.itemType}</div>
-                    <div style={{ fontWeight: 700, fontSize: isMobile ? '14px' : '15px', color: '#1a1a1a', marginBottom: '4px', lineHeight: 1.3 }}>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }}>{item.itemType}</div>
+                    <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '14px', color: '#1a1a1a', marginBottom: '6px', lineHeight: 1.3 }}>
                       {item.brand} {item.model}
                     </div>
-                    {badge && (
-                      <div style={{ fontSize: '11px', fontWeight: 600, color: badge.color, marginBottom: '8px' }}>
-                        {badge.label}
-                      </div>
-                    )}
-                    <div style={{ fontSize: isMobile ? '18px' : '20px', fontWeight: 800, color: '#1a5f2a' }}>
+                    <div style={{ fontSize: isMobile ? '20px' : '22px', fontWeight: 900, color: '#1a5f2a', letterSpacing: '-0.3px' }}>
                       {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}
                     </div>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
-                      Tap to see details
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '5px' }}>
+                      Tap to see details →
                     </div>
                   </div>
                 </div>
@@ -1239,6 +1255,36 @@ function SalesPage({ onBack, settings }) {
           </div>
         )}
       </div>
+
+      {/* Recently Sold Section */}
+      {soldItems.length > 0 && s.shopShowSoldHistory !== false && (
+        <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px 36px' }}>
+          <div style={{ borderTop: '2px solid #e5e1d8', paddingTop: '32px', marginTop: '8px' }}>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: '#1a1a1a' }}>Recently Sold</h2>
+            <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px' }}>Items we've sold recently — proof of quality and fair pricing.</p>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fill, minmax(190px, 1fr))', gap: isMobile ? '8px' : '12px' }}>
+              {soldItems.map(item => (
+                <div key={item.ref} style={{ background: '#fff', borderRadius: '10px', overflow: 'hidden', border: '1px solid #e5e1d8', position: 'relative' }}>
+                  <div style={{ position: 'absolute', top: '8px', left: '8px', background: '#374151', color: '#fff', fontSize: '10px', fontWeight: 800, padding: '3px 8px', borderRadius: '4px', letterSpacing: '0.5px', textTransform: 'uppercase', zIndex: 1 }}>Sold</div>
+                  {item.photoFront ? (
+                    <div style={{ width: '100%', height: '110px', background: '#f3f4f6', overflow: 'hidden' }}>
+                      <img src={item.photoFront} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'grayscale(25%)' }} loading="lazy" onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
+                    </div>
+                  ) : (
+                    <div style={{ width: '100%', height: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', background: '#f3f4f6' }}>{itemIcon(item.itemType)}</div>
+                  )}
+                  <div style={{ padding: '10px' }}>
+                    <div style={{ fontWeight: 700, fontSize: '13px', color: '#374151', marginBottom: '1px' }}>{item.brand} {item.model}</div>
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '5px' }}>{item.itemType}</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color: '#374151' }}>{item.salePrice ? fmtMoney(item.salePrice) : '—'}</div>
+                    {item.saleDate && <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '2px' }}>{fmtDate(item.saleDate)}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Contact footer */}
       <div style={{ background: '#111827', padding: '28px 20px', color: '#fff' }}>
@@ -3628,6 +3674,88 @@ export default function App() {
         )}
       </div>
 
+      {/* ── Shop Listing Settings (only when item is listed for sale) ── */}
+      {tx.status === 'for_sale' && isStaff && (() => {
+        const itemPhotos = normalizeItemPhotos(tx.itemPhotos).filter(Boolean);
+        const hiddenIdxs = Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : [];
+        const visibleCount = itemPhotos.filter((_, i) => !hiddenIdxs.includes(i)).length;
+
+        const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+        const maxHoldDays = (Math.max(1, Number(settings.maxLoanDays) || 30)) + (Math.max(0, Number(settings.graceDays) || 3));
+        const minPrice = (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
+        const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
+        const listedPrice = Math.max(targetPrice, minPrice);
+        const daysListed = getForSaleDaysListed(tx) || 0;
+        const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+        const dropInterval = Math.max(1, Number(settings.priceDropIntervalDays) || 3);
+        const maxDrops = Math.floor(targetDeadline / dropInterval);
+        const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
+        const dropPerInterval = (maxDrops > 0 && settings.priceDropEnabled) ? Math.max(0, Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
+        const suggestedPrice = (settings.priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
+        const nextDropDay = (drops + 1) * dropInterval;
+
+        return (
+          <div style={S.card}>
+            <div style={S.cardTitle}>🏪 Shop Listing Settings</div>
+
+            {/* Photo Visibility */}
+            {itemPhotos.length > 0 && (
+              <div style={{ marginBottom: '18px' }}>
+                <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '4px', color: COLORS.primaryDark }}>
+                  Photo Visibility in Public Shop ({visibleCount}/{itemPhotos.length} visible)
+                </div>
+                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>At least 2 photos must remain visible. Tap 🚫 to hide, 👁 to show.</div>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  {itemPhotos.map((photo, i) => {
+                    const isHidden = hiddenIdxs.includes(i);
+                    const canHide = visibleCount > 2;
+                    return (
+                      <div key={i} style={{ textAlign: 'center' }}>
+                        <div style={{ position: 'relative', width: '78px' }}>
+                          <img src={photo} alt={`Photo ${i + 1}`} style={{ width: '78px', height: '78px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.3 : 1, border: `2.5px solid ${isHidden ? COLORS.danger : '#10b981'}`, display: 'block' }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='78' height='78'%3E%3Crect width='78' height='78' fill='%23f3f4f6'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='10' fill='%236b7280'%3EPhoto%3C/text%3E%3C/svg%3E"; }} />
+                          <button title={isHidden ? 'Show in shop' : (canHide ? 'Hide from shop' : 'Cannot hide — min 2 required')} onClick={async () => { if (!isHidden && !canHide) return; const newHidden = isHidden ? hiddenIdxs.filter(x => x !== i) : [...hiddenIdxs, i]; await saveTx({ ...tx, hiddenPhotoIndexes: newHidden }); loadData(); }} style={{ position: 'absolute', bottom: '3px', right: '3px', width: '22px', height: '22px', borderRadius: '50%', border: 'none', background: isHidden ? '#10b981' : (canHide ? '#ef4444' : '#9ca3af'), color: '#fff', fontSize: '11px', cursor: (canHide || isHidden) ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
+                            {isHidden ? '👁' : '🚫'}
+                          </button>
+                        </div>
+                        <div style={{ fontSize: '10px', marginTop: '3px', color: isHidden ? COLORS.danger : '#10b981', fontWeight: 700 }}>{isHidden ? 'Hidden' : 'Visible'}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Shop Description */}
+            <div style={{ marginBottom: '18px' }}>
+              <label style={{ fontWeight: 600, fontSize: '13px', color: COLORS.primaryDark, display: 'block', marginBottom: '5px' }}>Shop Description (visible to buyers)</label>
+              <textarea key={tx.ref} defaultValue={tx.shopListingNote || ''} placeholder="E.g. 'Fully functional, minor scuffs on screen. Comes with charger.'" style={{ ...S.input, minHeight: '68px', fontSize: '13px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }} onBlur={async e => { if (e.target.value !== (tx.shopListingNote || '')) { await saveTx({ ...tx, shopListingNote: e.target.value }); loadData(); } }} />
+            </div>
+
+            {/* Price Auto-Drop Info */}
+            {settings.priceDropEnabled ? (
+              <div style={{ background: '#fffbeb', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
+                <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '10px', color: '#92400e' }}>⏬ Price Auto-Drop Schedule</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '10px' }}>
+                  <div style={{ textAlign: 'center', background: '#fff', borderRadius: '8px', padding: '8px' }}><div style={{ fontSize: '11px', color: COLORS.textMuted }}>Target Price</div><div style={{ fontWeight: 700, fontSize: '14px' }}>{fmtMoney(listedPrice)}</div></div>
+                  <div style={{ textAlign: 'center', background: '#fff', borderRadius: '8px', padding: '8px' }}><div style={{ fontSize: '11px', color: COLORS.textMuted }}>Today's Suggested</div><div style={{ fontWeight: 700, fontSize: '14px', color: suggestedPrice < listedPrice ? COLORS.danger : COLORS.primary }}>{fmtMoney(suggestedPrice)}</div></div>
+                  <div style={{ textAlign: 'center', background: '#fff', borderRadius: '8px', padding: '8px' }}><div style={{ fontSize: '11px', color: COLORS.textMuted }}>Floor Price</div><div style={{ fontWeight: 700, fontSize: '14px' }}>{fmtMoney(minPrice)}</div></div>
+                </div>
+                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '10px' }}>
+                  Day {daysListed} listed · drops ₦{fmtMoney(dropPerInterval).replace('₦', '')} every {dropInterval} day{dropInterval !== 1 ? 's' : ''} · {daysListed < targetDeadline ? `next drop: day ${nextDropDay}` : 'at floor price'}
+                </div>
+                {suggestedPrice !== (tx.salePrice || 0) && (
+                  <button style={{ ...S.btn('accent'), fontSize: '13px', padding: '8px 16px' }} onClick={async () => { if (window.confirm(`Update sale price to ${fmtMoney(suggestedPrice)}?`)) { await saveTx({ ...tx, salePrice: suggestedPrice }); loadData(); } }}>
+                    Apply Suggested Price: {fmtMoney(suggestedPrice)}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Price auto-drop is off. Enable it in Settings → Sales Configuration.</div>
+            )}
+          </div>
+        );
+      })()}
+
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' }}>
         <button style={S.btn('outline')} onClick={() => navigate(-1)}>← Back</button>
         {tx.status === 'active' && isStaff && (
@@ -5087,6 +5215,24 @@ export default function App() {
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Parts-Only Advance (₦)<InfoIcon tip="The maximum loan amount for items that don't power on (parts/scrap only). These items are worth less, so the cap is lower." /></span>}>
                 <input style={S.input} type="number" min="0" value={es.maxPartsOnlyAdvance ?? DEFAULT_SETTINGS.maxPartsOnlyAdvance} onChange={e => updateSettings({ ...es, maxPartsOnlyAdvance: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Price Auto-Drop<InfoIcon tip="When enabled, the transaction detail will suggest a lower sale price every X days, linearly stepping down from the target price to the minimum price over the target sell deadline. Staff must manually apply the drop." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={es.priceDropEnabled ?? DEFAULT_SETTINGS.priceDropEnabled} onChange={e => updateSettings({ ...es, priceDropEnabled: e.target.checked })} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+                  <span style={{ fontSize: '14px', fontWeight: 600 }}>Enable price auto-drop suggestions</span>
+                </label>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Price Drop Interval (days)<InfoIcon tip="When price auto-drop is enabled, the suggested price decreases by an equal step every this many days, from the target price down to the floor price over the target sell deadline." /></span>}>
+                <input style={S.input} type="number" min="1" max="30" value={es.priceDropIntervalDays ?? DEFAULT_SETTINGS.priceDropIntervalDays} onChange={e => updateSettings({ ...es, priceDropIntervalDays: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Show Sold History in Shop<InfoIcon tip="Whether to display a 'Recently Sold' section on the public shop page, showing past sold items and their prices as social proof." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={es.shopShowSoldHistory ?? DEFAULT_SETTINGS.shopShowSoldHistory} onChange={e => updateSettings({ ...es, shopShowSoldHistory: e.target.checked })} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+                  <span style={{ fontSize: '14px', fontWeight: 600 }}>Show recently sold items</span>
+                </label>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Sold History Items<InfoIcon tip="How many recently sold items to show in the public shop's 'Recently Sold' section." /></span>}>
+                <input style={S.input} type="number" min="0" max="50" value={es.shopMaxSoldHistoryItems ?? DEFAULT_SETTINGS.shopMaxSoldHistoryItems} onChange={e => updateSettings({ ...es, shopMaxSoldHistoryItems: Number(e.target.value) })} />
               </Field>
             </div>
           </div>
