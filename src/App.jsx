@@ -252,25 +252,25 @@ const fmtDate = (d) => {
 };
 
 const statusColor = (tx, settings = {}) => {
-  if (tx.status === 'declined') return '#6b7280';
-  if (tx.status === 'closed') return '#10b981';
-  if (tx.status === 'sold') return '#6b7280';
-  if (tx.status === 'for_sale') return '#8b5cf6';
-  if (tx.status === 'ready_to_sell') return '#dc2626';  // Early surrender — explicitly ready to sell
-  if (tx.type === 'outright') return '#8b5cf6';
+  if (tx.status === 'declined') return '#6b7280';          // Gray
+  if (tx.status === 'closed') return '#10b981';            // Green
+  if (tx.status === 'sold') return '#4b5563';              // Dark gray (distinct from declined's lighter gray)
+  if (tx.status === 'for_sale') return '#0ea5e9';          // Sky blue — clearly distinct from grace period purple
+  if (tx.status === 'ready_to_sell') return '#dc2626';     // Red — explicit early surrender
+  if (tx.type === 'outright') return '#0ea5e9';            // Sky blue — listed outright purchase
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
   const elapsed = daysBetween(tx?.dateGiven);
   const customerDaysLeft = getCustomerDaysLeft(tx);
-  if (elapsed >= maxLoanDays + graceDays + 1) return '#1e1e1e';       // Ready to sell
-  if (graceDays > 0 && elapsed === maxLoanDays + graceDays) return '#dc2626'; // Last day of grace
-  if (elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays) return '#7c3aed'; // In grace period
-  if (elapsed === maxLoanDays) return '#dc2626';                       // Last day of ownership
-  if (customerDaysLeft !== null && customerDaysLeft < 0) return '#f59e0b'; // Overdue by customer agreement
-  if (customerDaysLeft !== null && customerDaysLeft === 0) return '#ef4444'; // Due today
-  if (customerDaysLeft !== null && customerDaysLeft <= 7) return '#ef4444'; // 7 days or less
-  if (customerDaysLeft !== null && customerDaysLeft <= 15) return '#f59e0b'; // 15 days or less
-  return '#10b981';
+  if (elapsed >= maxLoanDays + graceDays + 1) return '#ea580c';       // Orange — timeline-eligible ready to sell (distinct from red surrender)
+  if (graceDays > 0 && elapsed === maxLoanDays + graceDays) return '#dc2626'; // Red — last day of grace
+  if (elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays) return '#7c3aed'; // Indigo — in grace period
+  if (elapsed === maxLoanDays) return '#b45309';                       // Amber-brown — last day of ownership
+  if (customerDaysLeft !== null && customerDaysLeft < 0) return '#f59e0b'; // Amber — overdue by customer agreement
+  if (customerDaysLeft !== null && customerDaysLeft === 0) return '#ef4444'; // Red — due today
+  if (customerDaysLeft !== null && customerDaysLeft <= 7) return '#ef4444'; // Red — 7 days or less
+  if (customerDaysLeft !== null && customerDaysLeft <= 15) return '#f59e0b'; // Amber — 15 days or less
+  return '#10b981';                                                     // Green — active, healthy
 };
 
 const statusLabel = (tx, settings = {}) => {
@@ -3751,6 +3751,10 @@ export default function App() {
   const [txPage, setTxPage] = useState(1);
   const [txSortKey, setTxSortKey] = useState('dateGiven');
   const [txSortDir, setTxSortDir] = useState('desc');
+  // For Sale page local state — kept here to avoid defining components with hooks inside switch/case
+  const [fsSearch, setFsSearch] = useState('');
+  const [fsFilter, setFsFilter] = useState('all'); // 'all' | 'listed' | 'ready'
+  const [fsSort, setFsSort] = useState('days_desc');
   const [txStatusFilter, setTxStatusFilter] = useState('all');
   const [txDateFrom, setTxDateFrom] = useState('');
   const [txDateTo, setTxDateTo] = useState('');
@@ -4745,162 +4749,139 @@ export default function App() {
       }
 
       case 'forSale': {
-        // ── For Sale page — with search, sort, filter and stat cards ──
-        const ForSalePage = () => {
-          const [fsSearch, setFsSearch] = React.useState('');
-          const [fsFilter, setFsFilter] = React.useState('all'); // 'all' | 'listed' | 'ready'
-          const [fsSort, setFsSort] = React.useState('days_desc'); // 'days_desc' | 'days_asc' | 'price_high' | 'price_low' | 'name'
+        // ── For Sale page — state lives at App level (fsSearch/fsFilter/fsSort) to avoid
+        // defining a component with hooks inside a switch/case block. ──
+        const allSellable = [...forSaleTxs, ...readyToSell];
 
-          const allSellable = useMemo(() => [...forSaleTxs, ...readyToSell], []);
+        // Deep search across all transaction fields
+        const fsSearched = !fsSearch.trim() ? allSellable : (() => {
+          const q = fsSearch.toLowerCase();
+          return allSellable.filter(t =>
+            (t.ref || '').toLowerCase().includes(q) ||
+            (t.fullName || '').toLowerCase().includes(q) ||
+            (t.aiBrand || '').toLowerCase().includes(q) ||
+            (t.aiModel || '').toLowerCase().includes(q) ||
+            (t.aiItemType || '').toLowerCase().includes(q) ||
+            (t.aiColour || '').toLowerCase().includes(q) ||
+            (t.captureItemType || '').toLowerCase().includes(q) ||
+            (t.imei || '').toLowerCase().includes(q) ||
+            (t.serialNumber || '').toLowerCase().includes(q) ||
+            (t.shopId || '').toLowerCase().includes(q) ||
+            (t.shopCondition || '').toLowerCase().includes(q) ||
+            (t.shopListingNote || '').toLowerCase().includes(q) ||
+            (t.aiCondition || '').toLowerCase().includes(q) ||
+            (t.conditionDescription || '').toLowerCase().includes(q) ||
+            (t.inspectionNotes || '').toLowerCase().includes(q) ||
+            (t.notes || '').toLowerCase().includes(q) ||
+            (t.address || '').toLowerCase().includes(q) ||
+            (t.phoneNumbers || []).some(p => (p || '').toLowerCase().includes(q)) ||
+            (t.salePrice && String(t.salePrice).includes(q)) ||
+            (t.cashAdvance && String(t.cashAdvance).includes(q)) ||
+            (t.screeningPurchaseLocation || '').toLowerCase().includes(q) ||
+            (t.contactLog || []).some(e => (e.notes || '').toLowerCase().includes(q))
+          );
+        })();
 
-          // Deep search across all transaction fields
-          const fsSearhed = useMemo(() => {
-            if (!fsSearch.trim()) return allSellable;
-            const q = fsSearch.toLowerCase();
-            return allSellable.filter(t => {
-              // Standard visible fields
-              if ((t.ref || '').toLowerCase().includes(q)) return true;
-              if ((t.fullName || '').toLowerCase().includes(q)) return true;
-              if ((t.aiBrand || '').toLowerCase().includes(q)) return true;
-              if ((t.aiModel || '').toLowerCase().includes(q)) return true;
-              if ((t.aiItemType || '').toLowerCase().includes(q)) return true;
-              if ((t.aiColour || '').toLowerCase().includes(q)) return true;
-              if ((t.captureItemType || '').toLowerCase().includes(q)) return true;
-              // Financial / identification
-              if ((t.imei || '').toLowerCase().includes(q)) return true;
-              if ((t.serialNumber || '').toLowerCase().includes(q)) return true;
-              if ((t.shopId || '').toLowerCase().includes(q)) return true;
-              // Condition / notes
-              if ((t.shopCondition || '').toLowerCase().includes(q)) return true;
-              if ((t.shopListingNote || '').toLowerCase().includes(q)) return true;
-              if ((t.aiCondition || '').toLowerCase().includes(q)) return true;
-              if ((t.conditionDescription || '').toLowerCase().includes(q)) return true;
-              if ((t.inspectionNotes || '').toLowerCase().includes(q)) return true;
-              if ((t.notes || '').toLowerCase().includes(q)) return true;
-              // Customer contact info
-              if ((t.address || '').toLowerCase().includes(q)) return true;
-              if ((t.phoneNumbers || []).some(p => (p || '').toLowerCase().includes(q))) return true;
-              // Price match (e.g. user types "50000")
-              if (t.salePrice && String(t.salePrice).includes(q)) return true;
-              if (t.cashAdvance && String(t.cashAdvance).includes(q)) return true;
-              // Item screening notes
-              if ((t.screeningPurchaseLocation || '').toLowerCase().includes(q)) return true;
-              // Contact log
-              if ((t.contactLog || []).some(e => (e.notes || '').toLowerCase().includes(q))) return true;
-              return false;
-            });
-          }, [allSellable, fsSearch]);
+        const fsFiltered = fsFilter === 'listed' ? fsSearched.filter(t => t.status === 'for_sale')
+          : fsFilter === 'ready' ? fsSearched.filter(t => t.status !== 'for_sale')
+          : fsSearched;
 
-          const fsFiltered = useMemo(() => {
-            if (fsFilter === 'listed') return fsSearhed.filter(t => t.status === 'for_sale');
-            if (fsFilter === 'ready') return fsSearhed.filter(t => t.status !== 'for_sale');
-            return fsSearhed;
-          }, [fsSearhed, fsFilter]);
+        const fsSorted = [...fsFiltered].sort((a, b) => {
+          if (fsSort === 'days_asc') return (getForSaleDaysListed(a) || 0) - (getForSaleDaysListed(b) || 0);
+          if (fsSort === 'price_high') return (b.salePrice || 0) - (a.salePrice || 0);
+          if (fsSort === 'price_low') return (a.salePrice || 0) - (b.salePrice || 0);
+          if (fsSort === 'name') return (`${a.aiBrand} ${a.aiModel}`).localeCompare(`${b.aiBrand} ${b.aiModel}`);
+          return (getForSaleDaysListed(b) || 0) - (getForSaleDaysListed(a) || 0); // days_desc default
+        });
 
-          const fsSorted = useMemo(() => {
-            const arr = [...fsFiltered];
-            if (fsSort === 'days_desc') return arr.sort((a, b) => (getForSaleDaysListed(b) || 0) - (getForSaleDaysListed(a) || 0));
-            if (fsSort === 'days_asc') return arr.sort((a, b) => (getForSaleDaysListed(a) || 0) - (getForSaleDaysListed(b) || 0));
-            if (fsSort === 'price_high') return arr.sort((a, b) => (b.salePrice || 0) - (a.salePrice || 0));
-            if (fsSort === 'price_low') return arr.sort((a, b) => (a.salePrice || 0) - (b.salePrice || 0));
-            if (fsSort === 'name') return arr.sort((a, b) => (`${a.aiBrand} ${a.aiModel}`).localeCompare(`${b.aiBrand} ${b.aiModel}`));
-            return arr;
-          }, [fsFiltered, fsSort]);
+        // Stat calculations
+        const totalAskingValue = forSaleTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
+        const totalCapitalRisk = allSellable.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const listedDaysArr = forSaleTxs.map(t => getForSaleDaysListed(t) || 0).filter(d => d > 0);
+        const avgDaysListed = listedDaysArr.length > 0 ? Math.round(listedDaysArr.reduce((a, b) => a + b, 0) / listedDaysArr.length) : 0;
+        const targetDeadlineDays = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+        const pastDeadline = forSaleTxs.filter(t => (getForSaleDaysListed(t) || 0) > targetDeadlineDays).length;
+        const SC = {
+          wrap: { ...S.stat, flex: '1 1 140px' },
+          label: { ...S.statLabel, display: 'flex', alignItems: 'center' },
+          value: S.statValue,
+          sub: { fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' },
+        };
 
-          // Stat calculations
-          const listedItems = forSaleTxs;
-          const readyItems = readyToSell;
-          const totalAskingValue = listedItems.reduce((s, t) => s + (t.salePrice || 0), 0);
-          const totalCapitalRisk = allSellable.reduce((s, t) => s + (t.cashAdvance || 0), 0);
-          const listedDaysArr = listedItems.map(t => getForSaleDaysListed(t) || 0).filter(d => d > 0);
-          const avgDaysListed = listedDaysArr.length > 0 ? Math.round(listedDaysArr.reduce((a, b) => a + b, 0) / listedDaysArr.length) : 0;
-          const targetDeadlineDays = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
-          const pastDeadline = listedItems.filter(t => (getForSaleDaysListed(t) || 0) > targetDeadlineDays).length;
-          const surrenderedCount = surrenderedTxs.length;
+        return (
+          <div>
+            {listLoadingNotice}
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🏷 For Sale</h2>
 
-          const SC = { // stat card styles
-            wrap: { ...S.stat, flex: '1 1 140px' },
-            label: { ...S.statLabel, display: 'flex', alignItems: 'center' },
-            value: S.statValue,
-            sub: { fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' },
-          };
-
-          return (
-            <div>
-              {listLoadingNotice}
-              <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🏷 For Sale</h2>
-
-              {/* ── Stat Cards ── */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
-                <div style={{ ...SC.wrap, background: COLORS.primaryLight }}>
-                  <div style={SC.label}>Listed in Shop<InfoIcon tip="Items currently visible on the public shop page." /></div>
-                  <div style={{ ...SC.value, color: COLORS.primary }}>{listedItems.length}</div>
-                  <div style={SC.sub}>Asking: {fmtMoney(totalAskingValue)}</div>
-                </div>
-                <div style={{ ...SC.wrap, background: readyItems.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}>
-                  <div style={SC.label}>Ready to Sell<InfoIcon tip="Items eligible to list but not yet in the shop (timeline expired or customer surrendered)." /></div>
-                  <div style={{ ...SC.value, color: readyItems.length > 0 ? COLORS.danger : COLORS.primary }}>{readyItems.length}</div>
-                  {surrenderedCount > 0 && <div style={SC.sub}>{surrenderedCount} early surrender{surrenderedCount !== 1 ? 's' : ''}</div>}
-                </div>
-                <div style={{ ...SC.wrap, background: '#fef3c7' }}>
-                  <div style={SC.label}>Capital at Risk<InfoIcon tip="Total cash advanced across all items not yet sold (both listed and ready to sell)." /></div>
-                  <div style={{ ...SC.value, color: '#92400e' }}>{fmtMoney(totalCapitalRisk)}</div>
-                  <div style={SC.sub}>{allSellable.length} item{allSellable.length !== 1 ? 's' : ''}</div>
-                </div>
-                <div style={{ ...SC.wrap, background: avgDaysListed > targetDeadlineDays ? '#fef2f2' : COLORS.bg }}>
-                  <div style={SC.label}>Avg Days Listed<InfoIcon tip="Average number of days listed items have been in the shop. Target is below the sale deadline setting." /></div>
-                  <div style={{ ...SC.value, color: avgDaysListed > targetDeadlineDays ? COLORS.danger : COLORS.text }}>{avgDaysListed > 0 ? avgDaysListed : '—'}</div>
-                  <div style={SC.sub}>Target ≤ {targetDeadlineDays} days</div>
-                </div>
-                {pastDeadline > 0 && (
-                  <div style={{ ...SC.wrap, background: '#fef2f2' }}>
-                    <div style={SC.label}>Past Target Deadline<InfoIcon tip="Listed items that have been in the shop longer than your target sale deadline. Consider reducing the price." /></div>
-                    <div style={{ ...SC.value, color: COLORS.danger }}>{pastDeadline}</div>
-                    <div style={{ ...SC.sub, color: '#991b1b' }}>Consider price drops</div>
-                  </div>
-                )}
+            {/* ── Stat Cards ── */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+              <div style={{ ...SC.wrap, background: COLORS.primaryLight }}>
+                <div style={SC.label}>Listed in Shop<InfoIcon tip="Items currently visible on the public shop page." /></div>
+                <div style={{ ...SC.value, color: COLORS.primary }}>{forSaleTxs.length}</div>
+                <div style={SC.sub}>Asking: {fmtMoney(totalAskingValue)}</div>
               </div>
-
-              {/* ── Search + Filter + Sort controls ── */}
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'center' }}>
-                <input
-                  type="text"
-                  value={fsSearch}
-                  onChange={e => setFsSearch(e.target.value)}
-                  placeholder="Deep search — ref, customer, item, IMEI, serial, notes, price..."
-                  style={{ flex: '1 1 240px', padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none', fontFamily: 'inherit' }}
-                />
-                <select value={fsFilter} onChange={e => setFsFilter(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
-                  <option value="all">All ({allSellable.length})</option>
-                  <option value="listed">Listed in Shop ({listedItems.length})</option>
-                  <option value="ready">Ready to Sell ({readyItems.length})</option>
-                </select>
-                <select value={fsSort} onChange={e => setFsSort(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
-                  <option value="days_desc">Longest Listed First</option>
-                  <option value="days_asc">Newest Listed First</option>
-                  <option value="price_high">Price: High → Low</option>
-                  <option value="price_low">Price: Low → High</option>
-                  <option value="name">Item Name (A–Z)</option>
-                </select>
-                {fsSearch && (
-                  <button onClick={() => setFsSearch('')} style={{ padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', color: COLORS.textMuted, cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>✕ Clear</button>
-                )}
+              <div style={{ ...SC.wrap, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}>
+                <div style={SC.label}>Ready to Sell<InfoIcon tip="Items eligible to list but not yet in the shop (timeline expired or customer surrendered)." /></div>
+                <div style={{ ...SC.value, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div>
+                {surrenderedTxs.length > 0 && <div style={SC.sub}>{surrenderedTxs.length} early surrender{surrenderedTxs.length !== 1 ? 's' : ''}</div>}
               </div>
-
-              {fsSearch && (
-                <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '10px' }}>
-                  {fsSorted.length} result{fsSorted.length !== 1 ? 's' : ''} for "<strong>{fsSearch}</strong>"
-                  {fsSorted.length === 0 && <span style={{ marginLeft: '8px', color: COLORS.danger }}>— no matches found</span>}
+              <div style={{ ...SC.wrap, background: '#fef3c7' }}>
+                <div style={SC.label}>Capital at Risk<InfoIcon tip="Total cash advanced across all items not yet sold (both listed and ready to sell)." /></div>
+                <div style={{ ...SC.value, color: '#92400e' }}>{fmtMoney(totalCapitalRisk)}</div>
+                <div style={SC.sub}>{allSellable.length} item{allSellable.length !== 1 ? 's' : ''}</div>
+              </div>
+              <div style={{ ...SC.wrap, background: avgDaysListed > targetDeadlineDays ? '#fef2f2' : COLORS.bg }}>
+                <div style={SC.label}>Avg Days Listed<InfoIcon tip="Average number of days listed items have been in the shop. Target is below the sale deadline setting." /></div>
+                <div style={{ ...SC.value, color: avgDaysListed > targetDeadlineDays ? COLORS.danger : COLORS.text }}>{avgDaysListed > 0 ? avgDaysListed : '—'}</div>
+                <div style={SC.sub}>Target ≤ {targetDeadlineDays} days</div>
+              </div>
+              {pastDeadline > 0 && (
+                <div style={{ ...SC.wrap, background: '#fef2f2' }}>
+                  <div style={SC.label}>Past Target Deadline<InfoIcon tip="Listed items in the shop longer than your target sale deadline. Consider reducing prices." /></div>
+                  <div style={{ ...SC.value, color: COLORS.danger }}>{pastDeadline}</div>
+                  <div style={{ ...SC.sub, color: '#991b1b' }}>Consider price drops</div>
                 </div>
               )}
-
-              <div style={S.card}>
-                <TxTable items={fsSorted} showDaysListed />
-              </div>
             </div>
-          );
-        };
-        return <ForSalePage />;
+
+            {/* ── Search + Filter + Sort controls ── */}
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'center' }}>
+              <input
+                type="text"
+                value={fsSearch}
+                onChange={e => setFsSearch(e.target.value)}
+                placeholder="Deep search — ref, customer, item, IMEI, serial, notes, price..."
+                style={{ flex: '1 1 240px', padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none', fontFamily: 'inherit' }}
+              />
+              <select value={fsFilter} onChange={e => setFsFilter(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
+                <option value="all">All ({allSellable.length})</option>
+                <option value="listed">Listed in Shop ({forSaleTxs.length})</option>
+                <option value="ready">Ready to Sell ({readyToSell.length})</option>
+              </select>
+              <select value={fsSort} onChange={e => setFsSort(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
+                <option value="days_desc">Longest Listed First</option>
+                <option value="days_asc">Newest Listed First</option>
+                <option value="price_high">Price: High → Low</option>
+                <option value="price_low">Price: Low → High</option>
+                <option value="name">Item Name (A–Z)</option>
+              </select>
+              {fsSearch && (
+                <button onClick={() => setFsSearch('')} style={{ padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', color: COLORS.textMuted, cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>✕ Clear</button>
+              )}
+            </div>
+
+            {fsSearch && (
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '10px' }}>
+                {fsSorted.length} result{fsSorted.length !== 1 ? 's' : ''} for "<strong>{fsSearch}</strong>"
+                {fsSorted.length === 0 && <span style={{ marginLeft: '8px', color: COLORS.danger }}>— no matches found</span>}
+              </div>
+            )}
+
+            <div style={S.card}>
+              <TxTable items={fsSorted} showDaysListed />
+            </div>
+          </div>
+        );
       }
 
       case 'reports': {
