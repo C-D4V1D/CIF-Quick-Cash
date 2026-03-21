@@ -1379,49 +1379,83 @@ function SalesPage({ onBack, settings }) {
 // SHOP LISTING MODAL — Staff/Admin manage a for-sale listing
 // ============================================================
 function ShopListingModal({ tx, settings, onClose, onSave }) {
-  const [condition, setCondition] = useState(tx.shopCondition || tx.conditionDescription || tx.aiCondition || '');
-  const [shopNote, setShopNote] = useState(tx.shopListingNote || '');
-  const [salePrice, setSalePrice] = useState(tx.salePrice || 0);
-  const [hiddenPhotoIndexes, setHiddenPhotoIndexes] = useState(Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : []);
-  const [priceDropEnabled, setPriceDropEnabled] = useState(tx.priceDropEnabled || false);
-  const [priceDropIntervalDays, setPriceDropIntervalDays] = useState(tx.priceDropIntervalDays || Number(settings.priceDropIntervalDays) || 3);
-  const [aiPolishing, setAiPolishing] = useState(false);
-
-  const itemPhotos = normalizeItemPhotos(tx.itemPhotos).filter(Boolean);
-  const visibleCount = itemPhotos.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
-
-  // Price calculations
+  // Stable price reference values (computed from props, not state)
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
-  const maxHoldDays = (Math.max(1, Number(settings.maxLoanDays) || 30)) + (Math.max(0, Number(settings.graceDays) || 3));
+  const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const minPrice = (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
   const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
   const listedPrice = Math.max(targetPrice, minPrice);
-  const daysListed = getForSaleDaysListed(tx) || 0;
   const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+  const isNewListing = tx.status !== 'for_sale';
+
+  const [condition, setCondition] = useState(tx.shopCondition || tx.conditionDescription || tx.aiCondition || '');
+  const [shopNote, setShopNote] = useState(tx.shopListingNote || '');
+  const [salePrice, setSalePrice] = useState(tx.salePrice > 0 ? tx.salePrice : listedPrice);
+  const [hiddenPhotoIndexes, setHiddenPhotoIndexes] = useState(Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : []);
+  const [priceDropEnabled, setPriceDropEnabled] = useState(tx.priceDropEnabled || false);
+  const [priceDropIntervalDays, setPriceDropIntervalDays] = useState(tx.priceDropIntervalDays || 3);
+  const [aiPolishing, setAiPolishing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showInspection, setShowInspection] = useState(false);
+  const [showDropSchedule, setShowDropSchedule] = useState(false);
+
+  const itemPhotos = normalizeItemPhotos(tx.itemPhotos).filter(Boolean);
+  const visibleCount = itemPhotos.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
+  const daysListed = getForSaleDaysListed(tx) || 0;
+  const listedDate = getForSaleListedDate(tx);
+
+  // Price drop calculations
   const dropInterval = Math.max(1, priceDropIntervalDays);
   const maxDrops = Math.floor(targetDeadline / dropInterval);
   const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
   const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? Math.max(0, Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
   const suggestedPrice = (priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
+  const deadlineProgress = Math.min(100, Math.round((daysListed / targetDeadline) * 100));
+
+  // Price drop schedule for preview
+  const dropSchedule = (priceDropEnabled && maxDrops > 0 && dropPerInterval > 0)
+    ? Array.from({ length: maxDrops + 1 }, (_, i) => ({
+        day: i * dropInterval,
+        price: Math.max(minPrice, listedPrice - i * dropPerInterval),
+        isCurrent: !isNewListing && i * dropInterval <= daysListed && (i + 1) * dropInterval > daysListed,
+      }))
+    : [];
+
+  // Validation
+  const hasEnoughPhotos = itemPhotos.length === 0 || visibleCount >= 2;
+  const priceValid = salePrice > 0;
+  const priceBelowMin = salePrice > 0 && salePrice < minPrice;
+  const canSave = hasEnoughPhotos && priceValid && !saving && !aiPolishing;
+
+  // Raw inspection data for reference
+  const inspectionNotes = tx.inspectionNotes || '';
+  const inspectionChecklist = tx.inspectionChecklist || {};
+  const hasInspectionData = inspectionNotes || Object.keys(inspectionChecklist).length > 0;
 
   const handleAiPolish = async () => {
     if (!settings.geminiApiKey) { alert('No Gemini API key configured. Go to Settings to add it.'); return; }
+    if (!condition.trim()) { alert('Enter a condition description first before polishing.'); return; }
     setAiPolishing(true);
+    const inspectionRef = inspectionNotes ? `Inspection notes: "${inspectionNotes}"` : '';
     const prompt = `You are writing a product condition description for a used ${tx.aiBrand || ''} ${tx.aiModel || ''} (${tx.aiItemType || ''}) being sold in a second-hand shop in Nigeria.
 The current condition description from inspection is: "${condition}"
+${inspectionRef}
 Rewrite this into a clear, honest, but attractive 2-3 sentence description for buyers. Be truthful about any issues but frame positively where possible. Do not exaggerate or lie. Do not use markdown or bullet points. Respond with ONLY the rewritten text, nothing else.`;
     const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt);
     if (result?.text) setCondition(result.text.trim());
-    else alert(result?.error || 'AI generation failed.');
+    else alert(result?.error || 'AI generation failed. Check your Gemini API key in Settings.');
     setAiPolishing(false);
   };
 
-  const isNewListing = tx.status !== 'for_sale';
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (!canSave) return;
+    if (!hasEnoughPhotos) { alert('At least 2 photos must be visible in the shop.'); return; }
+    if (!priceValid) { alert('Please set a valid sale price.'); return; }
+    setSaving(true);
     const updates = {
       ...tx,
-      shopCondition: condition,
-      shopListingNote: shopNote,
+      shopCondition: condition.trim(),
+      shopListingNote: shopNote.trim(),
       salePrice,
       hiddenPhotoIndexes,
       priceDropEnabled,
@@ -1429,93 +1463,206 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
     };
     if (isNewListing) {
       updates.status = 'for_sale';
-      if (!updates.salePrice) updates.salePrice = listedPrice;
+      updates.listedForSaleDate = new Date().toISOString().slice(0, 10);
     }
-    onSave(updates);
-    onClose();
+    await onSave(updates);
+    setSaving(false);
   };
 
-  const S_LABEL = { fontWeight: 600, fontSize: '13px', color: '#1a3a2a', display: 'block', marginBottom: '5px' };
-  const S_INPUT = { width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '14px', boxSizing: 'border-box', outline: 'none' };
+  const S_LABEL = { fontWeight: 600, fontSize: '13px', color: '#1a3a2a', display: 'block', marginBottom: '6px' };
+  const S_INPUT = { width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '14px', boxSizing: 'border-box', outline: 'none', background: '#fff', color: '#111', fontFamily: 'inherit' };
+  const S_SECTION = { marginBottom: '20px' };
 
   return (
     <div>
       {/* Item summary */}
       <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 14px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', border: '1px solid #bbf7d0' }}>
-        {itemPhotos[0] && <img src={itemPhotos[0]} alt="" style={{ width: '56px', height: '56px', borderRadius: '8px', objectFit: 'cover' }} />}
-        <div>
+        {itemPhotos[0] && <img src={itemPhotos[0]} alt="" style={{ width: '60px', height: '60px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} />}
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: '15px', color: '#111' }}>{tx.aiBrand} {tx.aiModel}</div>
-          <div style={{ fontSize: '12px', color: '#6b7280' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
+          <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
+          {tx.estimatedValue > 0 && <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '2px' }}>Est. value: {fmtMoney(tx.estimatedValue)}</div>}
         </div>
+        {!isNewListing && (
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ fontSize: '11px', color: '#6b7280', fontWeight: 500 }}>Listed</div>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#1a5f2a' }}>{daysListed}d ago</div>
+          </div>
+        )}
       </div>
+
+      {/* Listing status (existing listings only) */}
+      {!isNewListing && (
+        <div style={{ ...S_SECTION, background: deadlineProgress >= 100 ? '#fef2f2' : deadlineProgress >= 70 ? '#fefce8' : '#f0fdf4', borderRadius: '10px', padding: '12px 14px', border: `1px solid ${deadlineProgress >= 100 ? '#fecaca' : deadlineProgress >= 70 ? '#fde68a' : '#bbf7d0'}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+            <div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#374151', marginBottom: '2px' }}>Listing Progress</div>
+              {listedDate && <div style={{ fontSize: '11px', color: '#6b7280' }}>Listed: {fmtDate(listedDate)}</div>}
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: deadlineProgress >= 100 ? '#dc2626' : '#374151' }}>{daysListed} / {targetDeadline} days</div>
+              <div style={{ fontSize: '11px', color: '#6b7280' }}>target deadline</div>
+            </div>
+          </div>
+          <div style={{ height: '6px', borderRadius: '999px', background: '#e5e7eb', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${deadlineProgress}%`, borderRadius: '999px', background: deadlineProgress >= 100 ? '#dc2626' : deadlineProgress >= 70 ? '#f59e0b' : '#10b981', transition: 'width 0.3s' }} />
+          </div>
+          {deadlineProgress >= 100 && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '6px' }}>Past target deadline — consider lowering the price.</div>}
+        </div>
+      )}
 
       {/* Photo Visibility */}
       {itemPhotos.length > 0 && (
-        <div style={{ marginBottom: '20px' }}>
-          <label style={S_LABEL}>Photo Visibility ({visibleCount}/{itemPhotos.length} visible in shop)</label>
-          <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>At least 2 must remain visible. Tap to toggle.</div>
+        <div style={S_SECTION}>
+          <label style={S_LABEL}>
+            Photo Visibility
+            <span style={{ marginLeft: '8px', fontWeight: 400, color: visibleCount < 2 ? '#dc2626' : '#6b7280', fontSize: '12px' }}>({visibleCount}/{itemPhotos.length} visible in shop{visibleCount < 2 ? ' — need at least 2' : ''})</span>
+          </label>
+          <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '10px' }}>Tap a photo to toggle its visibility. At least 2 must remain visible.</div>
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             {itemPhotos.map((photo, i) => {
               const isHidden = hiddenPhotoIndexes.includes(i);
               const canToggle = isHidden || visibleCount > 2;
               return (
                 <div key={i} style={{ textAlign: 'center' }}>
-                  <div style={{ position: 'relative', width: '72px', cursor: canToggle ? 'pointer' : 'not-allowed' }} onClick={() => { if (!canToggle) return; setHiddenPhotoIndexes(isHidden ? hiddenPhotoIndexes.filter(x => x !== i) : [...hiddenPhotoIndexes, i]); }}>
-                    <img src={photo} alt="" style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.3 : 1, border: `2px solid ${isHidden ? '#ef4444' : '#10b981'}` }} />
-                    <div style={{ position: 'absolute', bottom: '2px', right: '2px', width: '20px', height: '20px', borderRadius: '50%', background: isHidden ? '#ef4444' : '#10b981', color: '#fff', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{isHidden ? '✕' : '✓'}</div>
+                  <div
+                    title={canToggle ? (isHidden ? 'Click to show' : 'Click to hide') : 'Cannot hide — need at least 2 visible'}
+                    style={{ position: 'relative', width: '72px', cursor: canToggle ? 'pointer' : 'not-allowed' }}
+                    onClick={() => { if (!canToggle) return; setHiddenPhotoIndexes(isHidden ? hiddenPhotoIndexes.filter(x => x !== i) : [...hiddenPhotoIndexes, i]); }}
+                  >
+                    <img src={photo} alt={`Photo ${i + 1}`} style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.25 : 1, border: `2.5px solid ${isHidden ? '#ef4444' : '#10b981'}` }} />
+                    <div style={{ position: 'absolute', bottom: '2px', right: '2px', width: '20px', height: '20px', borderRadius: '50%', background: isHidden ? '#ef4444' : '#10b981', color: '#fff', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>{isHidden ? '✕' : '✓'}</div>
+                    {!canToggle && !isHidden && <div style={{ position: 'absolute', inset: 0, borderRadius: '8px', background: 'rgba(0,0,0,0.15)' }} />}
                   </div>
-                  <div style={{ fontSize: '10px', marginTop: '2px', fontWeight: 600, color: isHidden ? '#ef4444' : '#10b981' }}>{isHidden ? 'Hidden' : 'Shown'}</div>
+                  <div style={{ fontSize: '10px', marginTop: '3px', fontWeight: 600, color: isHidden ? '#ef4444' : '#10b981' }}>{isHidden ? 'Hidden' : 'Shown'}</div>
                 </div>
               );
             })}
           </div>
+          {!hasEnoughPhotos && <div style={{ marginTop: '8px', fontSize: '12px', color: '#dc2626', fontWeight: 600 }}>Show at least 2 photos before saving.</div>}
         </div>
       )}
 
-      {/* Condition */}
-      <div style={{ marginBottom: '20px' }}>
-        <label style={S_LABEL}>Item Condition (shown to buyers)</label>
-        <textarea value={condition} onChange={e => setCondition(e.target.value)} placeholder="Describe the condition clearly and honestly..." style={{ ...S_INPUT, minHeight: '70px', resize: 'vertical' }} />
-        <button disabled={aiPolishing} onClick={handleAiPolish} style={{ marginTop: '8px', padding: '7px 14px', borderRadius: '8px', border: '1.5px solid #8b5cf6', background: aiPolishing ? '#ede9fe' : '#fff', color: '#7c3aed', fontWeight: 600, fontSize: '13px', cursor: aiPolishing ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {aiPolishing ? 'Polishing...' : '✨ AI Polish Condition Text'}
-        </button>
+      {/* Inspection Reference (collapsible) */}
+      {hasInspectionData && (
+        <div style={{ ...S_SECTION, borderRadius: '10px', border: '1px solid #e5e7eb', overflow: 'hidden' }}>
+          <button onClick={() => setShowInspection(v => !v)} style={{ width: '100%', padding: '10px 14px', background: '#f9fafb', border: 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600, fontSize: '13px', color: '#374151' }}>
+            <span>🔍 View Inspection Notes (staff reference)</span>
+            <span style={{ fontSize: '12px' }}>{showInspection ? '▲ Hide' : '▼ Show'}</span>
+          </button>
+          {showInspection && (
+            <div style={{ padding: '12px 14px', borderTop: '1px solid #e5e7eb', background: '#fff' }}>
+              {inspectionNotes && (
+                <div style={{ marginBottom: '8px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Inspector Notes</div>
+                  <div style={{ fontSize: '13px', color: '#374151', lineHeight: 1.6, background: '#f9fafb', borderRadius: '6px', padding: '8px 10px' }}>{inspectionNotes}</div>
+                </div>
+              )}
+              {Object.keys(inspectionChecklist).length > 0 && (
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Checklist</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {Object.entries(inspectionChecklist).map(([k, v]) => (
+                      <span key={k} style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '999px', background: v ? '#dcfce7' : '#fef2f2', color: v ? '#166534' : '#991b1b', border: `1px solid ${v ? '#86efac' : '#fecaca'}`, fontWeight: 600 }}>
+                        {v ? '✓' : '✕'} {k}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ marginTop: '10px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>This is internal data. Use the condition field below to write the buyer-facing description.</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Item Condition */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>Item Condition <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(shown to buyers in shop)</span></label>
+        <textarea
+          value={condition}
+          onChange={e => setCondition(e.target.value)}
+          placeholder="Describe the item condition clearly and honestly for buyers. E.g. 'Screen is in excellent condition, minor scratches on the back casing, battery holds full charge and all functions tested working.'"
+          style={{ ...S_INPUT, minHeight: '80px', resize: 'vertical', lineHeight: 1.6 }}
+        />
+        <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+          <button disabled={aiPolishing || !settings.geminiApiKey} onClick={handleAiPolish} style={{ padding: '7px 14px', borderRadius: '8px', border: '1.5px solid #8b5cf6', background: aiPolishing ? '#ede9fe' : '#fff', color: aiPolishing ? '#6d28d9' : '#7c3aed', fontWeight: 600, fontSize: '13px', cursor: (aiPolishing || !settings.geminiApiKey) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px', opacity: (!settings.geminiApiKey) ? 0.6 : 1 }}>
+            {aiPolishing ? '⏳ Polishing...' : '✨ AI Polish Condition Text'}
+          </button>
+          {!settings.geminiApiKey && <span style={{ fontSize: '11px', color: '#9ca3af', alignSelf: 'center' }}>Gemini API key required (Settings)</span>}
+        </div>
       </div>
 
       {/* Sale Price */}
-      <div style={{ marginBottom: '20px' }}>
+      <div style={S_SECTION}>
         <label style={S_LABEL}>Sale Price (₦)</label>
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
           <div style={{ flex: 1 }}>
-            <input type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} style={{ ...S_INPUT, fontSize: '18px', fontWeight: 700 }} />
+            <input
+              type="number"
+              min="0"
+              value={salePrice}
+              onChange={e => setSalePrice(Number(e.target.value))}
+              style={{ ...S_INPUT, fontSize: '20px', fontWeight: 700, color: priceBelowMin ? '#dc2626' : '#111' }}
+            />
           </div>
-          <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reset to Target</button>
+          <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap', color: '#374151' }}>Reset to Target</button>
         </div>
-        {salePrice < minPrice && <div style={{ fontSize: '12px', color: '#ef4444', fontWeight: 600 }}>Below minimum price ({fmtMoney(minPrice)})</div>}
-        <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>
-          <span>Target: {fmtMoney(listedPrice)}</span>
-          <span>Min: {fmtMoney(minPrice)}</span>
-          <span>Estimated value: {fmtMoney(tx.estimatedValue || 0)}</span>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
+          <span>Target: <strong style={{ color: '#1a5f2a' }}>{fmtMoney(listedPrice)}</strong></span>
+          <span>Min floor: <strong style={{ color: '#92400e' }}>{fmtMoney(minPrice)}</strong></span>
+          <span>Est. value: <strong>{fmtMoney(tx.estimatedValue || 0)}</strong></span>
         </div>
+        {!priceValid && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>Sale price must be greater than zero.</div>}
+        {priceBelowMin && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>Warning: price is below the minimum floor ({fmtMoney(minPrice)}). This may result in a loss.</div>}
+        {salePrice > listedPrice && <div style={{ fontSize: '12px', color: '#2563eb', fontWeight: 600, marginTop: '4px' }}>Price is above target — this is fine if the item is in excellent condition.</div>}
       </div>
 
-      {/* Price Auto-Drop (per-item) */}
-      <div style={{ marginBottom: '20px', background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
+      {/* Price Auto-Drop */}
+      <div style={{ ...S_SECTION, background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: priceDropEnabled ? '12px' : '0' }}>
-          <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px' }} />
-          <span style={{ fontWeight: 600, fontSize: '14px', color: '#92400e' }}>Enable price auto-drop for this item</span>
+          <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+          <span style={{ fontWeight: 700, fontSize: '14px', color: '#92400e' }}>Enable automatic price drop for this item</span>
         </label>
         {priceDropEnabled && (
           <div>
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '10px' }}>
-              <label style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</label>
-              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Number(e.target.value))} style={{ ...S_INPUT, width: '60px', textAlign: 'center', padding: '6px' }} />
-              <label style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>days over {targetDeadline}-day deadline</label>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</span>
+              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value)))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px', background: '#fff' }} />
+              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>days · target sell within {targetDeadline} days</span>
             </div>
-            {tx.status === 'for_sale' && daysListed > 0 && (
+            {dropPerInterval > 0 && (
+              <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '10px' }}>
+                Price drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} total drop{maxDrops !== 1 ? 's' : ''} · ends at <strong>{fmtMoney(minPrice)}</strong>
+              </div>
+            )}
+            {!isNewListing && daysListed > 0 && (
+              <div style={{ background: '#fff', borderRadius: '8px', padding: '10px 12px', marginBottom: '10px', border: '1px solid #fde68a' }}>
+                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: suggestedPrice < salePrice ? '8px' : '0' }}>
+                  Day <strong>{daysListed}</strong> listed — suggested price today: <strong style={{ fontSize: '14px' }}>{fmtMoney(suggestedPrice)}</strong>
+                  {suggestedPrice === salePrice && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Current price matches</span>}
+                </div>
+                {suggestedPrice < salePrice && (
+                  <button onClick={() => setSalePrice(suggestedPrice)} style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #f59e0b', background: '#fffbeb', color: '#92400e', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}>
+                    Apply Suggested Price ({fmtMoney(suggestedPrice)})
+                  </button>
+                )}
+              </div>
+            )}
+            {dropSchedule.length > 1 && (
               <div>
-                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '6px' }}>Day {daysListed} listed — suggested price today: <strong>{fmtMoney(suggestedPrice)}</strong></div>
-                {suggestedPrice !== salePrice && suggestedPrice < salePrice && (
-                  <button onClick={() => setSalePrice(suggestedPrice)} style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #f59e0b', background: '#fff', color: '#92400e', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>Apply {fmtMoney(suggestedPrice)}</button>
+                <button onClick={() => setShowDropSchedule(v => !v)} style={{ fontSize: '12px', color: '#92400e', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0, marginBottom: showDropSchedule ? '8px' : '0' }}>
+                  {showDropSchedule ? '▲ Hide' : '▼ Show'} price drop schedule
+                </button>
+                {showDropSchedule && (
+                  <div style={{ background: '#fff', borderRadius: '8px', overflow: 'hidden', border: '1px solid #fde68a' }}>
+                    {dropSchedule.map((step, i) => (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 12px', background: step.isCurrent ? '#fef9c3' : i % 2 === 0 ? '#fff' : '#fafafa', borderBottom: i < dropSchedule.length - 1 ? '1px solid #fde68a' : 'none', fontWeight: step.isCurrent ? 700 : 400 }}>
+                        <span style={{ fontSize: '12px', color: '#92400e' }}>Day {step.day}{step.isCurrent ? ' ← today' : ''}</span>
+                        <span style={{ fontSize: '12px', color: step.price === minPrice ? '#dc2626' : '#92400e', fontWeight: step.isCurrent ? 700 : 500 }}>{fmtMoney(step.price)}</span>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             )}
@@ -1523,18 +1670,27 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
         )}
       </div>
 
-      {/* Shop Description */}
-      <div style={{ marginBottom: '24px' }}>
-        <label style={S_LABEL}>Shop Description (shown to buyers)</label>
-        <textarea value={shopNote} onChange={e => setShopNote(e.target.value)} placeholder="Add a short note for buyers, e.g. 'Comes with charger, fully functional'" style={{ ...S_INPUT, minHeight: '60px', resize: 'vertical' }} />
+      {/* Shop Description / Seller Note */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>Seller Note <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(optional — shown to buyers)</span></label>
+        <textarea
+          value={shopNote}
+          onChange={e => setShopNote(e.target.value)}
+          placeholder="E.g. 'Comes with original charger and box. Fully reset and ready to use.'"
+          style={{ ...S_INPUT, minHeight: '60px', resize: 'vertical', lineHeight: 1.6 }}
+        />
       </div>
 
       {/* Action buttons */}
-      <div style={{ display: 'flex', gap: '10px' }}>
-        <button onClick={handleSave} style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: '#1a5f2a', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: 'pointer' }}>
-          {isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
+      <div style={{ display: 'flex', gap: '10px', paddingTop: '4px' }}>
+        <button
+          onClick={handleSave}
+          disabled={!canSave}
+          style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: canSave ? '#1a5f2a' : '#d1d5db', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: canSave ? 'pointer' : 'not-allowed', transition: 'background 0.2s' }}
+        >
+          {saving ? '⏳ Saving...' : isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
         </button>
-        <button onClick={onClose} style={{ padding: '14px 20px', borderRadius: '10px', border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>Cancel</button>
+        <button onClick={onClose} disabled={saving} style={{ padding: '14px 20px', borderRadius: '10px', border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer' }}>Cancel</button>
       </div>
     </div>
   );
@@ -4011,7 +4167,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?`)) { await saveTx({ ...tx, status: 'active', listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
