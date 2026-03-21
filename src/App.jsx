@@ -256,6 +256,7 @@ const statusColor = (tx, settings = {}) => {
   if (tx.status === 'closed') return '#10b981';
   if (tx.status === 'sold') return '#6b7280';
   if (tx.status === 'for_sale') return '#8b5cf6';
+  if (tx.status === 'ready_to_sell') return '#dc2626';  // Early surrender — explicitly ready to sell
   if (tx.type === 'outright') return '#8b5cf6';
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
@@ -277,6 +278,7 @@ const statusLabel = (tx, settings = {}) => {
   if (tx.status === 'sold') return '✅ Sold';
   if (tx.status === 'for_sale') return '🏷️ Listed for Sale';
   if (tx.status === 'declined') return 'Declined';
+  if (tx.status === 'ready_to_sell') return '🤝 Customer Surrendered';  // Early voluntary surrender
   if (tx.type === 'outright') return 'Outright Purchase';
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
@@ -1081,16 +1083,16 @@ function SalesPage({ onBack, settings }) {
               </div>
             )}
 
-            {/* Savings badge */}
-            {item.estimatedValue > 0 && item.salePrice > 0 && item.estimatedValue > item.salePrice && (
+            {/* Savings badge — only shown when staff has set the item's new retail price */}
+            {item.itemNewPrice > 0 && item.salePrice > 0 && item.itemNewPrice > item.salePrice && (
               <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', border: '1px solid #bbf7d0', display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <div style={{ fontSize: '28px' }}>🏷️</div>
                 <div>
                   <div style={{ fontSize: '15px', fontWeight: 800, color: '#166534' }}>
-                    You save {fmtMoney(item.estimatedValue - item.salePrice)} ({Math.round((item.estimatedValue - item.salePrice) / item.estimatedValue * 100)}% off)
+                    You save {fmtMoney(item.itemNewPrice - item.salePrice)} ({Math.round((item.itemNewPrice - item.salePrice) / item.itemNewPrice * 100)}% off new price)
                   </div>
-                  <div style={{ fontSize: '12px', color: '#4ade80', marginTop: '1px' }}>
-                    New market price: ~{fmtMoney(item.estimatedValue)} · Our price: {fmtMoney(item.salePrice)}
+                  <div style={{ fontSize: '12px', color: '#059669', marginTop: '1px' }}>
+                    New item price: {fmtMoney(item.itemNewPrice)} · Our price: {fmtMoney(item.salePrice)}
                   </div>
                 </div>
               </div>
@@ -1380,9 +1382,9 @@ function SalesPage({ onBack, settings }) {
                     <div style={{ fontSize: isMobile ? '20px' : '22px', fontWeight: 900, color: '#1a5f2a', letterSpacing: '-0.3px' }}>
                       {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}
                     </div>
-                    {item.estimatedValue > 0 && item.salePrice > 0 && item.estimatedValue > item.salePrice && (
+                    {item.itemNewPrice > 0 && item.salePrice > 0 && item.itemNewPrice > item.salePrice && (
                       <div style={{ fontSize: '10px', color: '#059669', fontWeight: 700, marginTop: '2px' }}>
-                        Save {Math.round((item.estimatedValue - item.salePrice) / item.estimatedValue * 100)}% off new price
+                        Save {Math.round((item.itemNewPrice - item.salePrice) / item.itemNewPrice * 100)}% off new price
                       </div>
                     )}
                     <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '5px' }}>Tap to see details →</div>
@@ -1480,6 +1482,9 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const [conditionGrade, setConditionGrade] = useState(initGrade);
   const [shopNote, setShopNote] = useState(tx.shopListingNote || rawCondText);
   const [salePrice, setSalePrice] = useState(tx.salePrice > 0 ? tx.salePrice : listedPrice);
+  // itemNewPrice = what this item costs brand new (retail). Used to display buyer savings in the shop.
+  // Different from estimatedValue (resale value). Staff can fill this in; defaults to any previously saved value.
+  const [itemNewPrice, setItemNewPrice] = useState(tx.itemNewPrice > 0 ? tx.itemNewPrice : 0);
   const [hiddenPhotoIndexes, setHiddenPhotoIndexes] = useState(Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : []);
   const [priceDropEnabled, setPriceDropEnabled] = useState(tx.priceDropEnabled || false);
   const [priceDropIntervalDays, setPriceDropIntervalDays] = useState(tx.priceDropIntervalDays || 3);
@@ -1573,13 +1578,14 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
     if (!canSave) return;
     setSaving(true);
     const shopId = (!tx.shopId && isNewListing)
-      ? 'SHP-' + Math.random().toString(36).slice(2, 7).toUpperCase()
+      ? 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 23)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0')
       : (tx.shopId || undefined);
     const updates = {
       ...tx,
       shopCondition: conditionGrade,
       shopListingNote: shopNote.trim(),
       salePrice,
+      itemNewPrice: itemNewPrice > 0 ? itemNewPrice : undefined,
       itemPhotos: photosList,
       hiddenPhotoIndexes: hiddenPhotoIndexes.filter(i => i < photosList.length),
       priceDropEnabled,
@@ -1768,19 +1774,38 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
           <span>Target: <strong style={{ color: '#1a5f2a' }}>{fmtMoney(listedPrice)}</strong></span>
           <span>Min floor: <strong style={{ color: '#92400e' }}>{fmtMoney(minPrice)}</strong></span>
-          {tx.estimatedValue > 0 && <span>Est. market value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
+          {tx.estimatedValue > 0 && <span>Est. resale value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
         </div>
-        {tx.estimatedValue > 0 && salePrice > 0 && salePrice < tx.estimatedValue && (
+        {itemNewPrice > 0 && salePrice > 0 && itemNewPrice > salePrice && (
           <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '4px' }}>
-            Buyer saves {fmtMoney(tx.estimatedValue - salePrice)} ({Math.round((tx.estimatedValue - salePrice) / tx.estimatedValue * 100)}% off market price)
+            Buyer saves {fmtMoney(itemNewPrice - salePrice)} ({Math.round((itemNewPrice - salePrice) / itemNewPrice * 100)}% off new price) — shown on shop page
           </div>
         )}
         {!priceValid && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>Sale price must be greater than zero.</div>}
         {priceBelowMin && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>⚠ Below minimum floor ({fmtMoney(minPrice)}) — this may result in a loss.</div>}
-        {salePrice > listedPrice && tx.estimatedValue > 0 && salePrice > tx.estimatedValue && <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600, marginTop: '4px' }}>Above estimated market value — buyers may push back on price.</div>}
+        {salePrice > listedPrice && tx.estimatedValue > 0 && salePrice > tx.estimatedValue && <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600, marginTop: '4px' }}>Above estimated resale value — buyers may push back on price.</div>}
       </div>
 
       {/* ── Price Auto-Drop ── */}
+      {/* ── New Item Price (for savings display) ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>
+          New Item Price (₦) <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>— optional, for buyer savings display</span>
+        </label>
+        <input
+          type="number" min="0" step="50"
+          value={itemNewPrice || ''}
+          onChange={e => setItemNewPrice(Number(e.target.value))}
+          onBlur={e => setItemNewPrice(roundToNice(Number(e.target.value)))}
+          placeholder="e.g. 150000 — what this item costs brand new in the market"
+          style={{ ...S_INPUT }}
+        />
+        <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
+          This is the retail/new price of the item — <em>not</em> the estimated resale value. When set, buyers see "You save ₦X" on the shop page.
+          {tx.estimatedValue > 0 && <span style={{ marginLeft: '6px' }}>Est. resale value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
+        </div>
+      </div>
+
       <div style={{ ...S_SECTION, background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: priceDropEnabled ? '12px' : '0' }}>
           <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
@@ -3862,8 +3887,10 @@ export default function App() {
   const closedTxs = transactions.filter(t => t.status === 'closed');
   const soldTxs = transactions.filter(t => t.status === 'sold');
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale');
+  const surrenderedTxs = transactions.filter(t => t.status === 'ready_to_sell'); // early voluntary surrender
   const inGracePeriod = activeTxs.filter(t => t.isInFinalGrace);
-  const readyToSell = activeTxs.filter(t => t.isEligibleForSale);
+  // readyToSell = timeline-eligible actives + explicitly surrendered items
+  const readyToSell = [...activeTxs.filter(t => t.isEligibleForSale), ...surrenderedTxs];
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
@@ -4204,16 +4231,42 @@ export default function App() {
         {tx.status === 'active' && isStaff && (
           <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
         )}
-        {tx.status === 'active' && tx.isEligibleForSale && isStaff && (
-          <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 List in Shop</button>
+        {/* Early surrender — customer voluntarily gives up the item before deadline/grace ends */}
+        {tx.status === 'active' && isStaff && (
+          <button style={S.btn('outline')} onClick={async () => {
+            const ok = window.confirm(
+              `⚠️ CUSTOMER EARLY SURRENDER\n\n` +
+              `This marks the item as voluntarily surrendered by the customer.\n\n` +
+              `What this means:\n` +
+              `• The customer is giving up their right to reclaim this item\n` +
+              `• They forfeit any claim even if their deadline has not yet passed\n` +
+              `• The item moves to "Ready to Sell" so it can be listed in the shop\n` +
+              `• This action CANNOT be undone\n\n` +
+              `Only do this if the customer has explicitly agreed and confirmed in person.\n\n` +
+              `Proceed with marking "${tx.aiBrand || ''} ${tx.aiModel || ''}" as surrendered?`
+            );
+            if (!ok) return;
+            await saveTx({ ...tx, status: 'ready_to_sell', surrenderDate: new Date().toISOString().slice(0, 10), surrenderedBy: currentUser?.name || currentUser?.email || 'Staff' });
+            loadData();
+          }}>🤝 Customer Surrenders Item</button>
         )}
+        {(tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell' ? (
+          isStaff ? <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 List in Shop</button> : null
+        ) : null}
         {tx.status === 'for_sale' && isStaff && (
           <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 Edit Listing</button>
         )}
         {tx.status === 'for_sale' && isStaff && (
-          <button style={S.btn('outline')} onClick={async () => { if (window.confirm('Remove this item from the public shop?')) { await saveTx({ ...tx, status: 'active', listedForSaleDate: null }); loadData(); } }}>✕ Unlist</button>
+          <button style={S.btn('outline')} onClick={async () => {
+            if (window.confirm('Remove this item from the public shop?\n\nIt will go back to "Ready to Sell" status and can be re-listed at any time.')) {
+              // Items that were early surrenders go back to ready_to_sell; timeline-eligible actives go back to active
+              const returnStatus = tx.surrenderDate ? 'ready_to_sell' : 'active';
+              await saveTx({ ...tx, status: returnStatus, listedForSaleDate: null });
+              loadData();
+            }
+          }}>✕ Unlist</button>
         )}
-        {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && (
+        {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell') && isStaff && (
           <button style={S.btn('danger')} onClick={() => navigate(txSellPath(tx.ref))}>🏷 Record Sale</button>
         )}
       </div>
@@ -4289,7 +4342,7 @@ export default function App() {
         );
       }
       if (subPage === '/sell') {
-        if (!isStaff || (tx.status !== 'for_sale' && !(tx.status === 'active' && tx.isEligibleForSale))) return <Navigate to={txDetailPath(txRef)} replace />;
+        if (!isStaff || (tx.status !== 'for_sale' && tx.status !== 'ready_to_sell' && !(tx.status === 'active' && tx.isEligibleForSale))) return <Navigate to={txDetailPath(txRef)} replace />;
         return (
           <div>
             <div style={{ marginBottom: '20px' }}>
@@ -4314,7 +4367,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?`)) { await saveTx({ ...tx, status: 'active', listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to "Ready to Sell" status.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -4691,7 +4744,164 @@ export default function App() {
         );
       }
 
-      case 'forSale': { const sellable = [...forSaleTxs, ...readyToSell]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} showDaysListed /></div></div>); }
+      case 'forSale': {
+        // ── For Sale page — with search, sort, filter and stat cards ──
+        const ForSalePage = () => {
+          const [fsSearch, setFsSearch] = React.useState('');
+          const [fsFilter, setFsFilter] = React.useState('all'); // 'all' | 'listed' | 'ready'
+          const [fsSort, setFsSort] = React.useState('days_desc'); // 'days_desc' | 'days_asc' | 'price_high' | 'price_low' | 'name'
+
+          const allSellable = useMemo(() => [...forSaleTxs, ...readyToSell], []);
+
+          // Deep search across all transaction fields
+          const fsSearhed = useMemo(() => {
+            if (!fsSearch.trim()) return allSellable;
+            const q = fsSearch.toLowerCase();
+            return allSellable.filter(t => {
+              // Standard visible fields
+              if ((t.ref || '').toLowerCase().includes(q)) return true;
+              if ((t.fullName || '').toLowerCase().includes(q)) return true;
+              if ((t.aiBrand || '').toLowerCase().includes(q)) return true;
+              if ((t.aiModel || '').toLowerCase().includes(q)) return true;
+              if ((t.aiItemType || '').toLowerCase().includes(q)) return true;
+              if ((t.aiColour || '').toLowerCase().includes(q)) return true;
+              if ((t.captureItemType || '').toLowerCase().includes(q)) return true;
+              // Financial / identification
+              if ((t.imei || '').toLowerCase().includes(q)) return true;
+              if ((t.serialNumber || '').toLowerCase().includes(q)) return true;
+              if ((t.shopId || '').toLowerCase().includes(q)) return true;
+              // Condition / notes
+              if ((t.shopCondition || '').toLowerCase().includes(q)) return true;
+              if ((t.shopListingNote || '').toLowerCase().includes(q)) return true;
+              if ((t.aiCondition || '').toLowerCase().includes(q)) return true;
+              if ((t.conditionDescription || '').toLowerCase().includes(q)) return true;
+              if ((t.inspectionNotes || '').toLowerCase().includes(q)) return true;
+              if ((t.notes || '').toLowerCase().includes(q)) return true;
+              // Customer contact info
+              if ((t.address || '').toLowerCase().includes(q)) return true;
+              if ((t.phoneNumbers || []).some(p => (p || '').toLowerCase().includes(q))) return true;
+              // Price match (e.g. user types "50000")
+              if (t.salePrice && String(t.salePrice).includes(q)) return true;
+              if (t.cashAdvance && String(t.cashAdvance).includes(q)) return true;
+              // Item screening notes
+              if ((t.screeningPurchaseLocation || '').toLowerCase().includes(q)) return true;
+              // Contact log
+              if ((t.contactLog || []).some(e => (e.notes || '').toLowerCase().includes(q))) return true;
+              return false;
+            });
+          }, [allSellable, fsSearch]);
+
+          const fsFiltered = useMemo(() => {
+            if (fsFilter === 'listed') return fsSearhed.filter(t => t.status === 'for_sale');
+            if (fsFilter === 'ready') return fsSearhed.filter(t => t.status !== 'for_sale');
+            return fsSearhed;
+          }, [fsSearhed, fsFilter]);
+
+          const fsSorted = useMemo(() => {
+            const arr = [...fsFiltered];
+            if (fsSort === 'days_desc') return arr.sort((a, b) => (getForSaleDaysListed(b) || 0) - (getForSaleDaysListed(a) || 0));
+            if (fsSort === 'days_asc') return arr.sort((a, b) => (getForSaleDaysListed(a) || 0) - (getForSaleDaysListed(b) || 0));
+            if (fsSort === 'price_high') return arr.sort((a, b) => (b.salePrice || 0) - (a.salePrice || 0));
+            if (fsSort === 'price_low') return arr.sort((a, b) => (a.salePrice || 0) - (b.salePrice || 0));
+            if (fsSort === 'name') return arr.sort((a, b) => (`${a.aiBrand} ${a.aiModel}`).localeCompare(`${b.aiBrand} ${b.aiModel}`));
+            return arr;
+          }, [fsFiltered, fsSort]);
+
+          // Stat calculations
+          const listedItems = forSaleTxs;
+          const readyItems = readyToSell;
+          const totalAskingValue = listedItems.reduce((s, t) => s + (t.salePrice || 0), 0);
+          const totalCapitalRisk = allSellable.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+          const listedDaysArr = listedItems.map(t => getForSaleDaysListed(t) || 0).filter(d => d > 0);
+          const avgDaysListed = listedDaysArr.length > 0 ? Math.round(listedDaysArr.reduce((a, b) => a + b, 0) / listedDaysArr.length) : 0;
+          const targetDeadlineDays = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+          const pastDeadline = listedItems.filter(t => (getForSaleDaysListed(t) || 0) > targetDeadlineDays).length;
+          const surrenderedCount = surrenderedTxs.length;
+
+          const SC = { // stat card styles
+            wrap: { ...S.stat, flex: '1 1 140px' },
+            label: { ...S.statLabel, display: 'flex', alignItems: 'center' },
+            value: S.statValue,
+            sub: { fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' },
+          };
+
+          return (
+            <div>
+              {listLoadingNotice}
+              <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🏷 For Sale</h2>
+
+              {/* ── Stat Cards ── */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+                <div style={{ ...SC.wrap, background: COLORS.primaryLight }}>
+                  <div style={SC.label}>Listed in Shop<InfoIcon tip="Items currently visible on the public shop page." /></div>
+                  <div style={{ ...SC.value, color: COLORS.primary }}>{listedItems.length}</div>
+                  <div style={SC.sub}>Asking: {fmtMoney(totalAskingValue)}</div>
+                </div>
+                <div style={{ ...SC.wrap, background: readyItems.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}>
+                  <div style={SC.label}>Ready to Sell<InfoIcon tip="Items eligible to list but not yet in the shop (timeline expired or customer surrendered)." /></div>
+                  <div style={{ ...SC.value, color: readyItems.length > 0 ? COLORS.danger : COLORS.primary }}>{readyItems.length}</div>
+                  {surrenderedCount > 0 && <div style={SC.sub}>{surrenderedCount} early surrender{surrenderedCount !== 1 ? 's' : ''}</div>}
+                </div>
+                <div style={{ ...SC.wrap, background: '#fef3c7' }}>
+                  <div style={SC.label}>Capital at Risk<InfoIcon tip="Total cash advanced across all items not yet sold (both listed and ready to sell)." /></div>
+                  <div style={{ ...SC.value, color: '#92400e' }}>{fmtMoney(totalCapitalRisk)}</div>
+                  <div style={SC.sub}>{allSellable.length} item{allSellable.length !== 1 ? 's' : ''}</div>
+                </div>
+                <div style={{ ...SC.wrap, background: avgDaysListed > targetDeadlineDays ? '#fef2f2' : COLORS.bg }}>
+                  <div style={SC.label}>Avg Days Listed<InfoIcon tip="Average number of days listed items have been in the shop. Target is below the sale deadline setting." /></div>
+                  <div style={{ ...SC.value, color: avgDaysListed > targetDeadlineDays ? COLORS.danger : COLORS.text }}>{avgDaysListed > 0 ? avgDaysListed : '—'}</div>
+                  <div style={SC.sub}>Target ≤ {targetDeadlineDays} days</div>
+                </div>
+                {pastDeadline > 0 && (
+                  <div style={{ ...SC.wrap, background: '#fef2f2' }}>
+                    <div style={SC.label}>Past Target Deadline<InfoIcon tip="Listed items that have been in the shop longer than your target sale deadline. Consider reducing the price." /></div>
+                    <div style={{ ...SC.value, color: COLORS.danger }}>{pastDeadline}</div>
+                    <div style={{ ...SC.sub, color: '#991b1b' }}>Consider price drops</div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Search + Filter + Sort controls ── */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={fsSearch}
+                  onChange={e => setFsSearch(e.target.value)}
+                  placeholder="Deep search — ref, customer, item, IMEI, serial, notes, price..."
+                  style={{ flex: '1 1 240px', padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none', fontFamily: 'inherit' }}
+                />
+                <select value={fsFilter} onChange={e => setFsFilter(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
+                  <option value="all">All ({allSellable.length})</option>
+                  <option value="listed">Listed in Shop ({listedItems.length})</option>
+                  <option value="ready">Ready to Sell ({readyItems.length})</option>
+                </select>
+                <select value={fsSort} onChange={e => setFsSort(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
+                  <option value="days_desc">Longest Listed First</option>
+                  <option value="days_asc">Newest Listed First</option>
+                  <option value="price_high">Price: High → Low</option>
+                  <option value="price_low">Price: Low → High</option>
+                  <option value="name">Item Name (A–Z)</option>
+                </select>
+                {fsSearch && (
+                  <button onClick={() => setFsSearch('')} style={{ padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', color: COLORS.textMuted, cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>✕ Clear</button>
+                )}
+              </div>
+
+              {fsSearch && (
+                <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '10px' }}>
+                  {fsSorted.length} result{fsSorted.length !== 1 ? 's' : ''} for "<strong>{fsSearch}</strong>"
+                  {fsSorted.length === 0 && <span style={{ marginLeft: '8px', color: COLORS.danger }}>— no matches found</span>}
+                </div>
+              )}
+
+              <div style={S.card}>
+                <TxTable items={fsSorted} showDaysListed />
+              </div>
+            </div>
+          );
+        };
+        return <ForSalePage />;
+      }
 
       case 'reports': {
         const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];

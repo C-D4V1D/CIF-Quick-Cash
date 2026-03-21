@@ -1002,6 +1002,7 @@ export async function onRequest(context) {
           colour: d.aiColour || '',
           condition: d.shopCondition || d.aiCondition || d.conditionDescription || '',
           salePrice: d.salePrice || 0,
+          itemNewPrice: d.itemNewPrice > 0 ? d.itemNewPrice : null,
           estimatedValue: d.estimatedValue || 0,
           photos,
           photoFront: photos[0] || null,
