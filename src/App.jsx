@@ -5428,7 +5428,7 @@ export default function App() {
           const triggers = [];
           const customerDaysLeft = getCustomerDaysLeft(tx);
           const elapsed = daysBetween(tx.dateGiven);
-          const ownershipDaysLeft = Math.max(0, maxLD - elapsed);
+          const ownershipDaysLeft = elapsed <= maxLD ? (maxLD - elapsed) : null;
           const overdueDays = customerDaysLeft !== null && customerDaysLeft < 0 ? Math.abs(customerDaysLeft) : 0;
 
           dueDateRules.forEach(days => {
