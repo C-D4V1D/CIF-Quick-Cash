@@ -200,6 +200,34 @@ const getCustomerDaysLeft = (tx) => {
 
 const getForSaleListedDate = (tx) => tx.listedForSaleDate || tx.updated_at || tx.created_at || null;
 
+// Round price to nearest ₦50 for cleaner suggested prices
+const roundToNice = (n) => Math.round(Math.max(0, n) / 50) * 50;
+
+// Standard condition grades shown to buyers
+const CONDITION_GRADES = [
+  'Like New — Barely used, no visible wear',
+  'Excellent — Excellent condition, minimal signs of use',
+  'Gently Used — Good condition, minor cosmetic marks',
+  'Good Used — Good working condition, some signs of use',
+  'Well Used — Visible signs of use, fully functional',
+  'Heavily Used — Major signs of use, all functions working',
+  'For Parts — Not fully functional, sold for parts or repair',
+];
+
+// Auto-derive a condition grade string from free-form condition text
+const deriveConditionGrade = (condText) => {
+  const t = (condText || '').toLowerCase();
+  if (!t) return CONDITION_GRADES[3];
+  if (t.includes('like new') || t.includes('mint') || t.includes('brand new') || t.includes('perfect')) return CONDITION_GRADES[0];
+  if (t.includes('excellent')) return CONDITION_GRADES[1];
+  if (t.includes('gently') || t.includes('light scratch') || t.includes('minor')) return CONDITION_GRADES[2];
+  if (t.includes('parts') || t.includes('repair') || t.includes('not work') || t.includes('broken')) return CONDITION_GRADES[6];
+  if (t.includes('heavily') || t.includes('heavy') || t.includes('crack') || t.includes('major')) return CONDITION_GRADES[5];
+  if (t.includes('visible') || t.includes('well used') || t.includes('dent') || t.includes('scuff') || t.includes('worn')) return CONDITION_GRADES[4];
+  if (t.includes('good') || t.includes('fair') || t.includes('moderate')) return CONDITION_GRADES[3];
+  return CONDITION_GRADES[3];
+};
+
 const getForSaleDaysListed = (tx) => {
   const listedDate = getForSaleListedDate(tx);
   if (!listedDate) return null;
@@ -224,24 +252,25 @@ const fmtDate = (d) => {
 };
 
 const statusColor = (tx, settings = {}) => {
-  if (tx.status === 'declined') return '#6b7280';
-  if (tx.status === 'closed') return '#10b981';
-  if (tx.status === 'sold') return '#6b7280';
-  if (tx.status === 'for_sale') return '#8b5cf6';
-  if (tx.type === 'outright') return '#8b5cf6';
+  if (tx.status === 'declined') return '#6b7280';          // Gray
+  if (tx.status === 'closed') return '#10b981';            // Green
+  if (tx.status === 'sold') return '#4b5563';              // Dark gray (distinct from declined's lighter gray)
+  if (tx.status === 'for_sale') return '#0ea5e9';          // Sky blue — clearly distinct from grace period purple
+  if (tx.status === 'ready_to_sell') return '#dc2626';     // Red — explicit early surrender
+  if (tx.type === 'outright') return '#0ea5e9';            // Sky blue — listed outright purchase
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
   const elapsed = daysBetween(tx?.dateGiven);
   const customerDaysLeft = getCustomerDaysLeft(tx);
-  if (elapsed >= maxLoanDays + graceDays + 1) return '#1e1e1e';       // Ready to sell
-  if (graceDays > 0 && elapsed === maxLoanDays + graceDays) return '#dc2626'; // Last day of grace
-  if (elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays) return '#7c3aed'; // In grace period
-  if (elapsed === maxLoanDays) return '#dc2626';                       // Last day of ownership
-  if (customerDaysLeft !== null && customerDaysLeft < 0) return '#f59e0b'; // Overdue by customer agreement
-  if (customerDaysLeft !== null && customerDaysLeft === 0) return '#ef4444'; // Due today
-  if (customerDaysLeft !== null && customerDaysLeft <= 7) return '#ef4444'; // 7 days or less
-  if (customerDaysLeft !== null && customerDaysLeft <= 15) return '#f59e0b'; // 15 days or less
-  return '#10b981';
+  if (elapsed >= maxLoanDays + graceDays + 1) return '#ea580c';       // Orange — timeline-eligible ready to sell (distinct from red surrender)
+  if (graceDays > 0 && elapsed === maxLoanDays + graceDays) return '#dc2626'; // Red — last day of grace
+  if (elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays) return '#7c3aed'; // Indigo — in grace period
+  if (elapsed === maxLoanDays) return '#b45309';                       // Amber-brown — last day of ownership
+  if (customerDaysLeft !== null && customerDaysLeft < 0) return '#f59e0b'; // Amber — overdue by customer agreement
+  if (customerDaysLeft !== null && customerDaysLeft === 0) return '#ef4444'; // Red — due today
+  if (customerDaysLeft !== null && customerDaysLeft <= 7) return '#ef4444'; // Red — 7 days or less
+  if (customerDaysLeft !== null && customerDaysLeft <= 15) return '#f59e0b'; // Amber — 15 days or less
+  return '#10b981';                                                     // Green — active, healthy
 };
 
 const statusLabel = (tx, settings = {}) => {
@@ -249,6 +278,7 @@ const statusLabel = (tx, settings = {}) => {
   if (tx.status === 'sold') return '✅ Sold';
   if (tx.status === 'for_sale') return '🏷️ Listed for Sale';
   if (tx.status === 'declined') return 'Declined';
+  if (tx.status === 'ready_to_sell') return '🤝 Customer Surrendered';  // Early voluntary surrender
   if (tx.type === 'outright') return 'Outright Purchase';
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
@@ -279,6 +309,8 @@ const DEFAULT_SETTINGS = {
   graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, maxPartsOnlyAdvance: 5000,
+  priceDropEnabled: false, priceDropIntervalDays: 3,
+  shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
   geminiApiKey: '', geminiModel: 'gemini-2.5-flash', cloudVisionApiKey: '', ninApiKey: '',
   // API Free Tier Limits (adjustable in case Google changes them)
@@ -1140,6 +1172,8 @@ function SalesPage({ onBack, settings }) {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [sortBy, setSortBy] = useState('newest');
   const [selectedItem, setSelectedItem] = useState(null);
+  const [soldItems, setSoldItems] = useState([]);
+  const [photoIdx, setPhotoIdx] = useState(0);
   const isMobile = useMobile();
 
   const s = settings || {};
@@ -1153,6 +1187,7 @@ function SalesPage({ onBack, settings }) {
       setLoading(true);
       const data = await API.get('shop-items');
       if (data?.items) setItems(data.items);
+      if (data?.soldItems) setSoldItems(data.soldItems);
       setLoading(false);
     };
     load();
@@ -1181,8 +1216,9 @@ function SalesPage({ onBack, settings }) {
   }, [items, categoryFilter, search, sortBy]);
 
   const getWhatsAppLink = (item) => {
+    const displayRef = item?.shopId || item?.ref || '';
     const msg = item
-      ? `Hello! I am interested in the ${item.brand} ${item.model} (${item.itemType}) listed for ${fmtMoney(item.salePrice)}. Ref: ${item.ref}. Is it still available?`
+      ? `Hello! I am interested in the ${item.brand} ${item.model} (${item.itemType}) listed for ${fmtMoney(item.salePrice)}. Item Ref: ${displayRef}. Is it still available?`
       : 'Hello! I want to check what items you have for sale.';
     return `https://wa.me/${whatsApp}?text=${encodeURIComponent(msg)}`;
   };
@@ -1213,72 +1249,189 @@ function SalesPage({ onBack, settings }) {
     return { label: cond, color };
   };
 
-  // Item detail modal
-  const ItemDetailModal = ({ item, onClose }) => {
-    if (!item) return null;
-    const badge = conditionBadge(item.condition);
+  const selectItem = (item) => { setSelectedItem(item); setPhotoIdx(0); };
+
+  // ── Full-page item detail view ──
+  if (selectedItem) {
+    const item = selectedItem;
+    const photos = item.photos?.length > 0 ? item.photos : item.photoFront ? [item.photoFront] : [];
+    const similarItems = items.filter(i => i.ref !== item.ref && i.itemType === item.itemType).slice(0, 4);
+    const listedAgo = item.listedDate ? daysBetween(item.listedDate) : null;
+    const listedAgoText = listedAgo === 0 ? 'Listed today' : listedAgo === 1 ? 'Listed yesterday' : listedAgo !== null ? `Listed ${listedAgo} days ago` : '';
+    const WA_SVG = <svg width="18" height="18" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>;
     return (
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
-        <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: '16px', maxWidth: '500px', width: '100%', maxHeight: '90vh', overflowY: 'auto', position: 'relative' }}>
-          {/* Photo */}
-          {(item.photoFront || item.photoPowerOn) ? (
-            <div style={{ width: '100%', height: '260px', background: '#f3f4f6', borderRadius: '16px 16px 0 0', overflow: 'hidden' }}>
-              <img src={item.photoFront || item.photoPowerOn} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-            </div>
-          ) : (
-            <div style={{ width: '100%', height: '180px', background: 'linear-gradient(135deg, #1a5f2a, #2d7a3e)', borderRadius: '16px 16px 0 0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '64px' }}>
-              {itemIcon(item.itemType)}
-            </div>
-          )}
+      <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#f8f6f1', minHeight: '100vh', color: '#1a1a1a' }}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-          <div style={{ padding: '20px' }}>
-            {/* Close button */}
-            <button onClick={onClose} style={{ position: 'absolute', top: '12px', right: '12px', background: 'rgba(0,0,0,0.5)', color: '#fff', border: 'none', borderRadius: '50%', width: '36px', height: '36px', fontSize: '18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
-
-            {/* Title */}
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '4px' }}>{item.itemType}</div>
-            <h2 style={{ fontSize: '22px', fontWeight: 800, margin: '0 0 4px', color: '#1a1a1a' }}>{item.brand} {item.model}</h2>
-            {item.colour && <div style={{ fontSize: '14px', color: '#6b7280', marginBottom: '12px' }}>Colour: {item.colour}</div>}
-
-            {/* Price */}
-            <div style={{ background: '#e8f5ec', borderRadius: '12px', padding: '16px', marginBottom: '16px', textAlign: 'center' }}>
-              <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>Price</div>
-              <div style={{ fontSize: '32px', fontWeight: 800, color: '#1a5f2a' }}>{item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}</div>
-            </div>
-
-            {/* Details grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-              {badge && (
-                <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>Condition</div>
-                  <div style={{ fontSize: '14px', fontWeight: 700, color: badge.color }}>{badge.label}</div>
-                </div>
-              )}
-              <div style={{ background: '#f9fafb', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '2px' }}>Ref No.</div>
-                <div style={{ fontSize: '14px', fontWeight: 700, color: '#1a1a1a' }}>{item.ref}</div>
-              </div>
-            </div>
-
-            {/* CTA Buttons */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25D366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
-                <svg width="20" height="20" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>
-                I Want to Buy This
-              </a>
-              <a href={getCallLink()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
-                📞 Call Us Now
-              </a>
-            </div>
-
-            <div style={{ textAlign: 'center', marginTop: '12px', fontSize: '13px', color: '#6b7280' }}>
-              Quote the ref number <strong>{item.ref}</strong> when you contact us
-            </div>
+        {/* Header */}
+        <div style={{ background: '#1a5f2a', padding: '12px 20px', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}>
+          <div style={{ maxWidth: '1000px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <button onClick={() => setSelectedItem(null)} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>← Back to Shop</button>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#a7f3d0' }}>Christ-in-Fabian Quick Cash</div>
+            <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ background: '#25D366', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 12px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '5px' }}>{WA_SVG}{isMobile ? '' : 'Chat'}</a>
           </div>
         </div>
+
+        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+          {/* Photo Section */}
+          <div style={{ background: '#fff' }}>
+            <div style={{ position: 'relative', height: isMobile ? '320px' : '440px', background: '#f3f4f6', overflow: 'hidden' }}>
+              {photos.length > 0 ? (
+                <img src={photos[photoIdx]} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#f3f4f6' }} onError={e => { e.currentTarget.onerror = null; }} />
+              ) : (
+                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '80px', background: 'linear-gradient(135deg, #e8f5ec, #d1fae5)' }}>{itemIcon(item.itemType)}</div>
+              )}
+              {photos.length > 1 && <div style={{ position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', fontWeight: 600 }}>{photoIdx + 1}/{photos.length}</div>}
+              {photos.length > 1 && <>
+                <button onClick={() => setPhotoIdx(i => (i - 1 + photos.length) % photos.length)} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>‹</button>
+                <button onClick={() => setPhotoIdx(i => (i + 1) % photos.length)} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>›</button>
+              </>}
+            </div>
+            {photos.length > 1 && (
+              <div style={{ display: 'flex', gap: '6px', padding: '10px 16px', overflowX: 'auto', borderTop: '1px solid #e5e7eb' }}>
+                {photos.map((p, i) => (
+                  <button key={i} onClick={() => setPhotoIdx(i)} style={{ flex: '0 0 62px', height: '62px', border: `2.5px solid ${i === photoIdx ? '#1a5f2a' : 'transparent'}`, borderRadius: '8px', overflow: 'hidden', padding: 0, cursor: 'pointer', background: '#f9fafb' }}>
+                    <img src={p} alt={`Thumb ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Info Section */}
+          <div style={{ background: '#fff', padding: isMobile ? '20px 16px' : '28px 24px', marginTop: '2px' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '1.2px', marginBottom: '6px' }}>For Sale · {item.itemType}</div>
+            <h1 style={{ fontSize: isMobile ? '22px' : '28px', fontWeight: 800, margin: '0 0 10px', color: '#111', lineHeight: 1.2 }}>{item.brand} {item.model}</h1>
+            <div style={{ fontSize: isMobile ? '36px' : '44px', fontWeight: 900, color: '#1a5f2a', marginBottom: '14px', lineHeight: 1, letterSpacing: '-0.5px' }}>
+              {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us for price'}
+            </div>
+
+            {/* Listed date */}
+            {item.listedDate && (
+              <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>{listedAgoText}</span>
+                <span style={{ color: '#d1d5db' }}>·</span>
+                <span>{fmtDate(item.listedDate)}</span>
+              </div>
+            )}
+
+            {/* Savings badge — only shown when staff has set the item's new retail price */}
+            {item.itemNewPrice > 0 && item.salePrice > 0 && item.itemNewPrice > item.salePrice && (
+              <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', border: '1px solid #bbf7d0', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ fontSize: '28px' }}>🏷️</div>
+                <div>
+                  <div style={{ fontSize: '15px', fontWeight: 800, color: '#166534' }}>
+                    You save {fmtMoney(item.itemNewPrice - item.salePrice)} ({Math.round((item.itemNewPrice - item.salePrice) / item.itemNewPrice * 100)}% off new price)
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#059669', marginTop: '1px' }}>
+                    New item price: {fmtMoney(item.itemNewPrice)} · Our price: {fmtMoney(item.salePrice)}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Condition + spec chips */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '18px' }}>
+              {item.condition && (
+                <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>
+                  {item.condition.includes(' — ')
+                    ? <><span style={{ color: '#6b7280' }}>Condition: </span><strong>{item.condition.split(' — ')[0]}</strong><span style={{ color: '#6b7280' }}> — {item.condition.split(' — ')[1]}</span></>
+                    : <><span style={{ color: '#6b7280' }}>Condition: </span><strong>{item.condition}</strong></>
+                  }
+                </span>
+              )}
+              {item.brand && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Brand: <strong>{item.brand}</strong></span>}
+              {item.colour && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Colour: <strong>{item.colour}</strong></span>}
+            </div>
+
+            {/* Description (shop note) */}
+            {item.shopNote && (
+              <div style={{ background: '#f8f6f1', borderRadius: '10px', padding: '14px 16px', marginBottom: '16px', fontSize: '14px', color: '#374151', lineHeight: 1.7, border: '1px solid #e5e1d8', whiteSpace: 'pre-line' }}>
+                {item.shopNote}
+              </div>
+            )}
+
+            {/* IMEI / Serial Number */}
+            {(item.imei || item.serialNumber) && (
+              <div style={{ marginBottom: '16px', background: '#f9fafb', borderRadius: '10px', padding: '12px 16px', border: '1px solid #e5e7eb' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Device Identifier</div>
+                {item.imei && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: item.serialNumber ? '6px' : '0' }}>
+                    <div style={{ fontSize: '13px', color: '#374151' }}>IMEI: <strong style={{ fontFamily: 'monospace', letterSpacing: '0.5px' }}>{item.imei}</strong></div>
+                    <a href={`https://www.imei.info/?imei=${item.imei}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: '#1a5f2a', fontWeight: 600, textDecoration: 'none', background: '#f0fdf4', padding: '3px 8px', borderRadius: '6px', border: '1px solid #bbf7d0' }}>Verify on imei.info →</a>
+                  </div>
+                )}
+                {item.serialNumber && (
+                  <div style={{ fontSize: '13px', color: '#374151' }}>Serial No: <strong style={{ fontFamily: 'monospace', letterSpacing: '0.5px' }}>{item.serialNumber}</strong></div>
+                )}
+                <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '6px' }}>Use this to verify the device history before buying.</div>
+              </div>
+            )}
+
+            {/* Inspection notes (public-facing) */}
+            {item.inspectionNotes && (
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Inspection Notes</div>
+                <div style={{ fontSize: '14px', color: '#4b5563', lineHeight: 1.6 }}>{item.inspectionNotes}</div>
+              </div>
+            )}
+
+            <div style={{ height: '1px', background: '#e5e7eb', margin: '0 0 14px' }} />
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>
+              Item Ref: <strong style={{ color: '#374151', fontFamily: 'monospace' }}>{item.shopId || item.ref}</strong>
+              <span style={{ color: '#d1d5db', margin: '0 8px' }}>·</span>
+              Quote this reference when contacting us about this item
+            </div>
+          </div>
+
+          {/* CTA Buttons */}
+          <div style={{ background: '#fff', padding: isMobile ? '16px' : '20px 24px', marginTop: '2px' }}>
+            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: '10px' }}>
+              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#25D366', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>{WA_SVG} I Want to Buy This</a>
+              <a href={getCallLink()} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#1a5f2a', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>📞 Call Us Now</a>
+            </div>
+            <div style={{ fontSize: '12px', color: '#9ca3af', textAlign: 'center', marginTop: '10px' }}>Visit our shop to inspect the item before buying</div>
+          </div>
+
+          {/* More Like This */}
+          {similarItems.length > 0 && (
+            <div style={{ padding: isMobile ? '24px 16px' : '28px 24px' }}>
+              <h2 style={{ fontSize: '18px', fontWeight: 800, marginBottom: '14px', color: '#1a1a1a' }}>More Like This</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: '10px' }}>
+                {similarItems.map(sim => (
+                  <div key={sim.ref} onClick={() => selectItem(sim)} style={{ background: '#fff', borderRadius: '10px', overflow: 'hidden', border: '1px solid #e5e1d8', cursor: 'pointer' }}>
+                    {sim.photoFront ? (
+                      <div style={{ height: '100px', background: '#f3f4f6', overflow: 'hidden' }}><img src={sim.photoFront} alt={sim.brand} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" /></div>
+                    ) : (
+                      <div style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', background: '#f3f4f6' }}>{itemIcon(sim.itemType)}</div>
+                    )}
+                    <div style={{ padding: '8px' }}>
+                      <div style={{ fontWeight: 700, fontSize: '12px', color: '#374151', marginBottom: '3px' }}>{sim.brand} {sim.model}</div>
+                      <div style={{ fontSize: '15px', fontWeight: 900, color: '#1a5f2a' }}>{sim.salePrice ? fmtMoney(sim.salePrice) : 'Contact'}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ background: '#111827', padding: '24px 20px', color: '#fff', textAlign: 'center' }}>
+          <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+            <div style={{ fontWeight: 700, marginBottom: '8px' }}>Want to buy? Contact us!</div>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', marginBottom: '12px' }}>
+              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ background: '#25D366', color: '#fff', padding: '10px 20px', borderRadius: '8px', textDecoration: 'none', fontWeight: 700, fontSize: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}>{WA_SVG} WhatsApp</a>
+              <a href={getCallLink()} style={{ background: '#1a5f2a', color: '#fff', padding: '10px 20px', borderRadius: '8px', textDecoration: 'none', fontWeight: 700, fontSize: '14px' }}>📞 Call</a>
+            </div>
+            <div style={{ fontSize: '12px', color: '#6b7280' }}>{address}</div>
+            <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>{hours}</div>
+          </div>
+        </div>
+        <div style={{ background: '#0a0f1a', padding: '12px 20px', textAlign: 'center', fontSize: '12px', color: '#6b7280' }}>© 2026 Christ-in-Fabian Quick Cash</div>
       </div>
     );
-  };
+  }
 
   return (
     <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#f8f6f1', minHeight: '100vh', color: '#1a1a1a' }}>
@@ -1426,7 +1579,7 @@ function SalesPage({ onBack, settings }) {
               return (
                 <div
                   key={item.ref}
-                  onClick={() => setSelectedItem(item)}
+                  onClick={() => selectItem(item)}
                   style={{
                     background: '#fff', borderRadius: '12px', overflow: 'hidden',
                     border: '1px solid #e5e1d8', cursor: 'pointer',
@@ -1449,21 +1602,24 @@ function SalesPage({ onBack, settings }) {
 
                   {/* Info */}
                   <div style={{ padding: isMobile ? '10px' : '14px' }}>
-                    <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }}>{item.itemType}</div>
-                    <div style={{ fontWeight: 700, fontSize: isMobile ? '14px' : '15px', color: '#1a1a1a', marginBottom: '4px', lineHeight: 1.3 }}>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '3px' }}>{item.itemType}</div>
+                    <div style={{ fontWeight: 800, fontSize: isMobile ? '13px' : '15px', color: '#1a1a1a', marginBottom: '4px', lineHeight: 1.2 }}>
                       {item.brand} {item.model}
                     </div>
-                    {badge && (
-                      <div style={{ fontSize: '11px', fontWeight: 600, color: badge.color, marginBottom: '8px' }}>
-                        {badge.label}
-                      </div>
-                    )}
-                    <div style={{ fontSize: isMobile ? '18px' : '20px', fontWeight: 800, color: '#1a5f2a' }}>
+                    {/* Key specs */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                      {item.colour && <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '999px', background: '#f3f4f6', color: '#374151', border: '1px solid #e5e7eb', fontWeight: 500 }}>{item.colour}</span>}
+                      {item.condition && (() => { const grade = item.condition.split(' — ')[0]; return grade ? <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '999px', background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', fontWeight: 600 }}>{grade}</span> : null; })()}
+                    </div>
+                    <div style={{ fontSize: isMobile ? '20px' : '22px', fontWeight: 900, color: '#1a5f2a', letterSpacing: '-0.3px' }}>
                       {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}
                     </div>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
-                      Tap to see details
-                    </div>
+                    {item.itemNewPrice > 0 && item.salePrice > 0 && item.itemNewPrice > item.salePrice && (
+                      <div style={{ fontSize: '10px', color: '#059669', fontWeight: 700, marginTop: '2px' }}>
+                        Save {Math.round((item.itemNewPrice - item.salePrice) / item.itemNewPrice * 100)}% off new price
+                      </div>
+                    )}
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '5px' }}>Tap to see details →</div>
                   </div>
                 </div>
               );
@@ -1471,6 +1627,36 @@ function SalesPage({ onBack, settings }) {
           </div>
         )}
       </div>
+
+      {/* Recently Sold Section */}
+      {soldItems.length > 0 && s.shopShowSoldHistory !== false && (
+        <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px 36px' }}>
+          <div style={{ borderTop: '2px solid #e5e1d8', paddingTop: '32px', marginTop: '8px' }}>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: '#1a1a1a' }}>Recently Sold</h2>
+            <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px' }}>Items we've sold recently — proof of quality and fair pricing.</p>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fill, minmax(190px, 1fr))', gap: isMobile ? '8px' : '12px' }}>
+              {soldItems.map(item => (
+                <div key={item.ref} style={{ background: '#fff', borderRadius: '10px', overflow: 'hidden', border: '1px solid #e5e1d8', position: 'relative' }}>
+                  <div style={{ position: 'absolute', top: '8px', left: '8px', background: '#374151', color: '#fff', fontSize: '10px', fontWeight: 800, padding: '3px 8px', borderRadius: '4px', letterSpacing: '0.5px', textTransform: 'uppercase', zIndex: 1 }}>Sold</div>
+                  {item.photoFront ? (
+                    <div style={{ width: '100%', height: '110px', background: '#f3f4f6', overflow: 'hidden' }}>
+                      <img src={item.photoFront} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'grayscale(25%)' }} loading="lazy" onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
+                    </div>
+                  ) : (
+                    <div style={{ width: '100%', height: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', background: '#f3f4f6' }}>{itemIcon(item.itemType)}</div>
+                  )}
+                  <div style={{ padding: '10px' }}>
+                    <div style={{ fontWeight: 700, fontSize: '13px', color: '#374151', marginBottom: '1px' }}>{item.brand} {item.model}</div>
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '5px' }}>{item.itemType}</div>
+                    <div style={{ fontSize: '16px', fontWeight: 800, color: '#374151' }}>{item.salePrice ? fmtMoney(item.salePrice) : '—'}</div>
+                    {item.saleDate && <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '2px' }}>{fmtDate(item.saleDate)}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Contact footer */}
       <div style={{ background: '#111827', padding: '28px 20px', color: '#fff' }}>
@@ -1499,8 +1685,419 @@ function SalesPage({ onBack, settings }) {
         <PartnershipFootnote dark />
       </div>
 
-      {/* Item detail modal */}
-      {selectedItem && <ItemDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} />}
+    </div>
+  );
+}
+
+// ============================================================
+// SHOP LISTING MODAL — Staff/Admin manage a for-sale listing
+// ============================================================
+function ShopListingModal({ tx, settings, onClose, onSave }) {
+  // Stable price reference values (computed from props, not state)
+  const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+  const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
+  const minPrice = roundToNice((tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100));
+  const targetPrice = roundToNice(Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100));
+  const listedPrice = Math.max(targetPrice, minPrice);
+  const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+  const isNewListing = tx.status !== 'for_sale';
+
+  // Raw condition text from inspection for initialising state
+  const rawCondText = tx.shopCondition || tx.conditionDescription || tx.aiCondition || '';
+
+  // Initialise conditionGrade: prefer an exact stored grade, else derive from text
+  const initGrade = CONDITION_GRADES.includes(tx.shopCondition)
+    ? tx.shopCondition
+    : (rawCondText ? deriveConditionGrade(rawCondText) : '');
+
+  const [photosList, setPhotosList] = useState(() => normalizeItemPhotos(tx.itemPhotos).filter(Boolean));
+  const [conditionGrade, setConditionGrade] = useState(initGrade);
+  const [shopNote, setShopNote] = useState(tx.shopListingNote || rawCondText);
+  const [salePrice, setSalePrice] = useState(tx.salePrice > 0 ? tx.salePrice : listedPrice);
+  // itemNewPrice = what this item costs brand new (retail). Used to display buyer savings in the shop.
+  // Priority: explicitly saved itemNewPrice > AI Run 3 aiNewMarketPrice > 0 (blank).
+  const aiMarketPrice = Number(tx.aiNewMarketPrice) || 0;
+  const [itemNewPrice, setItemNewPrice] = useState(tx.itemNewPrice > 0 ? tx.itemNewPrice : aiMarketPrice > 0 ? aiMarketPrice : 0);
+  const [hiddenPhotoIndexes, setHiddenPhotoIndexes] = useState(Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : []);
+  const [priceDropEnabled, setPriceDropEnabled] = useState(tx.priceDropEnabled || false);
+  const [priceDropIntervalDays, setPriceDropIntervalDays] = useState(tx.priceDropIntervalDays || 3);
+  const [aiToneLoading, setAiToneLoading] = useState(null); // null | 'paragraph' | 'bullets' | 'short'
+  const [saving, setSaving] = useState(false);
+  const [showInspection, setShowInspection] = useState(false);
+  const [showDropSchedule, setShowDropSchedule] = useState(false);
+  const addPhotoRef = useRef(null);
+
+  const visibleCount = photosList.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
+  const daysListed = getForSaleDaysListed(tx) || 0;
+  const listedDate = getForSaleListedDate(tx);
+
+  // Price drop calculations (all prices rounded to nearest ₦50)
+  const dropInterval = Math.max(1, priceDropIntervalDays);
+  const maxDrops = Math.floor(targetDeadline / dropInterval);
+  const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
+  const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? roundToNice(Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
+  const suggestedPrice = (priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
+  const deadlineProgress = Math.min(100, Math.round((daysListed / targetDeadline) * 100));
+
+  const dropSchedule = (priceDropEnabled && maxDrops > 0 && dropPerInterval > 0)
+    ? Array.from({ length: maxDrops + 1 }, (_, i) => ({
+        day: i * dropInterval,
+        price: Math.max(minPrice, listedPrice - i * dropPerInterval),
+        isCurrent: !isNewListing && i * dropInterval <= daysListed && (i + 1) * dropInterval > daysListed,
+      }))
+    : [];
+
+  // Inspection data
+  const inspectionNotes = tx.inspectionNotes || '';
+  const inspectionChecklist = tx.inspectionChecklist || {};
+  const hasInspectionData = !!(inspectionNotes || Object.keys(inspectionChecklist).length);
+
+  // Photo operations
+  const swapPhotos = (i, j) => {
+    const next = [...photosList];
+    [next[i], next[j]] = [next[j], next[i]];
+    setPhotosList(next);
+    setHiddenPhotoIndexes(hiddenPhotoIndexes.map(idx => idx === i ? j : idx === j ? i : idx));
+  };
+  const handleAddPhoto = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const compressed = await compressImageFile(file, { maxDimension: 1200, quality: 0.8 });
+      setPhotosList(prev => [...prev, compressed]);
+    } catch { alert('Failed to process photo. Try a different image.'); }
+    e.target.value = '';
+  };
+  const handleRemovePhoto = (i) => {
+    const isVisible = !hiddenPhotoIndexes.includes(i);
+    if (isVisible && visibleCount <= 2) { alert('Cannot remove — at least 2 photos must be visible. Hide this one first or add another.'); return; }
+    setPhotosList(photosList.filter((_, idx) => idx !== i));
+    setHiddenPhotoIndexes(hiddenPhotoIndexes.filter(idx => idx !== i).map(idx => idx > i ? idx - 1 : idx));
+  };
+  const togglePhotoVisibility = (i) => {
+    const isHidden = hiddenPhotoIndexes.includes(i);
+    if (!isHidden && visibleCount <= 2) return; // blocked — need at least 2 visible
+    setHiddenPhotoIndexes(isHidden ? hiddenPhotoIndexes.filter(x => x !== i) : [...hiddenPhotoIndexes, i]);
+  };
+
+  // AI description tone rewrite
+  const inspRef = inspectionNotes ? `\nInspection notes: "${inspectionNotes}"` : '';
+  const handleAiTone = async (tone) => {
+    if (!settings.geminiApiKey) { alert('No Gemini API key configured. Go to Settings to add it.'); return; }
+    if (!shopNote.trim()) { alert('Enter a description first before polishing.'); return; }
+    setAiToneLoading(tone);
+    const toneMap = {
+      paragraph: 'Rewrite as a clear, honest, flowing 2-3 sentence paragraph. Be factual and appealing. Do not use bullet points or markdown.',
+      bullets: 'Rewrite as 3-5 concise bullet points starting each with "•". Each point should cover a key fact about condition, features, or included accessories.',
+      short: 'Rewrite as a single short, punchy statement (max 15 words) highlighting the most important selling point.',
+    };
+    const prompt = `You are writing a product listing description for a used ${tx.aiBrand || ''} ${tx.aiModel || ''} sold in a second-hand shop in Nigeria.
+Current description: "${shopNote}"${inspRef}
+Condition grade: "${conditionGrade}"
+${toneMap[tone]}
+Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten text, nothing else.`;
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt);
+    if (result?.text) setShopNote(result.text.trim());
+    else alert(result?.error || 'AI generation failed. Check your Gemini API key in Settings.');
+    setAiToneLoading(null);
+  };
+
+  // Validation
+  const hasEnoughPhotos = photosList.length === 0 || visibleCount >= 2;
+  const priceValid = salePrice > 0;
+  const priceBelowMin = salePrice > 0 && salePrice < minPrice;
+  const canSave = hasEnoughPhotos && priceValid && !saving && !aiToneLoading;
+
+  const handleSave = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    const shopId = (!tx.shopId && isNewListing)
+      ? 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 23)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0')
+      : (tx.shopId || undefined);
+    const updates = {
+      ...tx,
+      shopCondition: conditionGrade,
+      shopListingNote: shopNote.trim(),
+      salePrice,
+      itemNewPrice: itemNewPrice > 0 ? itemNewPrice : undefined,
+      itemPhotos: photosList,
+      hiddenPhotoIndexes: hiddenPhotoIndexes.filter(i => i < photosList.length),
+      priceDropEnabled,
+      priceDropIntervalDays,
+      ...(shopId ? { shopId } : {}),
+    };
+    if (isNewListing) {
+      updates.status = 'for_sale';
+      updates.listedForSaleDate = new Date().toISOString().slice(0, 10);
+    }
+    await onSave(updates);
+    setSaving(false);
+  };
+
+  const S_LABEL = { fontWeight: 600, fontSize: '13px', color: '#1a3a2a', display: 'block', marginBottom: '6px' };
+  const S_INPUT = { width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '14px', boxSizing: 'border-box', outline: 'none', background: '#fff', color: '#111', fontFamily: 'inherit' };
+  const S_SECTION = { marginBottom: '20px' };
+  const S_AI_BTN = (active) => ({ padding: '6px 12px', borderRadius: '8px', border: '1.5px solid #8b5cf6', background: active ? '#ede9fe' : '#fff', color: active ? '#6d28d9' : '#7c3aed', fontWeight: 600, fontSize: '12px', cursor: (!settings.geminiApiKey || !!aiToneLoading) ? 'not-allowed' : 'pointer', opacity: !settings.geminiApiKey ? 0.5 : 1 });
+
+  return (
+    <div>
+      {/* ── Item summary ── */}
+      <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 14px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', border: '1px solid #bbf7d0' }}>
+        {photosList[0] && <img src={photosList[0]} alt="" style={{ width: '60px', height: '60px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} />}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: '15px', color: '#111' }}>{tx.aiBrand} {tx.aiModel}</div>
+          <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
+          {tx.estimatedValue > 0 && <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '2px' }}>Est. market value: {fmtMoney(tx.estimatedValue)}</div>}
+          {tx.imei && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>IMEI: {tx.imei}</div>}
+          {tx.serialNumber && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>Serial: {tx.serialNumber}</div>}
+        </div>
+        {!isNewListing && (
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ fontSize: '11px', color: '#6b7280', fontWeight: 500 }}>Listed</div>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#1a5f2a' }}>{daysListed}d ago</div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Listing progress (existing listings only) ── */}
+      {!isNewListing && (
+        <div style={{ ...S_SECTION, background: deadlineProgress >= 100 ? '#fef2f2' : deadlineProgress >= 70 ? '#fefce8' : '#f0fdf4', borderRadius: '10px', padding: '12px 14px', border: `1px solid ${deadlineProgress >= 100 ? '#fecaca' : deadlineProgress >= 70 ? '#fde68a' : '#bbf7d0'}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+            <div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#374151', marginBottom: '2px' }}>Listing Progress</div>
+              {listedDate && <div style={{ fontSize: '11px', color: '#6b7280' }}>Listed: {fmtDate(listedDate)}</div>}
+            </div>
+            <div style={{ textAlign: 'right' }}>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: deadlineProgress >= 100 ? '#dc2626' : '#374151' }}>{daysListed} / {targetDeadline} days</div>
+              <div style={{ fontSize: '11px', color: '#6b7280' }}>target deadline</div>
+            </div>
+          </div>
+          <div style={{ height: '6px', borderRadius: '999px', background: '#e5e7eb', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: `${deadlineProgress}%`, borderRadius: '999px', background: deadlineProgress >= 100 ? '#dc2626' : deadlineProgress >= 70 ? '#f59e0b' : '#10b981', transition: 'width 0.3s' }} />
+          </div>
+          {deadlineProgress >= 100 && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '6px' }}>⚠ Past target deadline — consider lowering the price or reviewing the listing.</div>}
+        </div>
+      )}
+
+      {/* ── Photos: visibility, rearrange, add ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>
+          Photos
+          <span style={{ marginLeft: '8px', fontWeight: 400, fontSize: '12px', color: visibleCount < 2 ? '#dc2626' : '#6b7280' }}>
+            ({visibleCount}/{photosList.length} shown in shop{visibleCount < 2 ? ' — need at least 2' : ''})
+          </span>
+        </label>
+        <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '10px' }}>
+          Tap photo to show/hide · Use ← → to reorder · ✕ to remove · Add button for new photos
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          {photosList.map((photo, i) => {
+            const isHidden = hiddenPhotoIndexes.includes(i);
+            const canHide = !isHidden && visibleCount > 2;
+            return (
+              <div key={i} style={{ textAlign: 'center', position: 'relative' }}>
+                {/* Remove button */}
+                <button onClick={() => handleRemovePhoto(i)} title="Remove photo" style={{ position: 'absolute', top: '-6px', left: '-6px', width: '18px', height: '18px', borderRadius: '50%', background: '#ef4444', border: '2px solid #fff', color: '#fff', fontSize: '9px', cursor: 'pointer', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, padding: 0 }}>✕</button>
+                {/* Photo tile — tap to toggle visibility */}
+                <div
+                  title={isHidden ? 'Click to show in shop' : canHide ? 'Click to hide from shop' : 'Cannot hide — need at least 2 visible'}
+                  onClick={() => togglePhotoVisibility(i)}
+                  style={{ position: 'relative', width: '72px', cursor: (isHidden || canHide) ? 'pointer' : 'default' }}
+                >
+                  <img src={photo} alt={`Photo ${i + 1}`} style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.25 : 1, border: `2.5px solid ${isHidden ? '#ef4444' : '#10b981'}`, display: 'block' }} />
+                  <div style={{ position: 'absolute', bottom: '2px', right: '2px', width: '18px', height: '18px', borderRadius: '50%', background: isHidden ? '#ef4444' : '#10b981', color: '#fff', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>{isHidden ? '✕' : '✓'}</div>
+                  {i === 0 && <div style={{ position: 'absolute', top: '2px', left: '2px', fontSize: '9px', background: 'rgba(0,0,0,0.6)', color: '#fff', borderRadius: '3px', padding: '1px 4px', fontWeight: 700 }}>COVER</div>}
+                </div>
+                {/* Reorder arrows */}
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '2px', marginTop: '4px' }}>
+                  <button onClick={() => i > 0 && swapPhotos(i, i - 1)} disabled={i === 0} title="Move left" style={{ padding: '2px 5px', fontSize: '10px', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff', cursor: i === 0 ? 'not-allowed' : 'pointer', opacity: i === 0 ? 0.3 : 1 }}>←</button>
+                  <button onClick={() => i < photosList.length - 1 && swapPhotos(i, i + 1)} disabled={i === photosList.length - 1} title="Move right" style={{ padding: '2px 5px', fontSize: '10px', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff', cursor: i === photosList.length - 1 ? 'not-allowed' : 'pointer', opacity: i === photosList.length - 1 ? 0.3 : 1 }}>→</button>
+                </div>
+                <div style={{ fontSize: '9px', color: isHidden ? '#ef4444' : '#10b981', fontWeight: 700, marginTop: '2px' }}>{isHidden ? 'Hidden' : 'Shown'}</div>
+              </div>
+            );
+          })}
+          {/* Add photo button */}
+          <div style={{ textAlign: 'center' }}>
+            <div onClick={() => addPhotoRef.current?.click()} style={{ width: '72px', height: '72px', borderRadius: '8px', border: '2px dashed #d1d5db', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: '#f9fafb', gap: '4px' }}>
+              <span style={{ fontSize: '22px', lineHeight: 1 }}>+</span>
+              <span style={{ fontSize: '9px', color: '#6b7280', fontWeight: 600 }}>Add Photo</span>
+            </div>
+            <input ref={addPhotoRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleAddPhoto} />
+            <div style={{ fontSize: '9px', color: '#9ca3af', marginTop: '6px' }}>&nbsp;</div>
+          </div>
+        </div>
+        {!hasEnoughPhotos && <div style={{ marginTop: '8px', fontSize: '12px', color: '#dc2626', fontWeight: 600 }}>Show at least 2 photos before saving.</div>}
+      </div>
+
+      {/* ── Inspection reference (collapsible) ── */}
+      {hasInspectionData && (
+        <div style={{ ...S_SECTION, borderRadius: '10px', border: '1px solid #e5e7eb', overflow: 'hidden' }}>
+          <button onClick={() => setShowInspection(v => !v)} style={{ width: '100%', padding: '10px 14px', background: '#f9fafb', border: 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600, fontSize: '13px', color: '#374151' }}>
+            <span>🔍 Inspection Notes (staff reference)</span>
+            <span style={{ fontSize: '12px', color: '#6b7280' }}>{showInspection ? '▲ Hide' : '▼ Show'}</span>
+          </button>
+          {showInspection && (
+            <div style={{ padding: '12px 14px', borderTop: '1px solid #e5e7eb', background: '#fff' }}>
+              {inspectionNotes && (
+                <div style={{ marginBottom: '8px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Inspector Notes</div>
+                  <div style={{ fontSize: '13px', color: '#374151', lineHeight: 1.6, background: '#f9fafb', borderRadius: '6px', padding: '8px 10px' }}>{inspectionNotes}</div>
+                </div>
+              )}
+              {Object.keys(inspectionChecklist).length > 0 && (
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Checklist Results</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                    {Object.entries(inspectionChecklist).map(([k, v]) => (
+                      <span key={k} style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '999px', background: v ? '#dcfce7' : '#fef2f2', color: v ? '#166534' : '#991b1b', border: `1px solid ${v ? '#86efac' : '#fecaca'}`, fontWeight: 600 }}>
+                        {v ? '✓' : '✕'} {k}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ marginTop: '10px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>Internal reference only — not shown to buyers. Use the description below for public-facing text.</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Condition Grade (dropdown) ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>Condition Grade <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(shown as a badge to buyers)</span></label>
+        {initGrade && initGrade !== conditionGrade && <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '6px' }}>Auto-suggested from inspection: <strong>{initGrade}</strong></div>}
+        <select value={conditionGrade} onChange={e => setConditionGrade(e.target.value)} style={{ ...S_INPUT }}>
+          <option value="">— Select condition grade —</option>
+          {CONDITION_GRADES.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+        {!conditionGrade && <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600, marginTop: '4px' }}>Selecting a condition grade helps buyers make faster decisions.</div>}
+      </div>
+
+      {/* ── Description for buyers (seller note) with multi-tone AI ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>Description for Buyers <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(main listing text shown to buyers)</span></label>
+        <textarea
+          value={shopNote}
+          onChange={e => setShopNote(e.target.value)}
+          placeholder="Describe the item honestly and clearly. What's included? What condition is it in? Any cosmetic marks? E.g. 'Screen in perfect condition, minor scratches on casing, battery healthy. Comes with original charger and box.'"
+          style={{ ...S_INPUT, minHeight: '90px', resize: 'vertical', lineHeight: 1.7 }}
+        />
+        <div style={{ marginTop: '8px', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: '#7c3aed', fontWeight: 600 }}>✨ AI Rewrite:</span>
+          {[
+            { key: 'paragraph', label: '📝 Paragraph' },
+            { key: 'bullets', label: '📋 Bullet Points' },
+            { key: 'short', label: '💬 Short & Punchy' },
+          ].map(({ key, label }) => (
+            <button key={key} disabled={!settings.geminiApiKey || !!aiToneLoading} onClick={() => handleAiTone(key)} style={S_AI_BTN(aiToneLoading === key)}>
+              {aiToneLoading === key ? '⏳ Rewriting...' : label}
+            </button>
+          ))}
+          {!settings.geminiApiKey && <span style={{ fontSize: '11px', color: '#9ca3af' }}>Gemini key required (Settings)</span>}
+        </div>
+      </div>
+
+      {/* ── Sale Price ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>Sale Price (₦)</label>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
+          <input type="number" min="0" step="50" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
+          <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap', color: '#374151' }}>Reset to Target</button>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
+          <span>Target: <strong style={{ color: '#1a5f2a' }}>{fmtMoney(listedPrice)}</strong></span>
+          <span>Min floor: <strong style={{ color: '#92400e' }}>{fmtMoney(minPrice)}</strong></span>
+          {tx.estimatedValue > 0 && <span>Est. resale value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
+        </div>
+        {itemNewPrice > 0 && salePrice > 0 && itemNewPrice > salePrice && (
+          <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '4px' }}>
+            Buyer saves {fmtMoney(itemNewPrice - salePrice)} ({Math.round((itemNewPrice - salePrice) / itemNewPrice * 100)}% off new price) — shown on shop page
+          </div>
+        )}
+        {!priceValid && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>Sale price must be greater than zero.</div>}
+        {priceBelowMin && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>⚠ Below minimum floor ({fmtMoney(minPrice)}) — this may result in a loss.</div>}
+        {salePrice > listedPrice && tx.estimatedValue > 0 && salePrice > tx.estimatedValue && <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600, marginTop: '4px' }}>Above estimated resale value — buyers may push back on price.</div>}
+      </div>
+
+      {/* ── Price Auto-Drop ── */}
+      {/* ── New Item Price (for savings display) ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>
+          New Item Price (₦) <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>— optional, for buyer savings display</span>
+        </label>
+        <input
+          type="number" min="0" step="50"
+          value={itemNewPrice || ''}
+          onChange={e => setItemNewPrice(Number(e.target.value))}
+          onBlur={e => setItemNewPrice(roundToNice(Number(e.target.value)))}
+          placeholder="e.g. 150000 — what this item costs brand new in the market"
+          style={{ ...S_INPUT }}
+        />
+        <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
+          What this item costs brand new — <em>not</em> the estimated resale value. When set, buyers see "You save ₦X" on the shop page.
+          {aiMarketPrice > 0 && tx.itemNewPrice !== aiMarketPrice && <span style={{ marginLeft: '6px', color: '#059669', fontWeight: 600 }}>Pre-filled from AI Run 3 valuation</span>}
+          {tx.estimatedValue > 0 && <span style={{ marginLeft: '6px' }}>· Resale estimate: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
+        </div>
+      </div>
+
+      <div style={{ ...S_SECTION, background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: priceDropEnabled ? '12px' : '0' }}>
+          <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+          <span style={{ fontWeight: 700, fontSize: '14px', color: '#92400e' }}>Enable automatic price drop for this item</span>
+        </label>
+        {priceDropEnabled && (
+          <div>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</span>
+              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value)))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
+              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>days · target sell within {targetDeadline} days</span>
+            </div>
+            {dropPerInterval > 0 && (
+              <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '10px' }}>
+                Drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} step{maxDrops !== 1 ? 's' : ''} · floor: <strong>{fmtMoney(minPrice)}</strong>
+              </div>
+            )}
+            {!isNewListing && daysListed > 0 && (
+              <div style={{ background: '#fff', borderRadius: '8px', padding: '10px 12px', marginBottom: '10px', border: '1px solid #fde68a' }}>
+                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: suggestedPrice < salePrice ? '8px' : '0' }}>
+                  Day <strong>{daysListed}</strong> listed — suggested price today: <strong style={{ fontSize: '15px' }}>{fmtMoney(suggestedPrice)}</strong>
+                  {suggestedPrice === salePrice && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Matches current price</span>}
+                </div>
+                {suggestedPrice < salePrice && (
+                  <button onClick={() => setSalePrice(suggestedPrice)} style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #f59e0b', background: '#fffbeb', color: '#92400e', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}>
+                    Apply Suggested Price ({fmtMoney(suggestedPrice)})
+                  </button>
+                )}
+              </div>
+            )}
+            {dropSchedule.length > 1 && (
+              <div>
+                <button onClick={() => setShowDropSchedule(v => !v)} style={{ fontSize: '12px', color: '#92400e', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0, marginBottom: showDropSchedule ? '8px' : '0' }}>
+                  {showDropSchedule ? '▲ Hide' : '▼ Show'} full price drop schedule
+                </button>
+                {showDropSchedule && (
+                  <div style={{ background: '#fff', borderRadius: '8px', overflow: 'hidden', border: '1px solid #fde68a', maxHeight: '200px', overflowY: 'auto' }}>
+                    {dropSchedule.map((step, i) => (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', background: step.isCurrent ? '#fef9c3' : i % 2 === 0 ? '#fff' : '#fafafa', borderBottom: i < dropSchedule.length - 1 ? '1px solid #fde68a' : 'none' }}>
+                        <span style={{ fontSize: '12px', color: '#92400e', fontWeight: step.isCurrent ? 700 : 400 }}>Day {step.day}{step.isCurrent ? ' ← today' : ''}</span>
+                        <span style={{ fontSize: '12px', color: step.price === minPrice ? '#dc2626' : '#92400e', fontWeight: step.isCurrent ? 700 : 500 }}>{fmtMoney(step.price)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Action buttons ── */}
+      <div style={{ display: 'flex', gap: '10px', paddingTop: '4px' }}>
+        <button onClick={handleSave} disabled={!canSave} style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: canSave ? '#1a5f2a' : '#d1d5db', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: canSave ? 'pointer' : 'not-allowed', transition: 'background 0.2s' }}>
+          {saving ? '⏳ Saving...' : isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
+        </button>
+        <button onClick={onClose} disabled={saving} style={{ padding: '14px 20px', borderRadius: '10px', border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer' }}>Cancel</button>
+      </div>
     </div>
   );
 }
@@ -3813,6 +4410,7 @@ export default function App() {
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
   const [loggingContactTx, setLoggingContactTx] = useState(null);
+  const [shopListingTx, setShopListingTx] = useState(null);
   const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
   const [reportEndYear, setReportEndYear] = useState(() => new Date().getFullYear());
@@ -3840,6 +4438,10 @@ export default function App() {
   const [txPage, setTxPage] = useState(1);
   const [txSortKey, setTxSortKey] = useState('dateGiven');
   const [txSortDir, setTxSortDir] = useState('desc');
+  // For Sale page local state — kept here to avoid defining components with hooks inside switch/case
+  const [fsSearch, setFsSearch] = useState('');
+  const [fsFilter, setFsFilter] = useState('all'); // 'all' | 'listed' | 'ready'
+  const [fsSort, setFsSort] = useState('days_desc');
   const [txStatusFilter, setTxStatusFilter] = useState('all');
   const [txDateFrom, setTxDateFrom] = useState('');
   const [txDateTo, setTxDateTo] = useState('');
@@ -3976,8 +4578,10 @@ export default function App() {
   const closedTxs = transactions.filter(t => t.status === 'closed');
   const soldTxs = transactions.filter(t => t.status === 'sold');
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale');
+  const surrenderedTxs = transactions.filter(t => t.status === 'ready_to_sell'); // early voluntary surrender
   const inGracePeriod = activeTxs.filter(t => t.isInFinalGrace);
-  const readyToSell = activeTxs.filter(t => t.isEligibleForSale);
+  // readyToSell = timeline-eligible actives + explicitly surrendered items
+  const readyToSell = [...activeTxs.filter(t => t.isEligibleForSale), ...surrenderedTxs];
   const dueTodayLoans = activeTxs.filter(t => getCustomerDaysLeft(t) === 0);
   const overdueLoans = activeTxs.filter(t => { const dl = getCustomerDaysLeft(t); return dl !== null && dl < 0; });
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
@@ -4327,7 +4931,42 @@ export default function App() {
         {tx.status === 'active' && isStaff && (
           <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
         )}
-        {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && (
+        {/* Early surrender — customer voluntarily gives up the item before deadline/grace ends */}
+        {tx.status === 'active' && isStaff && (
+          <button style={S.btn('outline')} onClick={async () => {
+            const ok = window.confirm(
+              `⚠️ CUSTOMER EARLY SURRENDER\n\n` +
+              `This marks the item as voluntarily surrendered by the customer.\n\n` +
+              `What this means:\n` +
+              `• The customer is giving up their right to reclaim this item\n` +
+              `• They forfeit any claim even if their deadline has not yet passed\n` +
+              `• The item moves to "Ready to Sell" so it can be listed in the shop\n` +
+              `• This action CANNOT be undone\n\n` +
+              `Only do this if the customer has explicitly agreed and confirmed in person.\n\n` +
+              `Proceed with marking "${tx.aiBrand || ''} ${tx.aiModel || ''}" as surrendered?`
+            );
+            if (!ok) return;
+            await saveTx({ ...tx, status: 'ready_to_sell', surrenderDate: new Date().toISOString().slice(0, 10), surrenderedBy: currentUser?.name || currentUser?.email || 'Staff' });
+            loadData();
+          }}>🤝 Customer Surrenders Item</button>
+        )}
+        {(tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell' ? (
+          isStaff ? <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 List in Shop</button> : null
+        ) : null}
+        {tx.status === 'for_sale' && isStaff && (
+          <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 Edit Listing</button>
+        )}
+        {tx.status === 'for_sale' && isStaff && (
+          <button style={S.btn('outline')} onClick={async () => {
+            if (window.confirm('Remove this item from the public shop?\n\nIt will go back to "Ready to Sell" status and can be re-listed at any time.')) {
+              // Items that were early surrenders go back to ready_to_sell; timeline-eligible actives go back to active
+              const returnStatus = tx.surrenderDate ? 'ready_to_sell' : 'active';
+              await saveTx({ ...tx, status: returnStatus, listedForSaleDate: null });
+              loadData();
+            }
+          }}>✕ Unlist</button>
+        )}
+        {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell') && isStaff && (
           <button style={S.btn('danger')} onClick={() => navigate(txSellPath(tx.ref))}>🏷 Record Sale</button>
         )}
       </div>
@@ -4403,7 +5042,7 @@ export default function App() {
         );
       }
       if (subPage === '/sell') {
-        if (!isStaff || (tx.status !== 'for_sale' && !(tx.status === 'active' && tx.isEligibleForSale))) return <Navigate to={txDetailPath(txRef)} replace />;
+        if (!isStaff || (tx.status !== 'for_sale' && tx.status !== 'ready_to_sell' && !(tx.status === 'active' && tx.isEligibleForSale))) return <Navigate to={txDetailPath(txRef)} replace />;
         return (
           <div>
             <div style={{ marginBottom: '20px' }}>
@@ -4428,7 +5067,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to "Ready to Sell" status.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -4956,7 +5595,141 @@ export default function App() {
         );
       }
 
-      case 'forSale': { const sellable = [...forSaleTxs, ...readyToSell]; return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>🏷 For Sale</h2><div style={S.card}><TxTable items={sellable} showDaysListed /></div></div>); }
+      case 'forSale': {
+        // ── For Sale page — state lives at App level (fsSearch/fsFilter/fsSort) to avoid
+        // defining a component with hooks inside a switch/case block. ──
+        const allSellable = [...forSaleTxs, ...readyToSell];
+
+        // Deep search across all transaction fields
+        const fsSearched = !fsSearch.trim() ? allSellable : (() => {
+          const q = fsSearch.toLowerCase();
+          return allSellable.filter(t =>
+            (t.ref || '').toLowerCase().includes(q) ||
+            (t.fullName || '').toLowerCase().includes(q) ||
+            (t.aiBrand || '').toLowerCase().includes(q) ||
+            (t.aiModel || '').toLowerCase().includes(q) ||
+            (t.aiItemType || '').toLowerCase().includes(q) ||
+            (t.aiColour || '').toLowerCase().includes(q) ||
+            (t.captureItemType || '').toLowerCase().includes(q) ||
+            (t.imei || '').toLowerCase().includes(q) ||
+            (t.serialNumber || '').toLowerCase().includes(q) ||
+            (t.shopId || '').toLowerCase().includes(q) ||
+            (t.shopCondition || '').toLowerCase().includes(q) ||
+            (t.shopListingNote || '').toLowerCase().includes(q) ||
+            (t.aiCondition || '').toLowerCase().includes(q) ||
+            (t.conditionDescription || '').toLowerCase().includes(q) ||
+            (t.inspectionNotes || '').toLowerCase().includes(q) ||
+            (t.notes || '').toLowerCase().includes(q) ||
+            (t.address || '').toLowerCase().includes(q) ||
+            (t.phoneNumbers || []).some(p => (p || '').toLowerCase().includes(q)) ||
+            (t.salePrice && String(t.salePrice).includes(q)) ||
+            (t.cashAdvance && String(t.cashAdvance).includes(q)) ||
+            (t.screeningPurchaseLocation || '').toLowerCase().includes(q) ||
+            (t.contactLog || []).some(e => (e.notes || '').toLowerCase().includes(q))
+          );
+        })();
+
+        const fsFiltered = fsFilter === 'listed' ? fsSearched.filter(t => t.status === 'for_sale')
+          : fsFilter === 'ready' ? fsSearched.filter(t => t.status !== 'for_sale')
+          : fsSearched;
+
+        const fsSorted = [...fsFiltered].sort((a, b) => {
+          if (fsSort === 'days_asc') return (getForSaleDaysListed(a) || 0) - (getForSaleDaysListed(b) || 0);
+          if (fsSort === 'price_high') return (b.salePrice || 0) - (a.salePrice || 0);
+          if (fsSort === 'price_low') return (a.salePrice || 0) - (b.salePrice || 0);
+          if (fsSort === 'name') return (`${a.aiBrand} ${a.aiModel}`).localeCompare(`${b.aiBrand} ${b.aiModel}`);
+          return (getForSaleDaysListed(b) || 0) - (getForSaleDaysListed(a) || 0); // days_desc default
+        });
+
+        // Stat calculations
+        const totalAskingValue = forSaleTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
+        const totalCapitalRisk = allSellable.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const listedDaysArr = forSaleTxs.map(t => getForSaleDaysListed(t) || 0).filter(d => d > 0);
+        const avgDaysListed = listedDaysArr.length > 0 ? Math.round(listedDaysArr.reduce((a, b) => a + b, 0) / listedDaysArr.length) : 0;
+        const targetDeadlineDays = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+        const pastDeadline = forSaleTxs.filter(t => (getForSaleDaysListed(t) || 0) > targetDeadlineDays).length;
+        const SC = {
+          wrap: { ...S.stat, flex: '1 1 140px' },
+          label: { ...S.statLabel, display: 'flex', alignItems: 'center' },
+          value: S.statValue,
+          sub: { fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' },
+        };
+
+        return (
+          <div>
+            {listLoadingNotice}
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🏷 For Sale</h2>
+
+            {/* ── Stat Cards ── */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
+              <div style={{ ...SC.wrap, background: COLORS.primaryLight }}>
+                <div style={SC.label}>Listed in Shop<InfoIcon tip="Items currently visible on the public shop page." /></div>
+                <div style={{ ...SC.value, color: COLORS.primary }}>{forSaleTxs.length}</div>
+                <div style={SC.sub}>Asking: {fmtMoney(totalAskingValue)}</div>
+              </div>
+              <div style={{ ...SC.wrap, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}>
+                <div style={SC.label}>Ready to Sell<InfoIcon tip="Items eligible to list but not yet in the shop (timeline expired or customer surrendered)." /></div>
+                <div style={{ ...SC.value, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div>
+                {surrenderedTxs.length > 0 && <div style={SC.sub}>{surrenderedTxs.length} early surrender{surrenderedTxs.length !== 1 ? 's' : ''}</div>}
+              </div>
+              <div style={{ ...SC.wrap, background: '#fef3c7' }}>
+                <div style={SC.label}>Capital at Risk<InfoIcon tip="Total cash advanced across all items not yet sold (both listed and ready to sell)." /></div>
+                <div style={{ ...SC.value, color: '#92400e' }}>{fmtMoney(totalCapitalRisk)}</div>
+                <div style={SC.sub}>{allSellable.length} item{allSellable.length !== 1 ? 's' : ''}</div>
+              </div>
+              <div style={{ ...SC.wrap, background: avgDaysListed > targetDeadlineDays ? '#fef2f2' : COLORS.bg }}>
+                <div style={SC.label}>Avg Days Listed<InfoIcon tip="Average number of days listed items have been in the shop. Target is below the sale deadline setting." /></div>
+                <div style={{ ...SC.value, color: avgDaysListed > targetDeadlineDays ? COLORS.danger : COLORS.text }}>{avgDaysListed > 0 ? avgDaysListed : '—'}</div>
+                <div style={SC.sub}>Target ≤ {targetDeadlineDays} days</div>
+              </div>
+              {pastDeadline > 0 && (
+                <div style={{ ...SC.wrap, background: '#fef2f2' }}>
+                  <div style={SC.label}>Past Target Deadline<InfoIcon tip="Listed items in the shop longer than your target sale deadline. Consider reducing prices." /></div>
+                  <div style={{ ...SC.value, color: COLORS.danger }}>{pastDeadline}</div>
+                  <div style={{ ...SC.sub, color: '#991b1b' }}>Consider price drops</div>
+                </div>
+              )}
+            </div>
+
+            {/* ── Search + Filter + Sort controls ── */}
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px', alignItems: 'center' }}>
+              <input
+                type="text"
+                value={fsSearch}
+                onChange={e => setFsSearch(e.target.value)}
+                placeholder="Deep search — ref, customer, item, IMEI, serial, notes, price..."
+                style={{ flex: '1 1 240px', padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none', fontFamily: 'inherit', background: '#fff', color: COLORS.text }}
+              />
+              <select value={fsFilter} onChange={e => setFsFilter(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
+                <option value="all">All ({allSellable.length})</option>
+                <option value="listed">Listed in Shop ({forSaleTxs.length})</option>
+                <option value="ready">Ready to Sell ({readyToSell.length})</option>
+              </select>
+              <select value={fsSort} onChange={e => setFsSort(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
+                <option value="days_desc">Longest Listed First</option>
+                <option value="days_asc">Newest Listed First</option>
+                <option value="price_high">Price: High → Low</option>
+                <option value="price_low">Price: Low → High</option>
+                <option value="name">Item Name (A–Z)</option>
+              </select>
+              {fsSearch && (
+                <button onClick={() => setFsSearch('')} style={{ padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', color: COLORS.textMuted, cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>✕ Clear</button>
+              )}
+            </div>
+
+            {fsSearch && (
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '10px' }}>
+                {fsSorted.length} result{fsSorted.length !== 1 ? 's' : ''} for "<strong>{fsSearch}</strong>"
+                {fsSorted.length === 0 && <span style={{ marginLeft: '8px', color: COLORS.danger }}>— no matches found</span>}
+              </div>
+            )}
+
+            <div style={S.card}>
+              <TxTable items={fsSorted} showDaysListed />
+            </div>
+          </div>
+        );
+      }
 
       case 'reports': {
         const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -5927,6 +6700,15 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Parts-Only Advance (₦)<InfoIcon tip="The maximum loan amount for items that don't power on (parts/scrap only). These items are worth less, so the cap is lower." /></span>}>
                 <input style={S.input} type="number" min="0" value={es.maxPartsOnlyAdvance ?? DEFAULT_SETTINGS.maxPartsOnlyAdvance} onChange={e => updateSettings({ ...es, maxPartsOnlyAdvance: Number(e.target.value) })} />
               </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Show Sold History in Shop<InfoIcon tip="Whether to display a 'Recently Sold' section on the public shop page, showing past sold items and their prices as social proof." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={es.shopShowSoldHistory ?? DEFAULT_SETTINGS.shopShowSoldHistory} onChange={e => updateSettings({ ...es, shopShowSoldHistory: e.target.checked })} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+                  <span style={{ fontSize: '14px', fontWeight: 600 }}>Show recently sold items</span>
+                </label>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Sold History Items<InfoIcon tip="How many recently sold items to show in the public shop's 'Recently Sold' section." /></span>}>
+                <input style={S.input} type="number" min="0" max="50" value={es.shopMaxSoldHistoryItems ?? DEFAULT_SETTINGS.shopMaxSoldHistoryItems} onChange={e => updateSettings({ ...es, shopMaxSoldHistoryItems: Number(e.target.value) })} />
+              </Field>
             </div>
           </div>
 
@@ -6566,6 +7348,7 @@ export default function App() {
 
       <ExpModal /><CapModal /><DistModal /><DecModal /><DeclineDraftModal /><UsrModal /><EditUserModal /><SettingsPwdModal />
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); }} />}</Modal>
+      <Modal open={!!shopListingTx} onClose={() => setShopListingTx(null)} title={shopListingTx?.status === 'for_sale' ? '🏪 Edit Shop Listing' : '🏪 List Item in Shop'} wide>{shopListingTx && <ShopListingModal tx={shopListingTx} settings={settings} onClose={() => setShopListingTx(null)} onSave={async (tx) => { await saveTx(tx); loadData(); setShopListingTx(null); }} />}</Modal>
       <style>{`
         input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}
         ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}
