@@ -1002,7 +1002,9 @@ export async function onRequest(context) {
           colour: d.aiColour || '',
           condition: d.shopCondition || d.aiCondition || d.conditionDescription || '',
           salePrice: d.salePrice || 0,
-          itemNewPrice: d.itemNewPrice > 0 ? d.itemNewPrice : null,
+          // itemNewPrice: explicitly set by staff during listing.
+          // Falls back to aiNewMarketPrice from AI Run 3 valuation if not set.
+          itemNewPrice: d.itemNewPrice > 0 ? d.itemNewPrice : (Number(d.aiNewMarketPrice) > 0 ? Number(d.aiNewMarketPrice) : null),
           estimatedValue: d.estimatedValue || 0,
           photos,
           photoFront: photos[0] || null,

@@ -1483,8 +1483,9 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const [shopNote, setShopNote] = useState(tx.shopListingNote || rawCondText);
   const [salePrice, setSalePrice] = useState(tx.salePrice > 0 ? tx.salePrice : listedPrice);
   // itemNewPrice = what this item costs brand new (retail). Used to display buyer savings in the shop.
-  // Different from estimatedValue (resale value). Staff can fill this in; defaults to any previously saved value.
-  const [itemNewPrice, setItemNewPrice] = useState(tx.itemNewPrice > 0 ? tx.itemNewPrice : 0);
+  // Priority: explicitly saved itemNewPrice > AI Run 3 aiNewMarketPrice > 0 (blank).
+  const aiMarketPrice = Number(tx.aiNewMarketPrice) || 0;
+  const [itemNewPrice, setItemNewPrice] = useState(tx.itemNewPrice > 0 ? tx.itemNewPrice : aiMarketPrice > 0 ? aiMarketPrice : 0);
   const [hiddenPhotoIndexes, setHiddenPhotoIndexes] = useState(Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : []);
   const [priceDropEnabled, setPriceDropEnabled] = useState(tx.priceDropEnabled || false);
   const [priceDropIntervalDays, setPriceDropIntervalDays] = useState(tx.priceDropIntervalDays || 3);
@@ -1801,8 +1802,9 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
           style={{ ...S_INPUT }}
         />
         <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>
-          This is the retail/new price of the item — <em>not</em> the estimated resale value. When set, buyers see "You save ₦X" on the shop page.
-          {tx.estimatedValue > 0 && <span style={{ marginLeft: '6px' }}>Est. resale value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
+          What this item costs brand new — <em>not</em> the estimated resale value. When set, buyers see "You save ₦X" on the shop page.
+          {aiMarketPrice > 0 && tx.itemNewPrice !== aiMarketPrice && <span style={{ marginLeft: '6px', color: '#059669', fontWeight: 600 }}>Pre-filled from AI Run 3 valuation</span>}
+          {tx.estimatedValue > 0 && <span style={{ marginLeft: '6px' }}>· Resale estimate: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
         </div>
       </div>
 
