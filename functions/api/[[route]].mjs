@@ -995,17 +995,22 @@ export async function onRequest(context) {
         const photos = extractPhotos(d);
         return {
           ref: row.ref,
+          shopId: d.shopId || null,
           itemType: d.aiItemType || d.captureItemType || 'Item',
           brand: d.aiBrand || '',
           model: d.aiModel || '',
           colour: d.aiColour || '',
           condition: d.shopCondition || d.aiCondition || d.conditionDescription || '',
           salePrice: d.salePrice || 0,
+          estimatedValue: d.estimatedValue || 0,
           photos,
           photoFront: photos[0] || null,
           listedDate: d.listedForSaleDate || null,
           shopNote: d.shopListingNote || '',
           inspectionNotes: d.inspectionNotes || '',
+          // Device identifiers — shown publicly to help buyers verify authenticity
+          imei: d.imei || null,
+          serialNumber: d.serialNumber || null,
         };
       });
 

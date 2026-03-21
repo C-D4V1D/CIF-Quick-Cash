@@ -200,6 +200,34 @@ const getCustomerDaysLeft = (tx) => {
 
 const getForSaleListedDate = (tx) => tx.listedForSaleDate || tx.updated_at || tx.created_at || null;
 
+// Round price to nearest ₦50 for cleaner suggested prices
+const roundToNice = (n) => Math.round(Math.max(0, n) / 50) * 50;
+
+// Standard condition grades shown to buyers
+const CONDITION_GRADES = [
+  'Like New — Barely used, no visible wear',
+  'Excellent — Excellent condition, minimal signs of use',
+  'Gently Used — Good condition, minor cosmetic marks',
+  'Good Used — Good working condition, some signs of use',
+  'Well Used — Visible signs of use, fully functional',
+  'Heavily Used — Major signs of use, all functions working',
+  'For Parts — Not fully functional, sold for parts or repair',
+];
+
+// Auto-derive a condition grade string from free-form condition text
+const deriveConditionGrade = (condText) => {
+  const t = (condText || '').toLowerCase();
+  if (!t) return CONDITION_GRADES[3];
+  if (t.includes('like new') || t.includes('mint') || t.includes('brand new') || t.includes('perfect')) return CONDITION_GRADES[0];
+  if (t.includes('excellent')) return CONDITION_GRADES[1];
+  if (t.includes('gently') || t.includes('light scratch') || t.includes('minor')) return CONDITION_GRADES[2];
+  if (t.includes('parts') || t.includes('repair') || t.includes('not work') || t.includes('broken')) return CONDITION_GRADES[6];
+  if (t.includes('heavily') || t.includes('heavy') || t.includes('crack') || t.includes('major')) return CONDITION_GRADES[5];
+  if (t.includes('visible') || t.includes('well used') || t.includes('dent') || t.includes('scuff') || t.includes('worn')) return CONDITION_GRADES[4];
+  if (t.includes('good') || t.includes('fair') || t.includes('moderate')) return CONDITION_GRADES[3];
+  return CONDITION_GRADES[3];
+};
+
 const getForSaleDaysListed = (tx) => {
   const listedDate = getForSaleListedDate(tx);
   if (!listedDate) return null;
@@ -954,8 +982,9 @@ function SalesPage({ onBack, settings }) {
   }, [items, categoryFilter, search, sortBy]);
 
   const getWhatsAppLink = (item) => {
+    const displayRef = item?.shopId || item?.ref || '';
     const msg = item
-      ? `Hello! I am interested in the ${item.brand} ${item.model} (${item.itemType}) listed for ${fmtMoney(item.salePrice)}. Ref: ${item.ref}. Is it still available?`
+      ? `Hello! I am interested in the ${item.brand} ${item.model} (${item.itemType}) listed for ${fmtMoney(item.salePrice)}. Item Ref: ${displayRef}. Is it still available?`
       : 'Hello! I want to check what items you have for sale.';
     return `https://wa.me/${whatsApp}?text=${encodeURIComponent(msg)}`;
   };
@@ -1052,21 +1081,60 @@ function SalesPage({ onBack, settings }) {
               </div>
             )}
 
-            {/* Spec chips — clean neutral style */}
+            {/* Savings badge */}
+            {item.estimatedValue > 0 && item.salePrice > 0 && item.estimatedValue > item.salePrice && (
+              <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', border: '1px solid #bbf7d0', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{ fontSize: '28px' }}>🏷️</div>
+                <div>
+                  <div style={{ fontSize: '15px', fontWeight: 800, color: '#166534' }}>
+                    You save {fmtMoney(item.estimatedValue - item.salePrice)} ({Math.round((item.estimatedValue - item.salePrice) / item.estimatedValue * 100)}% off)
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#4ade80', marginTop: '1px' }}>
+                    New market price: ~{fmtMoney(item.estimatedValue)} · Our price: {fmtMoney(item.salePrice)}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Condition + spec chips */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '18px' }}>
-              {item.condition && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Condition: <strong>{item.condition}</strong></span>}
+              {item.condition && (
+                <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>
+                  {item.condition.includes(' — ')
+                    ? <><span style={{ color: '#6b7280' }}>Condition: </span><strong>{item.condition.split(' — ')[0]}</strong><span style={{ color: '#6b7280' }}> — {item.condition.split(' — ')[1]}</span></>
+                    : <><span style={{ color: '#6b7280' }}>Condition: </span><strong>{item.condition}</strong></>
+                  }
+                </span>
+              )}
               {item.brand && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Brand: <strong>{item.brand}</strong></span>}
               {item.colour && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Colour: <strong>{item.colour}</strong></span>}
             </div>
 
-            {/* Shop note / description */}
+            {/* Description (shop note) */}
             {item.shopNote && (
-              <div style={{ background: '#f8f6f1', borderRadius: '10px', padding: '14px 16px', marginBottom: '16px', fontSize: '14px', color: '#374151', lineHeight: 1.7, border: '1px solid #e5e1d8' }}>
+              <div style={{ background: '#f8f6f1', borderRadius: '10px', padding: '14px 16px', marginBottom: '16px', fontSize: '14px', color: '#374151', lineHeight: 1.7, border: '1px solid #e5e1d8', whiteSpace: 'pre-line' }}>
                 {item.shopNote}
               </div>
             )}
 
-            {/* Inspection notes */}
+            {/* IMEI / Serial Number */}
+            {(item.imei || item.serialNumber) && (
+              <div style={{ marginBottom: '16px', background: '#f9fafb', borderRadius: '10px', padding: '12px 16px', border: '1px solid #e5e7eb' }}>
+                <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Device Identifier</div>
+                {item.imei && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: item.serialNumber ? '6px' : '0' }}>
+                    <div style={{ fontSize: '13px', color: '#374151' }}>IMEI: <strong style={{ fontFamily: 'monospace', letterSpacing: '0.5px' }}>{item.imei}</strong></div>
+                    <a href={`https://www.imei.info/?imei=${item.imei}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '12px', color: '#1a5f2a', fontWeight: 600, textDecoration: 'none', background: '#f0fdf4', padding: '3px 8px', borderRadius: '6px', border: '1px solid #bbf7d0' }}>Verify on imei.info →</a>
+                  </div>
+                )}
+                {item.serialNumber && (
+                  <div style={{ fontSize: '13px', color: '#374151' }}>Serial No: <strong style={{ fontFamily: 'monospace', letterSpacing: '0.5px' }}>{item.serialNumber}</strong></div>
+                )}
+                <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '6px' }}>Use this to verify the device history before buying.</div>
+              </div>
+            )}
+
+            {/* Inspection notes (public-facing) */}
             {item.inspectionNotes && (
               <div style={{ marginBottom: '16px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Inspection Notes</div>
@@ -1074,8 +1142,12 @@ function SalesPage({ onBack, settings }) {
               </div>
             )}
 
-            <div style={{ height: '1px', background: '#e5e7eb', margin: '0 0 16px' }} />
-            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>Ref: <strong style={{ color: '#374151' }}>{item.ref}</strong> · Quote this when contacting us</div>
+            <div style={{ height: '1px', background: '#e5e7eb', margin: '0 0 14px' }} />
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>
+              Item Ref: <strong style={{ color: '#374151', fontFamily: 'monospace' }}>{item.shopId || item.ref}</strong>
+              <span style={{ color: '#d1d5db', margin: '0 8px' }}>·</span>
+              Quote this reference when contacting us about this item
+            </div>
           </div>
 
           {/* CTA Buttons */}
@@ -1296,16 +1368,24 @@ function SalesPage({ onBack, settings }) {
 
                   {/* Info */}
                   <div style={{ padding: isMobile ? '10px' : '14px' }}>
-                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }}>{item.itemType}</div>
-                    <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '14px', color: '#1a1a1a', marginBottom: '6px', lineHeight: 1.3 }}>
+                    <div style={{ fontSize: '10px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '3px' }}>{item.itemType}</div>
+                    <div style={{ fontWeight: 800, fontSize: isMobile ? '13px' : '15px', color: '#1a1a1a', marginBottom: '4px', lineHeight: 1.2 }}>
                       {item.brand} {item.model}
+                    </div>
+                    {/* Key specs */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                      {item.colour && <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '999px', background: '#f3f4f6', color: '#374151', border: '1px solid #e5e7eb', fontWeight: 500 }}>{item.colour}</span>}
+                      {item.condition && (() => { const grade = item.condition.split(' — ')[0]; return grade ? <span style={{ fontSize: '10px', padding: '2px 7px', borderRadius: '999px', background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', fontWeight: 600 }}>{grade}</span> : null; })()}
                     </div>
                     <div style={{ fontSize: isMobile ? '20px' : '22px', fontWeight: 900, color: '#1a5f2a', letterSpacing: '-0.3px' }}>
                       {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us'}
                     </div>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '5px' }}>
-                      Tap to see details →
-                    </div>
+                    {item.estimatedValue > 0 && item.salePrice > 0 && item.estimatedValue > item.salePrice && (
+                      <div style={{ fontSize: '10px', color: '#059669', fontWeight: 700, marginTop: '2px' }}>
+                        Save {Math.round((item.estimatedValue - item.salePrice) / item.estimatedValue * 100)}% off new price
+                      </div>
+                    )}
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '5px' }}>Tap to see details →</div>
                   </div>
                 </div>
               );
@@ -1382,37 +1462,45 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   // Stable price reference values (computed from props, not state)
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
   const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
-  const minPrice = (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
-  const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
+  const minPrice = roundToNice((tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100));
+  const targetPrice = roundToNice(Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100));
   const listedPrice = Math.max(targetPrice, minPrice);
   const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
   const isNewListing = tx.status !== 'for_sale';
 
-  const [condition, setCondition] = useState(tx.shopCondition || tx.conditionDescription || tx.aiCondition || '');
-  const [shopNote, setShopNote] = useState(tx.shopListingNote || '');
+  // Raw condition text from inspection for initialising state
+  const rawCondText = tx.shopCondition || tx.conditionDescription || tx.aiCondition || '';
+
+  // Initialise conditionGrade: prefer an exact stored grade, else derive from text
+  const initGrade = CONDITION_GRADES.includes(tx.shopCondition)
+    ? tx.shopCondition
+    : (rawCondText ? deriveConditionGrade(rawCondText) : '');
+
+  const [photosList, setPhotosList] = useState(() => normalizeItemPhotos(tx.itemPhotos).filter(Boolean));
+  const [conditionGrade, setConditionGrade] = useState(initGrade);
+  const [shopNote, setShopNote] = useState(tx.shopListingNote || rawCondText);
   const [salePrice, setSalePrice] = useState(tx.salePrice > 0 ? tx.salePrice : listedPrice);
   const [hiddenPhotoIndexes, setHiddenPhotoIndexes] = useState(Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : []);
   const [priceDropEnabled, setPriceDropEnabled] = useState(tx.priceDropEnabled || false);
   const [priceDropIntervalDays, setPriceDropIntervalDays] = useState(tx.priceDropIntervalDays || 3);
-  const [aiPolishing, setAiPolishing] = useState(false);
+  const [aiToneLoading, setAiToneLoading] = useState(null); // null | 'paragraph' | 'bullets' | 'short'
   const [saving, setSaving] = useState(false);
   const [showInspection, setShowInspection] = useState(false);
   const [showDropSchedule, setShowDropSchedule] = useState(false);
+  const addPhotoRef = useRef(null);
 
-  const itemPhotos = normalizeItemPhotos(tx.itemPhotos).filter(Boolean);
-  const visibleCount = itemPhotos.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
+  const visibleCount = photosList.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
   const daysListed = getForSaleDaysListed(tx) || 0;
   const listedDate = getForSaleListedDate(tx);
 
-  // Price drop calculations
+  // Price drop calculations (all prices rounded to nearest ₦50)
   const dropInterval = Math.max(1, priceDropIntervalDays);
   const maxDrops = Math.floor(targetDeadline / dropInterval);
   const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
-  const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? Math.max(0, Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
+  const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? roundToNice(Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
   const suggestedPrice = (priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
   const deadlineProgress = Math.min(100, Math.round((daysListed / targetDeadline) * 100));
 
-  // Price drop schedule for preview
   const dropSchedule = (priceDropEnabled && maxDrops > 0 && dropPerInterval > 0)
     ? Array.from({ length: maxDrops + 1 }, (_, i) => ({
         day: i * dropInterval,
@@ -1421,45 +1509,82 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
       }))
     : [];
 
-  // Validation
-  const hasEnoughPhotos = itemPhotos.length === 0 || visibleCount >= 2;
-  const priceValid = salePrice > 0;
-  const priceBelowMin = salePrice > 0 && salePrice < minPrice;
-  const canSave = hasEnoughPhotos && priceValid && !saving && !aiPolishing;
-
-  // Raw inspection data for reference
+  // Inspection data
   const inspectionNotes = tx.inspectionNotes || '';
   const inspectionChecklist = tx.inspectionChecklist || {};
-  const hasInspectionData = inspectionNotes || Object.keys(inspectionChecklist).length > 0;
+  const hasInspectionData = !!(inspectionNotes || Object.keys(inspectionChecklist).length);
 
-  const handleAiPolish = async () => {
-    if (!settings.geminiApiKey) { alert('No Gemini API key configured. Go to Settings to add it.'); return; }
-    if (!condition.trim()) { alert('Enter a condition description first before polishing.'); return; }
-    setAiPolishing(true);
-    const inspectionRef = inspectionNotes ? `Inspection notes: "${inspectionNotes}"` : '';
-    const prompt = `You are writing a product condition description for a used ${tx.aiBrand || ''} ${tx.aiModel || ''} (${tx.aiItemType || ''}) being sold in a second-hand shop in Nigeria.
-The current condition description from inspection is: "${condition}"
-${inspectionRef}
-Rewrite this into a clear, honest, but attractive 2-3 sentence description for buyers. Be truthful about any issues but frame positively where possible. Do not exaggerate or lie. Do not use markdown or bullet points. Respond with ONLY the rewritten text, nothing else.`;
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt);
-    if (result?.text) setCondition(result.text.trim());
-    else alert(result?.error || 'AI generation failed. Check your Gemini API key in Settings.');
-    setAiPolishing(false);
+  // Photo operations
+  const swapPhotos = (i, j) => {
+    const next = [...photosList];
+    [next[i], next[j]] = [next[j], next[i]];
+    setPhotosList(next);
+    setHiddenPhotoIndexes(hiddenPhotoIndexes.map(idx => idx === i ? j : idx === j ? i : idx));
   };
+  const handleAddPhoto = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const compressed = await compressImageFile(file, { maxDimension: 1200, quality: 0.8 });
+      setPhotosList(prev => [...prev, compressed]);
+    } catch { alert('Failed to process photo. Try a different image.'); }
+    e.target.value = '';
+  };
+  const handleRemovePhoto = (i) => {
+    const isVisible = !hiddenPhotoIndexes.includes(i);
+    if (isVisible && visibleCount <= 2) { alert('Cannot remove — at least 2 photos must be visible. Hide this one first or add another.'); return; }
+    setPhotosList(photosList.filter((_, idx) => idx !== i));
+    setHiddenPhotoIndexes(hiddenPhotoIndexes.filter(idx => idx !== i).map(idx => idx > i ? idx - 1 : idx));
+  };
+  const togglePhotoVisibility = (i) => {
+    const isHidden = hiddenPhotoIndexes.includes(i);
+    if (!isHidden && visibleCount <= 2) return; // blocked — need at least 2 visible
+    setHiddenPhotoIndexes(isHidden ? hiddenPhotoIndexes.filter(x => x !== i) : [...hiddenPhotoIndexes, i]);
+  };
+
+  // AI description tone rewrite
+  const inspRef = inspectionNotes ? `\nInspection notes: "${inspectionNotes}"` : '';
+  const handleAiTone = async (tone) => {
+    if (!settings.geminiApiKey) { alert('No Gemini API key configured. Go to Settings to add it.'); return; }
+    if (!shopNote.trim()) { alert('Enter a description first before polishing.'); return; }
+    setAiToneLoading(tone);
+    const toneMap = {
+      paragraph: 'Rewrite as a clear, honest, flowing 2-3 sentence paragraph. Be factual and appealing. Do not use bullet points or markdown.',
+      bullets: 'Rewrite as 3-5 concise bullet points starting each with "•". Each point should cover a key fact about condition, features, or included accessories.',
+      short: 'Rewrite as a single short, punchy statement (max 15 words) highlighting the most important selling point.',
+    };
+    const prompt = `You are writing a product listing description for a used ${tx.aiBrand || ''} ${tx.aiModel || ''} sold in a second-hand shop in Nigeria.
+Current description: "${shopNote}"${inspRef}
+Condition grade: "${conditionGrade}"
+${toneMap[tone]}
+Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten text, nothing else.`;
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt);
+    if (result?.text) setShopNote(result.text.trim());
+    else alert(result?.error || 'AI generation failed. Check your Gemini API key in Settings.');
+    setAiToneLoading(null);
+  };
+
+  // Validation
+  const hasEnoughPhotos = photosList.length === 0 || visibleCount >= 2;
+  const priceValid = salePrice > 0;
+  const priceBelowMin = salePrice > 0 && salePrice < minPrice;
+  const canSave = hasEnoughPhotos && priceValid && !saving && !aiToneLoading;
 
   const handleSave = async () => {
     if (!canSave) return;
-    if (!hasEnoughPhotos) { alert('At least 2 photos must be visible in the shop.'); return; }
-    if (!priceValid) { alert('Please set a valid sale price.'); return; }
     setSaving(true);
+    const shopId = (!tx.shopId && isNewListing)
+      ? 'SHP-' + Math.random().toString(36).slice(2, 7).toUpperCase()
+      : (tx.shopId || undefined);
     const updates = {
       ...tx,
-      shopCondition: condition.trim(),
+      shopCondition: conditionGrade,
       shopListingNote: shopNote.trim(),
       salePrice,
-      hiddenPhotoIndexes,
+      itemPhotos: photosList,
+      hiddenPhotoIndexes: hiddenPhotoIndexes.filter(i => i < photosList.length),
       priceDropEnabled,
       priceDropIntervalDays,
+      ...(shopId ? { shopId } : {}),
     };
     if (isNewListing) {
       updates.status = 'for_sale';
@@ -1472,16 +1597,19 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
   const S_LABEL = { fontWeight: 600, fontSize: '13px', color: '#1a3a2a', display: 'block', marginBottom: '6px' };
   const S_INPUT = { width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '14px', boxSizing: 'border-box', outline: 'none', background: '#fff', color: '#111', fontFamily: 'inherit' };
   const S_SECTION = { marginBottom: '20px' };
+  const S_AI_BTN = (active) => ({ padding: '6px 12px', borderRadius: '8px', border: '1.5px solid #8b5cf6', background: active ? '#ede9fe' : '#fff', color: active ? '#6d28d9' : '#7c3aed', fontWeight: 600, fontSize: '12px', cursor: (!settings.geminiApiKey || !!aiToneLoading) ? 'not-allowed' : 'pointer', opacity: !settings.geminiApiKey ? 0.5 : 1 });
 
   return (
     <div>
-      {/* Item summary */}
+      {/* ── Item summary ── */}
       <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 14px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', border: '1px solid #bbf7d0' }}>
-        {itemPhotos[0] && <img src={itemPhotos[0]} alt="" style={{ width: '60px', height: '60px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} />}
+        {photosList[0] && <img src={photosList[0]} alt="" style={{ width: '60px', height: '60px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} />}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: '15px', color: '#111' }}>{tx.aiBrand} {tx.aiModel}</div>
           <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
-          {tx.estimatedValue > 0 && <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '2px' }}>Est. value: {fmtMoney(tx.estimatedValue)}</div>}
+          {tx.estimatedValue > 0 && <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '2px' }}>Est. market value: {fmtMoney(tx.estimatedValue)}</div>}
+          {tx.imei && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>IMEI: {tx.imei}</div>}
+          {tx.serialNumber && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>Serial: {tx.serialNumber}</div>}
         </div>
         {!isNewListing && (
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
@@ -1491,7 +1619,7 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
         )}
       </div>
 
-      {/* Listing status (existing listings only) */}
+      {/* ── Listing progress (existing listings only) ── */}
       {!isNewListing && (
         <div style={{ ...S_SECTION, background: deadlineProgress >= 100 ? '#fef2f2' : deadlineProgress >= 70 ? '#fefce8' : '#f0fdf4', borderRadius: '10px', padding: '12px 14px', border: `1px solid ${deadlineProgress >= 100 ? '#fecaca' : deadlineProgress >= 70 ? '#fde68a' : '#bbf7d0'}` }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
@@ -1507,48 +1635,67 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
           <div style={{ height: '6px', borderRadius: '999px', background: '#e5e7eb', overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${deadlineProgress}%`, borderRadius: '999px', background: deadlineProgress >= 100 ? '#dc2626' : deadlineProgress >= 70 ? '#f59e0b' : '#10b981', transition: 'width 0.3s' }} />
           </div>
-          {deadlineProgress >= 100 && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '6px' }}>Past target deadline — consider lowering the price.</div>}
+          {deadlineProgress >= 100 && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '6px' }}>⚠ Past target deadline — consider lowering the price or reviewing the listing.</div>}
         </div>
       )}
 
-      {/* Photo Visibility */}
-      {itemPhotos.length > 0 && (
-        <div style={S_SECTION}>
-          <label style={S_LABEL}>
-            Photo Visibility
-            <span style={{ marginLeft: '8px', fontWeight: 400, color: visibleCount < 2 ? '#dc2626' : '#6b7280', fontSize: '12px' }}>({visibleCount}/{itemPhotos.length} visible in shop{visibleCount < 2 ? ' — need at least 2' : ''})</span>
-          </label>
-          <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '10px' }}>Tap a photo to toggle its visibility. At least 2 must remain visible.</div>
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            {itemPhotos.map((photo, i) => {
-              const isHidden = hiddenPhotoIndexes.includes(i);
-              const canToggle = isHidden || visibleCount > 2;
-              return (
-                <div key={i} style={{ textAlign: 'center' }}>
-                  <div
-                    title={canToggle ? (isHidden ? 'Click to show' : 'Click to hide') : 'Cannot hide — need at least 2 visible'}
-                    style={{ position: 'relative', width: '72px', cursor: canToggle ? 'pointer' : 'not-allowed' }}
-                    onClick={() => { if (!canToggle) return; setHiddenPhotoIndexes(isHidden ? hiddenPhotoIndexes.filter(x => x !== i) : [...hiddenPhotoIndexes, i]); }}
-                  >
-                    <img src={photo} alt={`Photo ${i + 1}`} style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.25 : 1, border: `2.5px solid ${isHidden ? '#ef4444' : '#10b981'}` }} />
-                    <div style={{ position: 'absolute', bottom: '2px', right: '2px', width: '20px', height: '20px', borderRadius: '50%', background: isHidden ? '#ef4444' : '#10b981', color: '#fff', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>{isHidden ? '✕' : '✓'}</div>
-                    {!canToggle && !isHidden && <div style={{ position: 'absolute', inset: 0, borderRadius: '8px', background: 'rgba(0,0,0,0.15)' }} />}
-                  </div>
-                  <div style={{ fontSize: '10px', marginTop: '3px', fontWeight: 600, color: isHidden ? '#ef4444' : '#10b981' }}>{isHidden ? 'Hidden' : 'Shown'}</div>
+      {/* ── Photos: visibility, rearrange, add ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>
+          Photos
+          <span style={{ marginLeft: '8px', fontWeight: 400, fontSize: '12px', color: visibleCount < 2 ? '#dc2626' : '#6b7280' }}>
+            ({visibleCount}/{photosList.length} shown in shop{visibleCount < 2 ? ' — need at least 2' : ''})
+          </span>
+        </label>
+        <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '10px' }}>
+          Tap photo to show/hide · Use ← → to reorder · ✕ to remove · Add button for new photos
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          {photosList.map((photo, i) => {
+            const isHidden = hiddenPhotoIndexes.includes(i);
+            const canHide = !isHidden && visibleCount > 2;
+            return (
+              <div key={i} style={{ textAlign: 'center', position: 'relative' }}>
+                {/* Remove button */}
+                <button onClick={() => handleRemovePhoto(i)} title="Remove photo" style={{ position: 'absolute', top: '-6px', left: '-6px', width: '18px', height: '18px', borderRadius: '50%', background: '#ef4444', border: '2px solid #fff', color: '#fff', fontSize: '9px', cursor: 'pointer', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, padding: 0 }}>✕</button>
+                {/* Photo tile — tap to toggle visibility */}
+                <div
+                  title={isHidden ? 'Click to show in shop' : canHide ? 'Click to hide from shop' : 'Cannot hide — need at least 2 visible'}
+                  onClick={() => togglePhotoVisibility(i)}
+                  style={{ position: 'relative', width: '72px', cursor: (isHidden || canHide) ? 'pointer' : 'default' }}
+                >
+                  <img src={photo} alt={`Photo ${i + 1}`} style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.25 : 1, border: `2.5px solid ${isHidden ? '#ef4444' : '#10b981'}`, display: 'block' }} />
+                  <div style={{ position: 'absolute', bottom: '2px', right: '2px', width: '18px', height: '18px', borderRadius: '50%', background: isHidden ? '#ef4444' : '#10b981', color: '#fff', fontSize: '9px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>{isHidden ? '✕' : '✓'}</div>
+                  {i === 0 && <div style={{ position: 'absolute', top: '2px', left: '2px', fontSize: '9px', background: 'rgba(0,0,0,0.6)', color: '#fff', borderRadius: '3px', padding: '1px 4px', fontWeight: 700 }}>COVER</div>}
                 </div>
-              );
-            })}
+                {/* Reorder arrows */}
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '2px', marginTop: '4px' }}>
+                  <button onClick={() => i > 0 && swapPhotos(i, i - 1)} disabled={i === 0} title="Move left" style={{ padding: '2px 5px', fontSize: '10px', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff', cursor: i === 0 ? 'not-allowed' : 'pointer', opacity: i === 0 ? 0.3 : 1 }}>←</button>
+                  <button onClick={() => i < photosList.length - 1 && swapPhotos(i, i + 1)} disabled={i === photosList.length - 1} title="Move right" style={{ padding: '2px 5px', fontSize: '10px', borderRadius: '4px', border: '1px solid #d1d5db', background: '#fff', cursor: i === photosList.length - 1 ? 'not-allowed' : 'pointer', opacity: i === photosList.length - 1 ? 0.3 : 1 }}>→</button>
+                </div>
+                <div style={{ fontSize: '9px', color: isHidden ? '#ef4444' : '#10b981', fontWeight: 700, marginTop: '2px' }}>{isHidden ? 'Hidden' : 'Shown'}</div>
+              </div>
+            );
+          })}
+          {/* Add photo button */}
+          <div style={{ textAlign: 'center' }}>
+            <div onClick={() => addPhotoRef.current?.click()} style={{ width: '72px', height: '72px', borderRadius: '8px', border: '2px dashed #d1d5db', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', background: '#f9fafb', gap: '4px' }}>
+              <span style={{ fontSize: '22px', lineHeight: 1 }}>+</span>
+              <span style={{ fontSize: '9px', color: '#6b7280', fontWeight: 600 }}>Add Photo</span>
+            </div>
+            <input ref={addPhotoRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleAddPhoto} />
+            <div style={{ fontSize: '9px', color: '#9ca3af', marginTop: '6px' }}>&nbsp;</div>
           </div>
-          {!hasEnoughPhotos && <div style={{ marginTop: '8px', fontSize: '12px', color: '#dc2626', fontWeight: 600 }}>Show at least 2 photos before saving.</div>}
         </div>
-      )}
+        {!hasEnoughPhotos && <div style={{ marginTop: '8px', fontSize: '12px', color: '#dc2626', fontWeight: 600 }}>Show at least 2 photos before saving.</div>}
+      </div>
 
-      {/* Inspection Reference (collapsible) */}
+      {/* ── Inspection reference (collapsible) ── */}
       {hasInspectionData && (
         <div style={{ ...S_SECTION, borderRadius: '10px', border: '1px solid #e5e7eb', overflow: 'hidden' }}>
           <button onClick={() => setShowInspection(v => !v)} style={{ width: '100%', padding: '10px 14px', background: '#f9fafb', border: 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 600, fontSize: '13px', color: '#374151' }}>
-            <span>🔍 View Inspection Notes (staff reference)</span>
-            <span style={{ fontSize: '12px' }}>{showInspection ? '▲ Hide' : '▼ Show'}</span>
+            <span>🔍 Inspection Notes (staff reference)</span>
+            <span style={{ fontSize: '12px', color: '#6b7280' }}>{showInspection ? '▲ Hide' : '▼ Show'}</span>
           </button>
           {showInspection && (
             <div style={{ padding: '12px 14px', borderTop: '1px solid #e5e7eb', background: '#fff' }}>
@@ -1560,7 +1707,7 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
               )}
               {Object.keys(inspectionChecklist).length > 0 && (
                 <div>
-                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Checklist</div>
+                  <div style={{ fontSize: '11px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Checklist Results</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                     {Object.entries(inspectionChecklist).map(([k, v]) => (
                       <span key={k} style={{ fontSize: '11px', padding: '3px 8px', borderRadius: '999px', background: v ? '#dcfce7' : '#fef2f2', color: v ? '#166534' : '#991b1b', border: `1px solid ${v ? '#86efac' : '#fecaca'}`, fontWeight: 600 }}>
@@ -1570,55 +1717,70 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
                   </div>
                 </div>
               )}
-              <div style={{ marginTop: '10px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>This is internal data. Use the condition field below to write the buyer-facing description.</div>
+              <div style={{ marginTop: '10px', fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>Internal reference only — not shown to buyers. Use the description below for public-facing text.</div>
             </div>
           )}
         </div>
       )}
 
-      {/* Item Condition */}
+      {/* ── Condition Grade (dropdown) ── */}
       <div style={S_SECTION}>
-        <label style={S_LABEL}>Item Condition <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(shown to buyers in shop)</span></label>
+        <label style={S_LABEL}>Condition Grade <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(shown as a badge to buyers)</span></label>
+        {initGrade && initGrade !== conditionGrade && <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '6px' }}>Auto-suggested from inspection: <strong>{initGrade}</strong></div>}
+        <select value={conditionGrade} onChange={e => setConditionGrade(e.target.value)} style={{ ...S_INPUT }}>
+          <option value="">— Select condition grade —</option>
+          {CONDITION_GRADES.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+        {!conditionGrade && <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600, marginTop: '4px' }}>Selecting a condition grade helps buyers make faster decisions.</div>}
+      </div>
+
+      {/* ── Description for buyers (seller note) with multi-tone AI ── */}
+      <div style={S_SECTION}>
+        <label style={S_LABEL}>Description for Buyers <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(main listing text shown to buyers)</span></label>
         <textarea
-          value={condition}
-          onChange={e => setCondition(e.target.value)}
-          placeholder="Describe the item condition clearly and honestly for buyers. E.g. 'Screen is in excellent condition, minor scratches on the back casing, battery holds full charge and all functions tested working.'"
-          style={{ ...S_INPUT, minHeight: '80px', resize: 'vertical', lineHeight: 1.6 }}
+          value={shopNote}
+          onChange={e => setShopNote(e.target.value)}
+          placeholder="Describe the item honestly and clearly. What's included? What condition is it in? Any cosmetic marks? E.g. 'Screen in perfect condition, minor scratches on casing, battery healthy. Comes with original charger and box.'"
+          style={{ ...S_INPUT, minHeight: '90px', resize: 'vertical', lineHeight: 1.7 }}
         />
-        <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
-          <button disabled={aiPolishing || !settings.geminiApiKey} onClick={handleAiPolish} style={{ padding: '7px 14px', borderRadius: '8px', border: '1.5px solid #8b5cf6', background: aiPolishing ? '#ede9fe' : '#fff', color: aiPolishing ? '#6d28d9' : '#7c3aed', fontWeight: 600, fontSize: '13px', cursor: (aiPolishing || !settings.geminiApiKey) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px', opacity: (!settings.geminiApiKey) ? 0.6 : 1 }}>
-            {aiPolishing ? '⏳ Polishing...' : '✨ AI Polish Condition Text'}
-          </button>
-          {!settings.geminiApiKey && <span style={{ fontSize: '11px', color: '#9ca3af', alignSelf: 'center' }}>Gemini API key required (Settings)</span>}
+        <div style={{ marginTop: '8px', display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: '12px', color: '#7c3aed', fontWeight: 600 }}>✨ AI Rewrite:</span>
+          {[
+            { key: 'paragraph', label: '📝 Paragraph' },
+            { key: 'bullets', label: '📋 Bullet Points' },
+            { key: 'short', label: '💬 Short & Punchy' },
+          ].map(({ key, label }) => (
+            <button key={key} disabled={!settings.geminiApiKey || !!aiToneLoading} onClick={() => handleAiTone(key)} style={S_AI_BTN(aiToneLoading === key)}>
+              {aiToneLoading === key ? '⏳ Rewriting...' : label}
+            </button>
+          ))}
+          {!settings.geminiApiKey && <span style={{ fontSize: '11px', color: '#9ca3af' }}>Gemini key required (Settings)</span>}
         </div>
       </div>
 
-      {/* Sale Price */}
+      {/* ── Sale Price ── */}
       <div style={S_SECTION}>
         <label style={S_LABEL}>Sale Price (₦)</label>
         <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
-          <div style={{ flex: 1 }}>
-            <input
-              type="number"
-              min="0"
-              value={salePrice}
-              onChange={e => setSalePrice(Number(e.target.value))}
-              style={{ ...S_INPUT, fontSize: '20px', fontWeight: 700, color: priceBelowMin ? '#dc2626' : '#111' }}
-            />
-          </div>
+          <input type="number" min="0" step="50" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
           <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap', color: '#374151' }}>Reset to Target</button>
         </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
           <span>Target: <strong style={{ color: '#1a5f2a' }}>{fmtMoney(listedPrice)}</strong></span>
           <span>Min floor: <strong style={{ color: '#92400e' }}>{fmtMoney(minPrice)}</strong></span>
-          <span>Est. value: <strong>{fmtMoney(tx.estimatedValue || 0)}</strong></span>
+          {tx.estimatedValue > 0 && <span>Est. market value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
         </div>
+        {tx.estimatedValue > 0 && salePrice > 0 && salePrice < tx.estimatedValue && (
+          <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '4px' }}>
+            Buyer saves {fmtMoney(tx.estimatedValue - salePrice)} ({Math.round((tx.estimatedValue - salePrice) / tx.estimatedValue * 100)}% off market price)
+          </div>
+        )}
         {!priceValid && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>Sale price must be greater than zero.</div>}
-        {priceBelowMin && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>Warning: price is below the minimum floor ({fmtMoney(minPrice)}). This may result in a loss.</div>}
-        {salePrice > listedPrice && <div style={{ fontSize: '12px', color: '#2563eb', fontWeight: 600, marginTop: '4px' }}>Price is above target — this is fine if the item is in excellent condition.</div>}
+        {priceBelowMin && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '4px' }}>⚠ Below minimum floor ({fmtMoney(minPrice)}) — this may result in a loss.</div>}
+        {salePrice > listedPrice && tx.estimatedValue > 0 && salePrice > tx.estimatedValue && <div style={{ fontSize: '12px', color: '#f59e0b', fontWeight: 600, marginTop: '4px' }}>Above estimated market value — buyers may push back on price.</div>}
       </div>
 
-      {/* Price Auto-Drop */}
+      {/* ── Price Auto-Drop ── */}
       <div style={{ ...S_SECTION, background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: priceDropEnabled ? '12px' : '0' }}>
           <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
@@ -1628,19 +1790,19 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
           <div>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</span>
-              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value)))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px', background: '#fff' }} />
+              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value)))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
               <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>days · target sell within {targetDeadline} days</span>
             </div>
             {dropPerInterval > 0 && (
               <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '10px' }}>
-                Price drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} total drop{maxDrops !== 1 ? 's' : ''} · ends at <strong>{fmtMoney(minPrice)}</strong>
+                Drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} step{maxDrops !== 1 ? 's' : ''} · floor: <strong>{fmtMoney(minPrice)}</strong>
               </div>
             )}
             {!isNewListing && daysListed > 0 && (
               <div style={{ background: '#fff', borderRadius: '8px', padding: '10px 12px', marginBottom: '10px', border: '1px solid #fde68a' }}>
                 <div style={{ fontSize: '12px', color: '#92400e', marginBottom: suggestedPrice < salePrice ? '8px' : '0' }}>
-                  Day <strong>{daysListed}</strong> listed — suggested price today: <strong style={{ fontSize: '14px' }}>{fmtMoney(suggestedPrice)}</strong>
-                  {suggestedPrice === salePrice && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Current price matches</span>}
+                  Day <strong>{daysListed}</strong> listed — suggested price today: <strong style={{ fontSize: '15px' }}>{fmtMoney(suggestedPrice)}</strong>
+                  {suggestedPrice === salePrice && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Matches current price</span>}
                 </div>
                 {suggestedPrice < salePrice && (
                   <button onClick={() => setSalePrice(suggestedPrice)} style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #f59e0b', background: '#fffbeb', color: '#92400e', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}>
@@ -1652,13 +1814,13 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
             {dropSchedule.length > 1 && (
               <div>
                 <button onClick={() => setShowDropSchedule(v => !v)} style={{ fontSize: '12px', color: '#92400e', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, padding: 0, marginBottom: showDropSchedule ? '8px' : '0' }}>
-                  {showDropSchedule ? '▲ Hide' : '▼ Show'} price drop schedule
+                  {showDropSchedule ? '▲ Hide' : '▼ Show'} full price drop schedule
                 </button>
                 {showDropSchedule && (
-                  <div style={{ background: '#fff', borderRadius: '8px', overflow: 'hidden', border: '1px solid #fde68a' }}>
+                  <div style={{ background: '#fff', borderRadius: '8px', overflow: 'hidden', border: '1px solid #fde68a', maxHeight: '200px', overflowY: 'auto' }}>
                     {dropSchedule.map((step, i) => (
-                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 12px', background: step.isCurrent ? '#fef9c3' : i % 2 === 0 ? '#fff' : '#fafafa', borderBottom: i < dropSchedule.length - 1 ? '1px solid #fde68a' : 'none', fontWeight: step.isCurrent ? 700 : 400 }}>
-                        <span style={{ fontSize: '12px', color: '#92400e' }}>Day {step.day}{step.isCurrent ? ' ← today' : ''}</span>
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', background: step.isCurrent ? '#fef9c3' : i % 2 === 0 ? '#fff' : '#fafafa', borderBottom: i < dropSchedule.length - 1 ? '1px solid #fde68a' : 'none' }}>
+                        <span style={{ fontSize: '12px', color: '#92400e', fontWeight: step.isCurrent ? 700 : 400 }}>Day {step.day}{step.isCurrent ? ' ← today' : ''}</span>
                         <span style={{ fontSize: '12px', color: step.price === minPrice ? '#dc2626' : '#92400e', fontWeight: step.isCurrent ? 700 : 500 }}>{fmtMoney(step.price)}</span>
                       </div>
                     ))}
@@ -1670,24 +1832,9 @@ Rewrite this into a clear, honest, but attractive 2-3 sentence description for b
         )}
       </div>
 
-      {/* Shop Description / Seller Note */}
-      <div style={S_SECTION}>
-        <label style={S_LABEL}>Seller Note <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '12px' }}>(optional — shown to buyers)</span></label>
-        <textarea
-          value={shopNote}
-          onChange={e => setShopNote(e.target.value)}
-          placeholder="E.g. 'Comes with original charger and box. Fully reset and ready to use.'"
-          style={{ ...S_INPUT, minHeight: '60px', resize: 'vertical', lineHeight: 1.6 }}
-        />
-      </div>
-
-      {/* Action buttons */}
+      {/* ── Action buttons ── */}
       <div style={{ display: 'flex', gap: '10px', paddingTop: '4px' }}>
-        <button
-          onClick={handleSave}
-          disabled={!canSave}
-          style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: canSave ? '#1a5f2a' : '#d1d5db', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: canSave ? 'pointer' : 'not-allowed', transition: 'background 0.2s' }}
-        >
+        <button onClick={handleSave} disabled={!canSave} style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: canSave ? '#1a5f2a' : '#d1d5db', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: canSave ? 'pointer' : 'not-allowed', transition: 'background 0.2s' }}>
           {saving ? '⏳ Saving...' : isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
         </button>
         <button onClick={onClose} disabled={saving} style={{ padding: '14px 20px', borderRadius: '10px', border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer' }}>Cancel</button>
