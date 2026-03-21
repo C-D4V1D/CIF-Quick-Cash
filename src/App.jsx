@@ -911,6 +911,7 @@ function SalesPage({ onBack, settings }) {
   const [sortBy, setSortBy] = useState('newest');
   const [selectedItem, setSelectedItem] = useState(null);
   const [soldItems, setSoldItems] = useState([]);
+  const [photoIdx, setPhotoIdx] = useState(0);
   const isMobile = useMobile();
 
   const s = settings || {};
@@ -985,89 +986,146 @@ function SalesPage({ onBack, settings }) {
     return { label: cond, color };
   };
 
-  // Item detail modal — FINN-style with photo carousel
-  const ItemDetailModal = ({ item, onClose }) => {
-    if (!item) return null;
-    const [photoIdx, setPhotoIdx] = useState(0);
+  const selectItem = (item) => { setSelectedItem(item); setPhotoIdx(0); };
+
+  // ── Full-page item detail view ──
+  if (selectedItem) {
+    const item = selectedItem;
     const photos = item.photos?.length > 0 ? item.photos : item.photoFront ? [item.photoFront] : [];
-    const badge = conditionBadge(item.condition);
+    const similarItems = items.filter(i => i.ref !== item.ref && i.itemType === item.itemType).slice(0, 4);
+    const listedAgo = item.listedDate ? daysBetween(item.listedDate) : null;
+    const listedAgoText = listedAgo === 0 ? 'Listed today' : listedAgo === 1 ? 'Listed yesterday' : listedAgo !== null ? `Listed ${listedAgo} days ago` : '';
+    const WA_SVG = <svg width="18" height="18" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>;
     return (
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.82)', zIndex: 1000, overflowY: 'auto', display: 'flex', alignItems: isMobile ? 'flex-end' : 'center', justifyContent: 'center' }}>
-        <div onClick={e => e.stopPropagation()} style={{ background: '#fff', maxWidth: isMobile ? '100%' : '880px', width: '100%', margin: isMobile ? '0' : '32px auto', borderRadius: isMobile ? '16px 16px 0 0' : '16px', minHeight: isMobile ? '80vh' : 'auto', display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: 'hidden', position: 'relative' }}>
+      <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#f8f6f1', minHeight: '100vh', color: '#1a1a1a' }}>
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-          {/* Close button */}
-          <button onClick={onClose} style={{ position: 'absolute', top: '12px', right: '12px', background: 'rgba(0,0,0,0.55)', color: '#fff', border: 'none', borderRadius: '50%', width: '34px', height: '34px', fontSize: '17px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>✕</button>
+        {/* Header */}
+        <div style={{ background: '#1a5f2a', padding: '12px 20px', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}>
+          <div style={{ maxWidth: '1000px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <button onClick={() => setSelectedItem(null)} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>← Back to Shop</button>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#a7f3d0' }}>Christ-in-Fabian Quick Cash</div>
+            <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ background: '#25D366', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 12px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '5px' }}>{WA_SVG}{isMobile ? '' : 'Chat'}</a>
+          </div>
+        </div>
 
-          {/* LEFT: Photo Section */}
-          <div style={{ flex: isMobile ? 'none' : '0 0 50%', background: '#f3f4f6', display: 'flex', flexDirection: 'column' }}>
-            {/* Main photo */}
-            <div style={{ position: 'relative', height: isMobile ? '280px' : '390px', background: '#e5e7eb', overflow: 'hidden' }}>
+        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+          {/* Photo Section */}
+          <div style={{ background: '#fff' }}>
+            <div style={{ position: 'relative', height: isMobile ? '320px' : '440px', background: '#f3f4f6', overflow: 'hidden' }}>
               {photos.length > 0 ? (
-                <img src={photos[photoIdx]} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#f3f4f6' }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
+                <img src={photos[photoIdx]} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#f3f4f6' }} onError={e => { e.currentTarget.onerror = null; }} />
               ) : (
-                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '72px', background: 'linear-gradient(135deg, #e8f5ec, #d1fae5)' }}>{itemIcon(item.itemType)}</div>
+                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '80px', background: 'linear-gradient(135deg, #e8f5ec, #d1fae5)' }}>{itemIcon(item.itemType)}</div>
               )}
-              {photos.length > 1 && <div style={{ position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: '20px', padding: '3px 12px', fontSize: '12px', fontWeight: 600, pointerEvents: 'none' }}>{photoIdx + 1}/{photos.length}</div>}
+              {photos.length > 1 && <div style={{ position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)', background: 'rgba(0,0,0,0.55)', color: '#fff', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', fontWeight: 600 }}>{photoIdx + 1}/{photos.length}</div>}
               {photos.length > 1 && <>
-                <button onClick={e => { e.stopPropagation(); setPhotoIdx(i => (i - 1 + photos.length) % photos.length); }} style={{ position: 'absolute', left: '8px', top: '50%', transform: 'translateY(-50%)', width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '22px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>‹</button>
-                <button onClick={e => { e.stopPropagation(); setPhotoIdx(i => (i + 1) % photos.length); }} style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '22px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>›</button>
+                <button onClick={() => setPhotoIdx(i => (i - 1 + photos.length) % photos.length)} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>‹</button>
+                <button onClick={() => setPhotoIdx(i => (i + 1) % photos.length)} style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(0,0,0,0.45)', border: 'none', color: '#fff', fontSize: '24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>›</button>
               </>}
             </div>
-            {/* Thumbnail strip */}
             {photos.length > 1 && (
-              <div style={{ display: 'flex', gap: '6px', padding: '10px', overflowX: 'auto', background: '#f9fafb', borderTop: '1px solid #e5e7eb' }}>
+              <div style={{ display: 'flex', gap: '6px', padding: '10px 16px', overflowX: 'auto', borderTop: '1px solid #e5e7eb' }}>
                 {photos.map((p, i) => (
-                  <button key={i} onClick={() => setPhotoIdx(i)} style={{ flex: '0 0 58px', height: '58px', border: `2px solid ${i === photoIdx ? '#1a5f2a' : 'transparent'}`, borderRadius: '6px', overflow: 'hidden', padding: 0, cursor: 'pointer', background: '#fff', transition: 'border-color 0.15s' }}>
-                    <img src={p} alt={`Photo ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => { e.currentTarget.onerror = null; }} />
+                  <button key={i} onClick={() => setPhotoIdx(i)} style={{ flex: '0 0 62px', height: '62px', border: `2.5px solid ${i === photoIdx ? '#1a5f2a' : 'transparent'}`, borderRadius: '8px', overflow: 'hidden', padding: 0, cursor: 'pointer', background: '#f9fafb' }}>
+                    <img src={p} alt={`Thumb ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   </button>
                 ))}
               </div>
             )}
           </div>
 
-          {/* RIGHT: Info Section */}
-          <div style={{ flex: 1, padding: '24px 22px', overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          {/* Info Section */}
+          <div style={{ background: '#fff', padding: isMobile ? '20px 16px' : '28px 24px', marginTop: '2px' }}>
             <div style={{ fontSize: '11px', fontWeight: 700, color: '#1a5f2a', textTransform: 'uppercase', letterSpacing: '1.2px', marginBottom: '6px' }}>For Sale · {item.itemType}</div>
-            <h2 style={{ fontSize: isMobile ? '20px' : '24px', fontWeight: 800, margin: '0 0 10px', color: '#111', lineHeight: 1.2, paddingRight: '30px' }}>{item.brand} {item.model}</h2>
-
-            {/* Price — large & bold */}
-            <div style={{ fontSize: isMobile ? '34px' : '40px', fontWeight: 900, color: '#1a5f2a', marginBottom: '18px', lineHeight: 1, letterSpacing: '-0.5px' }}>
+            <h1 style={{ fontSize: isMobile ? '22px' : '28px', fontWeight: 800, margin: '0 0 10px', color: '#111', lineHeight: 1.2 }}>{item.brand} {item.model}</h1>
+            <div style={{ fontSize: isMobile ? '36px' : '44px', fontWeight: 900, color: '#1a5f2a', marginBottom: '14px', lineHeight: 1, letterSpacing: '-0.5px' }}>
               {item.salePrice ? fmtMoney(item.salePrice) : 'Contact us for price'}
             </div>
 
-            {/* Spec chips */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginBottom: '16px' }}>
-              {badge && <span style={{ padding: '5px 12px', borderRadius: '999px', border: '1.5px solid #e5e7eb', fontSize: '13px', fontWeight: 600, color: badge.color }}>Condition: <strong>{badge.label}</strong></span>}
-              {item.brand && <span style={{ padding: '5px 12px', borderRadius: '999px', border: '1.5px solid #e5e7eb', fontSize: '13px', fontWeight: 500, color: '#374151' }}>Brand: <strong>{item.brand}</strong></span>}
-              {item.colour && <span style={{ padding: '5px 12px', borderRadius: '999px', border: '1.5px solid #e5e7eb', fontSize: '13px', fontWeight: 500, color: '#374151' }}>Colour: <strong>{item.colour}</strong></span>}
+            {/* Listed date */}
+            {item.listedDate && (
+              <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span>{listedAgoText}</span>
+                <span style={{ color: '#d1d5db' }}>·</span>
+                <span>{fmtDate(item.listedDate)}</span>
+              </div>
+            )}
+
+            {/* Spec chips — clean neutral style */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '18px' }}>
+              {item.condition && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Condition: <strong>{item.condition}</strong></span>}
+              {item.brand && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Brand: <strong>{item.brand}</strong></span>}
+              {item.colour && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Colour: <strong>{item.colour}</strong></span>}
             </div>
 
-            {/* Shop note */}
+            {/* Shop note / description */}
             {item.shopNote && (
-              <div style={{ background: '#f8f6f1', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px', fontSize: '14px', color: '#374151', lineHeight: 1.6, border: '1px solid #e5e1d8' }}>
+              <div style={{ background: '#f8f6f1', borderRadius: '10px', padding: '14px 16px', marginBottom: '16px', fontSize: '14px', color: '#374151', lineHeight: 1.7, border: '1px solid #e5e1d8' }}>
                 {item.shopNote}
               </div>
             )}
 
-            <div style={{ height: '1px', background: '#f3f4f6', margin: '0 0 14px' }} />
-            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '14px' }}>Ref: <strong style={{ color: '#374151' }}>{item.ref}</strong> · Quote this when contacting us</div>
+            {/* Inspection notes */}
+            {item.inspectionNotes && (
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Inspection Notes</div>
+                <div style={{ fontSize: '14px', color: '#4b5563', lineHeight: 1.6 }}>{item.inspectionNotes}</div>
+              </div>
+            )}
 
-            {/* CTA Buttons */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#25D366', color: '#fff', padding: '15px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
-                <svg width="20" height="20" viewBox="0 0 32 32" fill="none"><path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.668 4.61 1.82 6.51L4 29l7.7-1.79A11.92 11.92 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3z" fill="white" fillOpacity="0.3"/><path fillRule="evenodd" clipRule="evenodd" d="M21.5 18.3c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51H12.5c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.49 0 1.47 1.07 2.89 1.22 3.09.15.2 2.1 3.2 5.09 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.89.12.58-.09 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z" fill="white"/></svg>
-                I Want to Buy This
-              </a>
-              <a href={getCallLink()} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#1a5f2a', color: '#fff', padding: '15px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>
-                📞 Call Us Now
-              </a>
+            <div style={{ height: '1px', background: '#e5e7eb', margin: '0 0 16px' }} />
+            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '4px' }}>Ref: <strong style={{ color: '#374151' }}>{item.ref}</strong> · Quote this when contacting us</div>
+          </div>
+
+          {/* CTA Buttons */}
+          <div style={{ background: '#fff', padding: isMobile ? '16px' : '20px 24px', marginTop: '2px' }}>
+            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: '10px' }}>
+              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#25D366', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>{WA_SVG} I Want to Buy This</a>
+              <a href={getCallLink()} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#1a5f2a', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>📞 Call Us Now</a>
             </div>
-            <div style={{ fontSize: '12px', color: '#9ca3af', textAlign: 'center', marginTop: '12px' }}>Visit our shop or contact us to inspect before buying</div>
+            <div style={{ fontSize: '12px', color: '#9ca3af', textAlign: 'center', marginTop: '10px' }}>Visit our shop to inspect the item before buying</div>
+          </div>
+
+          {/* More Like This */}
+          {similarItems.length > 0 && (
+            <div style={{ padding: isMobile ? '24px 16px' : '28px 24px' }}>
+              <h2 style={{ fontSize: '18px', fontWeight: 800, marginBottom: '14px', color: '#1a1a1a' }}>More Like This</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(4, 1fr)', gap: '10px' }}>
+                {similarItems.map(sim => (
+                  <div key={sim.ref} onClick={() => selectItem(sim)} style={{ background: '#fff', borderRadius: '10px', overflow: 'hidden', border: '1px solid #e5e1d8', cursor: 'pointer' }}>
+                    {sim.photoFront ? (
+                      <div style={{ height: '100px', background: '#f3f4f6', overflow: 'hidden' }}><img src={sim.photoFront} alt={sim.brand} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" /></div>
+                    ) : (
+                      <div style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', background: '#f3f4f6' }}>{itemIcon(sim.itemType)}</div>
+                    )}
+                    <div style={{ padding: '8px' }}>
+                      <div style={{ fontWeight: 700, fontSize: '12px', color: '#374151', marginBottom: '3px' }}>{sim.brand} {sim.model}</div>
+                      <div style={{ fontSize: '15px', fontWeight: 900, color: '#1a5f2a' }}>{sim.salePrice ? fmtMoney(sim.salePrice) : 'Contact'}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ background: '#111827', padding: '24px 20px', color: '#fff', textAlign: 'center' }}>
+          <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+            <div style={{ fontWeight: 700, marginBottom: '8px' }}>Want to buy? Contact us!</div>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', marginBottom: '12px' }}>
+              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ background: '#25D366', color: '#fff', padding: '10px 20px', borderRadius: '8px', textDecoration: 'none', fontWeight: 700, fontSize: '14px', display: 'flex', alignItems: 'center', gap: '6px' }}>{WA_SVG} WhatsApp</a>
+              <a href={getCallLink()} style={{ background: '#1a5f2a', color: '#fff', padding: '10px 20px', borderRadius: '8px', textDecoration: 'none', fontWeight: 700, fontSize: '14px' }}>📞 Call</a>
+            </div>
+            <div style={{ fontSize: '12px', color: '#6b7280' }}>{address}</div>
+            <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>{hours}</div>
           </div>
         </div>
+        <div style={{ background: '#0a0f1a', padding: '12px 20px', textAlign: 'center', fontSize: '12px', color: '#6b7280' }}>© 2026 Christ-in-Fabian Quick Cash</div>
       </div>
     );
-  };
+  }
 
   return (
     <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#f8f6f1', minHeight: '100vh', color: '#1a1a1a' }}>
@@ -1215,7 +1273,7 @@ function SalesPage({ onBack, settings }) {
               return (
                 <div
                   key={item.ref}
-                  onClick={() => setSelectedItem(item)}
+                  onClick={() => selectItem(item)}
                   style={{
                     background: '#fff', borderRadius: '12px', overflow: 'hidden',
                     border: '1px solid #e5e1d8', cursor: 'pointer',
@@ -1313,8 +1371,171 @@ function SalesPage({ onBack, settings }) {
         <PartnershipFootnote dark />
       </div>
 
-      {/* Item detail modal */}
-      {selectedItem && <ItemDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} />}
+    </div>
+  );
+}
+
+// ============================================================
+// SHOP LISTING MODAL — Staff/Admin manage a for-sale listing
+// ============================================================
+function ShopListingModal({ tx, settings, onClose, onSave }) {
+  const [condition, setCondition] = useState(tx.shopCondition || tx.conditionDescription || tx.aiCondition || '');
+  const [shopNote, setShopNote] = useState(tx.shopListingNote || '');
+  const [salePrice, setSalePrice] = useState(tx.salePrice || 0);
+  const [hiddenPhotoIndexes, setHiddenPhotoIndexes] = useState(Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : []);
+  const [priceDropEnabled, setPriceDropEnabled] = useState(tx.priceDropEnabled || false);
+  const [priceDropIntervalDays, setPriceDropIntervalDays] = useState(tx.priceDropIntervalDays || Number(settings.priceDropIntervalDays) || 3);
+  const [aiPolishing, setAiPolishing] = useState(false);
+
+  const itemPhotos = normalizeItemPhotos(tx.itemPhotos).filter(Boolean);
+  const visibleCount = itemPhotos.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
+
+  // Price calculations
+  const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+  const maxHoldDays = (Math.max(1, Number(settings.maxLoanDays) || 30)) + (Math.max(0, Number(settings.graceDays) || 3));
+  const minPrice = (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
+  const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
+  const listedPrice = Math.max(targetPrice, minPrice);
+  const daysListed = getForSaleDaysListed(tx) || 0;
+  const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+  const dropInterval = Math.max(1, priceDropIntervalDays);
+  const maxDrops = Math.floor(targetDeadline / dropInterval);
+  const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
+  const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? Math.max(0, Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
+  const suggestedPrice = (priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
+
+  const handleAiPolish = async () => {
+    if (!settings.geminiApiKey) { alert('No Gemini API key configured. Go to Settings to add it.'); return; }
+    setAiPolishing(true);
+    const prompt = `You are writing a product condition description for a used ${tx.aiBrand || ''} ${tx.aiModel || ''} (${tx.aiItemType || ''}) being sold in a second-hand shop in Nigeria.
+The current condition description from inspection is: "${condition}"
+Rewrite this into a clear, honest, but attractive 2-3 sentence description for buyers. Be truthful about any issues but frame positively where possible. Do not exaggerate or lie. Do not use markdown or bullet points. Respond with ONLY the rewritten text, nothing else.`;
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt);
+    if (result?.text) setCondition(result.text.trim());
+    else alert(result?.error || 'AI generation failed.');
+    setAiPolishing(false);
+  };
+
+  const isNewListing = tx.status !== 'for_sale';
+  const handleSave = () => {
+    const updates = {
+      ...tx,
+      shopCondition: condition,
+      shopListingNote: shopNote,
+      salePrice,
+      hiddenPhotoIndexes,
+      priceDropEnabled,
+      priceDropIntervalDays,
+    };
+    if (isNewListing) {
+      updates.status = 'for_sale';
+      if (!updates.salePrice) updates.salePrice = listedPrice;
+    }
+    onSave(updates);
+    onClose();
+  };
+
+  const S_LABEL = { fontWeight: 600, fontSize: '13px', color: '#1a3a2a', display: 'block', marginBottom: '5px' };
+  const S_INPUT = { width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '14px', boxSizing: 'border-box', outline: 'none' };
+
+  return (
+    <div>
+      {/* Item summary */}
+      <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 14px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '12px', border: '1px solid #bbf7d0' }}>
+        {itemPhotos[0] && <img src={itemPhotos[0]} alt="" style={{ width: '56px', height: '56px', borderRadius: '8px', objectFit: 'cover' }} />}
+        <div>
+          <div style={{ fontWeight: 700, fontSize: '15px', color: '#111' }}>{tx.aiBrand} {tx.aiModel}</div>
+          <div style={{ fontSize: '12px', color: '#6b7280' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
+        </div>
+      </div>
+
+      {/* Photo Visibility */}
+      {itemPhotos.length > 0 && (
+        <div style={{ marginBottom: '20px' }}>
+          <label style={S_LABEL}>Photo Visibility ({visibleCount}/{itemPhotos.length} visible in shop)</label>
+          <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>At least 2 must remain visible. Tap to toggle.</div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {itemPhotos.map((photo, i) => {
+              const isHidden = hiddenPhotoIndexes.includes(i);
+              const canToggle = isHidden || visibleCount > 2;
+              return (
+                <div key={i} style={{ textAlign: 'center' }}>
+                  <div style={{ position: 'relative', width: '72px', cursor: canToggle ? 'pointer' : 'not-allowed' }} onClick={() => { if (!canToggle) return; setHiddenPhotoIndexes(isHidden ? hiddenPhotoIndexes.filter(x => x !== i) : [...hiddenPhotoIndexes, i]); }}>
+                    <img src={photo} alt="" style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.3 : 1, border: `2px solid ${isHidden ? '#ef4444' : '#10b981'}` }} />
+                    <div style={{ position: 'absolute', bottom: '2px', right: '2px', width: '20px', height: '20px', borderRadius: '50%', background: isHidden ? '#ef4444' : '#10b981', color: '#fff', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{isHidden ? '✕' : '✓'}</div>
+                  </div>
+                  <div style={{ fontSize: '10px', marginTop: '2px', fontWeight: 600, color: isHidden ? '#ef4444' : '#10b981' }}>{isHidden ? 'Hidden' : 'Shown'}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Condition */}
+      <div style={{ marginBottom: '20px' }}>
+        <label style={S_LABEL}>Item Condition (shown to buyers)</label>
+        <textarea value={condition} onChange={e => setCondition(e.target.value)} placeholder="Describe the condition clearly and honestly..." style={{ ...S_INPUT, minHeight: '70px', resize: 'vertical' }} />
+        <button disabled={aiPolishing} onClick={handleAiPolish} style={{ marginTop: '8px', padding: '7px 14px', borderRadius: '8px', border: '1.5px solid #8b5cf6', background: aiPolishing ? '#ede9fe' : '#fff', color: '#7c3aed', fontWeight: 600, fontSize: '13px', cursor: aiPolishing ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {aiPolishing ? 'Polishing...' : '✨ AI Polish Condition Text'}
+        </button>
+      </div>
+
+      {/* Sale Price */}
+      <div style={{ marginBottom: '20px' }}>
+        <label style={S_LABEL}>Sale Price (₦)</label>
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+          <div style={{ flex: 1 }}>
+            <input type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} style={{ ...S_INPUT, fontSize: '18px', fontWeight: 700 }} />
+          </div>
+          <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap' }}>Reset to Target</button>
+        </div>
+        {salePrice < minPrice && <div style={{ fontSize: '12px', color: '#ef4444', fontWeight: 600 }}>Below minimum price ({fmtMoney(minPrice)})</div>}
+        <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>
+          <span>Target: {fmtMoney(listedPrice)}</span>
+          <span>Min: {fmtMoney(minPrice)}</span>
+          <span>Estimated value: {fmtMoney(tx.estimatedValue || 0)}</span>
+        </div>
+      </div>
+
+      {/* Price Auto-Drop (per-item) */}
+      <div style={{ marginBottom: '20px', background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: priceDropEnabled ? '12px' : '0' }}>
+          <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px' }} />
+          <span style={{ fontWeight: 600, fontSize: '14px', color: '#92400e' }}>Enable price auto-drop for this item</span>
+        </label>
+        {priceDropEnabled && (
+          <div>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '10px' }}>
+              <label style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</label>
+              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Number(e.target.value))} style={{ ...S_INPUT, width: '60px', textAlign: 'center', padding: '6px' }} />
+              <label style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>days over {targetDeadline}-day deadline</label>
+            </div>
+            {tx.status === 'for_sale' && daysListed > 0 && (
+              <div>
+                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '6px' }}>Day {daysListed} listed — suggested price today: <strong>{fmtMoney(suggestedPrice)}</strong></div>
+                {suggestedPrice !== salePrice && suggestedPrice < salePrice && (
+                  <button onClick={() => setSalePrice(suggestedPrice)} style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #f59e0b', background: '#fff', color: '#92400e', fontWeight: 600, fontSize: '13px', cursor: 'pointer' }}>Apply {fmtMoney(suggestedPrice)}</button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Shop Description */}
+      <div style={{ marginBottom: '24px' }}>
+        <label style={S_LABEL}>Shop Description (shown to buyers)</label>
+        <textarea value={shopNote} onChange={e => setShopNote(e.target.value)} placeholder="Add a short note for buyers, e.g. 'Comes with charger, fully functional'" style={{ ...S_INPUT, minHeight: '60px', resize: 'vertical' }} />
+      </div>
+
+      {/* Action buttons */}
+      <div style={{ display: 'flex', gap: '10px' }}>
+        <button onClick={handleSave} style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: '#1a5f2a', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: 'pointer' }}>
+          {isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
+        </button>
+        <button onClick={onClose} style={{ padding: '14px 20px', borderRadius: '10px', border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: '14px', cursor: 'pointer' }}>Cancel</button>
+      </div>
     </div>
   );
 }
@@ -3174,6 +3395,7 @@ export default function App() {
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
   const [loggingContactTx, setLoggingContactTx] = useState(null);
+  const [shopListingTx, setShopListingTx] = useState(null);
   const [reportYear, setReportYear] = useState(() => new Date().getFullYear());
   const [reportMonth, setReportMonth] = useState(() => new Date().getMonth() + 1);
   const [reportEndYear, setReportEndYear] = useState(() => new Date().getFullYear());
@@ -3674,95 +3896,16 @@ export default function App() {
         )}
       </div>
 
-      {/* ── Shop Listing Settings (only when item is listed for sale) ── */}
-      {tx.status === 'for_sale' && isStaff && (() => {
-        const itemPhotos = normalizeItemPhotos(tx.itemPhotos).filter(Boolean);
-        const hiddenIdxs = Array.isArray(tx.hiddenPhotoIndexes) ? tx.hiddenPhotoIndexes : [];
-        const visibleCount = itemPhotos.filter((_, i) => !hiddenIdxs.includes(i)).length;
-
-        const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
-        const maxHoldDays = (Math.max(1, Number(settings.maxLoanDays) || 30)) + (Math.max(0, Number(settings.graceDays) || 3));
-        const minPrice = (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100);
-        const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
-        const listedPrice = Math.max(targetPrice, minPrice);
-        const daysListed = getForSaleDaysListed(tx) || 0;
-        const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
-        const dropInterval = Math.max(1, Number(settings.priceDropIntervalDays) || 3);
-        const maxDrops = Math.floor(targetDeadline / dropInterval);
-        const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
-        const dropPerInterval = (maxDrops > 0 && settings.priceDropEnabled) ? Math.max(0, Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
-        const suggestedPrice = (settings.priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
-        const nextDropDay = (drops + 1) * dropInterval;
-
-        return (
-          <div style={S.card}>
-            <div style={S.cardTitle}>🏪 Shop Listing Settings</div>
-
-            {/* Photo Visibility */}
-            {itemPhotos.length > 0 && (
-              <div style={{ marginBottom: '18px' }}>
-                <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '4px', color: COLORS.primaryDark }}>
-                  Photo Visibility in Public Shop ({visibleCount}/{itemPhotos.length} visible)
-                </div>
-                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>At least 2 photos must remain visible. Tap 🚫 to hide, 👁 to show.</div>
-                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                  {itemPhotos.map((photo, i) => {
-                    const isHidden = hiddenIdxs.includes(i);
-                    const canHide = visibleCount > 2;
-                    return (
-                      <div key={i} style={{ textAlign: 'center' }}>
-                        <div style={{ position: 'relative', width: '78px' }}>
-                          <img src={photo} alt={`Photo ${i + 1}`} style={{ width: '78px', height: '78px', objectFit: 'cover', borderRadius: '8px', opacity: isHidden ? 0.3 : 1, border: `2.5px solid ${isHidden ? COLORS.danger : '#10b981'}`, display: 'block' }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='78' height='78'%3E%3Crect width='78' height='78' fill='%23f3f4f6'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='10' fill='%236b7280'%3EPhoto%3C/text%3E%3C/svg%3E"; }} />
-                          <button title={isHidden ? 'Show in shop' : (canHide ? 'Hide from shop' : 'Cannot hide — min 2 required')} onClick={async () => { if (!isHidden && !canHide) return; const newHidden = isHidden ? hiddenIdxs.filter(x => x !== i) : [...hiddenIdxs, i]; await saveTx({ ...tx, hiddenPhotoIndexes: newHidden }); loadData(); }} style={{ position: 'absolute', bottom: '3px', right: '3px', width: '22px', height: '22px', borderRadius: '50%', border: 'none', background: isHidden ? '#10b981' : (canHide ? '#ef4444' : '#9ca3af'), color: '#fff', fontSize: '11px', cursor: (canHide || isHidden) ? 'pointer' : 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}>
-                            {isHidden ? '👁' : '🚫'}
-                          </button>
-                        </div>
-                        <div style={{ fontSize: '10px', marginTop: '3px', color: isHidden ? COLORS.danger : '#10b981', fontWeight: 700 }}>{isHidden ? 'Hidden' : 'Visible'}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Shop Description */}
-            <div style={{ marginBottom: '18px' }}>
-              <label style={{ fontWeight: 600, fontSize: '13px', color: COLORS.primaryDark, display: 'block', marginBottom: '5px' }}>Shop Description (visible to buyers)</label>
-              <textarea key={tx.ref} defaultValue={tx.shopListingNote || ''} placeholder="E.g. 'Fully functional, minor scuffs on screen. Comes with charger.'" style={{ ...S.input, minHeight: '68px', fontSize: '13px', resize: 'vertical', width: '100%', boxSizing: 'border-box' }} onBlur={async e => { if (e.target.value !== (tx.shopListingNote || '')) { await saveTx({ ...tx, shopListingNote: e.target.value }); loadData(); } }} />
-            </div>
-
-            {/* Price Auto-Drop Info */}
-            {settings.priceDropEnabled ? (
-              <div style={{ background: '#fffbeb', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
-                <div style={{ fontWeight: 700, fontSize: '13px', marginBottom: '10px', color: '#92400e' }}>⏬ Price Auto-Drop Schedule</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '10px' }}>
-                  <div style={{ textAlign: 'center', background: '#fff', borderRadius: '8px', padding: '8px' }}><div style={{ fontSize: '11px', color: COLORS.textMuted }}>Target Price</div><div style={{ fontWeight: 700, fontSize: '14px' }}>{fmtMoney(listedPrice)}</div></div>
-                  <div style={{ textAlign: 'center', background: '#fff', borderRadius: '8px', padding: '8px' }}><div style={{ fontSize: '11px', color: COLORS.textMuted }}>Today's Suggested</div><div style={{ fontWeight: 700, fontSize: '14px', color: suggestedPrice < listedPrice ? COLORS.danger : COLORS.primary }}>{fmtMoney(suggestedPrice)}</div></div>
-                  <div style={{ textAlign: 'center', background: '#fff', borderRadius: '8px', padding: '8px' }}><div style={{ fontSize: '11px', color: COLORS.textMuted }}>Floor Price</div><div style={{ fontWeight: 700, fontSize: '14px' }}>{fmtMoney(minPrice)}</div></div>
-                </div>
-                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '10px' }}>
-                  Day {daysListed} listed · drops ₦{fmtMoney(dropPerInterval).replace('₦', '')} every {dropInterval} day{dropInterval !== 1 ? 's' : ''} · {daysListed < targetDeadline ? `next drop: day ${nextDropDay}` : 'at floor price'}
-                </div>
-                {suggestedPrice !== (tx.salePrice || 0) && (
-                  <button style={{ ...S.btn('accent'), fontSize: '13px', padding: '8px 16px' }} onClick={async () => { if (window.confirm(`Update sale price to ${fmtMoney(suggestedPrice)}?`)) { await saveTx({ ...tx, salePrice: suggestedPrice }); loadData(); } }}>
-                    Apply Suggested Price: {fmtMoney(suggestedPrice)}
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Price auto-drop is off. Enable it in Settings → Sales Configuration.</div>
-            )}
-          </div>
-        );
-      })()}
-
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' }}>
         <button style={S.btn('outline')} onClick={() => navigate(-1)}>← Back</button>
         {tx.status === 'active' && isStaff && (
           <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
         )}
         {tx.status === 'active' && tx.isEligibleForSale && isStaff && (
-          <button style={S.btn('accent')} onClick={async () => { if (window.confirm('List this item in the public shop?')) { await saveTx({ ...tx, status: 'for_sale' }); loadData(); } }}>🏪 List in Shop</button>
+          <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 List in Shop</button>
+        )}
+        {tx.status === 'for_sale' && isStaff && (
+          <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 Edit Listing</button>
         )}
         {tx.status === 'for_sale' && isStaff && (
           <button style={S.btn('outline')} onClick={async () => { if (window.confirm('Remove this item from the public shop?')) { await saveTx({ ...tx, status: 'active', listedForSaleDate: null }); loadData(); } }}>✕ Unlist</button>
@@ -3868,7 +4011,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -5216,15 +5359,6 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Parts-Only Advance (₦)<InfoIcon tip="The maximum loan amount for items that don't power on (parts/scrap only). These items are worth less, so the cap is lower." /></span>}>
                 <input style={S.input} type="number" min="0" value={es.maxPartsOnlyAdvance ?? DEFAULT_SETTINGS.maxPartsOnlyAdvance} onChange={e => updateSettings({ ...es, maxPartsOnlyAdvance: Number(e.target.value) })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Price Auto-Drop<InfoIcon tip="When enabled, the transaction detail will suggest a lower sale price every X days, linearly stepping down from the target price to the minimum price over the target sell deadline. Staff must manually apply the drop." /></span>}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={es.priceDropEnabled ?? DEFAULT_SETTINGS.priceDropEnabled} onChange={e => updateSettings({ ...es, priceDropEnabled: e.target.checked })} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
-                  <span style={{ fontSize: '14px', fontWeight: 600 }}>Enable price auto-drop suggestions</span>
-                </label>
-              </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Price Drop Interval (days)<InfoIcon tip="When price auto-drop is enabled, the suggested price decreases by an equal step every this many days, from the target price down to the floor price over the target sell deadline." /></span>}>
-                <input style={S.input} type="number" min="1" max="30" value={es.priceDropIntervalDays ?? DEFAULT_SETTINGS.priceDropIntervalDays} onChange={e => updateSettings({ ...es, priceDropIntervalDays: Number(e.target.value) })} />
-              </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Show Sold History in Shop<InfoIcon tip="Whether to display a 'Recently Sold' section on the public shop page, showing past sold items and their prices as social proof." /></span>}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px', cursor: 'pointer' }}>
                   <input type="checkbox" checked={es.shopShowSoldHistory ?? DEFAULT_SETTINGS.shopShowSoldHistory} onChange={e => updateSettings({ ...es, shopShowSoldHistory: e.target.checked })} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
@@ -5841,6 +5975,7 @@ export default function App() {
 
       <ExpModal /><CapModal /><DistModal /><DecModal /><DeclineDraftModal /><UsrModal /><EditUserModal /><SettingsPwdModal />
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); }} />}</Modal>
+      <Modal open={!!shopListingTx} onClose={() => setShopListingTx(null)} title={shopListingTx?.status === 'for_sale' ? '🏪 Edit Shop Listing' : '🏪 List Item in Shop'} wide>{shopListingTx && <ShopListingModal tx={shopListingTx} settings={settings} onClose={() => setShopListingTx(null)} onSave={async (tx) => { await saveTx(tx); loadData(); setShopListingTx(null); }} />}</Modal>
       <style>{`
         input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}
         ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}
