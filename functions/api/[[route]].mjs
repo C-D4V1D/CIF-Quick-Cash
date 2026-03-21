@@ -1005,10 +1005,12 @@ export async function onRequest(context) {
           // itemNewPrice: explicitly set by staff during listing.
           // Falls back to aiNewMarketPrice from AI Run 3 valuation if not set.
           itemNewPrice: d.itemNewPrice > 0 ? d.itemNewPrice : (Number(d.aiNewMarketPrice) > 0 ? Number(d.aiNewMarketPrice) : null),
-          estimatedValue: d.estimatedValue || 0,
+          estimatedValue: d.estimatedValue || d.aiEstimatedValue || 0,
           photos,
           photoFront: photos[0] || null,
-          listedDate: d.listedForSaleDate || null,
+          // For legacy transactions with object-format itemPhotos, expose powerOn photo as fallback thumbnail
+          photoPowerOn: (!Array.isArray(d.itemPhotos) && d.itemPhotos?.powerOn) ? d.itemPhotos.powerOn : null,
+          listedDate: d.listedForSaleDate || d.updated_at || d.created_at || null,
           shopNote: d.shopListingNote || '',
           inspectionNotes: d.inspectionNotes || '',
           // Device identifiers — shown publicly to help buyers verify authenticity
