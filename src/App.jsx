@@ -333,6 +333,8 @@ const DEFAULT_SETTINGS = {
   // Overdue & Penalty Rules
   autoForfeitDays: 0,
   overdueContactReminderDays: 2,
+  dueDateFollowUpDays: [1, 0],
+  ownershipFollowUpDays: [3, 0],
   penaltyRateMultiplier: 1.5,
   // Security
   sessionTimeoutMinutes: 480,
@@ -357,8 +359,8 @@ const PAGE_PATHS = {
   dashboard: '/dashboard',
   newTransaction: '/transactions/new',
   transactions: '/transactions',
-  active: '/loans/active',
-  deadlines: '/alerts',
+  actionLoans: '/recovery-queue',
+  deadlines: '/daily-follow-ups',
   forSale: '/for-sale',
   reports: '/reports',
   capital: '/capital',
@@ -369,7 +371,13 @@ const PAGE_PATHS = {
   activity: '/activity',
 };
 
-const PAGE_FROM_PATH = Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]) => [v, k]));
+const PAGE_FROM_PATH = {
+  ...Object.fromEntries(Object.entries(PAGE_PATHS).map(([k, v]) => [v, k])),
+  '/alerts': 'actionLoans',
+  '/action-loans': 'actionLoans',
+  '/follow-ups': 'deadlines',
+  '/loans/active': 'transactions',
+};
 const txDetailPath = (ref) => `/transactions/${encodeURIComponent(ref)}`;
 const txRepayPath = (ref) => `/transactions/${encodeURIComponent(ref)}/collect`;
 const txSellPath  = (ref) => `/transactions/${encodeURIComponent(ref)}/sell`;
@@ -4299,6 +4307,28 @@ const OUTCOME_COLORS = {
   other:              '#6b7280',
 };
 
+const SUCCESSFUL_CONTACT_OUTCOMES = new Set(['answered_promises', 'answered_refuses', 'answered_disputed', 'in_person', 'partial_payment']);
+
+const normalizeReminderDays = (value, fallback = []) => {
+  const source = Array.isArray(value)
+    ? value
+    : String(value ?? '')
+        .split(',')
+        .map(v => v.trim())
+        .filter(Boolean);
+  const parsed = source
+    .map(v => Number(v))
+    .filter(v => Number.isFinite(v) && v >= 0);
+  const unique = Array.from(new Set(parsed)).sort((a, b) => a - b);
+  return unique.length ? unique : fallback;
+};
+
+const formatReminderDays = (value, fallback = []) => normalizeReminderDays(value, fallback).join(', ');
+
+const isSuccessfulContactEntry = (entry) => SUCCESSFUL_CONTACT_OUTCOMES.has(entry?.result);
+
+const hasSuccessfulContactToday = (tx) => (tx?.contactLog || []).some(entry => entry?.date === localISODate() && isSuccessfulContactEntry(entry));
+
 function ContactLogModal({ tx, onClose, onSave, currentUser }) {
   const [date, setDate] = useState(localISODate());
   const [time, setTime] = useState(() => {
@@ -4552,6 +4582,8 @@ export default function App() {
   const inGracePeriod = activeTxs.filter(t => t.isInFinalGrace);
   // readyToSell = timeline-eligible actives + explicitly surrendered items
   const readyToSell = [...activeTxs.filter(t => t.isEligibleForSale), ...surrenderedTxs];
+  const dueTodayLoans = activeTxs.filter(t => getCustomerDaysLeft(t) === 0);
+  const overdueLoans = activeTxs.filter(t => { const dl = getCustomerDaysLeft(t); return dl !== null && dl < 0; });
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
@@ -4684,8 +4716,8 @@ export default function App() {
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: PAGE_PATHS.dashboard, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'newTx', label: 'New Transaction', icon: '➕', path: PAGE_PATHS.newTransaction, roles: ['staff', 'admin'] },
     { id: 'transactions', label: 'All Transactions', icon: '📋', path: PAGE_PATHS.transactions, roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'active', label: 'Active Loans', icon: '⏳', path: PAGE_PATHS.active, roles: ['staff', 'admin', 'stakeholder'] },
-    { id: 'deadlines', label: 'Deadlines & Alerts', icon: '🔔', path: PAGE_PATHS.deadlines, roles: ['staff', 'admin'] },
+    { id: 'actionLoans', label: 'Recovery Queue', icon: '🚨', path: PAGE_PATHS.actionLoans, roles: ['staff', 'admin'] },
+    { id: 'deadlines', label: 'Daily Follow-ups', icon: '📞', path: PAGE_PATHS.deadlines, roles: ['staff', 'admin'] },
     { id: 'forSale', label: 'For Sale', icon: '🏷', path: PAGE_PATHS.forSale, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'reports', label: 'Monthly Report', icon: '📈', path: PAGE_PATHS.reports, roles: ['admin', 'stakeholder'] },
     { id: 'capital', label: 'Capital & Profits', icon: '💎', path: PAGE_PATHS.capital, roles: ['admin', 'stakeholder'] },
@@ -5058,8 +5090,9 @@ export default function App() {
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money the business has ever earned — from daily fees, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
           <div style={{ ...S.stat, background: inGracePeriod.length > 0 ? '#f3e8ff' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>In Grace Period<InfoIcon tip="Customers who are overdue but we haven't listed their item for sale yet. We're giving them a little more time." /></div><div style={{ ...S.statValue, color: inGracePeriod.length > 0 ? '#7c3aed' : COLORS.primary }}>{inGracePeriod.length}</div></div>
           <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Ready to Sell<InfoIcon tip="Items where the customer ran out of time. We can now sell these to get our money back." /></div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
-          {(() => { const overdueLoans = activeTxs.filter(t => { const dl = getCustomerDaysLeft(t); return dl !== null && dl < 0; }); const overdueCapital = overdueLoans.reduce((s, t) => s + (t.cashAdvance || 0), 0); return overdueLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef2f2' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Overdue Capital<InfoIcon tip="Total cash advanced for loans where the customer has passed their agreed return date. This capital needs urgent recovery." /></div><div style={{ ...S.statValue, color: '#dc2626' }}>{fmtMoney(overdueCapital)}</div><div style={{ fontSize: '11px', color: '#991b1b', marginTop: '2px' }}>{overdueLoans.length} loan{overdueLoans.length !== 1 ? 's' : ''} overdue</div></div>) : null; })()}
-          {(() => { const dueTodayLoans = activeTxs.filter(t => getCustomerDaysLeft(t) === 0); return dueTodayLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef3c7' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Due Today<InfoIcon tip="Loans where the customer agreed to return today. Follow up to ensure they come in." /></div><div style={{ ...S.statValue, color: '#92400e' }}>{dueTodayLoans.length}</div></div>) : null; })()}
+          <div style={{ ...S.stat, background: forSaleTxs.length > 0 ? '#ede9fe' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Listed for Sale<InfoIcon tip="Items already moved into listed inventory so the team can focus on selling them and recovering capital." /></div><div style={{ ...S.statValue, color: forSaleTxs.length > 0 ? '#6d28d9' : COLORS.primary }}>{forSaleTxs.length}</div></div>
+          {(() => { const overdueCapital = overdueLoans.reduce((s, t) => s + (t.cashAdvance || 0), 0); return overdueLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef2f2' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Overdue Capital<InfoIcon tip="Total cash advanced for loans where the customer has passed their agreed return date. This capital needs urgent recovery." /></div><div style={{ ...S.statValue, color: '#dc2626' }}>{fmtMoney(overdueCapital)}</div><div style={{ fontSize: '11px', color: '#991b1b', marginTop: '2px' }}>{overdueLoans.length} loan{overdueLoans.length !== 1 ? 's' : ''} overdue</div></div>) : null; })()}
+          {dueTodayLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef3c7' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Due Today<InfoIcon tip="Loans where the customer agreed to return today. Follow up to ensure they come in." /></div><div style={{ ...S.statValue, color: '#92400e' }}>{dueTodayLoans.length}</div></div>) : null}
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}><span>Recent Transactions</span><select value={recentTxCount} onChange={e => setRecentTxCount(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: '6px', border: `1.5px solid ${COLORS.border}`, fontSize: '12px', fontWeight: 600, color: COLORS.primaryDark, background: '#fff', cursor: 'pointer' }}>{[3, 5, 10, 15, 20].map(n => <option key={n} value={n}>Show {n}</option>)}</select></div><TxTable items={transactions.slice(0, recentTxCount)} /></div>
@@ -5169,16 +5202,13 @@ export default function App() {
         </div>);
       }
 
-      case 'active': return (<div>{listLoadingNotice}<h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>⏳ Active Loans</h2><div style={S.card}><TxTable items={activeTxs.sort((a, b) => new Date(a.deadlineDate) - new Date(b.deadlineDate))} /></div></div>);
-
-      case 'deadlines': {
+      case 'actionLoans': {
         // --- Helper: compute penalty / total owed for a loan ---
         const computeTotalOwed = (tx) => {
           const elapsed = daysBetween(tx.dateGiven);
           const dailyFee = Number(tx.dailyFee) || 0;
           const cashAdvance = Number(tx.cashAdvance) || 0;
           const maxLD = Math.max(1, Number(settings.maxLoanDays) || 30);
-          const gd = Math.max(0, Number(settings.graceDays) || 3);
           const penaltyMult = Number(settings.penaltyRateMultiplier) || 1.5;
           const normalDays = Math.min(elapsed, maxLD);
           const overdueDays = Math.max(0, elapsed - maxLD);
@@ -5212,72 +5242,49 @@ export default function App() {
           return `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
         };
 
-        // --- Filter categories ---
-        // Each loan must appear in exactly one group based on where it is in the timeline.
         const maxLD = Math.max(1, Number(settings.maxLoanDays) || 30);
         const gd = Math.max(0, Number(settings.graceDays) || 3);
 
-        // Ready to sell: past grace period entirely (elapsedDays >= maxLoanDays + graceDays + 1)
-        // (readyToSell is already computed above from activeTxs.filter(t => t.isEligibleForSale))
-
-        // Grace period last day: elapsedDays === maxLoanDays + graceDays
         const graceLastDay = activeTxs.filter(t => {
           const elapsed = daysBetween(t.dateGiven);
           return elapsed === maxLD + gd && !t.isEligibleForSale;
         });
 
-        // Grace period (excluding last day): elapsedDays >= maxLoanDays + 1 AND < maxLoanDays + graceDays
         const inGrace = activeTxs.filter(t => {
           const elapsed = daysBetween(t.dateGiven);
           return elapsed >= maxLD + 1 && elapsed < maxLD + gd;
         });
 
-        // Internal deadline day (last day of ownership): elapsedDays === maxLoanDays exactly
         const lastDayOwnership = activeTxs.filter(t => {
           const elapsed = daysBetween(t.dateGiven);
           return elapsed === maxLD;
         });
 
-        // Overdue: customer missed agreed return date but business doesn't own item yet
-        // (between customer_due_date and internal deadline)
         const overdue = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
           const elapsed = daysBetween(t.dateGiven);
           return daysLeft !== null && daysLeft < 0 && elapsed < maxLD;
         });
 
-        // Due today: customer agreed to return today
         const dueToday = activeTxs.filter(t => {
           const daysLeft = getCustomerDaysLeft(t);
-          return daysLeft !== null && daysLeft === 0;
+          const elapsed = daysBetween(t.dateGiven);
+          return daysLeft !== null && daysLeft === 0 && elapsed !== maxLD;
         });
 
-        // 7 days or less
-        const upcoming7 = activeTxs.filter(t => {
-          const daysLeft = getCustomerDaysLeft(t);
-          return daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
-        });
+        const dedupeByRef = (items) => Array.from(new Map(items.map(tx => [tx.ref, tx])).values());
+        const allActionLoans = dedupeByRef([...forSaleTxs, ...readyToSell, ...graceLastDay, ...inGrace, ...lastDayOwnership, ...overdue, ...dueToday]);
+        const totalAtRisk = allActionLoans.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const customerFollowUps = overdue.length + dueToday.length + graceLastDay.length + lastDayOwnership.length;
 
-        // 8–14 days
-        const upcoming14 = activeTxs.filter(t => {
-          const daysLeft = getCustomerDaysLeft(t);
-          return daysLeft !== null && daysLeft > 7 && daysLeft <= 14;
-        });
-
-        // --- Summary stats ---
-        const allCritical = [...readyToSell, ...graceLastDay, ...inGrace, ...lastDayOwnership, ...overdue, ...dueToday];
-        const totalAlerts = allCritical.length + upcoming7.length + upcoming14.length;
-        const totalAtRisk = allCritical.reduce((s, t) => s + (t.cashAdvance || 0), 0);
-
-        // --- Enhanced AlertGroup component ---
         const AlertGroup = ({ title, items, color, icon, infoTip, templateType, defaultExpanded }) => {
           const [expanded, setExpanded] = useState(defaultExpanded !== false);
-          const [sortBy, setSortBy] = useState('deadline'); // deadline | amount | days
+          const [sortBy, setSortBy] = useState('deadline');
           if (items.length === 0) return null;
           const sorted = [...items].sort((a, b) => {
             if (sortBy === 'amount') return (b.cashAdvance || 0) - (a.cashAdvance || 0);
             if (sortBy === 'days') return daysBetween(b.dateGiven) - daysBetween(a.dateGiven);
-            return new Date(a.deadlineDate || a.customer_due_date || 0) - new Date(b.deadlineDate || b.customer_due_date || 0);
+            return new Date(a.deadlineDate || a.customer_due_date || a.internal_deadline || 0) - new Date(b.deadlineDate || b.customer_due_date || b.internal_deadline || 0);
           });
           const groupTotal = items.reduce((s, t) => s + (t.cashAdvance || 0), 0);
           return (
@@ -5313,7 +5320,7 @@ export default function App() {
                               {tx.aiBrand} {tx.aiModel} — Advanced: {fmtMoney(tx.cashAdvance)}
                             </div>
                             <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
-                              Phone: {tx.phoneNumbers?.[0] || 'N/A'} | Deadline: {fmtDate(tx.deadlineDate || tx.customer_due_date)}
+                              Phone: {tx.phoneNumbers?.[0] || 'N/A'} | Due: {fmtDate(tx.deadlineDate || tx.customer_due_date)}
                               {customerDaysLeft !== null && customerDaysLeft < 0 && (
                                 <span style={{ color: '#dc2626', fontWeight: 700 }}> ({Math.abs(customerDaysLeft)} day{Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue)</span>
                               )}
@@ -5323,6 +5330,9 @@ export default function App() {
                               {customerDaysLeft !== null && customerDaysLeft > 0 && (
                                 <span style={{ color: '#f59e0b', fontWeight: 600 }}> ({customerDaysLeft} day{customerDaysLeft !== 1 ? 's' : ''} left)</span>
                               )}
+                            </div>
+                            <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
+                              Ownership date: {fmtDate(tx.internal_deadline || addDays(tx.dateGiven, maxLD))}
                             </div>
                             {owed.penaltyFees > 0 && (
                               <div style={{ fontSize: '12px', marginTop: '4px', padding: '4px 8px', background: '#fef2f2', borderRadius: '4px', display: 'inline-block' }}>
@@ -5342,8 +5352,9 @@ export default function App() {
                                 Call
                               </a>
                             )}
+                            {tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>Log Contact</button>}
                             <button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>
-                            <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>
+                            {tx.status === 'active' && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}
                           </div>
                         </div>
                       </div>
@@ -5358,55 +5369,227 @@ export default function App() {
         return (
           <div>
             {listLoadingNotice}
-            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '8px', color: COLORS.primaryDark }}>🔔 Deadlines & Alerts</h2>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '8px', color: COLORS.primaryDark }}>🚨 Recovery Queue</h2>
             <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px', lineHeight: '1.5' }}>
-              This page shows every active loan that needs your attention, sorted by urgency from most critical at the top.
-              Use it to know who to call, who to follow up with, and which items are ready to sell.
-              The WhatsApp and Call buttons let you contact customers directly.
+              This page is the capital-recovery queue for staff. It shows every loan or item that needs action to recover money, sorted from the most urgent sale and ownership states down to customer follow-ups due today.
             </p>
 
-            {/* Summary statistics bar */}
             <div style={{ ...S.grid3, marginBottom: '20px' }}>
-              <div style={{ ...S.stat, background: totalAlerts > 0 ? '#fef3c7' : COLORS.primaryLight }}>
-                <div style={S.statLabel}>Total Alerts</div>
-                <div style={{ ...S.statValue, color: totalAlerts > 0 ? '#92400e' : COLORS.primary }}>{totalAlerts}</div>
+              <div style={{ ...S.stat, background: allActionLoans.length > 0 ? '#fef3c7' : COLORS.primaryLight }}>
+                <div style={S.statLabel}>Recovery Queue</div>
+                <div style={{ ...S.statValue, color: allActionLoans.length > 0 ? '#92400e' : COLORS.primary }}>{allActionLoans.length}</div>
               </div>
               <div style={{ ...S.stat, background: totalAtRisk > 0 ? '#fee2e2' : COLORS.primaryLight }}>
-                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital at Risk<InfoIcon tip="Total cash we gave out for all loans on this page that are due today, overdue, at the ownership deadline, in grace, or ready to sell. This is money we need to recover." /></div>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital at Risk<InfoIcon tip="Total cash tied up in every loan or item on this recovery queue, including sale-ready and listed inventory." /></div>
                 <div style={{ ...S.statValue, color: totalAtRisk > 0 ? '#dc2626' : COLORS.primary }}>{fmtMoney(totalAtRisk)}</div>
               </div>
               <div style={S.stat}>
-                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Needs Action<InfoIcon tip="Loans that need immediate action today — items ready to sell plus loans due today." /></div>
-                <div style={{ ...S.statValue, color: (readyToSell.length + dueToday.length) > 0 ? '#dc2626' : COLORS.primary }}>{readyToSell.length + dueToday.length}</div>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Customer Follow-Up Now<InfoIcon tip="Loans on this page that still need the team to actively reach out to the customer today." /></div>
+                <div style={{ ...S.statValue, color: customerFollowUps > 0 ? '#dc2626' : COLORS.primary }}>{customerFollowUps}</div>
               </div>
             </div>
 
+            <AlertGroup title="LISTED FOR SALE" items={forSaleTxs} color="#6d28d9" icon="🏷️" templateType="overdue" defaultExpanded={true}
+              infoTip="Items already listed for sale. Keep pushing them until they are sold and the capital is recovered." />
+
             <AlertGroup title="READY TO SELL" items={readyToSell} color="#1e1e1e" icon="🏷" templateType="overdue" defaultExpanded={true}
-              infoTip="These items have passed the final grace period. We can now sell them to get back the money we gave out." />
+              infoTip="Items that have passed the final grace period and can now be sold." />
 
             <AlertGroup title="GRACE PERIOD — LAST DAY" items={graceLastDay} color="#dc2626" icon="🔴" templateType="overdue" defaultExpanded={true}
-              infoTip="This is the very last day of the grace period for these loans. After today, their items become eligible for sale. Last chance to call them!" />
+              infoTip="The final day before an item becomes ready to sell. This is the last urgent recovery call window." />
 
             <AlertGroup title="GRACE PERIOD" items={inGrace} color="#7c3aed" icon="⏰" templateType="overdue" defaultExpanded={true}
-              infoTip="We now own these items but we're giving the customer a few extra days before selling. Call them urgently — once the grace period ends we can start selling." />
+              infoTip="Loans already inside the business-owned grace window. Staff should follow up and prepare for sale if no payment comes in." />
 
             <AlertGroup title="LAST DAY OF OWNERSHIP" items={lastDayOwnership} color="#b91c1c" icon="🚨" templateType="overdue" defaultExpanded={true}
-              infoTip="Today is the internal deadline — the business takes full ownership of these items today. After today they enter the grace period. Call these customers now!" />
+              infoTip="Today is the internal ownership deadline. These are high priority because the business takes ownership today." />
 
             <AlertGroup title="OVERDUE" items={overdue} color="#f59e0b" icon="⚠️" templateType="overdue" defaultExpanded={true}
-              infoTip="These customers missed the date they agreed to come back, but we haven't reached the internal deadline yet so we don't own the item. Contact them to come pay." />
+              infoTip="Customers missed their agreed due date and still need urgent recovery follow-up." />
 
             <AlertGroup title="DUE TODAY" items={dueToday} color="#ef4444" icon="📍" templateType="reminder" defaultExpanded={true}
-              infoTip="These customers agreed to come in and pay today. Follow up to make sure they show up." />
+              infoTip="Customers scheduled to return today. Reach out before these loans become overdue." />
 
-            <AlertGroup title="7 DAYS OR LESS" items={upcoming7} color="#ea580c" icon="📅" templateType="reminder" defaultExpanded={true}
-              infoTip="These customers have 7 days or less before their agreed return date. Start calling them now so they don't forget." />
+            {allActionLoans.length === 0 && (
+              <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! No capital-recovery actions are pending right now.</p></div>
+            )}
+          </div>
+        );
+      }
 
-            <AlertGroup title="8–14 DAYS" items={upcoming14} color="#3b82f6" icon="📋" templateType="reminder" defaultExpanded={false}
-              infoTip="These customers have 8 to 14 days left. Good time to send an early reminder." />
+      case 'deadlines': {
+        const maxLD = Math.max(1, Number(settings.maxLoanDays) || 30);
+        const dueDateRules = normalizeReminderDays(settings.dueDateFollowUpDays, DEFAULT_SETTINGS.dueDateFollowUpDays);
+        const ownershipRules = normalizeReminderDays(settings.ownershipFollowUpDays, DEFAULT_SETTINGS.ownershipFollowUpDays);
+        const overdueCadence = Math.max(0, Number(settings.overdueContactReminderDays) || 0);
 
-            {totalAlerts === 0 && (
-              <div style={S.card}><p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! No alerts or upcoming deadlines.</p></div>
+        const buildFollowUpTriggers = (tx) => {
+          const triggers = [];
+          const customerDaysLeft = getCustomerDaysLeft(tx);
+          const elapsed = daysBetween(tx.dateGiven);
+          const ownershipDaysLeft = Math.max(0, maxLD - elapsed);
+          const overdueDays = customerDaysLeft !== null && customerDaysLeft < 0 ? Math.abs(customerDaysLeft) : 0;
+
+          dueDateRules.forEach(days => {
+            if (customerDaysLeft === days) {
+              triggers.push({
+                key: `due-${days}`,
+                priority: days === 0 ? 70 : 90 + days,
+                label: days === 0 ? 'Due date is today' : `${days} day${days !== 1 ? 's' : ''} before due date`,
+                type: days === 0 ? 'due_today' : 'due_upcoming',
+                color: days === 0 ? '#ef4444' : '#f59e0b',
+              });
+            }
+          });
+
+          ownershipRules.forEach(days => {
+            if (ownershipDaysLeft === days) {
+              triggers.push({
+                key: `ownership-${days}`,
+                priority: days === 0 ? 40 : 60 + days,
+                label: days === 0 ? 'Last day of ownership is today' : `${days} day${days !== 1 ? 's' : ''} before last day of ownership`,
+                type: days === 0 ? 'ownership_today' : 'ownership_upcoming',
+                color: days === 0 ? '#b91c1c' : '#dc2626',
+              });
+            }
+          });
+
+          if (overdueCadence > 0 && overdueDays > 0 && overdueDays % overdueCadence === 0 && elapsed < maxLD) {
+            triggers.push({
+              key: `overdue-${overdueDays}`,
+              priority: 20,
+              label: `Overdue follow-up due (${overdueDays} day${overdueDays !== 1 ? 's' : ''} overdue)`,
+              type: 'overdue_followup',
+              color: '#f59e0b',
+            });
+          }
+
+          return triggers.sort((a, b) => a.priority - b.priority);
+        };
+
+        const followUpCandidates = activeTxs
+          .map(tx => ({ tx, triggers: buildFollowUpTriggers(tx), clearedToday: hasSuccessfulContactToday(tx) }))
+          .filter(item => item.triggers.length > 0);
+
+        const clearedToday = followUpCandidates.filter(item => item.clearedToday);
+        const pendingFollowUps = followUpCandidates.filter(item => !item.clearedToday).sort((a, b) => {
+          const p = (a.triggers[0]?.priority || 999) - (b.triggers[0]?.priority || 999);
+          if (p !== 0) return p;
+          return (b.tx.cashAdvance || 0) - (a.tx.cashAdvance || 0);
+        });
+        const pendingCapital = pendingFollowUps.reduce((s, item) => s + (item.tx.cashAdvance || 0), 0);
+        const overdueFollowUps = pendingFollowUps.filter(item => item.triggers.some(t => t.type === 'overdue_followup')).length;
+
+        const getFollowUpWhatsAppLink = (tx, triggers) => {
+          const phone = tx.phoneNumbers?.[0]?.replace(/\D/g, '') || '';
+          const waPhone = phone.startsWith('0') ? '234' + phone.slice(1) : phone;
+          if (!waPhone) return null;
+          const isReminder = triggers.every(t => t.type !== 'overdue_followup' && t.type !== 'ownership_today');
+          const template = isReminder
+            ? (settings.whatsappLoanReminder || DEFAULT_SETTINGS.whatsappLoanReminder)
+            : (settings.whatsappOverdueNotice || DEFAULT_SETTINGS.whatsappOverdueNotice);
+          const customerDaysLeft = getCustomerDaysLeft(tx);
+          const daysOverdue = customerDaysLeft !== null && customerDaysLeft < 0 ? Math.abs(customerDaysLeft) : 0;
+          const daysLeft = customerDaysLeft !== null && customerDaysLeft > 0 ? customerDaysLeft : 0;
+          const msg = template
+            .replace('{customerName}', tx.fullName || 'Customer')
+            .replace('{ref}', tx.ref)
+            .replace('{amount}', fmtMoney(tx.cashAdvance))
+            .replace('{daysLeft}', String(daysLeft))
+            .replace('{daysOverdue}', String(daysOverdue))
+            .replace('{shopPhone}', settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1)
+            .replace('{businessName}', settings.businessName || DEFAULT_SETTINGS.businessName);
+          return `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
+        };
+
+        return (
+          <div>
+            {listLoadingNotice}
+            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '8px', color: COLORS.primaryDark }}>📞 Daily Follow-ups</h2>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px', lineHeight: '1.5' }}>
+              This page is the daily follow-up queue. It only shows loans that match the admin-configured contact schedule for today, and a loan clears from this list once staff logs a successful contact attempt today.
+            </p>
+
+            <div style={{ ...S.grid4, marginBottom: '20px' }}>
+              <div style={{ ...S.stat, background: pendingFollowUps.length > 0 ? '#fef3c7' : COLORS.primaryLight }}>
+                <div style={S.statLabel}>Follow-Ups Due</div>
+                <div style={{ ...S.statValue, color: pendingFollowUps.length > 0 ? '#92400e' : COLORS.primary }}>{pendingFollowUps.length}</div>
+              </div>
+              <div style={{ ...S.stat, background: clearedToday.length > 0 ? '#dcfce7' : COLORS.primaryLight }}>
+                <div style={S.statLabel}>Cleared Today</div>
+                <div style={{ ...S.statValue, color: clearedToday.length > 0 ? '#166534' : COLORS.primary }}>{clearedToday.length}</div>
+              </div>
+              <div style={{ ...S.stat, background: pendingCapital > 0 ? '#fee2e2' : COLORS.primaryLight }}>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital in Today&apos;s Queue<InfoIcon tip="Cash tied to the loans that still require follow-up contact today." /></div>
+                <div style={{ ...S.statValue, color: pendingCapital > 0 ? '#dc2626' : COLORS.primary }}>{fmtMoney(pendingCapital)}</div>
+              </div>
+              <div style={S.stat}>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Overdue Follow-Ups<InfoIcon tip="How many of today&apos;s follow-ups are overdue reminder contacts based on the overdue cadence setting." /></div>
+                <div style={{ ...S.statValue, color: overdueFollowUps > 0 ? '#dc2626' : COLORS.primary }}>{overdueFollowUps}</div>
+              </div>
+            </div>
+
+            <div style={{ ...S.card, marginBottom: '16px' }}>
+              <div style={{ ...S.cardTitle, marginBottom: '8px' }}>Today&apos;s follow-up rules</div>
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '1.6' }}>
+                Due-date reminders: <strong>{formatReminderDays(dueDateRules, DEFAULT_SETTINGS.dueDateFollowUpDays) || 'Disabled'}</strong> day(s) before due date · Ownership reminders: <strong>{formatReminderDays(ownershipRules, DEFAULT_SETTINGS.ownershipFollowUpDays) || 'Disabled'}</strong> day(s) before last day of ownership · Overdue follow-up cadence: <strong>{overdueCadence > 0 ? `every ${overdueCadence} day(s)` : 'Disabled'}</strong>.
+              </div>
+            </div>
+
+            <div style={S.card}>
+              <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Follow-Up Queue</span>
+                <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{pendingFollowUps.length} pending</span>
+              </div>
+              {pendingFollowUps.length === 0 ? (
+                <p style={{ color: COLORS.textMuted, textAlign: 'center' }}>All clear! No customers are due for follow-up today.</p>
+              ) : pendingFollowUps.map(({ tx, triggers }) => {
+                const waLink = getFollowUpWhatsAppLink(tx, triggers);
+                const customerDaysLeft = getCustomerDaysLeft(tx);
+                return (
+                  <div key={tx.ref} style={{ padding: '12px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', flexWrap: 'wrap' }}>
+                      <div style={{ flex: 1, minWidth: '240px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <strong style={{ fontSize: '13px' }}>{tx.ref}</strong>
+                          <span style={{ fontSize: '13px' }}>{tx.fullName}</span>
+                        </div>
+                        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
+                          {tx.aiBrand} {tx.aiModel} — Advanced: {fmtMoney(tx.cashAdvance)} — Due: {fmtDate(tx.deadlineDate || tx.customer_due_date)}
+                          {customerDaysLeft !== null && customerDaysLeft < 0 && <span style={{ color: '#dc2626', fontWeight: 700 }}> ({Math.abs(customerDaysLeft)} day{Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue)</span>}
+                          {customerDaysLeft !== null && customerDaysLeft === 0 && <span style={{ color: '#dc2626', fontWeight: 700 }}> (Due today)</span>}
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+                          {triggers.map(trigger => (
+                            <span key={trigger.key} style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: '999px', background: `${trigger.color}15`, color: trigger.color, border: `1px solid ${trigger.color}33`, fontSize: '11px', fontWeight: 700 }}>
+                              {trigger.label}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        {waLink && <a href={waLink} target="_blank" rel="noopener noreferrer" style={{ ...S.btnSm('primary'), background: '#25D366', borderColor: '#25D366', color: '#fff', textDecoration: 'none' }}>WhatsApp</a>}
+                        {tx.phoneNumbers?.[0] && <a href={`tel:${tx.phoneNumbers[0]}`} style={{ ...S.btnSm('outline'), textDecoration: 'none' }}>Call</a>}
+                        <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>Log Successful Contact</button>
+                        <button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {clearedToday.length > 0 && (
+              <div style={{ ...S.card, marginTop: '16px' }}>
+                <div style={{ ...S.cardTitle, marginBottom: '8px' }}>Cleared from today&apos;s follow-up queue</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                  {clearedToday.map(({ tx }) => (
+                    <span key={tx.ref} style={{ display: 'inline-flex', alignItems: 'center', padding: '6px 10px', borderRadius: '999px', background: '#dcfce7', color: '#166534', fontSize: '12px', fontWeight: 700 }}>
+                      {tx.ref} — {tx.fullName}
+                    </span>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
         );
@@ -6537,7 +6720,13 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Penalty Rate Multiplier<InfoIcon tip="After the grace period expires, the daily fee is multiplied by this number. For example, 1.5x means a ₦100/day fee becomes ₦150/day for overdue loans. Set to 1 for no penalty." /></span>}>
                 <input style={S.input} type="number" step="0.1" min="1" max="5" value={es.penaltyRateMultiplier ?? DEFAULT_SETTINGS.penaltyRateMultiplier} onChange={e => updateSettings({ ...es, penaltyRateMultiplier: Number(e.target.value) })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Contact Reminder (days)<InfoIcon tip="How often (in days) the system should flag overdue loans for a follow-up contact attempt. Set to 0 to disable." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Follow-Up Days<InfoIcon tip="Comma-separated day offsets for when the Daily Follow-ups page should show a loan before its customer due date. Example: 3, 1, 0" /></span>}>
+                <input style={S.input} value={formatReminderDays(es.dueDateFollowUpDays, DEFAULT_SETTINGS.dueDateFollowUpDays)} onChange={e => updateSettings({ ...es, dueDateFollowUpDays: normalizeReminderDays(e.target.value, DEFAULT_SETTINGS.dueDateFollowUpDays) })} placeholder="e.g. 3, 1, 0" />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Follow-Up Days<InfoIcon tip="Comma-separated day offsets for reminders before the internal last day of ownership. Example: 3, 0 will show three days before ownership and again on the ownership day." /></span>}>
+                <input style={S.input} value={formatReminderDays(es.ownershipFollowUpDays, DEFAULT_SETTINGS.ownershipFollowUpDays)} onChange={e => updateSettings({ ...es, ownershipFollowUpDays: normalizeReminderDays(e.target.value, DEFAULT_SETTINGS.ownershipFollowUpDays) })} placeholder="e.g. 3, 0" />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Contact Reminder (days)<InfoIcon tip="How often (in days) the follow-up page should bring back overdue loans for another contact attempt. Set to 0 to disable overdue reminders." /></span>}>
                 <input style={S.input} type="number" min="0" max="30" value={es.overdueContactReminderDays ?? DEFAULT_SETTINGS.overdueContactReminderDays} onChange={e => updateSettings({ ...es, overdueContactReminderDays: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Auto-Forfeit Days<InfoIcon tip="Number of days after the grace period ends before the item is automatically marked as 'Ready to Sell'. Set to 0 to handle this manually (current behaviour)." /></span>}>
