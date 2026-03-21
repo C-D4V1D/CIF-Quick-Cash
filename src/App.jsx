@@ -4853,7 +4853,7 @@ export default function App() {
                 value={fsSearch}
                 onChange={e => setFsSearch(e.target.value)}
                 placeholder="Deep search — ref, customer, item, IMEI, serial, notes, price..."
-                style={{ flex: '1 1 240px', padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none', fontFamily: 'inherit' }}
+                style={{ flex: '1 1 240px', padding: '9px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none', fontFamily: 'inherit', background: '#fff', color: COLORS.text }}
               />
               <select value={fsFilter} onChange={e => setFsFilter(e.target.value)} style={{ padding: '9px 10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '13px', background: '#fff', cursor: 'pointer' }}>
                 <option value="all">All ({allSellable.length})</option>
