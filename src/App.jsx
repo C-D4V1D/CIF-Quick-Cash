@@ -5427,7 +5427,7 @@ export default function App() {
           const triggers = [];
           const customerDaysLeft = getCustomerDaysLeft(tx);
           const elapsed = daysBetween(tx.dateGiven);
-          const ownershipDaysLeft = Math.max(0, maxLD - elapsed);
+          const ownershipDaysLeft = maxLD - elapsed;
           const overdueDays = customerDaysLeft !== null && customerDaysLeft < 0 ? Math.abs(customerDaysLeft) : 0;
 
           dueDateRules.forEach(days => {
@@ -5443,7 +5443,7 @@ export default function App() {
           });
 
           ownershipRules.forEach(days => {
-            if (ownershipDaysLeft === days) {
+            if (ownershipDaysLeft >= 0 && ownershipDaysLeft === days) {
               triggers.push({
                 key: `ownership-${days}`,
                 priority: days === 0 ? 40 : 60 + days,
