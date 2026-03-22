@@ -309,7 +309,7 @@ const DEFAULT_SETTINGS = {
   interestRate: 1, loanCapNoReceipt: 40, loanCapWithReceipt: 50,
   graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
   // Sales Configuration
-  targetSellPct: 75, minSellBonus: 20, maxPartsOnlyAdvance: 5000,
+  targetSellPct: 75, minSellBonus: 20, outrightMinMarkupPct: 20, maxPartsOnlyAdvance: 5000,
   priceDropEnabled: false, priceDropIntervalDays: 3,
   shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
@@ -1694,9 +1694,17 @@ function SalesPage({ onBack, settings }) {
 // ============================================================
 function ShopListingModal({ tx, settings, onClose, onSave }) {
   // Stable price reference values (computed from props, not state)
+  const isOutright = tx.type === 'outright';
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
   const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
-  const minPrice = roundToNice((tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100));
+  const outrightMinMarkupPct = settings.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct;
+  const minPrice = isOutright
+    ? roundToNice(
+        Math.floor((tx.cashAdvance || 0) * (1 + outrightMinMarkupPct / 100))
+      )
+    : roundToNice(
+        (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100)
+      );
   const targetPrice = roundToNice(Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100));
   const listedPrice = Math.max(targetPrice, minPrice);
   const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
@@ -2007,7 +2015,14 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
           <span>Target: <strong style={{ color: '#1a5f2a' }}>{fmtMoney(listedPrice)}</strong></span>
-          <span>Min floor: <strong style={{ color: '#92400e' }}>{fmtMoney(minPrice)}</strong></span>
+          <span>
+            Min floor: <strong style={{ color: '#92400e' }}>{fmtMoney(minPrice)}</strong>
+            <span style={{ fontSize: '11px', color: COLORS.textMuted, marginLeft: '6px' }}>
+              {isOutright
+                ? `(cost + ${outrightMinMarkupPct}% markup)`
+                : `(advance + ${maxHoldDays}d fees + bonus)`}
+            </span>
+          </span>
           {tx.estimatedValue > 0 && <span>Est. resale value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
         </div>
         {itemNewPrice > 0 && salePrice > 0 && itemNewPrice > salePrice && (
@@ -7070,6 +7085,21 @@ export default function App() {
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Minimum Sell Bonus (%)<InfoIcon tip="The minimum profit margin above the loan amount + fees. Ensures we don't sell at a loss even if the target price is low." /></span>}>
                 <input style={S.input} type="number" min="0" max="100" value={es.minSellBonus ?? DEFAULT_SETTINGS.minSellBonus} onChange={e => updateSettings({ ...es, minSellBonus: Number(e.target.value) })} />
+              </Field>
+              <Field label={
+                <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                  Outright Purchase Min Markup (%)
+                  <InfoIcon tip="The minimum profit margin above what you paid for an outright purchase. Example: you paid ₦50,000 for an item, at 20% markup the minimum sale price is ₦60,000. This protects you from ever selling at a loss." />
+                </span>
+              }>
+                <input
+                  style={S.input}
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={es.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct}
+                  onChange={e => updateSettings({ ...es, outrightMinMarkupPct: Number(e.target.value) })}
+                />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Parts-Only Advance (₦)<InfoIcon tip="The maximum loan amount for items that don't power on (parts/scrap only). These items are worth less, so the cap is lower." /></span>}>
                 <input style={S.input} type="number" min="0" value={es.maxPartsOnlyAdvance ?? DEFAULT_SETTINGS.maxPartsOnlyAdvance} onChange={e => updateSettings({ ...es, maxPartsOnlyAdvance: Number(e.target.value) })} />
