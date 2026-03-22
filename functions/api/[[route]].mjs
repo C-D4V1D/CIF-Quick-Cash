@@ -416,10 +416,8 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'bootstrap' && method === 'GET') {
       const scope = url.searchParams.get('scope') || 'critical';
-      const auth = scope !== 'critical' ? requireAuth(request) : null;
-      if (scope !== 'critical') {
-        if (auth.error) return auth.error;
-      }
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const isAdmin = auth?.user?.role === 'admin';
 
       if (scope === 'secondary') {
@@ -632,8 +630,11 @@ export async function onRequest(context) {
         }
       }
 
+      if (existing) {
+        return error('Transaction already exists; use PUT /transactions/{ref} to update it.', 409);
+      }
       await db
-        .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, status = excluded.status, updated_at = datetime('now')")
+        .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now'))")
         .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
         .run();
       let txAction, txDesc;

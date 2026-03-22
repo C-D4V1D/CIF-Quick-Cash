@@ -3752,7 +3752,15 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
       case 'nin': return settings.requireNinVerification ? (tx.ninVerified && !!tx.ninPhoto) : tx.ninVerificationAttempted;
       case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.familyName && tx.familyPhone && (tx.phonesVerified[0] || tx.phonesVerified[1]));
       case 'custPhotos': return !!tx.photoCustomerHolding;
-      case 'screening': return tx.screeningPurchaseLocation !== 'Other' || !!tx.screeningPurchaseLocationOther;
+      case 'screening': {
+        if (!tx.screeningDuration) return false;
+        if (tx.screeningDuration === 'Other' && !tx.screeningDurationOther) return false;
+        if (!tx.screeningPurchaseLocation) return false;
+        if (tx.screeningPurchaseLocation === 'Other' && !tx.screeningPurchaseLocationOther) return false;
+        if (!tx.screeningRegistered) return false;
+        if (!tx.screeningOthersUsing) return false;
+        return true;
+      }
       case 'itemPhotos': {
         const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
         const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
@@ -3894,7 +3902,8 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
 
   const handleComplete = async () => {
     const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
-    await API.post('transactions', finalTx);
+    const saved = await API.post('transactions', finalTx);
+    if (!saved?.success) return;
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
     onSave(finalTx);
   };
@@ -4384,8 +4393,578 @@ function ContactLogModal({ tx, onClose, onSave, currentUser }) {
 }
 
 // ============================================================
+// TXDETAIL — defined outside App so React never remounts it
+// when unrelated App state changes, which would cause flicker.
+// ============================================================
+function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggingContactTx, saveTx, loadData, setShopListingTx }) {
+  const navigate = useNavigate();
+  const timeline = tx.type === 'advance' ? getLoanTimeline(tx, settings) : null;
+  const customerDaysLeft = tx.type === 'advance' ? getCustomerDaysLeft(tx) : null;
+  const dailyInterest = tx.cashAdvance ? Math.floor((tx.cashAdvance * (settings.interestRate || 1)) / 100) : 0;
+  const daysOut = timeline ? timeline.elapsedDays : 0;
+  const amountDueToday = tx.cashAdvance ? tx.cashAdvance + daysOut * dailyInterest : 0;
+  const row = (label, value, color) => (value !== null && value !== undefined && value !== '') ? (
+    <div style={{ display: 'grid', gridTemplateColumns: '165px 1fr', gap: '8px', padding: '6px 0', borderBottom: `1px solid ${COLORS.border}`, fontSize: '13px', alignItems: 'start' }}>
+      <div style={{ fontWeight: 600, color: COLORS.textMuted, fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.3px', paddingTop: '2px' }}>{label}</div>
+      <div style={{ color: color || COLORS.text }}>{value}</div>
+    </div>
+  ) : null;
+  return (<div>
+    {/* ── Header ── */}
+    <div style={{ marginBottom: '20px' }}>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+        <span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span>
+        <span style={S.badge('#6b7280')}>{tx.type === 'outright' ? '📦 Outright Purchase' : '💳 Cash Advance'}</span>
+        <span style={{ ...S.badge(COLORS.primary), letterSpacing: '0.5px' }}>Ref: {tx.ref}</span>
+      </div>
+      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '12px', color: COLORS.textMuted, lineHeight: 1.9 }}>
+        {tx.created_at && <span>🕐 Created: <strong style={{ color: COLORS.text }}>{new Date(tx.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong></span>}
+        <span>📅 Date Given: <strong style={{ color: COLORS.text }}>{fmtDate(tx.dateGiven)}</strong></span>
+        {tx.type === 'advance' && tx.deadlineDate && <span>⏰ Agreed Return: <strong style={{ color: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text }}>{fmtDate(tx.deadlineDate)}</strong></span>}
+        <span>👤 By: <strong style={{ color: COLORS.text }}>{tx.completedBy || tx.createdBy || 'Unknown'}</strong></span>
+      </div>
+    </div>
+
+    {/* ── Customer & Item ── */}
+    <div style={S.grid2}>
+      <div style={S.card}>
+        <div style={S.cardTitle}>👤 Customer</div>
+        {row('Full Name', <strong>{tx.fullName}</strong>)}
+        {row('Address', tx.address)}
+        {row('Phone(s)', tx.phoneNumbers?.filter(Boolean).join(', '))}
+        {tx.familyName && row('Emergency Contact', `${tx.familyName} (${tx.familyRelation || 'N/A'}) — ${tx.familyPhone || ''}`)}
+        {row('ID Type', tx.idType?.toUpperCase())}
+        {row('ID Number', tx.idNumber)}
+        {row('NIN Verification', tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠️ Attempted (placeholder data)' : '❌ Not attempted')}
+        {row('Processed By', tx.completedBy || tx.createdBy)}
+      </div>
+      <div style={S.card}>
+        <div style={S.cardTitle}>📦 Item</div>
+        {tx.captureItemType && row('Category', <>{tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
+        {row('Identified As', [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' '))}
+        {row('Colour', tx.aiColour)}
+        {tx.aiKeySpecs && row('Key Specs', tx.aiKeySpecs)}
+        {tx.aiConfidence && row('AI Confidence', tx.aiConfidence)}
+        {row('Condition', tx.aiCondition)}
+        {tx.imei && row('IMEI', <>{tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: tx.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
+        {tx.serialNumber && row('Serial No.', tx.serialNumber)}
+        {tx.inspectionNotes && row('Inspection Result', tx.inspectionNotes)}
+        {tx.hasReceipt != null && row('Receipt', tx.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
+        {tx.aiPriceBasis && row('Price Basis', tx.aiPriceBasis)}
+        {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
+        {tx.aiPriceRangeLow && tx.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(tx.aiPriceRangeLow))} — ${fmtMoney(Number(tx.aiPriceRangeHigh))}`)}
+        {tx.aiValuationConfidence && row('Valuation Confidence', tx.aiValuationConfidence)}
+        {tx.aiVisionUsed && row('Cloud Vision', 'Used for identification')}
+      </div>
+    </div>
+
+    {/* ── Financial Summary ── */}
+    <div style={S.card}>
+      <div style={S.cardTitle}>💰 Financial Summary</div>
+      <div style={S.grid4}>
+        <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Estimated Value<InfoIcon tip="What the AI estimates this item would sell for second-hand. The max we can give is a percentage of this number." /></div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
+        <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Cash Advanced<InfoIcon tip="The cash we handed to the customer when they left the item with us." /></div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
+        {tx.type === 'advance' && <>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div></div>
+          <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
+            <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="The full amount the customer owes us today — the cash we gave them plus all the daily fees added up so far. It grows bigger every day." /></div>
+            <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
+          </div>
+        </>}
+      </div>
+      {tx.type === 'advance' && (
+        <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
+          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(settings.serviceFee) > 0 && <> · Service fee: <strong>{fmtMoney(settings.serviceFee)}</strong></>}
+        </div>
+      )}
+      {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
+      {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>{tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}</div>}
+    </div>
+
+    {/* ── Loan Timeline (advance only) ── */}
+    {tx.type === 'advance' && timeline && (
+      <div style={S.card}>
+        <div style={S.cardTitle}>📅 Loan Timeline</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '12px' }}>
+          {[
+            { label: 'Date Given', date: tx.dateGiven, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'The day we gave the customer money and the loan started.' },
+            { label: 'Agreed Return', date: tx.deadlineDate, bg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.dangerLight : COLORS.bg, fg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text, border: customerDaysLeft !== null && customerDaysLeft <= 0 ? '#f5c6cb' : COLORS.border, tip: 'The date the customer said they\'d come back to pay. Try to reach them before this date.' },
+            { label: 'Internal Deadline', date: timeline.internal_deadline, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'A private reminder date for staff — set earlier than the customer\'s return date. Start chasing the customer by this point.' },
+            { label: 'Grace Period Ends', date: timeline.grace_end_date, bg: '#f3e8ff', fg: '#7c3aed', border: '#d8b4fe', tip: 'The last day of the extra time after the internal deadline. After this, we can start selling the item.' },
+            { label: 'Sale Eligible From', date: timeline.sale_allowed_date, bg: '#f0fdf4', fg: '#166534', border: '#86efac', tip: 'From this date, if the customer still hasn\'t paid, we\'re allowed to sell their item to get our money back.' },
+          ].filter(item => item.date).map(({ label, date, bg, fg, border, tip }) => (
+            <div key={label} style={{ padding: '10px 12px', background: bg, borderRadius: '8px', border: `1px solid ${border}` }}>
+              <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px', display: 'flex', alignItems: 'center' }}>{label}<InfoIcon tip={tip} /></div>
+              <div style={{ fontSize: '13.5px', fontWeight: 700, color: fg }}>{fmtDate(date)}</div>
+              <div style={{ marginTop: '5px', display: 'inline-block', fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '20px', background: 'rgba(0,0,0,0.07)', color: fg === COLORS.text ? COLORS.textMuted : fg, letterSpacing: '0.2px' }}>{relativeDateLabel(date)}</div>
+            </div>
+          ))}
+        </div>
+        {customerDaysLeft !== null && (
+          <div style={{ padding: '10px 12px', background: customerDaysLeft < 0 ? COLORS.dangerLight : customerDaysLeft === 0 ? COLORS.dangerLight : customerDaysLeft <= 7 ? '#fef3c7' : COLORS.primaryLight, borderRadius: '8px', fontSize: '13px', color: customerDaysLeft <= 0 ? COLORS.danger : customerDaysLeft <= 7 ? '#92400e' : COLORS.primary, fontWeight: 600 }}>
+            {customerDaysLeft < 0 ? `⚠️ Customer is ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue on their agreed return date.` : customerDaysLeft === 0 ? '🔴 Customer return is due today.' : `⏰ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} remaining until customer's agreed return date.`}
+          </div>
+        )}
+      </div>
+    )}
+
+    {/* ── Screening & Notes ── */}
+    <div style={S.card}>
+      <div style={S.cardTitle}>🧾 Screening & Notes</div>
+      {row('Duration in Use', tx.screeningDuration ? (tx.screeningDuration === 'Other' ? `Other — ${tx.screeningDurationOther || 'unspecified'}` : tx.screeningDuration) : null)}
+      {row('Where Purchased', tx.screeningPurchaseLocation ? (tx.screeningPurchaseLocation === 'Other' ? `Other — ${tx.screeningPurchaseLocationOther || 'unspecified'}` : tx.screeningPurchaseLocationOther ? `${tx.screeningPurchaseLocation} (${tx.screeningPurchaseLocationOther})` : tx.screeningPurchaseLocation) : null)}
+      {row('Registered in Customer Name', tx.screeningRegistered)}
+      {row('Other Users on Device', tx.screeningOthersUsing)}
+      {row('Red Flag Detected', tx.screeningRedFlag ? '🚩 Yes — Review required' : '✅ None', tx.screeningRedFlag ? COLORS.danger : '#166534')}
+      {tx.notes && row('Staff Notes', tx.notes)}
+      {!tx.screeningDuration && !tx.screeningPurchaseLocation && !tx.screeningRegistered && !tx.screeningOthersUsing && !tx.notes && (
+        <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No screening data captured.</div>
+      )}
+    </div>
+
+    {/* ── Photos ── */}
+    <div style={S.card}>
+      <div style={S.cardTitle}>📸 Photos</div>
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        {[
+          tx.ninPhoto,
+          tx.photoCustomerHolding,
+          tx.photoCustomerID,
+          ...(normalizeItemPhotos(tx.itemPhotos)),
+          tx.imeiPhoto,
+          tx.serialNumberPhoto,
+          tx.receiptPhoto,
+          tx.photoSigning,
+          tx.photoSealedPkg,
+        ]
+          .filter(Boolean)
+          .map((p, i) => (
+            <button
+              key={i}
+              onClick={() => setZoomedPhoto(p)}
+              style={{
+                border: 'none',
+                padding: 0,
+                background: 'transparent',
+                cursor: 'zoom-in',
+                borderRadius: '8px',
+                overflow: 'hidden'
+              }}
+              title="Tap to view full image"
+            >
+              <img
+                src={p}
+                alt={`Transaction photo ${i + 1}`}
+                style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }}
+                onError={e => {
+                  e.currentTarget.onerror = null;
+                  e.currentTarget.style.background = '#fee2e2';
+                  e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E";
+                }}
+              />
+            </button>
+          ))}
+      </div>
+      <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
+    </div>
+
+    {/* ── Contact Log ── */}
+    <div style={S.card}>
+      <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>📋 Contact Log</span>
+        {tx.status === 'active' && isStaff && (
+          <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>+ Log Contact Attempt</button>
+        )}
+      </div>
+      {(tx.contactLog?.length > 0) ? (
+        <div>
+          {[...tx.contactLog].reverse().map((entry, i) => (
+            <div key={i} style={{ padding: '10px 0', borderBottom: i < tx.contactLog.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
+                <span style={{ ...S.badge(OUTCOME_COLORS[entry.result] || '#6b7280'), fontSize: '12px' }}>{CONTACT_OUTCOME_LABEL[entry.result] || entry.result}</span>
+                <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{entry.date} {entry.time}</span>
+              </div>
+              {entry.notes && <div style={{ fontSize: '13px', marginTop: '4px' }}>{entry.notes}</div>}
+              <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>Logged by {entry.loggedBy}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No contact attempts logged yet.{tx.status === 'active' && ' Use the button above to record a call attempt.'}</div>
+      )}
+    </div>
+
+    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' }}>
+      <button style={S.btn('outline')} onClick={() => navigate(-1)}>← Back</button>
+      {tx.status === 'active' && isStaff && (
+        <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
+      )}
+      {tx.status === 'active' && isStaff && (
+        <button style={S.btn('outline')} onClick={async () => {
+          const ok = window.confirm(
+            `⚠️ CUSTOMER EARLY SURRENDER\n\n` +
+            `This marks the item as voluntarily surrendered by the customer.\n\n` +
+            `What this means:\n` +
+            `• The customer is giving up their right to reclaim this item\n` +
+            `• They forfeit any claim even if their deadline has not yet passed\n` +
+            `• The item moves to "Ready to Sell" so it can be listed in the shop\n` +
+            `• This action CANNOT be undone\n\n` +
+            `Only do this if the customer has explicitly agreed and confirmed in person.\n\n` +
+            `Proceed with marking "${tx.aiBrand || ''} ${tx.aiModel || ''}" as surrendered?`
+          );
+          if (!ok) return;
+          await saveTx({ ...tx, status: 'ready_to_sell', surrenderDate: new Date().toISOString().slice(0, 10), surrenderedBy: currentUser?.name || currentUser?.email || 'Staff' });
+          loadData();
+        }}>🤝 Customer Surrenders Item</button>
+      )}
+      {(tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell' ? (
+        isStaff ? <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 List in Shop</button> : null
+      ) : null}
+      {tx.status === 'for_sale' && isStaff && (
+        <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 Edit Listing</button>
+      )}
+      {tx.status === 'for_sale' && isStaff && (
+        <button style={S.btn('outline')} onClick={async () => {
+          if (window.confirm('Remove this item from the public shop?\n\nIt will be removed from the public shop and moved back into sellable inventory so it can be re-listed at any time.')) {
+            const returnStatus = tx.surrenderDate ? 'ready_to_sell' : 'active';
+            await saveTx({ ...tx, status: returnStatus, listedForSaleDate: null });
+            loadData();
+          }
+        }}>✕ Unlist</button>
+      )}
+      {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell') && isStaff && (
+        <button style={S.btn('danger')} onClick={() => navigate(txSellPath(tx.ref))}>🏷 Record Sale</button>
+      )}
+    </div>
+  </div>);
+}
+
+// ============================================================
 // MAIN APPLICATION
 // ============================================================
+// --- Modal components lifted outside App so React never remounts them on re-renders (prevents input focus loss) ---
+
+function SettingsPwdModal({ showSettingsPwdModal, setShowSettingsPwdModal, settingsPwdInput, setSettingsPwdInput, settingsPwdError, setSettingsPwdError, settingsPwdLoading, setSettingsPwdLoading, pendingSettings, setPendingSettings, saveSettings }) {
+  const handleConfirm = async () => {
+    if (!settingsPwdInput.trim()) { setSettingsPwdError('Please enter your password.'); return; }
+    setSettingsPwdLoading(true);
+    setSettingsPwdError('');
+    const res = await API.post('verify-password', { password: settingsPwdInput });
+    setSettingsPwdLoading(false);
+    if (res?.ok) {
+      await saveSettings(pendingSettings);
+      setPendingSettings(null);
+      setShowSettingsPwdModal(false);
+      setSettingsPwdInput('');
+    } else {
+      setSettingsPwdError(res?.error || 'Incorrect password. Please try again.');
+    }
+  };
+  return (
+    <Modal open={showSettingsPwdModal} onClose={() => { setShowSettingsPwdModal(false); setSettingsPwdError(''); }} title="Confirm Settings Changes">
+      <p style={{ fontSize: '14px', color: COLORS.text, marginBottom: '16px' }}>Enter your admin password to apply the settings changes.</p>
+      <Field label="Admin Password">
+        <input
+          style={S.input}
+          type="password"
+          autoFocus
+          value={settingsPwdInput}
+          onChange={e => setSettingsPwdInput(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleConfirm()}
+          placeholder="Your password"
+        />
+      </Field>
+      {settingsPwdError && <div style={{ color: COLORS.danger, fontSize: '13px', marginBottom: '10px' }}>{settingsPwdError}</div>}
+      <div style={{ display: 'flex', gap: '10px' }}>
+        <button style={S.btn('primary')} onClick={handleConfirm} disabled={settingsPwdLoading}>
+          {settingsPwdLoading ? 'Verifying…' : 'Confirm & Save'}
+        </button>
+        <button style={S.btn('outline')} onClick={() => { setShowSettingsPwdModal(false); setSettingsPwdError(''); }}>Cancel</button>
+      </div>
+    </Modal>
+  );
+}
+
+function ExpModal({ showAddExpense, setShowAddExpense, expForm, setExpForm, settings, currentUser, setExpenses, loadData }) {
+  const expCats = settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories;
+  return (
+    <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense">
+      <div style={S.grid2}>
+        <Field label="Date"><input style={S.input} type="date" value={expForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExpForm({ ...expForm, date: e.target.value })} /></Field>
+        <Field label="Category">
+          <select style={S.select} value={expForm.category} onChange={e => setExpForm({ ...expForm, category: e.target.value })}>
+            {expCats.map(c => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="Description"><input style={S.input} value={expForm.description} onChange={e => setExpForm({ ...expForm, description: e.target.value })} /></Field>
+      <Field label="Amount (₦)"><input style={S.input} type="number" value={expForm.amount} placeholder="0" onChange={e => setExpForm({ ...expForm, amount: e.target.value })} /></Field>
+      <button style={S.btn('primary')} onClick={async () => {
+        const e2 = { ...expForm, amount: Number(expForm.amount) || 0 };
+        const registeredBy = currentUser?.username || currentUser?.name || null;
+        setExpenses(prev => [{ ...e2, id: Date.now(), registered_by: registeredBy }, ...prev]);
+        setShowAddExpense(false);
+        await API.post('expenses', e2);
+        loadData();
+      }}>Save</button>
+    </Modal>
+  );
+}
+
+function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapitalTopUpFor, capital, setCapital, capForm, setCapForm, capShowPwd, setCapShowPwd, capAccountMode, setCapAccountMode, capSelectedUserId, setCapSelectedUserId, users, setUsers, loadData }) {
+  const isTopUp = !!capitalTopUpFor;
+  const existingNames = [...new Set(capital.map(c => c.name))];
+  const linkedEntry = isTopUp ? capital.find(c => c.name.toLowerCase() === capitalTopUpFor.toLowerCase()) : null;
+  const linkedUserId = linkedEntry?.user_id || null;
+  const linkedUser = linkedUserId ? users.find(u => u.id === linkedUserId) : null;
+  const availableUsers = users.filter(u => u.id !== 'admin');
+  const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); };
+  const handleSave = async () => {
+    const amount = Number(capForm.amount) || 0;
+    if (!capForm.name.trim() || !amount || !capForm.date || !capForm.method.trim()) return;
+    let userId = linkedUserId;
+    if (!isTopUp) {
+      if (capAccountMode === 'existing' && capSelectedUserId) {
+        userId = capSelectedUserId;
+        // Grant stakeholder role to the linked user if they don't have it yet
+        const existingUser = users.find(u => u.id === capSelectedUserId);
+        if (existingUser && !hasRole(existingUser, 'stakeholder')) {
+          const newRoles = [...(existingUser.roles || []), 'stakeholder'];
+          setUsers(prev => prev.map(x => x.id === capSelectedUserId ? { ...x, roles: newRoles } : x));
+          await API.put(`users/${capSelectedUserId}`, { roles: newRoles });
+        }
+      } else if (capAccountMode === 'new' && capForm.username.trim() && capForm.password.trim()) {
+        userId = `u-${Date.now()}`;
+        const newUser = { id: userId, name: capForm.name.trim(), username: capForm.username.trim(), password: capForm.password.trim(), role: 'stakeholder' };
+        setUsers(prev => [...prev, { ...newUser, roles: [], created_at: new Date().toISOString() }]);
+        await API.post('users', newUser);
+      }
+    }
+    const capEntry = { name: capForm.name.trim(), amount, date: capForm.date, method: capForm.method.trim(), receipt: capForm.receipt, user_id: userId };
+    setCapital(prev => [...prev, { ...capEntry, id: Date.now() }]);
+    closeModal();
+    await API.post('capital', capEntry);
+    loadData();
+  };
+  return (
+    <Modal open={showAddCapital} onClose={closeModal} title={isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add New Stakeholder'}>
+      <div style={S.grid2}>
+        <Field label="Stakeholder Name">
+          {isTopUp
+            ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={capForm.name} readOnly />
+            : <><input style={S.input} list="cap-names" value={capForm.name} onChange={e => setCapForm({ ...capForm, name: e.target.value })} placeholder="Full name" /><datalist id="cap-names">{existingNames.map(n => <option key={n} value={n} />)}</datalist></>}
+        </Field>
+        {isTopUp
+          ? <Field label="Account">{linkedUser ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={`@${linkedUser.username}`} readOnly /> : <span style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '40px' }}>No account linked</span>}</Field>
+          : <div />}
+        <Field label="Amount (₦)"><input style={S.input} type="number" value={capForm.amount} placeholder="0" onChange={e => setCapForm({ ...capForm, amount: e.target.value })} /></Field>
+        <Field label="Date"><input style={S.input} type="date" value={capForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCapForm({ ...capForm, date: e.target.value })} /></Field>
+        <Field label="Method/Bank" style={{ gridColumn: '1 / -1' }}><input style={S.input} value={capForm.method} onChange={e => setCapForm({ ...capForm, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
+      </div>
+      {!isTopUp && (
+        <div style={{ margin: '16px 0 8px', padding: '14px', background: COLORS.primaryLight, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Login Account</div>
+          <Field label="Account type">
+            <select style={S.select} value={capAccountMode} onChange={e => { setCapAccountMode(e.target.value); setCapSelectedUserId(''); }}>
+              <option value="none">No account — stakeholder without login</option>
+              <option value="existing">Link to existing user (e.g. staff who is also a stakeholder)</option>
+              <option value="new">Create new stakeholder account</option>
+            </select>
+          </Field>
+          {capAccountMode === 'existing' && (
+            <Field label="Select User">
+              <select style={S.select} value={capSelectedUserId} onChange={e => { setCapSelectedUserId(e.target.value); const u = availableUsers.find(x => x.id === e.target.value); if (u && !capForm.name.trim()) setCapForm(prev => ({ ...prev, name: u.name })); }}>
+                <option value="">— Select a user —</option>
+                {availableUsers.map(u => <option key={u.id} value={u.id}>{u.name} (@{u.username}) — {u.role}{(u.roles || []).length ? ` + ${u.roles.join(', ')}` : ''}</option>)}
+              </select>
+              <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>The stakeholder role will be automatically granted to this user so they can view capital &amp; profits.</div>
+            </Field>
+          )}
+          {capAccountMode === 'new' && (
+            <div style={S.grid2}>
+              <Field label="Username"><input style={S.input} value={capForm.username} onChange={e => setCapForm({ ...capForm, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
+              <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={capShowPwd ? 'text' : 'password'} value={capForm.password} onChange={e => setCapForm({ ...capForm, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setCapShowPwd(v => !v)}>{capShowPwd ? '🙈' : '👁'}</button></div></Field>
+            </div>
+          )}
+        </div>
+      )}
+      <Field label="Transfer Receipt (optional)"><PhotoUpload label="Receipt" value={capForm.receipt} onChange={v => setCapForm({ ...capForm, receipt: v })} size={120} /></Field>
+      <button style={S.btn('primary')} onClick={handleSave}>Save</button>
+    </Modal>
+  );
+}
+
+function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setDistForm, setDistributions, currentUser, loadData }) {
+  const handleSave = async () => {
+    const amount = Number(distForm.amount) || 0;
+    if (!amount || !distForm.date || !distForm.method) return;
+    const entry = { date: distForm.date, amount, method: distForm.method, note: distForm.note.trim(), receipt: distForm.receipt };
+    setDistributions(prev => [{ ...entry, id: Date.now(), created_by: currentUser?.name || currentUser?.username || '', created_at: new Date().toISOString() }, ...prev]);
+    setShowAddDistribution(false);
+    await API.post('distributions', entry);
+    loadData();
+  };
+  return (
+    <Modal open={showAddDistribution} onClose={() => setShowAddDistribution(false)} title="Record Profit Distribution">
+      <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 12px', background: COLORS.primaryLight, borderRadius: '8px' }}>
+        Record a payment made to stakeholders from the business profit. This will be deducted from the available lending capital.
+      </div>
+      <div style={S.grid2}>
+        <Field label="Date"><input style={S.input} type="date" value={distForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDistForm({ ...distForm, date: e.target.value })} /></Field>
+        <Field label="Total Amount Distributed (₦)"><input style={S.input} type="number" value={distForm.amount} placeholder="0" onChange={e => setDistForm({ ...distForm, amount: e.target.value })} /></Field>
+        <Field label="Payment Method" style={{ gridColumn: '1 / -1' }}>
+          <select style={S.select} value={distForm.method} onChange={e => setDistForm({ ...distForm, method: e.target.value })}>
+            <option value="">— Select method —</option>
+            <option value="Cash">Cash</option>
+            <option value="Bank Transfer">Bank Transfer</option>
+            <option value="Mobile Transfer (Opay/Palmpay)">Mobile Transfer (Opay/Palmpay)</option>
+            <option value="Cheque">Cheque</option>
+          </select>
+        </Field>
+        <Field label="Note (optional)" style={{ gridColumn: '1 / -1' }}>
+          <textarea style={S.textarea} value={distForm.note} placeholder="e.g. Q1 2026 profit share, Month of January…" onChange={e => setDistForm({ ...distForm, note: e.target.value })} rows={2} />
+        </Field>
+      </div>
+      <Field label="Receipt / Proof of Payment (optional)">
+        <PhotoUpload label="Receipt" value={distForm.receipt} onChange={v => setDistForm({ ...distForm, receipt: v })} size={120} />
+      </Field>
+      <button style={S.btn('primary')} onClick={handleSave}>Save Distribution</button>
+    </Modal>
+  );
+}
+
+function DecModal({ showAddDeclined, setShowAddDeclined, decForm, setDecForm, setDeclinedLog, loadData }) {
+  return (
+    <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined Customer">
+      <div style={S.grid2}>
+        <Field label="Date">
+          <input style={S.input} type="date" value={decForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDecForm({ ...decForm, date: e.target.value })} />
+        </Field>
+        <Field label="Ref # (optional)">
+          <input style={S.input} value={decForm.ref} onChange={e => setDecForm({ ...decForm, ref: e.target.value })} placeholder="e.g. CFC-20240101-A1B2" />
+        </Field>
+      </div>
+      <div style={S.grid2}>
+        <Field label="Customer Name (optional)">
+          <input style={S.input} value={decForm.customerName} onChange={e => setDecForm({ ...decForm, customerName: e.target.value })} placeholder="e.g. David Chukwuemeka" />
+        </Field>
+        <Field label="NIN / BVN (optional)">
+          <input style={S.input} value={decForm.ninBvn} onChange={e => setDecForm({ ...decForm, ninBvn: e.target.value })} placeholder="e.g. NIN: 12345678901" />
+        </Field>
+      </div>
+      <Field label="Item Brought" required>
+        <input style={S.input} value={decForm.item} onChange={e => setDecForm({ ...decForm, item: e.target.value })} placeholder="e.g. Smartphone Samsung Galaxy A14" />
+      </Field>
+      <Field label="Decline Reason" required>
+        <select style={S.select} value={decForm.reason} onChange={e => setDecForm({ ...decForm, reason: e.target.value })}>
+          <option value="">— Select a reason —</option>
+          {DECLINE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </Field>
+      <Field label="Additional Notes (optional)">
+        <textarea style={S.textarea} value={decForm.notes} onChange={e => setDecForm({ ...decForm, notes: e.target.value })} placeholder="e.g. NIN photo did not match, customer gave two different answers about purchase date…" rows={3} />
+      </Field>
+      <button style={S.btn('primary')} disabled={!decForm.item || !decForm.reason} onClick={async () => { const result = await API.post('declined', decForm); if (result?.success) { setDeclinedLog(prev => [{ ...decForm, id: Date.now() }, ...prev]); setShowAddDeclined(false); } loadData(); }}>Save</button>
+    </Modal>
+  );
+}
+
+function DeclineDraftModal({ declineDraftModal, setDeclineDraftModal, declineDraftDec, setDeclineDraftDec, setDeclinedLog, setDrafts, currentUser, loadData }) {
+  const d = declineDraftModal;
+  if (!d) return null;
+  const handleSave = async () => {
+    const declinedTx = { ...d, status: 'declined', declineReason: `Declined - ${declineDraftDec.reason}`, wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
+    const entry = { ...declineDraftDec, id: Date.now() };
+    setDeclinedLog(prev => [entry, ...prev]);
+    setDeclineDraftModal(null);
+    setDrafts(prev => prev.filter(x => x.ref !== d.ref));
+    await API.post('transactions', declinedTx);
+    await API.post('declined', declineDraftDec);
+    await API.del(`drafts/${encodeURIComponent(d.ref)}`);
+    loadData();
+  };
+  return (
+    <Modal open={!!d} onClose={() => setDeclineDraftModal(null)} title="🚫 Decline In-Progress Draft">
+      <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
+        ⚠️ This will decline and remove the draft. Fill in the reason and save an entry to the Declined Log.
+      </div>
+      <div style={S.grid2}>
+        <Field label="Date">
+          <input style={S.input} type="date" value={declineDraftDec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDeclineDraftDec({ ...declineDraftDec, date: e.target.value })} />
+        </Field>
+        <Field label="Ref #">
+          <input style={{ ...S.input, background: COLORS.bg }} value={declineDraftDec.ref} readOnly />
+        </Field>
+      </div>
+      <div style={S.grid2}>
+        <Field label="Customer Name">
+          <input style={S.input} value={declineDraftDec.customerName} onChange={e => setDeclineDraftDec({ ...declineDraftDec, customerName: e.target.value })} placeholder="e.g. David Chukwuemeka" />
+        </Field>
+        <Field label="NIN / BVN">
+          <input style={S.input} value={declineDraftDec.ninBvn} onChange={e => setDeclineDraftDec({ ...declineDraftDec, ninBvn: e.target.value })} placeholder="e.g. NIN: 12345678901" />
+        </Field>
+      </div>
+      <Field label="Item Brought" required>
+        <input style={S.input} value={declineDraftDec.item} onChange={e => setDeclineDraftDec({ ...declineDraftDec, item: e.target.value })} placeholder="e.g. Smartphone Samsung Galaxy A14" />
+      </Field>
+      <Field label="Decline Reason" required>
+        <select style={S.select} value={declineDraftDec.reason} onChange={e => setDeclineDraftDec({ ...declineDraftDec, reason: e.target.value })}>
+          <option value="">— Select a reason —</option>
+          {DECLINE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+      </Field>
+      <Field label="Additional Notes (optional)">
+        <textarea style={S.textarea} value={declineDraftDec.notes} onChange={e => setDeclineDraftDec({ ...declineDraftDec, notes: e.target.value })} placeholder="e.g. Customer gave two different answers about purchase date…" rows={3} />
+      </Field>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+        <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={!declineDraftDec.item || !declineDraftDec.reason} onClick={handleSave}>
+          🚫 Decline &amp; Save to Log
+        </button>
+        <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={() => setDeclineDraftModal(null)}>
+          Cancel
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function EditUserModal({ showEditUser, setShowEditUser, editUserUsername, setEditUserUsername, editUserPassword, setEditUserPassword, editUserShowPwd, setEditUserShowPwd, setUsers, loadData, loadActivityLogs }) {
+  const u = showEditUser;
+  if (!u) return null;
+  const handleSave = async () => {
+    const payload = {};
+    if (editUserUsername.trim() && editUserUsername.trim() !== u.username) payload.username = editUserUsername.trim();
+    if (editUserPassword.trim()) payload.password = editUserPassword.trim();
+    if (!Object.keys(payload).length) { setShowEditUser(null); return; }
+    setUsers(prev => prev.map(x => x.id === u.id ? { ...x, ...(payload.username ? { username: payload.username } : {}) } : x));
+    setShowEditUser(null);
+    await API.put(`users/${u.id}`, payload);
+    loadData(); loadActivityLogs();
+  };
+  return (
+    <Modal open={!!showEditUser} onClose={() => setShowEditUser(null)} title={`Edit Account — ${u.name}`}>
+      <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Leave a field blank to keep it unchanged.</div>
+      <Field label="New Username"><input style={S.input} value={editUserUsername} onChange={e => setEditUserUsername(e.target.value)} placeholder={u.username} autoComplete="off" /></Field>
+      <Field label="New Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={editUserShowPwd ? 'text' : 'password'} value={editUserPassword} onChange={e => setEditUserPassword(e.target.value)} placeholder="Leave blank to keep current" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setEditUserShowPwd(v => !v)}>{editUserShowPwd ? '🙈' : '👁'}</button></div></Field>
+      <button style={S.btn('primary')} onClick={handleSave}>Save Changes</button>
+    </Modal>
+  );
+}
+
+function UsrModal({ showAddUser, setShowAddUser, usrForm, setUsrForm, usrShowPwd, setUsrShowPwd, setUsers, loadData }) {
+  return (
+    <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User">
+      <div style={S.grid2}>
+        <Field label="Name"><input style={S.input} value={usrForm.name} onChange={e => setUsrForm({ ...usrForm, name: e.target.value })} /></Field>
+        <Field label="Username"><input style={S.input} value={usrForm.username} onChange={e => setUsrForm({ ...usrForm, username: e.target.value })} /></Field>
+        <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={usrShowPwd ? 'text' : 'password'} value={usrForm.password} onChange={e => setUsrForm({ ...usrForm, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setUsrShowPwd(v => !v)}>{usrShowPwd ? '🙈 Hide' : '👁 Show'}</button></div></Field>
+        <Field label="Role"><select style={S.select} value={usrForm.role} onChange={e => setUsrForm({ ...usrForm, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field>
+      </div>
+      <button style={S.btn('primary')} onClick={async () => { const newId = `u-${Date.now()}`; setUsers(prev => [...prev, { ...usrForm, id: newId, created_at: new Date().toISOString() }]); setShowAddUser(false); await API.post('users', { ...usrForm, id: newId }); loadData(); }}>Add</button>
+    </Modal>
+  );
+}
+
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -4435,6 +5014,20 @@ export default function App() {
   const [settingsPwdInput, setSettingsPwdInput] = useState('');
   const [settingsPwdError, setSettingsPwdError] = useState('');
   const [settingsPwdLoading, setSettingsPwdLoading] = useState(false);
+  // Lifted modal form state — prevents form fields resetting when App re-renders while a modal is open
+  const [expForm, setExpForm] = useState({ date: '', category: '', description: '', amount: '' });
+  const [distForm, setDistForm] = useState({ date: '', amount: '', method: '', note: '', receipt: '' });
+  const [decForm, setDecForm] = useState({ date: '', ref: '', customerName: '', ninBvn: '', item: '', reason: '', notes: '' });
+  const [declineDraftDec, setDeclineDraftDec] = useState({ date: '', ref: '', customerName: '', ninBvn: '', item: '', reason: '', notes: '' });
+  const [capForm, setCapForm] = useState({ name: '', amount: '', date: '', method: '', receipt: '', username: '', password: '' });
+  const [capShowPwd, setCapShowPwd] = useState(false);
+  const [capAccountMode, setCapAccountMode] = useState('none');
+  const [capSelectedUserId, setCapSelectedUserId] = useState('');
+  const [usrForm, setUsrForm] = useState({ name: '', username: '', password: '', role: 'staff' });
+  const [usrShowPwd, setUsrShowPwd] = useState(false);
+  const [editUserUsername, setEditUserUsername] = useState('');
+  const [editUserPassword, setEditUserPassword] = useState('');
+  const [editUserShowPwd, setEditUserShowPwd] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [txPage, setTxPage] = useState(1);
   const [txSortKey, setTxSortKey] = useState('dateGiven');
@@ -4515,8 +5108,9 @@ export default function App() {
     if (!listCache) setListLoading(true);
 
     const critical = await API.get('bootstrap?scope=critical');
+    const freshSettings = { ...DEFAULT_SETTINGS, ...(critical?.settings || {}) };
     if (critical) {
-      setSettings({ ...DEFAULT_SETTINGS, ...(critical.settings || {}) });
+      setSettings(freshSettings);
       setDbStatus('connected');
       writeCache('cfc_critical', { settings: critical.settings, summary: critical.summary || {} });
     } else {
@@ -4528,7 +5122,7 @@ export default function App() {
     // Load large list datasets in the background so navigation/header remain interactive.
     const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');
     if (lists) {
-      const normalizedTransactions = withLoanTimelines(lists.transactions || [], settings);
+      const normalizedTransactions = withLoanTimelines(lists.transactions || [], freshSettings);
       setTransactions(normalizedTransactions);
       setDrafts(lists.drafts || []);
       writeCache('cfc_transactions', { transactions: normalizedTransactions, drafts: lists.drafts || [], pagination: lists.pagination || null });
@@ -4570,7 +5164,11 @@ export default function App() {
     const nextTx = preparedTx.status === 'for_sale'
       ? { ...preparedTx, listedForSaleDate: preparedTx.listedForSaleDate || existing?.listedForSaleDate || nowIso }
       : preparedTx;
-    await API.post('transactions', nextTx);
+    if (existing) {
+      await API.put(`transactions/${encodeURIComponent(nextTx.ref)}`, nextTx);
+    } else {
+      await API.post('transactions', nextTx);
+    }
     setTransactions(prev => { const i = prev.findIndex(t => t.ref === nextTx.ref); if (i >= 0) { const n = [...prev]; n[i] = nextTx; return n; } return [...prev, nextTx]; });
   };
 
@@ -4734,250 +5332,6 @@ export default function App() {
     { id: 'users', label: 'Users', icon: '👥', path: PAGE_PATHS.users, roles: ['admin'] },
   ].filter(n => n.roles.some(r => hasRole(currentUser, r)));
 
-  // Render transaction detail
-  const TxDetail = ({ tx }) => {
-    const timeline = tx.type === 'advance' ? getLoanTimeline(tx, settings) : null;
-    const customerDaysLeft = tx.type === 'advance' ? getCustomerDaysLeft(tx) : null;
-    const dailyInterest = tx.cashAdvance ? Math.floor((tx.cashAdvance * (settings.interestRate || 1)) / 100) : 0;
-    const daysOut = timeline ? timeline.elapsedDays : 0;
-    const amountDueToday = tx.cashAdvance ? tx.cashAdvance + daysOut * dailyInterest : 0;
-    const row = (label, value, color) => (value !== null && value !== undefined && value !== '') ? (
-      <div style={{ display: 'grid', gridTemplateColumns: '165px 1fr', gap: '8px', padding: '6px 0', borderBottom: `1px solid ${COLORS.border}`, fontSize: '13px', alignItems: 'start' }}>
-        <div style={{ fontWeight: 600, color: COLORS.textMuted, fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.3px', paddingTop: '2px' }}>{label}</div>
-        <div style={{ color: color || COLORS.text }}>{value}</div>
-      </div>
-    ) : null;
-    return (<div>
-      {/* ── Header ── */}
-      <div style={{ marginBottom: '20px' }}>
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-          <span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span>
-          <span style={S.badge('#6b7280')}>{tx.type === 'outright' ? '📦 Outright Purchase' : '💳 Cash Advance'}</span>
-          <span style={{ ...S.badge(COLORS.primary), letterSpacing: '0.5px' }}>Ref: {tx.ref}</span>
-        </div>
-        <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '12px', color: COLORS.textMuted, lineHeight: 1.9 }}>
-          {tx.created_at && <span>🕐 Created: <strong style={{ color: COLORS.text }}>{new Date(tx.created_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</strong></span>}
-          <span>📅 Date Given: <strong style={{ color: COLORS.text }}>{fmtDate(tx.dateGiven)}</strong></span>
-          {tx.type === 'advance' && tx.deadlineDate && <span>⏰ Agreed Return: <strong style={{ color: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text }}>{fmtDate(tx.deadlineDate)}</strong></span>}
-          <span>👤 By: <strong style={{ color: COLORS.text }}>{tx.completedBy || tx.createdBy || 'Unknown'}</strong></span>
-        </div>
-      </div>
-
-      {/* ── Customer & Item ── */}
-      <div style={S.grid2}>
-        <div style={S.card}>
-          <div style={S.cardTitle}>👤 Customer</div>
-          {row('Full Name', <strong>{tx.fullName}</strong>)}
-          {row('Address', tx.address)}
-          {row('Phone(s)', tx.phoneNumbers?.filter(Boolean).join(', '))}
-          {tx.familyName && row('Emergency Contact', `${tx.familyName} (${tx.familyRelation || 'N/A'}) — ${tx.familyPhone || ''}`)}
-          {row('ID Type', tx.idType?.toUpperCase())}
-          {row('ID Number', tx.idNumber)}
-          {row('NIN Verification', tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠️ Attempted (placeholder data)' : '❌ Not attempted')}
-          {row('Processed By', tx.completedBy || tx.createdBy)}
-        </div>
-        <div style={S.card}>
-          <div style={S.cardTitle}>📦 Item</div>
-          {tx.captureItemType && row('Category', <>{tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
-          {row('Identified As', [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' '))}
-          {row('Colour', tx.aiColour)}
-          {tx.aiKeySpecs && row('Key Specs', tx.aiKeySpecs)}
-          {tx.aiConfidence && row('AI Confidence', tx.aiConfidence)}
-          {row('Condition', tx.aiCondition)}
-          {tx.imei && row('IMEI', <>{tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: tx.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
-          {tx.serialNumber && row('Serial No.', tx.serialNumber)}
-          {tx.inspectionNotes && row('Inspection Result', tx.inspectionNotes)}
-          {tx.hasReceipt != null && row('Receipt', tx.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
-          {tx.aiPriceBasis && row('Price Basis', tx.aiPriceBasis)}
-          {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
-          {tx.aiPriceRangeLow && tx.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(tx.aiPriceRangeLow))} — ${fmtMoney(Number(tx.aiPriceRangeHigh))}`)}
-          {tx.aiValuationConfidence && row('Valuation Confidence', tx.aiValuationConfidence)}
-          {tx.aiVisionUsed && row('Cloud Vision', 'Used for identification')}
-        </div>
-      </div>
-
-      {/* ── Financial Summary ── */}
-      <div style={S.card}>
-        <div style={S.cardTitle}>💰 Financial Summary</div>
-        <div style={S.grid4}>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Estimated Value<InfoIcon tip="What the AI estimates this item would sell for second-hand. The max we can give is a percentage of this number." /></div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Cash Advanced<InfoIcon tip="The cash we handed to the customer when they left the item with us." /></div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
-          {tx.type === 'advance' && <>
-            <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div></div>
-            <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
-              <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="The full amount the customer owes us today — the cash we gave them plus all the daily fees added up so far. It grows bigger every day." /></div>
-              <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
-            </div>
-          </>}
-        </div>
-        {tx.type === 'advance' && (
-          <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
-            Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(settings.serviceFee) > 0 && <> · Service fee: <strong>{fmtMoney(settings.serviceFee)}</strong></>}
-          </div>
-        )}
-        {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
-        {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>{tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}</div>}
-      </div>
-
-      {/* ── Loan Timeline (advance only) ── */}
-      {tx.type === 'advance' && timeline && (
-        <div style={S.card}>
-          <div style={S.cardTitle}>📅 Loan Timeline</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px', marginBottom: '12px' }}>
-            {[
-              { label: 'Date Given', date: tx.dateGiven, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'The day we gave the customer money and the loan started.' },
-              { label: 'Agreed Return', date: tx.deadlineDate, bg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.dangerLight : COLORS.bg, fg: customerDaysLeft !== null && customerDaysLeft <= 0 ? COLORS.danger : COLORS.text, border: customerDaysLeft !== null && customerDaysLeft <= 0 ? '#f5c6cb' : COLORS.border, tip: 'The date the customer said they\'d come back to pay. Try to reach them before this date.' },
-              { label: 'Internal Deadline', date: timeline.internal_deadline, bg: COLORS.bg, fg: COLORS.text, border: COLORS.border, tip: 'A private reminder date for staff — set earlier than the customer\'s return date. Start chasing the customer by this point.' },
-              { label: 'Grace Period Ends', date: timeline.grace_end_date, bg: '#f3e8ff', fg: '#7c3aed', border: '#d8b4fe', tip: 'The last day of the extra time after the internal deadline. After this, we can start selling the item.' },
-              { label: 'Sale Eligible From', date: timeline.sale_allowed_date, bg: '#f0fdf4', fg: '#166534', border: '#86efac', tip: 'From this date, if the customer still hasn\'t paid, we\'re allowed to sell their item to get our money back.' },
-            ].filter(item => item.date).map(({ label, date, bg, fg, border, tip }) => (
-              <div key={label} style={{ padding: '10px 12px', background: bg, borderRadius: '8px', border: `1px solid ${border}` }}>
-                <div style={{ fontSize: '10.5px', fontWeight: 700, color: fg === COLORS.text ? COLORS.textMuted : fg, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px', display: 'flex', alignItems: 'center' }}>{label}<InfoIcon tip={tip} /></div>
-                <div style={{ fontSize: '13.5px', fontWeight: 700, color: fg }}>{fmtDate(date)}</div>
-                <div style={{ marginTop: '5px', display: 'inline-block', fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '20px', background: 'rgba(0,0,0,0.07)', color: fg === COLORS.text ? COLORS.textMuted : fg, letterSpacing: '0.2px' }}>{relativeDateLabel(date)}</div>
-              </div>
-            ))}
-          </div>
-          {customerDaysLeft !== null && (
-            <div style={{ padding: '10px 12px', background: customerDaysLeft < 0 ? COLORS.dangerLight : customerDaysLeft === 0 ? COLORS.dangerLight : customerDaysLeft <= 7 ? '#fef3c7' : COLORS.primaryLight, borderRadius: '8px', fontSize: '13px', color: customerDaysLeft <= 0 ? COLORS.danger : customerDaysLeft <= 7 ? '#92400e' : COLORS.primary, fontWeight: 600 }}>
-              {customerDaysLeft < 0 ? `⚠️ Customer is ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue on their agreed return date.` : customerDaysLeft === 0 ? '🔴 Customer return is due today.' : `⏰ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} remaining until customer's agreed return date.`}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Screening & Notes ── */}
-      <div style={S.card}>
-        <div style={S.cardTitle}>🧾 Screening & Notes</div>
-        {row('Duration in Use', tx.screeningDuration ? (tx.screeningDuration === 'Other' ? `Other — ${tx.screeningDurationOther || 'unspecified'}` : tx.screeningDuration) : null)}
-        {row('Where Purchased', tx.screeningPurchaseLocation ? (tx.screeningPurchaseLocation === 'Other' ? `Other — ${tx.screeningPurchaseLocationOther || 'unspecified'}` : tx.screeningPurchaseLocationOther ? `${tx.screeningPurchaseLocation} (${tx.screeningPurchaseLocationOther})` : tx.screeningPurchaseLocation) : null)}
-        {row('Registered in Customer Name', tx.screeningRegistered)}
-        {row('Other Users on Device', tx.screeningOthersUsing)}
-        {row('Red Flag Detected', tx.screeningRedFlag ? '🚩 Yes — Review required' : '✅ None', tx.screeningRedFlag ? COLORS.danger : '#166534')}
-        {tx.notes && row('Staff Notes', tx.notes)}
-        {!tx.screeningDuration && !tx.screeningPurchaseLocation && !tx.screeningRegistered && !tx.screeningOthersUsing && !tx.notes && (
-          <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No screening data captured.</div>
-        )}
-      </div>
-
-      {/* ── Photos ── */}
-      <div style={S.card}>
-        <div style={S.cardTitle}>📸 Photos</div>
-        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-          {[
-            tx.ninPhoto,
-            tx.photoCustomerHolding,
-            tx.photoCustomerID,
-            ...(normalizeItemPhotos(tx.itemPhotos)),
-            tx.imeiPhoto,
-            tx.serialNumberPhoto,
-            tx.receiptPhoto,
-            tx.photoSigning,
-            tx.photoSealedPkg,
-          ]
-            .filter(Boolean)
-            .map((p, i) => (
-              <button
-                key={i}
-                onClick={() => setZoomedPhoto(p)}
-                style={{
-                  border: 'none',
-                  padding: 0,
-                  background: 'transparent',
-                  cursor: 'zoom-in',
-                  borderRadius: '8px',
-                  overflow: 'hidden'
-                }}
-                title="Tap to view full image"
-              >
-                <img
-                  src={p}
-                  alt={`Transaction photo ${i + 1}`}
-                  style={{ width: '100px', height: '100px', borderRadius: '8px', objectFit: 'cover', display: 'block' }}
-                  onError={e => {
-                    e.currentTarget.onerror = null;
-                    e.currentTarget.style.background = '#fee2e2';
-                    e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E";
-                  }}
-                />
-              </button>
-            ))}
-        </div>
-        <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
-      </div>
-
-      {/* ── Contact Log ── */}
-      <div style={S.card}>
-        <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>📋 Contact Log</span>
-          {tx.status === 'active' && isStaff && (
-            <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>+ Log Contact Attempt</button>
-          )}
-        </div>
-        {(tx.contactLog?.length > 0) ? (
-          <div>
-            {[...tx.contactLog].reverse().map((entry, i) => (
-              <div key={i} style={{ padding: '10px 0', borderBottom: i < tx.contactLog.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
-                  <span style={{ ...S.badge(OUTCOME_COLORS[entry.result] || '#6b7280'), fontSize: '12px' }}>{CONTACT_OUTCOME_LABEL[entry.result] || entry.result}</span>
-                  <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{entry.date} {entry.time}</span>
-                </div>
-                {entry.notes && <div style={{ fontSize: '13px', marginTop: '4px' }}>{entry.notes}</div>}
-                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>Logged by {entry.loggedBy}</div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No contact attempts logged yet.{tx.status === 'active' && ' Use the button above to record a call attempt.'}</div>
-        )}
-      </div>
-
-      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' }}>
-        <button style={S.btn('outline')} onClick={() => navigate(-1)}>← Back</button>
-        {tx.status === 'active' && isStaff && (
-          <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
-        )}
-        {/* Early surrender — customer voluntarily gives up the item before deadline/grace ends */}
-        {tx.status === 'active' && isStaff && (
-          <button style={S.btn('outline')} onClick={async () => {
-            const ok = window.confirm(
-              `⚠️ CUSTOMER EARLY SURRENDER\n\n` +
-              `This marks the item as voluntarily surrendered by the customer.\n\n` +
-              `What this means:\n` +
-              `• The customer is giving up their right to reclaim this item\n` +
-              `• They forfeit any claim even if their deadline has not yet passed\n` +
-              `• The item moves to "Ready to Sell" so it can be listed in the shop\n` +
-              `• This action CANNOT be undone\n\n` +
-              `Only do this if the customer has explicitly agreed and confirmed in person.\n\n` +
-              `Proceed with marking "${tx.aiBrand || ''} ${tx.aiModel || ''}" as surrendered?`
-            );
-            if (!ok) return;
-            await saveTx({ ...tx, status: 'ready_to_sell', surrenderDate: new Date().toISOString().slice(0, 10), surrenderedBy: currentUser?.name || currentUser?.email || 'Staff' });
-            loadData();
-          }}>🤝 Customer Surrenders Item</button>
-        )}
-        {(tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell' ? (
-          isStaff ? <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 List in Shop</button> : null
-        ) : null}
-        {tx.status === 'for_sale' && isStaff && (
-          <button style={S.btn('accent')} onClick={() => setShopListingTx(tx)}>🏪 Edit Listing</button>
-        )}
-        {tx.status === 'for_sale' && isStaff && (
-          <button style={S.btn('outline')} onClick={async () => {
-            if (window.confirm('Remove this item from the public shop?\n\nIt will be removed from the public shop and moved back into sellable inventory so it can be re-listed at any time.')) {
-              // Early surrenders go back to ready_to_sell; timeline-eligible actives go back to active but remain sale-eligible
-              const returnStatus = tx.surrenderDate ? 'ready_to_sell' : 'active';
-              await saveTx({ ...tx, status: returnStatus, listedForSaleDate: null });
-              loadData();
-            }
-          }}>✕ Unlist</button>
-        )}
-        {(tx.status === 'for_sale' || (tx.status === 'active' && tx.isEligibleForSale) || tx.status === 'ready_to_sell') && isStaff && (
-          <button style={S.btn('danger')} onClick={() => navigate(txSellPath(tx.ref))}>🏷 Record Sale</button>
-        )}
-      </div>
-    </div>);
-  };
 
   const PhotoViewer = () => {
     if (!zoomedPhoto) return null;
@@ -5061,7 +5415,7 @@ export default function App() {
         );
       }
       // No sub-page segment → transaction detail
-      return <TxDetail tx={tx} />;
+      return <TxDetail tx={tx} settings={settings} isStaff={isStaff} currentUser={currentUser} setZoomedPhoto={setZoomedPhoto} setLoggingContactTx={setLoggingContactTx} saveTx={saveTx} loadData={loadData} setShopListingTx={setShopListingTx} />;
     }
 
     const TX_PAGE_SIZE = 25;
@@ -5102,7 +5456,7 @@ export default function App() {
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'Connected to Cloudflare D1' : 'Connection error'}</div></div>
         <div style={S.card}><div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}><span>Recent Transactions</span><select value={recentTxCount} onChange={e => setRecentTxCount(Number(e.target.value))} style={{ padding: '4px 8px', borderRadius: '6px', border: `1.5px solid ${COLORS.border}`, fontSize: '12px', fontWeight: 600, color: COLORS.primaryDark, background: '#fff', cursor: 'pointer' }}>{[3, 5, 10, 15, 20].map(n => <option key={n} value={n}>Show {n}</option>)}</select></div><TxTable items={transactions.slice(0, recentTxCount)} /></div>
-        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={() => setDeclineDraftModal(d)}>Decline</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
+        {drafts.length > 0 && isStaff && <div style={S.card}><div style={S.cardTitle}>📝 In-Progress Drafts</div>{drafts.slice().sort((a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)).map(d => (<div key={d.ref} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', borderBottom: `1px solid ${COLORS.border}` }}><div><strong>{d.ref}</strong> — {d.fullName || 'No name yet'} — Step {(d.wizardStep || 0) + 1}<br/><span style={{ fontSize: '12px', color: COLORS.textMuted }}>Created: {d.createdAt ? new Date(d.createdAt).toLocaleString() : 'Unknown'}</span></div><div style={{ display: 'flex', gap: '8px' }}><button style={S.btnSm('accent')} onClick={() => { setEditingTx(d); navigate(PAGE_PATHS.newTransaction); }}>Resume</button><button style={S.btnSm('danger')} onClick={() => { const ninBvn = d.idNumber ? `${d.idType?.toUpperCase() || 'ID'}: ${d.idNumber}` : ''; const item = d.aiItemType ? `${d.aiItemType} ${d.aiBrand || ''} ${d.aiModel || ''}`.trim() : (d.captureItemType || ''); setDeclineDraftDec({ date: localISODate(), ref: d.ref || '', customerName: d.fullName || '', ninBvn, item, reason: '', notes: '' }); setDeclineDraftModal(d); }}>Decline</button><button style={S.btnSm('danger')} onClick={async () => { if(window.confirm('Are you sure you want to delete this draft?')) { setDrafts(prev => prev.filter(x => x.ref !== d.ref)); await API.del(`drafts/${encodeURIComponent(d.ref)}`); loadData(); } }}>Delete</button></div></div>))}</div>}
       </div>);
 
       case 'transactions': {
@@ -6223,7 +6577,7 @@ export default function App() {
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>💎 Capital & Distributions</h2>
-              {isAdmin && <button style={S.btn('primary')} onClick={() => { setCapitalTopUpFor(null); setShowAddCapital(true); }}>+ Add Stakeholder</button>}
+              {isAdmin && <button style={S.btn('primary')} onClick={() => { setCapitalTopUpFor(null); setCapForm({ name: '', amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' }); setCapShowPwd(false); setCapAccountMode('none'); setCapSelectedUserId(''); setShowAddCapital(true); }}>+ Add Stakeholder</button>}
             </div>
 
             {/* Available for Lending */}
@@ -6258,7 +6612,7 @@ export default function App() {
                               {isExpanded ? '▲ Hide' : `▼ ${s.entries.length} entry${s.entries.length !== 1 ? 'ies' : 'y'}`}
                             </button>
                           </td>
-                          {isAdmin && <td style={S.td}><button style={S.btnSm('primary')} onClick={() => { setCapitalTopUpFor(s.name); setShowAddCapital(true); }}>+ Top Up</button></td>}
+                          {isAdmin && <td style={S.td}><button style={S.btnSm('primary')} onClick={() => { setCapitalTopUpFor(s.name); setCapForm({ name: s.name, amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' }); setCapShowPwd(false); setCapAccountMode('none'); setCapSelectedUserId(''); setShowAddCapital(true); }}>+ Top Up</button></td>}
                         </tr>
                         {isExpanded && (
                           <tr>
@@ -6272,7 +6626,7 @@ export default function App() {
                                       <td style={S.td}>{fmtMoney(e.amount)}</td>
                                       <td style={S.td}>{e.method}</td>
                                       <td style={S.td}>{e.receipt ? <a href={e.receipt} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.primary, fontWeight: 600 }}>View</a> : <span style={{ color: COLORS.textMuted }}>—</span>}</td>
-                                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete ₦${e.amount.toLocaleString()} contribution from ${e.name}?`)) { setCapital(prev => prev.filter(x => x.id !== e.id)); await API.del(`capital/${e.id}`); loadData(); } }}>Del</button></td>}
+                                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete ₦${e.amount.toLocaleString()} contribution from ${e.name}?`)) { const ok = await API.del(`capital/${e.id}`); if (ok) setCapital(prev => prev.filter(x => x.id !== e.id)); loadData(); } }}>Del</button></td>}
                                     </tr>
                                   ))}
                                 </tbody>
@@ -6293,7 +6647,7 @@ export default function App() {
             <div style={S.card}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                 <div style={S.cardTitle}>💸 Profit Distributions</div>
-                {isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDistribution(true)}>+ Record Distribution</button>}
+                {isStaff && <button style={S.btn('primary')} onClick={() => { setDistForm({ date: localISODate(), amount: '', method: '', note: '', receipt: '' }); setShowAddDistribution(true); }}>+ Record Distribution</button>}
               </div>
               <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
                 Every time profit is paid out to stakeholders, Fabian records it here. All stakeholders can see this record.
@@ -6319,7 +6673,7 @@ export default function App() {
                       <td style={S.td}>{d.note || <span style={{ color: COLORS.textMuted }}>—</span>}</td>
                       <td style={S.td}><span style={{ fontSize: '12px', color: COLORS.textMuted }}>{d.created_by || '—'}</span></td>
                       <td style={S.td}>{d.receipt ? <a href={d.receipt} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.primary, fontWeight: 600 }}>View</a> : <span style={{ color: COLORS.textMuted }}>—</span>}</td>
-                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { setDistributions(prev => prev.filter(x => x.id !== d.id)); await API.del(`distributions/${d.id}`); loadData(); } }}>Del</button></td>}
+                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { const ok = await API.del(`distributions/${d.id}`); if (ok) setDistributions(prev => prev.filter(x => x.id !== d.id)); loadData(); } }}>Del</button></td>}
                     </tr>
                   ))}
                   {distributions.length === 0 && <tr><td style={{ ...S.td, color: COLORS.textMuted }} colSpan={isAdmin ? 7 : 6}>No distributions recorded yet.</td></tr>}
@@ -6371,7 +6725,7 @@ export default function App() {
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🧾 Expenses</h2>
-              {isStaff && <button style={S.btn('primary')} onClick={() => setShowAddExpense(true)}>+ Add</button>}
+              {isStaff && <button style={S.btn('primary')} onClick={() => { const cats = settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories; setExpForm({ date: localISODate(), category: cats[0] || 'Miscellaneous', description: '', amount: '' }); setShowAddExpense(true); }}>+ Add</button>}
             </div>
 
             {/* Search & Filters */}
@@ -6441,8 +6795,8 @@ export default function App() {
                         <td style={S.td}>
                           <button style={S.btnSm('danger')} onClick={async () => {
                             if (window.confirm('Delete this expense entry?')) {
-                              setExpenses(prev => prev.filter(x => x.id !== e.id));
-                              await API.del(`expenses/${e.id}`);
+                              const ok = await API.del(`expenses/${e.id}`);
+                              if (ok) setExpenses(prev => prev.filter(x => x.id !== e.id));
                               loadData();
                             }
                           }}>Delete</button>
@@ -6476,7 +6830,7 @@ export default function App() {
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🚫 Declined Log</h2>
-            {isStaff && <button style={S.btn('primary')} onClick={() => setShowAddDeclined(true)}>+ Add</button>}
+            {isStaff && <button style={S.btn('primary')} onClick={() => { setDecForm({ date: localISODate(), ref: '', customerName: '', ninBvn: '', item: '', reason: '', notes: '' }); setShowAddDeclined(true); }}>+ Add</button>}
           </div>
           <div style={S.card}>
             <table style={S.table}>
@@ -6533,7 +6887,7 @@ export default function App() {
           return COLORS.textMuted;
         };
         const roleColor = (r) => r === 'admin' ? '#c8a84e' : r === 'staff' ? '#10b981' : '#6b7280';
-        const grouped = activityLogs.reduce((acc, a) => { const k = new Date(a.created_at).toDateString(); if (!acc[k]) acc[k] = []; acc[k].push(a); return acc; }, {});
+        const grouped = activityLogs.reduce((acc, a) => { const k = new Intl.DateTimeFormat('en-CA', { timeZone: NIGERIA_TZ }).format(new Date(a.created_at)); if (!acc[k]) acc[k] = []; acc[k].push(a); return acc; }, {});
         const applyFilters = () => loadActivityLogs(activityFilter);
         const setF = (patch) => setActivityFilter(prev => ({ ...prev, ...patch }));
         const todayStr = localISODate();
@@ -6933,343 +7287,11 @@ export default function App() {
       );
       }
 
-      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => setShowAddUser(true)}>+ Add User</button></div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 14px', background: COLORS.primaryLight, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>A user can hold multiple roles — for example, a staff member can also be a stakeholder. Use the <strong>Grant/Revoke Stakeholder</strong> button below to manage this without needing two accounts.</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Roles</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; const extraRoles = u.roles || []; const isAlsoStakeholder = u.role !== 'stakeholder' && extraRoles.includes('stakeholder'); const canToggleStakeholder = u.role !== 'admin' && u.role !== 'stakeholder'; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span>{extraRoles.map(r => <span key={r} style={S.badge('#8b5cf6')}>{r}</span>)}</div></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => setShowEditUser(u)}>Edit</button>{canToggleStakeholder && <button style={S.btnSm(isAlsoStakeholder ? 'danger' : 'primary')} onClick={async () => { const newRoles = isAlsoStakeholder ? extraRoles.filter(r => r !== 'stakeholder') : [...extraRoles, 'stakeholder']; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, roles: newRoles } : x)); await API.put(`users/${u.id}`, { roles: newRoles }); loadData(); }}>{isAlsoStakeholder ? '− Revoke Stakeholder' : '+ Grant Stakeholder'}</button>}<button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
+      case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => { setUsrForm({ name: '', username: '', password: '', role: 'staff' }); setUsrShowPwd(false); setShowAddUser(true); }}>+ Add User</button></div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 14px', background: COLORS.primaryLight, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>A user can hold multiple roles — for example, a staff member can also be a stakeholder. Use the <strong>Grant/Revoke Stakeholder</strong> button below to manage this without needing two accounts.</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Roles</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; const extraRoles = u.roles || []; const isAlsoStakeholder = u.role !== 'stakeholder' && extraRoles.includes('stakeholder'); const canToggleStakeholder = u.role !== 'admin' && u.role !== 'stakeholder'; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span>{extraRoles.map(r => <span key={r} style={S.badge('#8b5cf6')}>{r}</span>)}</div></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => { setEditUserUsername(u.username || ''); setEditUserPassword(''); setEditUserShowPwd(false); setShowEditUser(u); }}>Edit</button>{canToggleStakeholder && <button style={S.btnSm(isAlsoStakeholder ? 'danger' : 'primary')} onClick={async () => { const newRoles = isAlsoStakeholder ? extraRoles.filter(r => r !== 'stakeholder') : [...extraRoles, 'stakeholder']; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, roles: newRoles } : x)); await API.put(`users/${u.id}`, { roles: newRoles }); loadData(); }}>{isAlsoStakeholder ? '− Revoke Stakeholder' : '+ Grant Stakeholder'}</button>}<button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
 
       default: return <Navigate to="/dashboard" replace />;
     }
   };
-
-  // Settings Password Confirmation Modal
-  const SettingsPwdModal = () => {
-    const handleConfirm = async () => {
-      if (!settingsPwdInput.trim()) { setSettingsPwdError('Please enter your password.'); return; }
-      setSettingsPwdLoading(true);
-      setSettingsPwdError('');
-      const res = await API.post('verify-password', { password: settingsPwdInput });
-      setSettingsPwdLoading(false);
-      if (res?.ok) {
-        await saveSettings(pendingSettings);
-        setPendingSettings(null);
-        setShowSettingsPwdModal(false);
-        setSettingsPwdInput('');
-      } else {
-        setSettingsPwdError(res?.error || 'Incorrect password. Please try again.');
-      }
-    };
-    return (
-      <Modal open={showSettingsPwdModal} onClose={() => { setShowSettingsPwdModal(false); setSettingsPwdError(''); }} title="Confirm Settings Changes">
-        <p style={{ fontSize: '14px', color: COLORS.text, marginBottom: '16px' }}>Enter your admin password to apply the settings changes.</p>
-        <Field label="Admin Password">
-          <input
-            style={S.input}
-            type="password"
-            autoFocus
-            value={settingsPwdInput}
-            onChange={e => setSettingsPwdInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleConfirm()}
-            placeholder="Your password"
-          />
-        </Field>
-        {settingsPwdError && <div style={{ color: COLORS.danger, fontSize: '13px', marginBottom: '10px' }}>{settingsPwdError}</div>}
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button style={S.btn('primary')} onClick={handleConfirm} disabled={settingsPwdLoading}>
-            {settingsPwdLoading ? 'Verifying…' : 'Confirm & Save'}
-          </button>
-          <button style={S.btn('outline')} onClick={() => { setShowSettingsPwdModal(false); setSettingsPwdError(''); }}>Cancel</button>
-        </div>
-      </Modal>
-    );
-  };
-
-  // Modals
-  const ExpModal = () => {
-    const expCats = settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories;
-    const [exp, setExp] = useState({ date: localISODate(), category: expCats[0] || 'Miscellaneous', description: '', amount: '' });
-    return (
-      <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense">
-        <div style={S.grid2}>
-          <Field label="Date"><input style={S.input} type="date" value={exp.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExp({ ...exp, date: e.target.value })} /></Field>
-          <Field label="Category">
-            <select style={S.select} value={exp.category} onChange={e => setExp({ ...exp, category: e.target.value })}>
-              {expCats.map(c => <option key={c}>{c}</option>)}
-            </select>
-          </Field>
-        </div>
-        <Field label="Description"><input style={S.input} value={exp.description} onChange={e => setExp({ ...exp, description: e.target.value })} /></Field>
-        <Field label="Amount (₦)"><input style={S.input} type="number" value={exp.amount} placeholder="0" onChange={e => setExp({ ...exp, amount: e.target.value })} /></Field>
-        <button style={S.btn('primary')} onClick={async () => {
-          const e2 = { ...exp, amount: Number(exp.amount) || 0 };
-          const registeredBy = currentUser?.username || currentUser?.name || null;
-          setExpenses(prev => [{ ...e2, id: Date.now(), registered_by: registeredBy }, ...prev]);
-          setShowAddExpense(false);
-          await API.post('expenses', e2);
-          loadData();
-        }}>Save</button>
-      </Modal>
-    );
-  };
-
-  const CapModal = () => {
-    const [cap, setCap] = useState({ name: capitalTopUpFor || '', amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' });
-    const [showPwd, setShowPwd] = useState(false);
-    const [accountMode, setAccountMode] = useState('none'); // 'none' | 'existing' | 'new'
-    const [selectedUserId, setSelectedUserId] = useState('');
-    const isTopUp = !!capitalTopUpFor;
-    const existingNames = [...new Set(capital.map(c => c.name))];
-    const linkedEntry = isTopUp ? capital.find(c => c.name.toLowerCase() === capitalTopUpFor.toLowerCase()) : null;
-    const linkedUserId = linkedEntry?.user_id || null;
-    const linkedUser = linkedUserId ? users.find(u => u.id === linkedUserId) : null;
-    const availableUsers = users.filter(u => u.id !== 'admin');
-    const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); };
-    const handleSave = async () => {
-      const amount = Number(cap.amount) || 0;
-      if (!cap.name.trim() || !amount || !cap.date || !cap.method.trim()) return;
-      let userId = linkedUserId;
-      if (!isTopUp) {
-        if (accountMode === 'existing' && selectedUserId) {
-          userId = selectedUserId;
-          // Grant stakeholder role to the linked user if they don't have it yet
-          const existingUser = users.find(u => u.id === selectedUserId);
-          if (existingUser && !hasRole(existingUser, 'stakeholder')) {
-            const newRoles = [...(existingUser.roles || []), 'stakeholder'];
-            setUsers(prev => prev.map(x => x.id === selectedUserId ? { ...x, roles: newRoles } : x));
-            await API.put(`users/${selectedUserId}`, { roles: newRoles });
-          }
-        } else if (accountMode === 'new' && cap.username.trim() && cap.password.trim()) {
-          userId = `u-${Date.now()}`;
-          const newUser = { id: userId, name: cap.name.trim(), username: cap.username.trim(), password: cap.password.trim(), role: 'stakeholder' };
-          setUsers(prev => [...prev, { ...newUser, roles: [], created_at: new Date().toISOString() }]);
-          await API.post('users', newUser);
-        }
-      }
-      const capEntry = { name: cap.name.trim(), amount, date: cap.date, method: cap.method.trim(), receipt: cap.receipt, user_id: userId };
-      setCapital(prev => [...prev, { ...capEntry, id: Date.now() }]);
-      closeModal();
-      await API.post('capital', capEntry);
-      loadData();
-    };
-    return (
-      <Modal open={showAddCapital} onClose={closeModal} title={isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add New Stakeholder'}>
-        <div style={S.grid2}>
-          <Field label="Stakeholder Name">
-            {isTopUp
-              ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={cap.name} readOnly />
-              : <><input style={S.input} list="cap-names" value={cap.name} onChange={e => setCap({ ...cap, name: e.target.value })} placeholder="Full name" /><datalist id="cap-names">{existingNames.map(n => <option key={n} value={n} />)}</datalist></>}
-          </Field>
-          {isTopUp
-            ? <Field label="Account">{linkedUser ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={`@${linkedUser.username}`} readOnly /> : <span style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '40px' }}>No account linked</span>}</Field>
-            : <div />}
-          <Field label="Amount (₦)"><input style={S.input} type="number" value={cap.amount} placeholder="0" onChange={e => setCap({ ...cap, amount: e.target.value })} /></Field>
-          <Field label="Date"><input style={S.input} type="date" value={cap.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCap({ ...cap, date: e.target.value })} /></Field>
-          <Field label="Method/Bank" style={{ gridColumn: '1 / -1' }}><input style={S.input} value={cap.method} onChange={e => setCap({ ...cap, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
-        </div>
-        {!isTopUp && (
-          <div style={{ margin: '16px 0 8px', padding: '14px', background: COLORS.primaryLight, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Login Account</div>
-            <Field label="Account type">
-              <select style={S.select} value={accountMode} onChange={e => { setAccountMode(e.target.value); setSelectedUserId(''); }}>
-                <option value="none">No account — stakeholder without login</option>
-                <option value="existing">Link to existing user (e.g. staff who is also a stakeholder)</option>
-                <option value="new">Create new stakeholder account</option>
-              </select>
-            </Field>
-            {accountMode === 'existing' && (
-              <Field label="Select User">
-                <select style={S.select} value={selectedUserId} onChange={e => { setSelectedUserId(e.target.value); const u = availableUsers.find(x => x.id === e.target.value); if (u && !cap.name.trim()) setCap(prev => ({ ...prev, name: u.name })); }}>
-                  <option value="">— Select a user —</option>
-                  {availableUsers.map(u => <option key={u.id} value={u.id}>{u.name} (@{u.username}) — {u.role}{(u.roles || []).length ? ` + ${u.roles.join(', ')}` : ''}</option>)}
-                </select>
-                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>The stakeholder role will be automatically granted to this user so they can view capital &amp; profits.</div>
-              </Field>
-            )}
-            {accountMode === 'new' && (
-              <div style={S.grid2}>
-                <Field label="Username"><input style={S.input} value={cap.username} onChange={e => setCap({ ...cap, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
-                <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={cap.password} onChange={e => setCap({ ...cap, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
-              </div>
-            )}
-          </div>
-        )}
-        <Field label="Transfer Receipt (optional)"><PhotoUpload label="Receipt" value={cap.receipt} onChange={v => setCap({ ...cap, receipt: v })} size={120} /></Field>
-        <button style={S.btn('primary')} onClick={handleSave}>Save</button>
-      </Modal>
-    );
-  };
-
-  const DistModal = () => {
-    const today = localISODate();
-    const [dist, setDist] = useState({ date: today, amount: '', method: '', note: '', receipt: '' });
-    const handleSave = async () => {
-      const amount = Number(dist.amount) || 0;
-      if (!amount || !dist.date || !dist.method) return;
-      const entry = { date: dist.date, amount, method: dist.method, note: dist.note.trim(), receipt: dist.receipt };
-      setDistributions(prev => [{ ...entry, id: Date.now(), created_by: currentUser?.name || currentUser?.username || '', created_at: new Date().toISOString() }, ...prev]);
-      setShowAddDistribution(false);
-      await API.post('distributions', entry);
-      loadData();
-    };
-    return (
-      <Modal open={showAddDistribution} onClose={() => setShowAddDistribution(false)} title="Record Profit Distribution">
-        <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 12px', background: COLORS.primaryLight, borderRadius: '8px' }}>
-          Record a payment made to stakeholders from the business profit. This will be deducted from the available lending capital.
-        </div>
-        <div style={S.grid2}>
-          <Field label="Date"><input style={S.input} type="date" value={dist.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDist({ ...dist, date: e.target.value })} /></Field>
-          <Field label="Total Amount Distributed (₦)"><input style={S.input} type="number" value={dist.amount} placeholder="0" onChange={e => setDist({ ...dist, amount: e.target.value })} /></Field>
-          <Field label="Payment Method" style={{ gridColumn: '1 / -1' }}>
-            <select style={S.select} value={dist.method} onChange={e => setDist({ ...dist, method: e.target.value })}>
-              <option value="">— Select method —</option>
-              <option value="Cash">Cash</option>
-              <option value="Bank Transfer">Bank Transfer</option>
-              <option value="Mobile Transfer (Opay/Palmpay)">Mobile Transfer (Opay/Palmpay)</option>
-              <option value="Cheque">Cheque</option>
-            </select>
-          </Field>
-          <Field label="Note (optional)" style={{ gridColumn: '1 / -1' }}>
-            <textarea style={S.textarea} value={dist.note} placeholder="e.g. Q1 2026 profit share, Month of January…" onChange={e => setDist({ ...dist, note: e.target.value })} rows={2} />
-          </Field>
-        </div>
-        <Field label="Receipt / Proof of Payment (optional)">
-          <PhotoUpload label="Receipt" value={dist.receipt} onChange={v => setDist({ ...dist, receipt: v })} size={120} />
-        </Field>
-        <button style={S.btn('primary')} onClick={handleSave}>Save Distribution</button>
-      </Modal>
-    );
-  };
-
-  const DecModal = () => {
-    const [dec, setDec] = useState({ date: localISODate(), ref: '', customerName: '', ninBvn: '', item: '', reason: '', notes: '' });
-    return (
-      <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined Customer">
-        <div style={S.grid2}>
-          <Field label="Date">
-            <input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} />
-          </Field>
-          <Field label="Ref # (optional)">
-            <input style={S.input} value={dec.ref} onChange={e => setDec({ ...dec, ref: e.target.value })} placeholder="e.g. CFC-20240101-A1B2" />
-          </Field>
-        </div>
-        <div style={S.grid2}>
-          <Field label="Customer Name (optional)">
-            <input style={S.input} value={dec.customerName} onChange={e => setDec({ ...dec, customerName: e.target.value })} placeholder="e.g. David Chukwuemeka" />
-          </Field>
-          <Field label="NIN / BVN (optional)">
-            <input style={S.input} value={dec.ninBvn} onChange={e => setDec({ ...dec, ninBvn: e.target.value })} placeholder="e.g. NIN: 12345678901" />
-          </Field>
-        </div>
-        <Field label="Item Brought" required>
-          <input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} placeholder="e.g. Smartphone Samsung Galaxy A14" />
-        </Field>
-        <Field label="Decline Reason" required>
-          <select style={S.select} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })}>
-            <option value="">— Select a reason —</option>
-            {DECLINE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </Field>
-        <Field label="Additional Notes (optional)">
-          <textarea style={S.textarea} value={dec.notes} onChange={e => setDec({ ...dec, notes: e.target.value })} placeholder="e.g. NIN photo did not match, customer gave two different answers about purchase date…" rows={3} />
-        </Field>
-        <button style={S.btn('primary')} disabled={!dec.item || !dec.reason} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button>
-      </Modal>
-    );
-  };
-
-  const DeclineDraftModal = () => {
-    const d = declineDraftModal;
-    const ninBvnPrefill = d?.idNumber ? `${d.idType?.toUpperCase() || 'ID'}: ${d.idNumber}` : '';
-    const itemPrefill = d?.aiItemType ? `${d.aiItemType} ${d.aiBrand || ''} ${d.aiModel || ''}`.trim() : (d?.captureItemType || '');
-    const [dec, setDec] = useState({
-      date: localISODate(),
-      ref: d?.ref || '',
-      customerName: d?.fullName || '',
-      ninBvn: ninBvnPrefill,
-      item: itemPrefill,
-      reason: '',
-      notes: '',
-    });
-    if (!d) return null;
-    const handleSave = async () => {
-      const declinedTx = { ...d, status: 'declined', declineReason: `Declined - ${dec.reason}`, wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
-      const entry = { ...dec, id: Date.now() };
-      setDeclinedLog(prev => [entry, ...prev]);
-      setDeclineDraftModal(null);
-      setDrafts(prev => prev.filter(x => x.ref !== d.ref));
-      await API.post('transactions', declinedTx);
-      await API.post('declined', dec);
-      await API.del(`drafts/${encodeURIComponent(d.ref)}`);
-      loadData();
-    };
-    return (
-      <Modal open={!!d} onClose={() => setDeclineDraftModal(null)} title="🚫 Decline In-Progress Draft">
-        <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
-          ⚠️ This will decline and remove the draft. Fill in the reason and save an entry to the Declined Log.
-        </div>
-        <div style={S.grid2}>
-          <Field label="Date">
-            <input style={S.input} type="date" value={dec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDec({ ...dec, date: e.target.value })} />
-          </Field>
-          <Field label="Ref #">
-            <input style={{ ...S.input, background: COLORS.bg }} value={dec.ref} readOnly />
-          </Field>
-        </div>
-        <div style={S.grid2}>
-          <Field label="Customer Name">
-            <input style={S.input} value={dec.customerName} onChange={e => setDec({ ...dec, customerName: e.target.value })} placeholder="e.g. David Chukwuemeka" />
-          </Field>
-          <Field label="NIN / BVN">
-            <input style={S.input} value={dec.ninBvn} onChange={e => setDec({ ...dec, ninBvn: e.target.value })} placeholder="e.g. NIN: 12345678901" />
-          </Field>
-        </div>
-        <Field label="Item Brought" required>
-          <input style={S.input} value={dec.item} onChange={e => setDec({ ...dec, item: e.target.value })} placeholder="e.g. Smartphone Samsung Galaxy A14" />
-        </Field>
-        <Field label="Decline Reason" required>
-          <select style={S.select} value={dec.reason} onChange={e => setDec({ ...dec, reason: e.target.value })}>
-            <option value="">— Select a reason —</option>
-            {DECLINE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </Field>
-        <Field label="Additional Notes (optional)">
-          <textarea style={S.textarea} value={dec.notes} onChange={e => setDec({ ...dec, notes: e.target.value })} placeholder="e.g. Customer gave two different answers about purchase date…" rows={3} />
-        </Field>
-        <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
-          <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={!dec.item || !dec.reason} onClick={handleSave}>
-            🚫 Decline &amp; Save to Log
-          </button>
-          <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={() => setDeclineDraftModal(null)}>
-            Cancel
-          </button>
-        </div>
-      </Modal>
-    );
-  };
-
-  const EditUserModal = () => {
-    const u = showEditUser;
-    const [username, setUsername] = useState(u?.username || '');
-    const [password, setPassword] = useState('');
-    const [showPwd, setShowPwd] = useState(false);
-    if (!u) return null;
-    const handleSave = async () => {
-      const payload = {};
-      if (username.trim() && username.trim() !== u.username) payload.username = username.trim();
-      if (password.trim()) payload.password = password.trim();
-      if (!Object.keys(payload).length) { setShowEditUser(null); return; }
-      setUsers(prev => prev.map(x => x.id === u.id ? { ...x, ...(payload.username ? { username: payload.username } : {}) } : x));
-      setShowEditUser(null);
-      await API.put(`users/${u.id}`, payload);
-      loadData(); loadActivityLogs();
-    };
-    return (
-      <Modal open={!!showEditUser} onClose={() => setShowEditUser(null)} title={`Edit Account — ${u.name}`}>
-        <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Leave a field blank to keep it unchanged.</div>
-        <Field label="New Username"><input style={S.input} value={username} onChange={e => setUsername(e.target.value)} placeholder={u.username} autoComplete="off" /></Field>
-        <Field label="New Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="Leave blank to keep current" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setShowPwd(v => !v)}>{showPwd ? '🙈' : '👁'}</button></div></Field>
-        <button style={S.btn('primary')} onClick={handleSave}>Save Changes</button>
-      </Modal>
-    );
-  };
-  const UsrModal = () => { const [usr, setUsr] = useState({ name: '', username: '', password: '', role: 'staff' }); const [showUsrPassword, setShowUsrPassword] = useState(false); return <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User"><div style={S.grid2}><Field label="Name"><input style={S.input} value={usr.name} onChange={e => setUsr({ ...usr, name: e.target.value })} /></Field><Field label="Username"><input style={S.input} value={usr.username} onChange={e => setUsr({ ...usr, username: e.target.value })} /></Field><Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showUsrPassword ? 'text' : 'password'} value={usr.password} onChange={e => setUsr({ ...usr, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setShowUsrPassword(v => !v)}>{showUsrPassword ? '🙈 Hide' : '👁 Show'}</button></div></Field><Field label="Role"><select style={S.select} value={usr.role} onChange={e => setUsr({ ...usr, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field></div><button style={S.btn('primary')} onClick={async () => { const newId = `u-${Date.now()}`; setUsers(prev => [...prev, { ...usr, id: newId, created_at: new Date().toISOString() }]); setShowAddUser(false); await API.post('users', { ...usr, id: newId }); loadData(); }}>Add</button></Modal>; };
 
   const navAction = (item) => {
     setSidebarOpen(false);
@@ -7356,7 +7378,14 @@ export default function App() {
         </div>
       )}
 
-      <ExpModal /><CapModal /><DistModal /><DecModal /><DeclineDraftModal /><UsrModal /><EditUserModal /><SettingsPwdModal />
+      <ExpModal showAddExpense={showAddExpense} setShowAddExpense={setShowAddExpense} expForm={expForm} setExpForm={setExpForm} settings={settings} currentUser={currentUser} setExpenses={setExpenses} loadData={loadData} />
+      <CapModal showAddCapital={showAddCapital} setShowAddCapital={setShowAddCapital} capitalTopUpFor={capitalTopUpFor} setCapitalTopUpFor={setCapitalTopUpFor} capital={capital} setCapital={setCapital} capForm={capForm} setCapForm={setCapForm} capShowPwd={capShowPwd} setCapShowPwd={setCapShowPwd} capAccountMode={capAccountMode} setCapAccountMode={setCapAccountMode} capSelectedUserId={capSelectedUserId} setCapSelectedUserId={setCapSelectedUserId} users={users} setUsers={setUsers} loadData={loadData} />
+      <DistModal showAddDistribution={showAddDistribution} setShowAddDistribution={setShowAddDistribution} distForm={distForm} setDistForm={setDistForm} setDistributions={setDistributions} currentUser={currentUser} loadData={loadData} />
+      <DecModal showAddDeclined={showAddDeclined} setShowAddDeclined={setShowAddDeclined} decForm={decForm} setDecForm={setDecForm} setDeclinedLog={setDeclinedLog} loadData={loadData} />
+      <DeclineDraftModal declineDraftModal={declineDraftModal} setDeclineDraftModal={setDeclineDraftModal} declineDraftDec={declineDraftDec} setDeclineDraftDec={setDeclineDraftDec} setDeclinedLog={setDeclinedLog} setDrafts={setDrafts} currentUser={currentUser} loadData={loadData} />
+      <UsrModal showAddUser={showAddUser} setShowAddUser={setShowAddUser} usrForm={usrForm} setUsrForm={setUsrForm} usrShowPwd={usrShowPwd} setUsrShowPwd={setUsrShowPwd} setUsers={setUsers} loadData={loadData} />
+      <EditUserModal showEditUser={showEditUser} setShowEditUser={setShowEditUser} editUserUsername={editUserUsername} setEditUserUsername={setEditUserUsername} editUserPassword={editUserPassword} setEditUserPassword={setEditUserPassword} editUserShowPwd={editUserShowPwd} setEditUserShowPwd={setEditUserShowPwd} setUsers={setUsers} loadData={loadData} loadActivityLogs={loadActivityLogs} />
+      <SettingsPwdModal showSettingsPwdModal={showSettingsPwdModal} setShowSettingsPwdModal={setShowSettingsPwdModal} settingsPwdInput={settingsPwdInput} setSettingsPwdInput={setSettingsPwdInput} settingsPwdError={settingsPwdError} setSettingsPwdError={setSettingsPwdError} settingsPwdLoading={settingsPwdLoading} setSettingsPwdLoading={setSettingsPwdLoading} pendingSettings={pendingSettings} setPendingSettings={setPendingSettings} saveSettings={saveSettings} />
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); }} />}</Modal>
       <Modal open={!!shopListingTx} onClose={() => setShopListingTx(null)} title={shopListingTx?.status === 'for_sale' ? '🏪 Edit Shop Listing' : '🏪 List Item in Shop'} wide>{shopListingTx && <ShopListingModal tx={shopListingTx} settings={settings} onClose={() => setShopListingTx(null)} onSave={async (tx) => { await saveTx(tx); loadData(); setShopListingTx(null); }} />}</Modal>
       <style>{`

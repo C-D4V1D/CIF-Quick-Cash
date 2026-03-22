@@ -28,8 +28,8 @@ const buildReportHTML = ({
   rStaffByTask, staffSharePct, totalTaskPoints, taskLabels, taskDefs,
   expByCategory,
 }) => {
-  const rows = (items, cols) => items.length === 0
-    ? `<tr><td colspan="${cols}" class="empty-row">No records</td></tr>`
+  const rows = (items, cols, numCols) => items.length === 0
+    ? `<tr><td colspan="${numCols}" class="empty-row">No records</td></tr>`
     : items.map(cols).join('');
 
   const repaymentRows = rows(rClosed, t => `
@@ -39,7 +39,7 @@ const buildReportHTML = ({
       <td class="num">${fmtMoney(t.cashAdvance)}</td>
       <td class="num green">${fmtMoney(t.totalFees)}</td>
       <td>${fmtDate(t.dateRepaid || t.updated_at)}</td>
-    </tr>`);
+    </tr>`, 5);
 
   const saleRows = rows(rSold, t => {
     const margin = (t.salePrice || 0) - (t.cashAdvance || 0);
@@ -53,7 +53,7 @@ const buildReportHTML = ({
       <td>${esc(t.saleBuyer)}</td>
       <td>${fmtDate(t.saleDate || t.updated_at)}</td>
     </tr>`;
-  });
+  }, 7);
 
   const newLoanRows = rows(rNewTxs, t => `
     <tr>
@@ -64,7 +64,7 @@ const buildReportHTML = ({
       <td class="num">${t.loanDays || 30} days</td>
       <td>${fmtDate(t.created_at)}</td>
       <td>${esc(t.status)}</td>
-    </tr>`);
+    </tr>`, 7);
 
   const expenseRows = rows(
     [...rExpenses].sort((a, b) => new Date(b.date) - new Date(a.date)),
@@ -74,7 +74,7 @@ const buildReportHTML = ({
       <td>${esc(e.category)}</td>
       <td>${esc(e.description || e.note)}</td>
       <td class="num red">${fmtMoney(e.amount)}</td>
-    </tr>`
+    </tr>`, 4
   );
 
   const categoryRows = Object.entries(expByCategory)

@@ -72,7 +72,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
       <tr>
         <td class="fl" style="width:12%"><b>ID Type:</b></td>
         <td class="fv" style="width:28%">${idTypeDisplay}</td>
-        <td class="fl" style="width:16%"><b>NIN Number:</b></td>
+        <td class="fl" style="width:16%"><b>${idTypeDisplay} Number:</b></td>
         <td class="fv" style="width:44%">${tx.idNumber || ''}</td>
       </tr>
     </table>
