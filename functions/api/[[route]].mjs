@@ -2,6 +2,9 @@
 const SESSION_COOKIE_SHORT = 'cfc_session_short';
 const SESSION_COOKIE_LONG = 'cfc_session_long';
 const REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
+const PASSWORD_HASH_PREFIX = 'pbkdf2_sha256';
+const PASSWORD_HASH_ITERATIONS = 210000;
+const PASSWORD_SALT_BYTES = 16;
 
 // Helper: JSON response — uses Headers so multiple Set-Cookie values work correctly
 const json = (data, status = 200, extraHeaders = {}) => {
@@ -44,6 +47,57 @@ const buildSessionCookie = (name, value, maxAge) => {
 };
 
 const clearSessionCookie = (name) => `${name}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`;
+
+const textEncoder = new TextEncoder();
+
+const toBase64 = (bytes) => {
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary);
+};
+
+const fromBase64 = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+
+const timingSafeEqual = (a, b) => {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+};
+
+const hashPassword = async (password) => {
+  const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
+  const keyMaterial = await crypto.subtle.importKey('raw', textEncoder.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
+  const derivedBits = await crypto.subtle.deriveBits({
+    name: 'PBKDF2',
+    salt,
+    iterations: PASSWORD_HASH_ITERATIONS,
+    hash: 'SHA-256',
+  }, keyMaterial, 256);
+  return `${PASSWORD_HASH_PREFIX}$${PASSWORD_HASH_ITERATIONS}$${toBase64(salt)}$${toBase64(new Uint8Array(derivedBits))}`;
+};
+
+const verifyPassword = async (password, storedPassword) => {
+  if (typeof storedPassword !== 'string' || !storedPassword) return { ok: false, needsUpgrade: false };
+  if (!storedPassword.startsWith(`${PASSWORD_HASH_PREFIX}$`)) {
+    return { ok: timingSafeEqual(password, storedPassword), needsUpgrade: true };
+  }
+
+  const [, iterationPart, saltPart, hashPart] = storedPassword.split('$');
+  const iterations = Number.parseInt(iterationPart, 10);
+  if (!iterations || !saltPart || !hashPart) return { ok: false, needsUpgrade: false };
+
+  const salt = fromBase64(saltPart);
+  const keyMaterial = await crypto.subtle.importKey('raw', textEncoder.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
+  const derivedBits = await crypto.subtle.deriveBits({
+    name: 'PBKDF2',
+    salt,
+    iterations,
+    hash: 'SHA-256',
+  }, keyMaterial, 256);
+  const actualHash = toBase64(new Uint8Array(derivedBits));
+  return { ok: timingSafeEqual(actualHash, hashPart), needsUpgrade: false };
+};
 
 // Read user from either cookie (long-lived takes priority)
 const getSessionUser = (request) => {
@@ -277,16 +331,23 @@ export async function onRequest(context) {
     if (path === 'login' && method === 'POST') {
       const { username, password, rememberMe } = await request.json();
       let user = await db
-        .prepare('SELECT id, username, role, roles, name, active FROM users WHERE username = ? AND password = ?')
-        .bind(username, password)
+        .prepare('SELECT id, username, password, role, roles, name, active FROM users WHERE username = ?')
+        .bind(username)
         .first()
         .catch(() =>
           // Fallback for databases where the `active`/`roles` migration hasn't run yet
-          db.prepare('SELECT id, username, role, name FROM users WHERE username = ? AND password = ?')
-            .bind(username, password).first().then(u => u ? { ...u, active: 1, roles: '[]' } : null)
+          db.prepare('SELECT id, username, password, role, name FROM users WHERE username = ?')
+            .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]' } : null)
         );
       if (!user) return error('Invalid username or password', 401);
+      const passwordCheck = await verifyPassword(password, user.password);
+      if (!passwordCheck.ok) return error('Invalid username or password', 401);
       if (user.active === 0) return error('This account has been disabled. Contact the administrator.', 403);
+      if (passwordCheck.needsUpgrade) {
+        const upgradedHash = await hashPassword(password);
+        await db.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgradedHash, user.id).run();
+        user = { ...user, password: upgradedHash };
+      }
 
       const parsedRoles = parseRoles(user.roles);
       const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, issuedAt: Date.now() });
@@ -317,11 +378,13 @@ export async function onRequest(context) {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const { password } = await request.json();
-      const match = await db
-        .prepare('SELECT id FROM users WHERE id = ? AND password = ?')
-        .bind(auth.user.id, password)
-        .first();
-      if (!match) return error('Incorrect password', 401);
+      const user = await db.prepare('SELECT id, password FROM users WHERE id = ?').bind(auth.user.id).first();
+      const passwordCheck = await verifyPassword(password, user?.password);
+      if (!passwordCheck.ok) return error('Incorrect password', 401);
+      if (passwordCheck.needsUpgrade) {
+        const upgradedHash = await hashPassword(password);
+        await db.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgradedHash, auth.user.id).run();
+      }
       return json({ ok: true });
     }
 
@@ -341,18 +404,18 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'bootstrap' && method === 'GET') {
       const scope = url.searchParams.get('scope') || 'critical';
+      const auth = scope !== 'critical' ? requireAuth(request) : null;
       if (scope !== 'critical') {
-        const auth = requireAuth(request);
         if (auth.error) return auth.error;
       }
-      const role = url.searchParams.get('role') || '';
+      const isAdmin = auth?.user?.role === 'admin';
 
       if (scope === 'secondary') {
         const [expensesRes, capitalRes, declinedRes, usersRes] = await Promise.all([
           db.prepare('SELECT id, date, category, description, amount, registered_by FROM expenses ORDER BY date DESC').all(),
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, ref, customer_name AS customerName, nin_bvn AS ninBvn, item, reason, notes FROM declined_log ORDER BY date DESC').all(),
-          role === 'admin'
+          isAdmin
             ? db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] }),
         ]);
@@ -442,9 +505,10 @@ export async function onRequest(context) {
       if (auth.error) return auth.error;
       const { id, username, password, role, name, roles } = await request.json();
       const rolesJson = JSON.stringify(Array.isArray(roles) ? roles : []);
+      const passwordHash = await hashPassword(password);
       await db
         .prepare('INSERT INTO users (id, username, password, role, roles, name) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(id, username, password, role, rolesJson, name)
+        .bind(id, username, passwordHash, role, rolesJson, name)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `👤 New ${role} account created: ${name} (@${username})` });
       return json({ success: true });
@@ -469,7 +533,7 @@ export async function onRequest(context) {
       if (!cur) return error('User not found', 404);
       const setClauses = []; const setParams = [];
       if (username !== undefined && username.trim() && username.trim() !== cur.username) { setClauses.push('username = ?'); setParams.push(username.trim()); }
-      if (password !== undefined && password.trim()) { setClauses.push('password = ?'); setParams.push(password.trim()); }
+      if (password !== undefined && password.trim()) { setClauses.push('password = ?'); setParams.push(await hashPassword(password.trim())); }
       if (active !== undefined && Number(active) !== Number(cur.active ?? 1)) { setClauses.push('active = ?'); setParams.push(active ? 1 : 0); }
       if (roles !== undefined && Array.isArray(roles)) { setClauses.push('roles = ?'); setParams.push(JSON.stringify(roles)); }
       if (setClauses.length) await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, id).run();
