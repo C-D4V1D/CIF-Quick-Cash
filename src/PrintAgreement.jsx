@@ -26,8 +26,8 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
   const colourCondition = [tx.aiColour, safeCondition].filter(Boolean).join('  —  ');
   const serialImei = [tx.imei && `IMEI: ${tx.imei}`, tx.serialNumber && `S/N: ${tx.serialNumber}`]
     .filter(Boolean).join('     ');
-  const interestRate = settings.interestRate || 1;
-  const dailyFee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * interestRate / 100);
+  const interestRate = settings.interestRate ?? 1;
+  const dailyFee = tx.dailyFee ?? Math.floor((tx.cashAdvance || 0) * Number(interestRate) / 100);
   const loanDays = tx.loanDays || 30;
 
   const hasReceipt = tx.hasReceipt ? true : false;

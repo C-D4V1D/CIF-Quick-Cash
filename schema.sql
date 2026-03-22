@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS users (
   id          TEXT    PRIMARY KEY,
   username    TEXT    NOT NULL UNIQUE,
-  password    TEXT    NOT NULL,
+  password    TEXT    NOT NULL, -- PBKDF2-SHA256 hash string
   role        TEXT    NOT NULL DEFAULT 'user',
   roles       TEXT    NOT NULL DEFAULT '[]',  -- JSON array of additional roles, e.g. '["stakeholder"]'
   name        TEXT    NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Default admin user
 INSERT OR IGNORE INTO users (id, username, password, role, name)
-  VALUES ('admin', 'cifadmin', 'CIF@dm!n#2025xQ8p', 'admin', 'Administrator');
+  VALUES ('admin', 'cifadmin', 'pbkdf2_sha256$210000$owReP1/ifmilje/3sEldAA==$I+5MqLOqWJRQ6DwHV1Ck3D2E42E6t9/XFhkfvEZE0ZA=', 'admin', 'Administrator');
 
 CREATE TABLE IF NOT EXISTS transactions (
   ref         TEXT    PRIMARY KEY,
