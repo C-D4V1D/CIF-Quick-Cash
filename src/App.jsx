@@ -696,9 +696,9 @@ const COLORS = {
   text: '#1a1a1a', textMuted: '#6b7280', border: '#e5e1d8', borderDark: '#d1cdc4',
 };
 
-const APP_PAGE_MAX_WIDTH = '1440px';
-const APP_PAGE_GUTTER = 'clamp(18px, 4vw, 56px)';
-const APP_PAGE_GUTTER_MOBILE = '16px';
+const APP_PAGE_MAX_WIDTH = '1280px';
+const APP_PAGE_GUTTER = 'clamp(28px, 5vw, 88px)';
+const APP_PAGE_GUTTER_MOBILE = '18px';
 const AUTH_PAGE_CONTENT_STYLE = (isMobile) => ({
   width: '100%',
   maxWidth: APP_PAGE_MAX_WIDTH,
@@ -706,7 +706,7 @@ const AUTH_PAGE_CONTENT_STYLE = (isMobile) => ({
   paddingInline: isMobile ? APP_PAGE_GUTTER_MOBILE : APP_PAGE_GUTTER,
   boxSizing: 'border-box',
 });
-const PUBLIC_PAGE_SHELL_STYLE = (isMobile, maxWidth = '1120px') => ({
+const PUBLIC_PAGE_SHELL_STYLE = (isMobile, maxWidth = '1040px') => ({
   width: '100%',
   maxWidth,
   margin: '0 auto',
