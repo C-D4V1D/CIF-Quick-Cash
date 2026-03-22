@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Default admin user
 INSERT OR IGNORE INTO users (id, username, password, role, name)
-  VALUES ('admin', 'cifadmin', 'pbkdf2_sha256$210000$owReP1/ifmilje/3sEldAA==$I+5MqLOqWJRQ6DwHV1Ck3D2E42E6t9/XFhkfvEZE0ZA=', 'admin', 'Administrator');
+  VALUES ('admin', 'cifadmin', 'pbkdf2_sha256$100000$u7LD0M2xIoi2gVt1cujVBw==$MhniNOx1JQYo18UYqwk+6AS6SPW5j8zTyqXQG9Lv900=', 'admin', 'Administrator'); -- default password: CifAdmin@1 (change immediately)
 
 CREATE TABLE IF NOT EXISTS transactions (
   ref         TEXT    PRIMARY KEY,

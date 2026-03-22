@@ -5,7 +5,7 @@ const SESSION_COOKIE_SHORT = 'cfc_session_short';
 const SESSION_COOKIE_LONG = 'cfc_session_long';
 const REMEMBER_ME_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 const PASSWORD_HASH_PREFIX = 'pbkdf2_sha256';
-const PASSWORD_HASH_ITERATIONS = 210000;
+const PASSWORD_HASH_ITERATIONS = 100000;
 const PASSWORD_SALT_BYTES = 16;
 
 // Helper: JSON response — uses Headers so multiple Set-Cookie values work correctly
@@ -103,8 +103,12 @@ const verifyPassword = async (password, storedPassword) => {
   if (!iterations || !saltPart || !hashPart) return { ok: false, needsUpgrade: false };
 
   const salt = fromBase64(saltPart);
-  const actualHash = await derivePbkdf2Base64(password, salt, iterations);
-  return { ok: timingSafeEqual(actualHash, hashPart), needsUpgrade: false };
+  try {
+    const actualHash = await derivePbkdf2Base64(password, salt, iterations);
+    return { ok: timingSafeEqual(actualHash, hashPart), needsUpgrade: false };
+  } catch {
+    return { ok: false, needsUpgrade: false };
+  }
 };
 
 // Read user from either cookie (long-lived takes priority)
