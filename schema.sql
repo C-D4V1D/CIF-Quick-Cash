@@ -44,14 +44,18 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 CREATE TABLE IF NOT EXISTS expenses (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  date        TEXT    NOT NULL,
-  category    TEXT    NOT NULL,
-  description TEXT,
-  amount      REAL    NOT NULL
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  date          TEXT    NOT NULL,
+  category      TEXT    NOT NULL,
+  description   TEXT,
+  amount        REAL    NOT NULL,
+  registered_by TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (date DESC);
+
+-- Migration for existing databases (run once against live D1):
+-- ALTER TABLE expenses ADD COLUMN registered_by TEXT;
 
 CREATE TABLE IF NOT EXISTS capital (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
