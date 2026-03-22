@@ -1,6 +1,8 @@
 name = "cifcash"
 pages_build_output_dir = "dist"
 
+compatibility_flags = ["nodejs_compat"]
+
 [[d1_databases]]
 binding       = "DB"
 database_name = "cifcash-db"
@@ -9,3 +11,4 @@ database_id   = "84f2f966-3cf2-43d5-b5bc-028435dcc419"
 [[r2_buckets]]
 binding     = "PHOTOS"
 bucket_name = "cifcash-photos"
+

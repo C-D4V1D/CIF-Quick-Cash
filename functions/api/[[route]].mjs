@@ -1,3 +1,5 @@
+import { pbkdf2Sync, randomBytes, timingSafeEqual as nodeTimingSafeEqual } from 'node:crypto';
+
 // Session cookie names — short-lived (session) vs long-lived (remember me)
 const SESSION_COOKIE_SHORT = 'cfc_session_short';
 const SESSION_COOKIE_LONG = 'cfc_session_long';
@@ -60,21 +62,34 @@ const fromBase64 = (value) => Uint8Array.from(atob(value), (char) => char.charCo
 
 const timingSafeEqual = (a, b) => {
   if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+  try {
+    return nodeTimingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch {
+    let diff = 0;
+    for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
+  }
+};
+
+const derivePbkdf2Base64 = async (password, salt, iterations) => {
+  try {
+    return pbkdf2Sync(password, salt, iterations, 32, 'sha256').toString('base64');
+  } catch {
+    const keyMaterial = await crypto.subtle.importKey('raw', textEncoder.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
+    const derivedBits = await crypto.subtle.deriveBits({
+      name: 'PBKDF2',
+      salt,
+      iterations,
+      hash: 'SHA-256',
+    }, keyMaterial, 256);
+    return toBase64(new Uint8Array(derivedBits));
+  }
 };
 
 const hashPassword = async (password) => {
-  const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
-  const keyMaterial = await crypto.subtle.importKey('raw', textEncoder.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
-  const derivedBits = await crypto.subtle.deriveBits({
-    name: 'PBKDF2',
-    salt,
-    iterations: PASSWORD_HASH_ITERATIONS,
-    hash: 'SHA-256',
-  }, keyMaterial, 256);
-  return `${PASSWORD_HASH_PREFIX}$${PASSWORD_HASH_ITERATIONS}$${toBase64(salt)}$${toBase64(new Uint8Array(derivedBits))}`;
+  const salt = randomBytes(PASSWORD_SALT_BYTES);
+  const hash = await derivePbkdf2Base64(password, salt, PASSWORD_HASH_ITERATIONS);
+  return `${PASSWORD_HASH_PREFIX}$${PASSWORD_HASH_ITERATIONS}$${salt.toString('base64')}$${hash}`;
 };
 
 const verifyPassword = async (password, storedPassword) => {
@@ -88,14 +103,7 @@ const verifyPassword = async (password, storedPassword) => {
   if (!iterations || !saltPart || !hashPart) return { ok: false, needsUpgrade: false };
 
   const salt = fromBase64(saltPart);
-  const keyMaterial = await crypto.subtle.importKey('raw', textEncoder.encode(password), { name: 'PBKDF2' }, false, ['deriveBits']);
-  const derivedBits = await crypto.subtle.deriveBits({
-    name: 'PBKDF2',
-    salt,
-    iterations,
-    hash: 'SHA-256',
-  }, keyMaterial, 256);
-  const actualHash = toBase64(new Uint8Array(derivedBits));
+  const actualHash = await derivePbkdf2Base64(password, salt, iterations);
   return { ok: timingSafeEqual(actualHash, hashPart), needsUpgrade: false };
 };
 
