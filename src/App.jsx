@@ -696,6 +696,24 @@ const COLORS = {
   text: '#1a1a1a', textMuted: '#6b7280', border: '#e5e1d8', borderDark: '#d1cdc4',
 };
 
+const APP_PAGE_MAX_WIDTH = '1440px';
+const APP_PAGE_GUTTER = 'clamp(18px, 4vw, 56px)';
+const APP_PAGE_GUTTER_MOBILE = '16px';
+const AUTH_PAGE_CONTENT_STYLE = (isMobile) => ({
+  width: '100%',
+  maxWidth: APP_PAGE_MAX_WIDTH,
+  margin: '0 auto',
+  paddingInline: isMobile ? APP_PAGE_GUTTER_MOBILE : APP_PAGE_GUTTER,
+  boxSizing: 'border-box',
+});
+const PUBLIC_PAGE_SHELL_STYLE = (isMobile, maxWidth = '1120px') => ({
+  width: '100%',
+  maxWidth,
+  margin: '0 auto',
+  paddingInline: isMobile ? APP_PAGE_GUTTER_MOBILE : APP_PAGE_GUTTER,
+  boxSizing: 'border-box',
+});
+
 const S = {
   app: { fontFamily: "'DM Sans', 'Nunito', sans-serif", background: COLORS.bg, minHeight: '100vh', color: COLORS.text, fontSize: '14px', lineHeight: 1.6 },
   loginWrap: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: `linear-gradient(135deg, ${COLORS.primaryDark} 0%, ${COLORS.primary} 50%, #2d7a3e 100%)`, padding: '20px' },
@@ -1288,7 +1306,7 @@ function SalesPage({ onBack, settings }) {
           </div>
         </div>
 
-        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+        <div style={PUBLIC_PAGE_SHELL_STYLE(isMobile, '1120px')}>
           {/* Photo Section */}
           <div style={{ background: '#fff' }}>
             <div style={{ position: 'relative', height: isMobile ? '320px' : '440px', background: '#f3f4f6', overflow: 'hidden' }}>
@@ -1455,7 +1473,7 @@ function SalesPage({ onBack, settings }) {
 
       {/* Header */}
       <div style={{ background: '#1a5f2a', padding: '16px 20px', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ ...PUBLIC_PAGE_SHELL_STYLE(isMobile, '1280px'), display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <button onClick={onBack} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>
             ← Back
           </button>
@@ -1472,7 +1490,7 @@ function SalesPage({ onBack, settings }) {
 
       {/* Hero banner */}
       <div style={{ background: 'linear-gradient(135deg, #0d3518, #1a5f2a, #2d7a3e)', padding: isMobile ? '24px 20px' : '32px 20px', textAlign: 'center', color: '#fff' }}>
-        <div style={{ maxWidth: '700px', margin: '0 auto' }}>
+        <div style={PUBLIC_PAGE_SHELL_STYLE(isMobile, '780px')}>
           <div style={{ fontSize: '36px', marginBottom: '8px' }}>🛍</div>
           <h1 style={{ fontSize: isMobile ? '22px' : '28px', fontWeight: 800, margin: '0 0 8px', lineHeight: 1.3 }}>Quality Items at Low Prices</h1>
           <p style={{ fontSize: '15px', opacity: 0.9, margin: '0 0 4px' }}>
@@ -1486,7 +1504,7 @@ function SalesPage({ onBack, settings }) {
 
       {/* How to Buy section */}
       <div style={{ background: '#fff', borderBottom: '1px solid #e5e1d8', padding: '20px' }}>
-        <div style={{ maxWidth: '800px', margin: '0 auto' }}>
+        <div style={PUBLIC_PAGE_SHELL_STYLE(isMobile, '880px')}>
           <h2 style={{ fontSize: '16px', fontWeight: 800, margin: '0 0 12px', color: '#1a5f2a', textAlign: 'center' }}>How to Buy — 3 Easy Steps</h2>
           <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: '12px' }}>
             {[
@@ -1507,7 +1525,7 @@ function SalesPage({ onBack, settings }) {
 
       {/* Search + Filters */}
       <div style={{ background: '#fff', borderBottom: '1px solid #e5e1d8', padding: '16px 20px', position: 'sticky', top: isMobile ? '52px' : '56px', zIndex: 50 }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
+        <div style={PUBLIC_PAGE_SHELL_STYLE(isMobile, '1280px')}>
           {/* Search bar */}
           <div style={{ position: 'relative', marginBottom: '12px' }}>
             <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '18px' }}>🔍</span>
@@ -1552,14 +1570,14 @@ function SalesPage({ onBack, settings }) {
       </div>
 
       {/* Items count */}
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '16px 20px 0' }}>
+      <div style={{ ...PUBLIC_PAGE_SHELL_STYLE(isMobile, '1280px'), paddingTop: '16px' }}>
         <div style={{ fontSize: '14px', color: '#6b7280', fontWeight: 600 }}>
           {loading ? 'Loading items...' : `${filtered.length} item${filtered.length !== 1 ? 's' : ''} available`}
         </div>
       </div>
 
       {/* Items grid */}
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '12px 20px 32px' }}>
+      <div style={{ ...PUBLIC_PAGE_SHELL_STYLE(isMobile, '1280px'), paddingTop: '12px', paddingBottom: '32px' }}>
         {loading ? (
           <div style={{ textAlign: 'center', padding: '60px 20px' }}>
             <div style={{ fontSize: '48px', marginBottom: '12px' }}>🔄</div>
@@ -1646,7 +1664,7 @@ function SalesPage({ onBack, settings }) {
 
       {/* Recently Sold Section */}
       {soldItems.length > 0 && s.shopShowSoldHistory !== false && (
-        <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px 36px' }}>
+        <div style={{ ...PUBLIC_PAGE_SHELL_STYLE(isMobile, '1280px'), paddingBottom: '36px' }}>
           <div style={{ borderTop: '2px solid #e5e1d8', paddingTop: '32px', marginTop: '8px' }}>
             <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: '#1a1a1a' }}>Recently Sold</h2>
             <p style={{ fontSize: '13px', color: '#6b7280', marginBottom: '20px' }}>Items we've sold recently — proof of quality and fair pricing.</p>
@@ -2284,7 +2302,7 @@ function CustomerPortal({ onBack, settings }) {
         <p style={{ margin: 0, opacity: 0.85, fontSize: '15px' }}>Type the number from your agreement form — just the digits, no need to type "CIF".</p>
       </div>
 
-      <div style={{ padding: '24px 20px', maxWidth: '500px', margin: '0 auto' }}>
+      <div style={{ ...PUBLIC_PAGE_SHELL_STYLE(false, '640px'), paddingTop: '24px', paddingBottom: '24px' }}>
         {/* Search */}
         {(!searched || result === 'not_found') && (
           <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', marginBottom: '20px', border: '1px solid #2a3447' }}>
@@ -2657,7 +2675,8 @@ function LoginScreen({ onLogin }) {
 
   return (
     <div style={S.loginWrap}>
-      <div style={S.loginCard}>
+      <div style={{ ...PUBLIC_PAGE_SHELL_STYLE(false, '560px'), display: 'flex', justifyContent: 'center' }}>
+        <div style={S.loginCard}>
         <div style={{ textAlign: 'center', marginBottom: '8px' }}><span style={{ fontSize: '36px' }}>💰</span></div>
         <div style={S.loginTitle}>CHRIST-IN-FABIAN</div>
         <div style={{ fontSize: '14px', fontWeight: 700, textAlign: 'center', color: COLORS.accent, marginBottom: '4px', letterSpacing: '2px' }}>QUICK CASH</div>
@@ -2677,6 +2696,7 @@ function LoginScreen({ onLogin }) {
         <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center', marginTop: '8px', padding: '12px', opacity: loading ? 0.6 : 1 }} onClick={handleLogin} disabled={loading}>
           {loading ? '⏳ Signing in...' : 'Sign In →'}
         </button>
+        </div>
       </div>
     </div>
   );
@@ -5311,16 +5331,19 @@ export default function App() {
   if (!currentUser) {
     return (
       <Routes>
-        <Route path="/check-loan-status" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/check-loan-status" element={<CustomerPortal settings={settings} onBack={() => navigate('/home')} />} />
         <Route path="/checkloanstatus" element={<Navigate to="/check-loan-status" replace />} />
-        <Route path="/shop" element={<SalesPage settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/shop" element={<SalesPage settings={settings} onBack={() => navigate('/home')} />} />
+        <Route path="/home" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} onShop={() => navigate('/shop')} />} />
+        <Route path="/landing" element={<Navigate to="/home" replace />} />
         <Route path="/login" element={<LoginScreen onLogin={(u) => {
           const normalizedUser = normalizeUser(u);
           writeCache('cfc_user', normalizedUser);
           setCurrentUser(normalizedUser);
           navigate('/dashboard');
         }} />} />
-        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} onShop={() => navigate('/shop')} />} />
+        <Route path="/" element={<Navigate to="/home" replace />} />
+        <Route path="*" element={<Navigate to="/home" replace />} />
       </Routes>
     );
   }
@@ -5332,6 +5355,10 @@ export default function App() {
 
   // Allow authenticated users to view the landing page
   if (location.pathname === '/landing') {
+    return <Navigate to="/home" replace />;
+  }
+
+  if (location.pathname === '/home') {
     return <LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/dashboard')} onShop={() => navigate('/shop')} />;
   }
 
@@ -5354,7 +5381,7 @@ export default function App() {
         <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</div>
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
-      <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
+      <div style={{ ...AUTH_PAGE_CONTENT_STYLE(isMobile), paddingTop: isMobile ? '12px' : '20px', paddingBottom: isMobile ? '12px' : '20px', maxWidth: '1080px' }}>
         <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
       </div>
     </div>
@@ -7418,7 +7445,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isMobile && <button style={S.hamburger} onClick={() => setSidebarOpen(o => !o)} aria-label="Menu">☰</button>}
           <span style={{ fontSize: '20px' }}>💰</span>
-          <button onClick={() => navigate('/landing')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
+          <button onClick={() => navigate('/home')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
@@ -7457,11 +7484,13 @@ export default function App() {
             ))}
           </div>
         )}
-        <div style={{ ...S.mainContent, padding: isMobile ? '16px' : '24px', maxHeight: isMobile ? 'none' : 'calc(100vh - 56px)', paddingBottom: isMobile ? '80px' : '24px' }}>
+        <div style={{ ...S.mainContent, padding: isMobile ? '16px 0 80px' : '24px 0', maxHeight: isMobile ? 'none' : 'calc(100vh - 56px)' }}>
+          <div style={AUTH_PAGE_CONTENT_STYLE(isMobile)}>
           {renderPage()}
-          <PhotoViewer />
-          <div style={{ marginTop: '40px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}`, textAlign: 'center' }}>
-            <PartnershipFootnote />
+            <PhotoViewer />
+            <div style={{ marginTop: '40px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}`, textAlign: 'center' }}>
+              <PartnershipFootnote />
+            </div>
           </div>
         </div>
       </div>
