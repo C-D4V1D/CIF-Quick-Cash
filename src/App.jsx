@@ -1846,7 +1846,8 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 700, fontSize: '15px', color: '#111' }}>{tx.aiBrand} {tx.aiModel}</div>
           <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
-          {tx.estimatedValue > 0 && <div style={{ fontSize: '12px', color: '#059669', fontWeight: 600, marginTop: '2px' }}>Est. market value: {fmtMoney(tx.estimatedValue)}</div>}
+          {tx.cashAdvance > 0 && <div style={{ fontSize: '12px', color: '#374151', fontWeight: 600, marginTop: '2px' }}>Cash advance: {fmtMoney(tx.cashAdvance)}</div>}
+          {tx.type === 'advance' && tx.cashAdvance > 0 && (() => { const elapsed = daysBetween(tx.dateGiven); const amountDue = tx.cashAdvance + elapsed * dailyFee; return <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '2px' }}>Amount due: {fmtMoney(amountDue)}</div>; })()}
           {tx.imei && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>IMEI: {tx.imei}</div>}
           {tx.serialNumber && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>Serial: {tx.serialNumber}</div>}
         </div>
@@ -4684,6 +4685,11 @@ export default function App() {
     return <SalesPage settings={settings} onBack={() => navigate('/dashboard')} />;
   }
 
+  // Allow authenticated users to view the landing page
+  if (location.pathname === '/landing') {
+    return <LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/dashboard')} onShop={() => navigate('/shop')} />;
+  }
+
   // Redirect authenticated users away from public paths (including root)
   if (['/', '/login', '/checkloanstatus', '/check-loan-status'].includes(location.pathname)) {
     return <Navigate to="/dashboard" replace />;
@@ -4780,7 +4786,7 @@ export default function App() {
           {row('Condition', tx.aiCondition)}
           {tx.imei && row('IMEI', <>{tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: tx.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
           {tx.serialNumber && row('Serial No.', tx.serialNumber)}
-          {tx.conditionDescription && row('Condition Notes', tx.conditionDescription)}
+          {tx.inspectionNotes && row('Inspection Result', tx.inspectionNotes)}
           {tx.hasReceipt != null && row('Receipt', tx.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
           {tx.aiPriceBasis && row('Price Basis', tx.aiPriceBasis)}
           {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
@@ -5374,7 +5380,7 @@ export default function App() {
               This page is the capital-recovery queue for staff. It shows every loan or item that needs action to recover money, sorted from the most urgent sale and ownership states down to customer follow-ups due today.
             </p>
 
-            <div style={{ ...S.grid3, marginBottom: '20px' }}>
+            <div style={{ ...S.grid2, marginBottom: '20px' }}>
               <div style={{ ...S.stat, background: allActionLoans.length > 0 ? '#fef3c7' : COLORS.primaryLight }}>
                 <div style={S.statLabel}>Recovery Queue</div>
                 <div style={{ ...S.statValue, color: allActionLoans.length > 0 ? '#92400e' : COLORS.primary }}>{allActionLoans.length}</div>
@@ -5382,10 +5388,6 @@ export default function App() {
               <div style={{ ...S.stat, background: totalAtRisk > 0 ? '#fee2e2' : COLORS.primaryLight }}>
                 <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital at Risk<InfoIcon tip="Total cash tied up in every loan or item on this recovery queue, including sale-ready and listed inventory." /></div>
                 <div style={{ ...S.statValue, color: totalAtRisk > 0 ? '#dc2626' : COLORS.primary }}>{fmtMoney(totalAtRisk)}</div>
-              </div>
-              <div style={S.stat}>
-                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Customer Follow-Up Now<InfoIcon tip="Loans on this page that still need the team to actively reach out to the customer today." /></div>
-                <div style={{ ...S.statValue, color: customerFollowUps > 0 ? '#dc2626' : COLORS.primary }}>{customerFollowUps}</div>
               </div>
             </div>
 
@@ -7288,7 +7290,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isMobile && <button style={S.hamburger} onClick={() => setSidebarOpen(o => !o)} aria-label="Menu">☰</button>}
           <span style={{ fontSize: '20px' }}>💰</span>
-          <span style={{ fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px' }}>CIF QUICK CASH</span>
+          <button onClick={() => navigate('/landing')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}

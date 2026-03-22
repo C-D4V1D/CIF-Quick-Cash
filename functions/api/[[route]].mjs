@@ -617,12 +617,17 @@ export async function onRequest(context) {
       // sale_allowed_date = dateGiven + maxLoanDays + graceDays + 1
       // This single check covers both the "no sale before day maxLoanDays+graceDays+1"
       // and "no inventory before day maxLoanDays" constraints.
+      // Exception: voluntarily surrendered items (surrenderDate set or previously ready_to_sell)
+      // can be listed at any time since the customer explicitly gave up the item.
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
-        const timeline = computeLoanTimeline(tx, loanCfg);
-        if (timeline && timeline.sale_allowed_date) {
-          const today = todayNigeria();
-          if (today < timeline.sale_allowed_date) {
-            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
+        const isVoluntarySurrender = !!(tx.surrenderDate || existingData?.surrenderDate || existing?.status === 'ready_to_sell');
+        if (!isVoluntarySurrender) {
+          const timeline = computeLoanTimeline(tx, loanCfg);
+          if (timeline && timeline.sale_allowed_date) {
+            const today = todayNigeria();
+            if (today < timeline.sale_allowed_date) {
+              return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
+            }
           }
         }
       }
@@ -669,12 +674,16 @@ export async function onRequest(context) {
       }
 
       // Prevent marking an advance loan for sale before sale_allowed_date.
+      // Exception: voluntarily surrendered items can be listed at any time.
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
-        const timeline = computeLoanTimeline(tx, loanCfg);
-        if (timeline && timeline.sale_allowed_date) {
-          const today = todayNigeria();
-          if (today < timeline.sale_allowed_date) {
-            return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
+        const isVoluntarySurrender = !!(tx.surrenderDate || existingData?.surrenderDate || existing?.status === 'ready_to_sell');
+        if (!isVoluntarySurrender) {
+          const timeline = computeLoanTimeline(tx, loanCfg);
+          if (timeline && timeline.sale_allowed_date) {
+            const today = todayNigeria();
+            if (today < timeline.sale_allowed_date) {
+              return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
+            }
           }
         }
       }
