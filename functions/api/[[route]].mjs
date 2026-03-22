@@ -8,6 +8,17 @@ const PASSWORD_HASH_PREFIX = 'pbkdf2_sha256';
 const PASSWORD_HASH_ITERATIONS = 100000;
 const PASSWORD_SALT_BYTES = 16;
 
+const ALLOWED_USER_ROLES = ['admin', 'staff', 'stakeholder'];
+const ALLOWED_PHOTO_MIME_TYPES = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+  ['image/heic', 'heic'],
+  ['image/heif', 'heif'],
+  ['image/avif', 'avif'],
+]);
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
 // Helper: JSON response — uses Headers so multiple Set-Cookie values work correctly
 const json = (data, status = 200, extraHeaders = {}) => {
   const headers = new Headers({ 'Content-Type': 'application/json' });
@@ -19,6 +30,17 @@ const json = (data, status = 200, extraHeaders = {}) => {
 };
 
 const error = (msg, status = 400) => json({ error: msg }, status);
+
+const canRecordDistribution = async (request, db) => {
+  const auth = requireAuth(request);
+  if (auth.error) return auth;
+  if (auth.user.role === 'admin') return auth;
+  const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first().catch(() => null);
+  const config = row ? JSON.parse(row.value || '{}') : {};
+  const allowed = Array.isArray(config.distributionAuthorizedUserIds) ? config.distributionAuthorizedUserIds : [];
+  if (!allowed.includes(auth.user.id)) return { error: error('You are not allowed to record profit distributions', 403) };
+  return auth;
+};
 
 // Parse the JSON roles column safely — returns an array (never throws)
 const parseRoles = (rolesJson) => {
@@ -330,10 +352,19 @@ export async function onRequest(context) {
       if (!env.PHOTOS) return error('R2 bucket binding missing — add PHOTOS binding in wrangler.toml', 500);
       const { data, mimeType } = await request.json();
       if (!data || !mimeType) return error('Missing data or mimeType');
-      const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
-      const key = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-      await env.PHOTOS.put(key, bytes, { httpMetadata: { contentType: mimeType } });
+      const normalizedMime = String(mimeType).toLowerCase().trim();
+      const ext = ALLOWED_PHOTO_MIME_TYPES.get(normalizedMime);
+      if (!ext) return error('Unsupported photo type. Upload a JPG, PNG, WebP, HEIC, HEIF, or AVIF image.', 415);
+      let bytes;
+      try {
+        bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      } catch {
+        return error('Invalid photo data', 400);
+      }
+      if (!bytes.length) return error('Photo upload is empty', 400);
+      if (bytes.length > MAX_PHOTO_BYTES) return error(`Photo is too large. Maximum size is ${Math.floor(MAX_PHOTO_BYTES / (1024 * 1024))}MB.`, 413);
+      const key = `${Date.now()}-${randomBytes(16).toString('hex')}.${ext}`;
+      await env.PHOTOS.put(key, bytes, { httpMetadata: { contentType: normalizedMime } });
       return json({ url: `/api/photos/${key}` });
     }
 
@@ -514,14 +545,26 @@ export async function onRequest(context) {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
       const { id, username, password, role, name, roles } = await request.json();
-      const rolesJson = JSON.stringify(Array.isArray(roles) ? roles : []);
-      const passwordHash = await hashPassword(password);
+      const normalizedUsername = String(username || '').trim().toLowerCase();
+      const normalizedName = String(name || '').trim();
+      const normalizedPassword = String(password || '').trim();
+      const normalizedRole = String(role || '').trim();
+      if (!normalizedName) return error('Name is required');
+      if (!normalizedUsername) return error('Username is required');
+      if (!normalizedPassword) return error('Password is required');
+      if (!ALLOWED_USER_ROLES.includes(normalizedRole)) return error('Invalid role');
+      const existingUser = await db.prepare('SELECT id FROM users WHERE lower(username) = ?').bind(normalizedUsername).first();
+      if (existingUser) return error('Username already exists', 409);
+      const safeRoles = Array.isArray(roles) ? roles.filter(r => typeof r === 'string' && ALLOWED_USER_ROLES.includes(r) && r !== normalizedRole) : [];
+      const rolesJson = JSON.stringify([...new Set(safeRoles)]);
+      const passwordHash = await hashPassword(normalizedPassword);
+      const userId = id || `u-${Date.now()}`;
       await db
         .prepare('INSERT INTO users (id, username, password, role, roles, name) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(id, username, passwordHash, role, rolesJson, name)
+        .bind(userId, normalizedUsername, passwordHash, normalizedRole, rolesJson, normalizedName)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: id, description: `👤 New ${role} account created: ${name} (@${username})` });
-      return json({ success: true });
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'user', entityId: userId, description: `👤 New ${normalizedRole} account created: ${normalizedName} (@${normalizedUsername})` });
+      return json({ success: true, id: userId });
     }
     if (path.startsWith('users/') && method === 'DELETE') {
       const auth = requireAdmin(request);
@@ -846,7 +889,7 @@ export async function onRequest(context) {
       } catch (_) { return json([]); }
     }
     if (path === 'distributions' && method === 'POST') {
-      const auth = requireAuth(request);
+      const auth = await canRecordDistribution(request, db);
       if (auth.error) return auth.error;
       const { date, amount, method: distMethod, note, receipt } = await request.json();
       const inserted = await db

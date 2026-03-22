@@ -49,9 +49,10 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      if (!r.ok) throw new Error(`API error: ${r.status}`);
-      return await r.json();
-    } catch (e) { console.error(`PUT /api/${endpoint}:`, e); return null; }
+      const body = await r.json().catch(() => null);
+      if (!r.ok) return body || { error: `Server error ${r.status}` };
+      return body;
+    } catch (e) { console.error(`PUT /api/${endpoint}:`, e); return { error: 'Network error — please try again' }; }
   },
   async del(endpoint) {
     try {
@@ -336,6 +337,7 @@ const DEFAULT_SETTINGS = {
   dueDateFollowUpDays: [1, 0],
   ownershipFollowUpDays: [3, 0],
   penaltyRateMultiplier: 1.5,
+  distributionAuthorizedUserIds: [],
   // Security
   sessionTimeoutMinutes: 480,
   minPasswordLength: 6,
@@ -401,8 +403,8 @@ const saveApiUsage = (usage) => {
   try { localStorage.setItem(API_USAGE_KEY, JSON.stringify(usage)); } catch {}
 };
 
-const getTodayKey = () => new Date().toISOString().slice(0, 10); // "2026-03-20"
-const getMonthKey = () => new Date().toISOString().slice(0, 7);  // "2026-03"
+const getTodayKey = () => localISODate(); // Nigeria-local YYYY-MM-DD
+const getMonthKey = () => localISODate().slice(0, 7);  // Nigeria-local YYYY-MM
 
 const trackGeminiCall = () => {
   const usage = getApiUsage();
@@ -532,18 +534,17 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
-      trackGeminiCall();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       // For thinking models (2.5-pro), set a low thinking budget to reduce latency
       const isThinkingModel = modelName.includes('pro');
       const body = { contents: [{ parts }] };
       if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      trackGeminiCall();
       let resp = await fetch(url, options);
       // Retry once on transient errors (429/500/502/503)
       if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
         await new Promise(r => setTimeout(r, 2000));
-        trackGeminiCall();
         resp = await fetch(url, options);
       }
       const data = await resp.json().catch(() => null);
@@ -576,17 +577,16 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
-      trackGeminiCall();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const isThinkingModel = modelName.includes('pro');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
       if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      trackGeminiCall();
       let resp = await fetch(url, options);
       // Retry once on transient errors (429/500/502/503)
       if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
         await new Promise(r => setTimeout(r, 2000));
-        trackGeminiCall();
         resp = await fetch(url, options);
       }
       const data = await resp.json().catch(() => null);
@@ -793,7 +793,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
     }
   };
 
-  const displaySrc = value || preview;
+  const displaySrc = preview || value;
 
   return (
     <div style={{ textAlign: 'center' }}>
@@ -2298,7 +2298,7 @@ function CustomerPortal({ onBack, settings }) {
           const daysInfo = getDaysInfo(tx);
           const owed = calcOwedToday(tx);
           const agreedDueDateLabel = formatDateLong(tx.deadlineDate);
-          const isOverdue = !!daysInfo && (daysInfo.isAfterAgreedDue || daysInfo.isOnAgreedDueDate);
+          const isOverdue = !!daysInfo && daysInfo.isAfterAgreedDue;
           // Pre-compute key milestone date labels (using current settings, used for all scenarios)
           const maxLoanDaysNum = Math.max(1, Number(s.maxLoanDays) || 30);
           const graceDaysNum = Math.max(0, Number(s.graceDays) || 3);
@@ -2584,6 +2584,7 @@ function LoginScreen({ onLogin }) {
   }, []);
 
   const handleLogin = async () => {
+    if (loading) return;
     setLoading(true);
     setError('');
 
@@ -2999,7 +3000,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
     if (result.error) { setImeiAiError(result.error); }
     else {
       const extracted = result.text.trim().replace(/\D/g, '');
-      if (!extracted || extracted.length < 14) { setImeiAiError('AI could not read a valid IMEI from the photo. Try a clearer, closer shot of the screen.'); }
+      if (!extracted || extracted.length !== 15) { setImeiAiError('AI could not read a valid 15-digit IMEI from the photo. Try a clearer, closer shot of the screen.'); }
       else { upd('imei', extracted); setImeiAiError(''); }
     }
     setImeiAiLoading(false);
@@ -3901,7 +3902,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
   };
 
   const handleComplete = async () => {
-    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
+    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString(), serviceFeeAmount: tx.type === 'advance' && tx.serviceFeeCollected ? (settings.serviceFee || 1000) : 0 };
     const saved = await API.post('transactions', finalTx);
     if (!saved?.success) return;
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
@@ -4070,7 +4071,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
             )}
 
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
-              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue ?? tx.aiEstimatedValue ?? ''} onChange={e => {
                 let val = Number(e.target.value) || 0;
                 const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
                 if (maxPrice > 0 && val > maxPrice) val = maxPrice;
@@ -4175,7 +4176,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
             {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
             <button style={S.btn('muted')} onClick={async () => { await saveDraftNow(); onCancel(); }}>Save Draft & Exit</button>
           </div>
-          {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={() => { saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
+          {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={async () => { await saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
         </div>
       </div>
     </div>
@@ -4799,9 +4800,10 @@ function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setD
     const amount = Number(distForm.amount) || 0;
     if (!amount || !distForm.date || !distForm.method) return;
     const entry = { date: distForm.date, amount, method: distForm.method, note: distForm.note.trim(), receipt: distForm.receipt };
+    const res = await API.post('distributions', entry);
+    if (res?.error) { window.alert(res.error); return; }
     setDistributions(prev => [{ ...entry, id: Date.now(), created_by: currentUser?.name || currentUser?.username || '', created_at: new Date().toISOString() }, ...prev]);
     setShowAddDistribution(false);
-    await API.post('distributions', entry);
     loadData();
   };
   return (
@@ -4951,7 +4953,7 @@ function EditUserModal({ showEditUser, setShowEditUser, editUserUsername, setEdi
   );
 }
 
-function UsrModal({ showAddUser, setShowAddUser, usrForm, setUsrForm, usrShowPwd, setUsrShowPwd, setUsers, loadData }) {
+function UsrModal({ showAddUser, setShowAddUser, usrForm, setUsrForm, usrShowPwd, setUsrShowPwd, loadData }) {
   return (
     <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User">
       <div style={S.grid2}>
@@ -4960,7 +4962,7 @@ function UsrModal({ showAddUser, setShowAddUser, usrForm, setUsrForm, usrShowPwd
         <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={usrShowPwd ? 'text' : 'password'} value={usrForm.password} onChange={e => setUsrForm({ ...usrForm, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setUsrShowPwd(v => !v)}>{usrShowPwd ? '🙈 Hide' : '👁 Show'}</button></div></Field>
         <Field label="Role"><select style={S.select} value={usrForm.role} onChange={e => setUsrForm({ ...usrForm, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field>
       </div>
-      <button style={S.btn('primary')} onClick={async () => { const newId = `u-${Date.now()}`; setUsers(prev => [...prev, { ...usrForm, id: newId, created_at: new Date().toISOString() }]); setShowAddUser(false); await API.post('users', { ...usrForm, id: newId }); loadData(); }}>Add</button>
+      <button style={S.btn('primary')} onClick={async () => { const payload = { ...usrForm, id: `u-${Date.now()}` }; const res = await API.post('users', payload); if (res?.error) { window.alert(res.error); return; } setShowAddUser(false); setUsrForm({ name: '', username: '', password: '', role: 'staff' }); await loadData(); }}>Add</button>
     </Modal>
   );
 }
@@ -5029,7 +5031,7 @@ export default function App() {
   const [editUserPassword, setEditUserPassword] = useState('');
   const [editUserShowPwd, setEditUserShowPwd] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [txPage, setTxPage] = useState(1);
+  const [txPages, setTxPages] = useState({});
   const [txSortKey, setTxSortKey] = useState('dateGiven');
   const [txSortDir, setTxSortDir] = useState('desc');
   // For Sale page local state — kept here to avoid defining components with hooks inside switch/case
@@ -5146,7 +5148,7 @@ export default function App() {
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
 
   // Reset transaction table to page 1 when route, search, filters, or list data changes
-  useEffect(() => { setTxPage(1); }, [location.pathname, searchQuery, txStatusFilter, txDateFrom, txDateTo, txTypeFilter, txSortKey, txSortDir, listLoading]);
+  useEffect(() => { setTxPages({}); }, [location.pathname, searchQuery, txStatusFilter, txDateFrom, txDateTo, txTypeFilter, txSortKey, txSortDir, listLoading]);
 
   // Auto-open wizard when navigating directly to /transactions/new
   useEffect(() => {
@@ -5187,7 +5189,7 @@ export default function App() {
   const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
-  const totalServiceFees = transactions.filter(t => t.status !== 'declined').length * (settings.serviceFee || 1000);
+  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
@@ -5315,6 +5317,8 @@ export default function App() {
 
   const isStaff = hasRole(currentUser, 'staff') || hasRole(currentUser, 'admin');
   const isAdmin = hasRole(currentUser, 'admin');
+  const distributionAuthorizedUserIds = settings.distributionAuthorizedUserIds || DEFAULT_SETTINGS.distributionAuthorizedUserIds;
+  const canRecordDistributions = isAdmin || distributionAuthorizedUserIds.includes(currentUser?.id);
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: '📊', path: PAGE_PATHS.dashboard, roles: ['staff', 'admin', 'stakeholder'] },
@@ -5419,22 +5423,24 @@ export default function App() {
     }
 
     const TX_PAGE_SIZE = 25;
-    const TxTable = ({ items, showActions = true, showDaysListed = false }) => {
+    const TxTable = ({ items, showActions = true, showDaysListed = false, pageKey = 'default' }) => {
       const totalPages = Math.max(1, Math.ceil(items.length / TX_PAGE_SIZE));
-      const safePage = Math.min(txPage, totalPages);
+      const currentPage = txPages[pageKey] || 1;
+      const safePage = Math.min(currentPage, totalPages);
       const pageItems = items.slice((safePage - 1) * TX_PAGE_SIZE, safePage * TX_PAGE_SIZE);
       const colSpan = showActions ? (showDaysListed ? 8 : 7) : (showDaysListed ? 7 : 6);
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
+      const setPage = (nextPage) => setTxPages(prev => ({ ...prev, [pageKey]: nextPage }));
       return (<>
         <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to sellable inventory so it can be listed again later.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
-            <button style={pageBtnStyle(safePage === 1)} disabled={safePage === 1} onClick={() => setTxPage(1)}>«</button>
-            <button style={pageBtnStyle(safePage === 1)} disabled={safePage === 1} onClick={() => setTxPage(p => Math.max(1, p - 1))}>‹ Prev</button>
-            <button style={pageBtnStyle(safePage === totalPages)} disabled={safePage === totalPages} onClick={() => setTxPage(p => Math.min(totalPages, p + 1))}>Next ›</button>
-            <button style={pageBtnStyle(safePage === totalPages)} disabled={safePage === totalPages} onClick={() => setTxPage(totalPages)}>»</button>
+            <button style={pageBtnStyle(safePage === 1)} disabled={safePage === 1} onClick={() => setPage(1)}>«</button>
+            <button style={pageBtnStyle(safePage === 1)} disabled={safePage === 1} onClick={() => setPage(Math.max(1, safePage - 1))}>‹ Prev</button>
+            <button style={pageBtnStyle(safePage === totalPages)} disabled={safePage === totalPages} onClick={() => setPage(Math.min(totalPages, safePage + 1))}>Next ›</button>
+            <button style={pageBtnStyle(safePage === totalPages)} disabled={safePage === totalPages} onClick={() => setPage(totalPages)}>»</button>
           </div>
         </div>)}
       </>);
@@ -5460,7 +5466,7 @@ export default function App() {
       </div>);
 
       case 'transactions': {
-        const txStatusCounts = { all: transactions.length, active: 0, closed: 0, sold: 0, for_sale: 0, declined: 0 };
+        const txStatusCounts = { all: transactions.length, active: 0, closed: 0, sold: 0, for_sale: 0, ready_to_sell: 0, declined: 0 };
         transactions.forEach(t => { if (txStatusCounts[t.status] !== undefined) txStatusCounts[t.status]++; });
         const hasActiveFilters = searchQuery || txStatusFilter !== 'all' || txTypeFilter !== 'all' || txDateFrom || txDateTo;
         const sortOptions = [
@@ -5474,6 +5480,7 @@ export default function App() {
           { key: 'all', label: 'All', color: COLORS.primary },
           { key: 'active', label: '⏳ Active Loans', color: '#10b981' },
           { key: 'for_sale', label: '🏷️ For Sale', color: '#8b5cf6' },
+          { key: 'ready_to_sell', label: '🤝 Surrendered', color: '#dc2626' },
           { key: 'closed', label: '✅ Closed', color: '#10b981' },
           { key: 'sold', label: '💰 Sold', color: '#6b7280' },
           { key: 'declined', label: '❌ Declined', color: '#6b7280' },
@@ -5558,7 +5565,7 @@ export default function App() {
             </div>
           )}
 
-          <div style={S.card}><TxTable items={filteredTxs} /></div>
+          <div style={S.card}><TxTable items={filteredTxs} pageKey="transactions" /></div>
         </div>);
       }
 
@@ -6089,7 +6096,7 @@ export default function App() {
             )}
 
             <div style={S.card}>
-              <TxTable items={fsSorted} showDaysListed />
+              <TxTable items={fsSorted} showDaysListed pageKey="for-sale" />
             </div>
           </div>
         );
@@ -6117,10 +6124,11 @@ export default function App() {
         const rClosed = closedTxs.filter(t => inPeriod(t.dateRepaid || t.updated_at));
         const rSold = soldTxs.filter(t => inPeriod(t.saleDate || t.updated_at));
         const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
+        const rNewLoans = rNewTxs.filter(t => t.type !== 'outright');
         const rExpenses = expenses.filter(e => inPeriod(e.date));
         const rRepaymentFees = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0);
         const rSalesRevenue = rSold.reduce((s, t) => s + (t.salePrice || 0), 0);
-        const rServiceFees = rNewTxs.length * (settings.serviceFee || 1000);
+        const rServiceFees = rNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
         const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
@@ -6212,6 +6220,7 @@ export default function App() {
           rExpTotal, rProfit, rStaff, rStakeholder,
           rCapitalDeployed, rCapitalReturned,
           serviceFee: settings.serviceFee || 1000,
+          rNewLoans,
           stakeholders: rStakeholders,
           rStaffByTask, staffSharePct, totalTaskPoints,
           taskLabels, taskDefs,
@@ -6247,7 +6256,7 @@ export default function App() {
             '',
             'NEW LOANS',
             toCSV(['Ref','Customer','Cash Advanced','Service Fee','Loan Term (days)','Date','Status'],
-              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, settings.serviceFee || 1000, t.loanDays || 30, t.created_at, t.status])),
+              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), t.loanDays || 30, t.created_at, t.status])),
             '',
             'EXPENSES',
             toCSV(['Date','Category','Description','Amount'],
@@ -6315,7 +6324,7 @@ export default function App() {
                 <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Revenue Breakdown</div>
                 <div style={rowStyle}><span>Repayment fees ({rClosed.length} loan{rClosed.length !== 1 ? 's' : ''})<InfoIcon tip="The daily fees we collect when a customer comes back to pay and pick up their item." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rRepaymentFees)}</strong></div>
                 <div style={rowStyle}><span>Sales proceeds ({rSold.length} item{rSold.length !== 1 ? 's' : ''})<InfoIcon tip="Money from selling items that customers didn't come back to collect before their time ran out." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rSalesRevenue)}</strong></div>
-                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Service fees ({rNewTxs.length} new loan{rNewTxs.length !== 1 ? 's' : ''} × {fmtMoney(settings.serviceFee || 1000)})<InfoIcon tip="A flat fee collected once at the very start of a new loan, before any daily charges start." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rServiceFees)}</strong></div>
+                <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Service fees ({rNewLoans.length} new loan{rNewLoans.length !== 1 ? 's' : ''})<InfoIcon tip="Flat fees actually collected on new advance loans during this period, using the fee saved on each transaction when available." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rServiceFees)}</strong></div>
               </div>
               <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Capital Flow</div>
@@ -6470,7 +6479,7 @@ export default function App() {
                           <td style={S.td}><strong>{t.ref}</strong></td>
                           <td style={S.td}>{t.fullName || '—'}</td>
                           <td style={{ ...S.td, fontWeight: 700 }}>{fmtMoney(t.cashAdvance)}</td>
-                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(settings.serviceFee || 1000)}</td>
+                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)))}</td>
                           <td style={S.td}>{t.loanDays || 30} days</td>
                           <td style={S.td}>{fmtDate(t.created_at)}</td>
                           <td style={S.td}><span style={{ fontSize: '12px', fontWeight: 600, color: statusColor(t, settings) }}>{statusLabel(t, settings)}</span></td>
@@ -6647,7 +6656,7 @@ export default function App() {
             <div style={S.card}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                 <div style={S.cardTitle}>💸 Profit Distributions</div>
-                {isStaff && <button style={S.btn('primary')} onClick={() => { setDistForm({ date: localISODate(), amount: '', method: '', note: '', receipt: '' }); setShowAddDistribution(true); }}>+ Record Distribution</button>}
+                {canRecordDistributions && <button style={S.btn('primary')} onClick={() => { setDistForm({ date: localISODate(), amount: '', method: '', note: '', receipt: '' }); setShowAddDistribution(true); }}>+ Record Distribution</button>}
               </div>
               <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
                 Every time profit is paid out to stakeholders, Fabian records it here. All stakeholders can see this record.
@@ -6978,6 +6987,7 @@ export default function App() {
         const es = pendingSettings ?? settings; // effective settings (pending or saved)
         const hasUnsaved = pendingSettings !== null;
         const updateSettings = (s) => setPendingSettings(s);
+        const distributableStaff = users.filter(u => u.active !== 0 && u.role === 'staff');
         return (
         <div style={{ paddingBottom: hasUnsaved ? '80px' : 0 }}>
           <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>⚙ Settings</h2>
@@ -7233,7 +7243,41 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 14. SECURITY ── */}
+          {/* ── 14. PROFIT DISTRIBUTION ACCESS ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>💸 Profit Distribution Access</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Admins can always record profit distributions. Select any extra staff members who should also be allowed to record them.</div>
+            {distributableStaff.length > 0 ? (
+              <div style={{ display: 'grid', gap: '10px' }}>
+                {distributableStaff.map(u => {
+                  const selected = (es.distributionAuthorizedUserIds || DEFAULT_SETTINGS.distributionAuthorizedUserIds).includes(u.id);
+                  return (
+                    <label key={u.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px 12px', border: `1px solid ${selected ? COLORS.primary : COLORS.border}`, borderRadius: '8px', background: selected ? COLORS.primaryLight : '#fff', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={e => {
+                          const next = new Set(es.distributionAuthorizedUserIds || DEFAULT_SETTINGS.distributionAuthorizedUserIds);
+                          if (e.target.checked) next.add(u.id);
+                          else next.delete(u.id);
+                          updateSettings({ ...es, distributionAuthorizedUserIds: [...next] });
+                        }}
+                        style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }}
+                      />
+                      <span>
+                        <strong>{u.name}</strong> <span style={{ color: COLORS.textMuted }}>@{u.username}</span>
+                        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>Primary role: {u.role}{(u.roles || []).length ? ` · Extra roles: ${(u.roles || []).join(', ')}` : ''}</div>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ fontSize: '13px', color: COLORS.textMuted }}>No active staff accounts found. Create or enable a staff account first if you want to delegate distribution recording.</div>
+            )}
+          </div>
+
+          {/* ── 15. SECURITY ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🔒 Security &amp; Access Control</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Protect your system with login rules and session policies.</div>
@@ -7253,7 +7297,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 14. DATA MANAGEMENT ── */}
+          {/* ── 16. DATA MANAGEMENT ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🗄 Data Management</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Control how long data is retained and manage system maintenance tasks.</div>
@@ -7264,7 +7308,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 15. DANGER ZONE ── */}
+          {/* ── 17. DANGER ZONE ── */}
           <div style={{ ...S.card, border: `2px solid ${COLORS.danger}`, background: COLORS.dangerLight }}>
             <div style={{ ...S.cardTitle, color: COLORS.danger }}>🚨 Danger Zone</div>
             <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '14px' }}>Irreversible actions. Proceed with extreme caution.</div>
