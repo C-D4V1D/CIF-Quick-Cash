@@ -416,10 +416,8 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'bootstrap' && method === 'GET') {
       const scope = url.searchParams.get('scope') || 'critical';
-      const auth = scope !== 'critical' ? requireAuth(request) : null;
-      if (scope !== 'critical') {
-        if (auth.error) return auth.error;
-      }
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
       const isAdmin = auth?.user?.role === 'admin';
 
       if (scope === 'secondary') {

@@ -3752,7 +3752,15 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
       case 'nin': return settings.requireNinVerification ? (tx.ninVerified && !!tx.ninPhoto) : tx.ninVerificationAttempted;
       case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.familyName && tx.familyPhone && (tx.phonesVerified[0] || tx.phonesVerified[1]));
       case 'custPhotos': return !!tx.photoCustomerHolding;
-      case 'screening': return tx.screeningPurchaseLocation !== 'Other' || !!tx.screeningPurchaseLocationOther;
+      case 'screening': {
+        if (!tx.screeningDuration) return false;
+        if (tx.screeningDuration === 'Other' && !tx.screeningDurationOther) return false;
+        if (!tx.screeningPurchaseLocation) return false;
+        if (tx.screeningPurchaseLocation === 'Other' && !tx.screeningPurchaseLocationOther) return false;
+        if (!tx.screeningRegistered) return false;
+        if (!tx.screeningOthersUsing) return false;
+        return true;
+      }
       case 'itemPhotos': {
         const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
         const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
@@ -3894,7 +3902,8 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
 
   const handleComplete = async () => {
     const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
-    await API.post('transactions', finalTx);
+    const saved = await API.post('transactions', finalTx);
+    if (!saved?.success) return;
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
     onSave(finalTx);
   };
@@ -4515,8 +4524,9 @@ export default function App() {
     if (!listCache) setListLoading(true);
 
     const critical = await API.get('bootstrap?scope=critical');
+    const freshSettings = { ...DEFAULT_SETTINGS, ...(critical?.settings || {}) };
     if (critical) {
-      setSettings({ ...DEFAULT_SETTINGS, ...(critical.settings || {}) });
+      setSettings(freshSettings);
       setDbStatus('connected');
       writeCache('cfc_critical', { settings: critical.settings, summary: critical.summary || {} });
     } else {
@@ -4528,7 +4538,7 @@ export default function App() {
     // Load large list datasets in the background so navigation/header remain interactive.
     const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');
     if (lists) {
-      const normalizedTransactions = withLoanTimelines(lists.transactions || [], settings);
+      const normalizedTransactions = withLoanTimelines(lists.transactions || [], freshSettings);
       setTransactions(normalizedTransactions);
       setDrafts(lists.drafts || []);
       writeCache('cfc_transactions', { transactions: normalizedTransactions, drafts: lists.drafts || [], pagination: lists.pagination || null });
@@ -6272,7 +6282,7 @@ export default function App() {
                                       <td style={S.td}>{fmtMoney(e.amount)}</td>
                                       <td style={S.td}>{e.method}</td>
                                       <td style={S.td}>{e.receipt ? <a href={e.receipt} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.primary, fontWeight: 600 }}>View</a> : <span style={{ color: COLORS.textMuted }}>—</span>}</td>
-                                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete ₦${e.amount.toLocaleString()} contribution from ${e.name}?`)) { setCapital(prev => prev.filter(x => x.id !== e.id)); await API.del(`capital/${e.id}`); loadData(); } }}>Del</button></td>}
+                                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete ₦${e.amount.toLocaleString()} contribution from ${e.name}?`)) { const ok = await API.del(`capital/${e.id}`); if (ok) setCapital(prev => prev.filter(x => x.id !== e.id)); loadData(); } }}>Del</button></td>}
                                     </tr>
                                   ))}
                                 </tbody>
@@ -6319,7 +6329,7 @@ export default function App() {
                       <td style={S.td}>{d.note || <span style={{ color: COLORS.textMuted }}>—</span>}</td>
                       <td style={S.td}><span style={{ fontSize: '12px', color: COLORS.textMuted }}>{d.created_by || '—'}</span></td>
                       <td style={S.td}>{d.receipt ? <a href={d.receipt} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.primary, fontWeight: 600 }}>View</a> : <span style={{ color: COLORS.textMuted }}>—</span>}</td>
-                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { setDistributions(prev => prev.filter(x => x.id !== d.id)); await API.del(`distributions/${d.id}`); loadData(); } }}>Del</button></td>}
+                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { const ok = await API.del(`distributions/${d.id}`); if (ok) setDistributions(prev => prev.filter(x => x.id !== d.id)); loadData(); } }}>Del</button></td>}
                     </tr>
                   ))}
                   {distributions.length === 0 && <tr><td style={{ ...S.td, color: COLORS.textMuted }} colSpan={isAdmin ? 7 : 6}>No distributions recorded yet.</td></tr>}
@@ -6441,8 +6451,8 @@ export default function App() {
                         <td style={S.td}>
                           <button style={S.btnSm('danger')} onClick={async () => {
                             if (window.confirm('Delete this expense entry?')) {
-                              setExpenses(prev => prev.filter(x => x.id !== e.id));
-                              await API.del(`expenses/${e.id}`);
+                              const ok = await API.del(`expenses/${e.id}`);
+                              if (ok) setExpenses(prev => prev.filter(x => x.id !== e.id));
                               loadData();
                             }
                           }}>Delete</button>
@@ -6533,7 +6543,7 @@ export default function App() {
           return COLORS.textMuted;
         };
         const roleColor = (r) => r === 'admin' ? '#c8a84e' : r === 'staff' ? '#10b981' : '#6b7280';
-        const grouped = activityLogs.reduce((acc, a) => { const k = new Date(a.created_at).toDateString(); if (!acc[k]) acc[k] = []; acc[k].push(a); return acc; }, {});
+        const grouped = activityLogs.reduce((acc, a) => { const k = new Intl.DateTimeFormat('en-CA', { timeZone: NIGERIA_TZ }).format(new Date(a.created_at)); if (!acc[k]) acc[k] = []; acc[k].push(a); return acc; }, {});
         const applyFilters = () => loadActivityLogs(activityFilter);
         const setF = (patch) => setActivityFilter(prev => ({ ...prev, ...patch }));
         const todayStr = localISODate();
@@ -7169,7 +7179,7 @@ export default function App() {
         <Field label="Additional Notes (optional)">
           <textarea style={S.textarea} value={dec.notes} onChange={e => setDec({ ...dec, notes: e.target.value })} placeholder="e.g. NIN photo did not match, customer gave two different answers about purchase date…" rows={3} />
         </Field>
-        <button style={S.btn('primary')} disabled={!dec.item || !dec.reason} onClick={async () => { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); await API.post('declined', dec); loadData(); }}>Save</button>
+        <button style={S.btn('primary')} disabled={!dec.item || !dec.reason} onClick={async () => { const result = await API.post('declined', dec); if (result?.success) { setDeclinedLog(prev => [{ ...dec, id: Date.now() }, ...prev]); setShowAddDeclined(false); } loadData(); }}>Save</button>
       </Modal>
     );
   };
