@@ -5427,7 +5427,7 @@ export default function App() {
           const triggers = [];
           const customerDaysLeft = getCustomerDaysLeft(tx);
           const elapsed = daysBetween(tx.dateGiven);
-          const ownershipDaysLeft = Math.max(0, maxLD - elapsed);
+          const ownershipDaysLeft = maxLD - elapsed;
           const overdueDays = customerDaysLeft !== null && customerDaysLeft < 0 ? Math.abs(customerDaysLeft) : 0;
 
           dueDateRules.forEach(days => {
@@ -5443,7 +5443,7 @@ export default function App() {
           });
 
           ownershipRules.forEach(days => {
-            if (ownershipDaysLeft === days) {
+            if (ownershipDaysLeft >= 0 && ownershipDaysLeft === days) {
               triggers.push({
                 key: `ownership-${days}`,
                 priority: days === 0 ? 40 : 60 + days,
@@ -5546,6 +5546,8 @@ export default function App() {
               ) : pendingFollowUps.map(({ tx, triggers }) => {
                 const waLink = getFollowUpWhatsAppLink(tx, triggers);
                 const customerDaysLeft = getCustomerDaysLeft(tx);
+                const currentStatusLabel = statusLabel(tx, settings);
+                const currentStatusColor = statusColor(tx, settings);
                 return (
                   <div key={tx.ref} style={{ padding: '12px 0', borderBottom: `1px solid ${COLORS.border}` }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', flexWrap: 'wrap' }}>
@@ -5553,13 +5555,19 @@ export default function App() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                           <strong style={{ fontSize: '13px' }}>{tx.ref}</strong>
                           <span style={{ fontSize: '13px' }}>{tx.fullName}</span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', padding: '3px 8px', borderRadius: '999px', background: `${currentStatusColor}15`, color: currentStatusColor, border: `1px solid ${currentStatusColor}33`, fontSize: '11px', fontWeight: 700 }}>
+                            Current status: {currentStatusLabel}
+                          </span>
                         </div>
                         <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
                           {tx.aiBrand} {tx.aiModel} — Advanced: {fmtMoney(tx.cashAdvance)} — Due: {fmtDate(tx.deadlineDate || tx.customer_due_date)}
                           {customerDaysLeft !== null && customerDaysLeft < 0 && <span style={{ color: '#dc2626', fontWeight: 700 }}> ({Math.abs(customerDaysLeft)} day{Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue)</span>}
                           {customerDaysLeft !== null && customerDaysLeft === 0 && <span style={{ color: '#dc2626', fontWeight: 700 }}> (Due today)</span>}
                         </div>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+                        <div style={{ fontSize: '11px', color: COLORS.textMuted, fontWeight: 700, marginTop: '8px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                          Follow-up reason for today
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
                           {triggers.map(trigger => (
                             <span key={trigger.key} style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 8px', borderRadius: '999px', background: `${trigger.color}15`, color: trigger.color, border: `1px solid ${trigger.color}33`, fontSize: '11px', fontWeight: 700 }}>
                               {trigger.label}
