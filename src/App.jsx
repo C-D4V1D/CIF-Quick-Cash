@@ -49,9 +49,10 @@ const API = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      if (!r.ok) throw new Error(`API error: ${r.status}`);
-      return await r.json();
-    } catch (e) { console.error(`PUT /api/${endpoint}:`, e); return null; }
+      const body = await r.json().catch(() => null);
+      if (!r.ok) return body || { error: `Server error ${r.status}` };
+      return body;
+    } catch (e) { console.error(`PUT /api/${endpoint}:`, e); return { error: 'Network error — please try again' }; }
   },
   async del(endpoint) {
     try {
@@ -401,8 +402,8 @@ const saveApiUsage = (usage) => {
   try { localStorage.setItem(API_USAGE_KEY, JSON.stringify(usage)); } catch {}
 };
 
-const getTodayKey = () => new Date().toISOString().slice(0, 10); // "2026-03-20"
-const getMonthKey = () => new Date().toISOString().slice(0, 7);  // "2026-03"
+const getTodayKey = () => localISODate(); // Nigeria-local YYYY-MM-DD
+const getMonthKey = () => localISODate().slice(0, 7);  // Nigeria-local YYYY-MM
 
 const trackGeminiCall = () => {
   const usage = getApiUsage();
@@ -532,18 +533,17 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
-      trackGeminiCall();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       // For thinking models (2.5-pro), set a low thinking budget to reduce latency
       const isThinkingModel = modelName.includes('pro');
       const body = { contents: [{ parts }] };
       if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      trackGeminiCall();
       let resp = await fetch(url, options);
       // Retry once on transient errors (429/500/502/503)
       if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
         await new Promise(r => setTimeout(r, 2000));
-        trackGeminiCall();
         resp = await fetch(url, options);
       }
       const data = await resp.json().catch(() => null);
@@ -576,17 +576,16 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
     }
 
     for (const modelName of modelCandidates) {
-      trackGeminiCall();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       const isThinkingModel = modelName.includes('pro');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
       if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      trackGeminiCall();
       let resp = await fetch(url, options);
       // Retry once on transient errors (429/500/502/503)
       if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
         await new Promise(r => setTimeout(r, 2000));
-        trackGeminiCall();
         resp = await fetch(url, options);
       }
       const data = await resp.json().catch(() => null);
@@ -793,7 +792,7 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
     }
   };
 
-  const displaySrc = value || preview;
+  const displaySrc = preview || value;
 
   return (
     <div style={{ textAlign: 'center' }}>
@@ -2298,7 +2297,7 @@ function CustomerPortal({ onBack, settings }) {
           const daysInfo = getDaysInfo(tx);
           const owed = calcOwedToday(tx);
           const agreedDueDateLabel = formatDateLong(tx.deadlineDate);
-          const isOverdue = !!daysInfo && (daysInfo.isAfterAgreedDue || daysInfo.isOnAgreedDueDate);
+          const isOverdue = !!daysInfo && daysInfo.isAfterAgreedDue;
           // Pre-compute key milestone date labels (using current settings, used for all scenarios)
           const maxLoanDaysNum = Math.max(1, Number(s.maxLoanDays) || 30);
           const graceDaysNum = Math.max(0, Number(s.graceDays) || 3);
@@ -2584,6 +2583,7 @@ function LoginScreen({ onLogin }) {
   }, []);
 
   const handleLogin = async () => {
+    if (loading) return;
     setLoading(true);
     setError('');
 
@@ -2999,7 +2999,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
     if (result.error) { setImeiAiError(result.error); }
     else {
       const extracted = result.text.trim().replace(/\D/g, '');
-      if (!extracted || extracted.length < 14) { setImeiAiError('AI could not read a valid IMEI from the photo. Try a clearer, closer shot of the screen.'); }
+      if (!extracted || extracted.length !== 15) { setImeiAiError('AI could not read a valid 15-digit IMEI from the photo. Try a clearer, closer shot of the screen.'); }
       else { upd('imei', extracted); setImeiAiError(''); }
     }
     setImeiAiLoading(false);
@@ -4070,7 +4070,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
             )}
 
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
-              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue ?? tx.aiEstimatedValue ?? ''} onChange={e => {
                 let val = Number(e.target.value) || 0;
                 const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
                 if (maxPrice > 0 && val > maxPrice) val = maxPrice;
@@ -4175,7 +4175,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
             {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
             <button style={S.btn('muted')} onClick={async () => { await saveDraftNow(); onCancel(); }}>Save Draft & Exit</button>
           </div>
-          {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={() => { saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
+          {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={async () => { await saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
         </div>
       </div>
     </div>
