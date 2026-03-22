@@ -1036,11 +1036,11 @@ export async function onRequest(context) {
     if (path === 'shop-items' && method === 'GET') {
       const settingsRow = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
       const cfg = settingsRow ? JSON.parse(settingsRow.value) : {};
-      const maxSoldHistory = Math.max(0, Number(cfg.shopMaxSoldHistoryItems) || 8);
+      const maxSoldHistory = cfg.shopMaxSoldHistoryItems == null ? 8 : Math.max(0, Number(cfg.shopMaxSoldHistoryItems) || 0);
 
       const [rows, soldRows] = await Promise.all([
-        db.prepare("SELECT ref, data FROM transactions WHERE status = 'for_sale' ORDER BY updated_at DESC").all(),
-        db.prepare("SELECT ref, data FROM transactions WHERE status = 'sold' ORDER BY updated_at DESC LIMIT ?").bind(maxSoldHistory).all(),
+        db.prepare("SELECT ref, data, created_at, updated_at FROM transactions WHERE status = 'for_sale' ORDER BY updated_at DESC").all(),
+        db.prepare("SELECT ref, data, created_at, updated_at FROM transactions WHERE status = 'sold' ORDER BY updated_at DESC LIMIT ?").bind(maxSoldHistory).all(),
       ]);
 
       // Extract visible item photos, respecting hiddenPhotoIndexes set by staff
@@ -1074,7 +1074,7 @@ export async function onRequest(context) {
           photoFront: photos[0] || null,
           // For legacy transactions with object-format itemPhotos, expose powerOn photo as fallback thumbnail
           photoPowerOn: (!Array.isArray(d.itemPhotos) && d.itemPhotos?.powerOn) ? d.itemPhotos.powerOn : null,
-          listedDate: d.listedForSaleDate || d.updated_at || d.created_at || null,
+          listedDate: d.listedForSaleDate || row.updated_at || row.created_at || null,
           shopNote: d.shopListingNote || '',
           inspectionNotes: d.inspectionNotes || '',
           // Device identifiers — shown publicly to help buyers verify authenticity

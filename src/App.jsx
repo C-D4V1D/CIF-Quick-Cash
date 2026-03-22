@@ -1004,12 +1004,12 @@ function PartnershipFootnote({ dark = false }) {
 // ============================================================
 function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
   const s = settings || {};
-  const phone1 = s.shopPhone1 || '08165491908';
-  const phone2 = s.shopPhone2 || '09023540646';
-  const address = s.shopAddress || 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
-  const hours = s.shopHours || 'Monday – Saturday, 8am – 6pm';
+  const phone1 = s.shopPhone1 ?? '08165491908';
+  const phone2 = s.shopPhone2 ?? '09023540646';
+  const address = s.shopAddress ?? 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
+  const hours = s.shopHours ?? 'Monday – Saturday, 8am – 6pm';
   const mapsUrl = s.shopMapsUrl || `https://www.google.com/search?q=${encodeURIComponent(address)}`;
-  const whatsApp = s.shopWhatsApp || '2348165491908';
+  const whatsApp = s.shopWhatsApp ?? '2348165491908';
 
   const items = ['Phones', 'Laptops', 'Tablets', 'Speakers', 'Power Banks', 'Fans', 'TVs', 'Generators', 'Gas Cylinders'];
   const features = [
@@ -1177,10 +1177,10 @@ function SalesPage({ onBack, settings }) {
   const isMobile = useMobile();
 
   const s = settings || {};
-  const phone1 = s.shopPhone1 || '08165491908';
-  const whatsApp = s.shopWhatsApp || '2348165491908';
-  const address = s.shopAddress || 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
-  const hours = s.shopHours || 'Monday – Saturday, 8am – 6pm';
+  const phone1 = s.shopPhone1 ?? '08165491908';
+  const whatsApp = s.shopWhatsApp ?? '2348165491908';
+  const address = s.shopAddress ?? 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
+  const hours = s.shopHours ?? 'Monday – Saturday, 8am – 6pm';
 
   useEffect(() => {
     const load = async () => {
@@ -2113,9 +2113,9 @@ function CustomerPortal({ onBack, settings }) {
   const refNumInput = useRef(null);
 
   const s = settings || {};
-  const phone1 = s.shopPhone1 || '08165491908';
-  const whatsApp = s.shopWhatsApp || '2348165491908';
-  const shopHours = s.shopHours || 'Monday – Saturday, 8am – 6pm';
+  const phone1 = s.shopPhone1 ?? '08165491908';
+  const whatsApp = s.shopWhatsApp ?? '2348165491908';
+  const shopHours = s.shopHours ?? 'Monday – Saturday, 8am – 6pm';
 
   const fullRef = `CIF-${refDate}-${refNum}`;
 
@@ -2218,7 +2218,7 @@ function CustomerPortal({ onBack, settings }) {
     if (tx.type === 'outright') return { label: 'Outright Purchase', color: '#8b5cf6' };
     const info = getDaysInfo(tx);
     if (!info) return { label: 'Active', color: '#10b981' };
-    if (info.isSaleEligible) return { label: '🏷️ For Sale', color: '#374151' };
+    if (info.isSaleEligible) return { label: '📦 Ready to Sell', color: '#92400e' };
     if (info.isLastDayOfGrace) return { label: '🔴 Last Day of Grace', color: '#dc2626' };
     if (info.isInGracePeriod) return { label: `💜 Grace Period Ends ${info.graceEndDate ? formatDateLong(info.graceEndDate) : ''}`, color: '#8b5cf6' };
     if (info.isOnMaxLoanDay) return { label: '🔴 Last Day of Ownership', color: '#dc2626' };
@@ -4958,8 +4958,8 @@ export default function App() {
         )}
         {tx.status === 'for_sale' && isStaff && (
           <button style={S.btn('outline')} onClick={async () => {
-            if (window.confirm('Remove this item from the public shop?\n\nIt will go back to "Ready to Sell" status and can be re-listed at any time.')) {
-              // Items that were early surrenders go back to ready_to_sell; timeline-eligible actives go back to active
+            if (window.confirm('Remove this item from the public shop?\n\nIt will be removed from the public shop and moved back into sellable inventory so it can be re-listed at any time.')) {
+              // Early surrenders go back to ready_to_sell; timeline-eligible actives go back to active but remain sale-eligible
               const returnStatus = tx.surrenderDate ? 'ready_to_sell' : 'active';
               await saveTx({ ...tx, status: returnStatus, listedForSaleDate: null });
               loadData();
@@ -5067,7 +5067,7 @@ export default function App() {
       const paginationStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 4px 0', flexWrap: 'wrap', gap: '8px' };
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to "Ready to Sell" status.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to sellable inventory so it can be listed again later.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -5237,7 +5237,7 @@ export default function App() {
             .replace('{amount}', fmtMoney(tx.cashAdvance))
             .replace('{daysLeft}', String(daysLeft))
             .replace('{daysOverdue}', String(daysOverdue))
-            .replace('{shopPhone}', settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1)
+            .replace('{shopPhone}', settings.shopPhone1 ?? DEFAULT_SETTINGS.shopPhone1)
             .replace('{businessName}', settings.businessName || DEFAULT_SETTINGS.businessName);
           return `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
         };
@@ -5497,7 +5497,7 @@ export default function App() {
             .replace('{amount}', fmtMoney(tx.cashAdvance))
             .replace('{daysLeft}', String(daysLeft))
             .replace('{daysOverdue}', String(daysOverdue))
-            .replace('{shopPhone}', settings.shopPhone1 || DEFAULT_SETTINGS.shopPhone1)
+            .replace('{shopPhone}', settings.shopPhone1 ?? DEFAULT_SETTINGS.shopPhone1)
             .replace('{businessName}', settings.businessName || DEFAULT_SETTINGS.businessName);
           return `https://wa.me/${waPhone}?text=${encodeURIComponent(msg)}`;
         };
@@ -6653,16 +6653,16 @@ export default function App() {
           <div style={S.card}>
             <div style={S.cardTitle}>🏪 Business Contact &amp; Hours</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>These values appear on the public landing page and customer portal. Update them here and they change everywhere automatically.</div>
-            <Field label="Shop Address"><textarea style={S.textarea} value={es.shopAddress || DEFAULT_SETTINGS.shopAddress} onChange={e => updateSettings({ ...es, shopAddress: e.target.value })} /></Field>
+            <Field label="Shop Address"><textarea style={S.textarea} value={es.shopAddress ?? DEFAULT_SETTINGS.shopAddress} onChange={e => updateSettings({ ...es, shopAddress: e.target.value })} /></Field>
             <div style={S.grid2}>
-              <Field label="Phone Number 1"><input style={S.input} value={es.shopPhone1 || DEFAULT_SETTINGS.shopPhone1} onChange={e => updateSettings({ ...es, shopPhone1: e.target.value })} /></Field>
-              <Field label="Phone Number 2"><input style={S.input} value={es.shopPhone2 || DEFAULT_SETTINGS.shopPhone2} onChange={e => updateSettings({ ...es, shopPhone2: e.target.value })} /></Field>
+              <Field label="Phone Number 1"><input style={S.input} value={es.shopPhone1 ?? DEFAULT_SETTINGS.shopPhone1} onChange={e => updateSettings({ ...es, shopPhone1: e.target.value })} /></Field>
+              <Field label="Phone Number 2"><input style={S.input} value={es.shopPhone2 ?? DEFAULT_SETTINGS.shopPhone2} onChange={e => updateSettings({ ...es, shopPhone2: e.target.value })} /></Field>
             </div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>WhatsApp Number<InfoIcon tip="Type the number starting with the country code, without the + sign (e.g. 2348165491908). Customers tap this to WhatsApp us from the loan check page." /></span>}>
-              <input style={S.input} value={es.shopWhatsApp || DEFAULT_SETTINGS.shopWhatsApp} onChange={e => updateSettings({ ...es, shopWhatsApp: e.target.value })} placeholder="2348165491908" />
+              <input style={S.input} value={es.shopWhatsApp ?? DEFAULT_SETTINGS.shopWhatsApp} onChange={e => updateSettings({ ...es, shopWhatsApp: e.target.value })} placeholder="2348165491908" />
               <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Enter in international format without the + sign. Example: 2348165491908</div>
             </Field>
-            <Field label="Operating Hours"><input style={S.input} value={es.shopHours || DEFAULT_SETTINGS.shopHours} onChange={e => updateSettings({ ...es, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field>
+            <Field label="Operating Hours"><input style={S.input} value={es.shopHours ?? DEFAULT_SETTINGS.shopHours} onChange={e => updateSettings({ ...es, shopHours: e.target.value })} placeholder="Monday – Saturday, 8am – 6pm" /></Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Google Maps Link (optional)<InfoIcon tip="Paste a Google Maps link here so customers can find the shop easily. If you leave it empty, it'll use a Google Search link instead." /></span>}>
               <input style={S.input} value={es.shopMapsUrl || ''} onChange={e => updateSettings({ ...es, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." />
             </Field>
