@@ -235,6 +235,22 @@ const getForSaleDaysListed = (tx) => {
   return daysBetween(listedDate);
 };
 
+const getTargetSaleDate = (tx, settings = {}) => {
+  if (!tx?.dateGiven) return null;
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const targetDays = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+  return addDays(tx.dateGiven, maxLoanDays + graceDays + targetDays);
+};
+
+const getDaysUntilTargetSale = (tx, settings = {}) => {
+  const targetDate = getTargetSaleDate(tx, settings);
+  if (!targetDate) return null;
+  const today = new Date(localISODate());
+  const target = new Date(targetDate);
+  return Math.ceil((target - today) / 86400000);
+};
+
 const getForSaleDaysBadgeStyle = (days) => {
   if (days === null || days === undefined) return null;
   if (days >= 14) return { bg: '#fee2e2', fg: '#b91c1c', border: '#fecaca' };
@@ -1708,6 +1724,15 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const targetPrice = roundToNice(Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100));
   const listedPrice = Math.max(targetPrice, minPrice);
   const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
+  const targetSaleDate = getTargetSaleDate(tx, settings);
+  const today = localISODate();
+  const totalDays = targetSaleDate
+    ? Math.max(1, Math.round((new Date(targetSaleDate) - new Date(tx.dateGiven)) / 86400000))
+    : 1;
+  const elapsedSinceGiven = daysBetween(tx.dateGiven);
+  const deadlineProgress = Math.min(100, Math.round((elapsedSinceGiven / totalDays) * 100));
+  const daysUntilTarget = getDaysUntilTargetSale(tx, settings);
+  const isPastTarget = !!targetSaleDate && today > targetSaleDate;
   const isNewListing = tx.status !== 'for_sale';
 
   // Raw condition text from inspection for initialising state
@@ -1745,7 +1770,6 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
   const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? roundToNice(Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
   const suggestedPrice = (priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
-  const deadlineProgress = Math.min(100, Math.round((daysListed / targetDeadline) * 100));
 
   const dropSchedule = (priceDropEnabled && maxDrops > 0 && dropPerInterval > 0)
     ? Array.from({ length: maxDrops + 1 }, (_, i) => ({
@@ -1876,14 +1900,20 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
               {listedDate && <div style={{ fontSize: '11px', color: '#6b7280' }}>Listed: {fmtDate(listedDate)}</div>}
             </div>
             <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: '12px', fontWeight: 700, color: deadlineProgress >= 100 ? '#dc2626' : '#374151' }}>{daysListed} / {targetDeadline} days</div>
-              <div style={{ fontSize: '11px', color: '#6b7280' }}>target deadline</div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: isPastTarget ? '#dc2626' : '#374151' }}>
+                {daysUntilTarget === null
+                  ? 'Target sale date unavailable'
+                  : isPastTarget
+                    ? `${Math.abs(daysUntilTarget)} day${Math.abs(daysUntilTarget) !== 1 ? 's' : ''} past target`
+                    : `${daysUntilTarget} day${daysUntilTarget !== 1 ? 's' : ''} remaining`}
+              </div>
+              {targetSaleDate && <div style={{ fontSize: '11px', color: '#6b7280' }}>Target sale date: {fmtDate(targetSaleDate)}</div>}
             </div>
           </div>
           <div style={{ height: '6px', borderRadius: '999px', background: '#e5e7eb', overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${deadlineProgress}%`, borderRadius: '999px', background: deadlineProgress >= 100 ? '#dc2626' : deadlineProgress >= 70 ? '#f59e0b' : '#10b981', transition: 'width 0.3s' }} />
           </div>
-          {deadlineProgress >= 100 && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '6px' }}>⚠ Past target deadline — consider lowering the price or reviewing the listing.</div>}
+          {isPastTarget && targetSaleDate && <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '6px' }}>⚠ Past target sale date ({fmtDate(targetSaleDate)}) — consider lowering the price or reviewing the listing.</div>}
         </div>
       )}
 
@@ -5448,7 +5478,7 @@ export default function App() {
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       const setPage = (nextPage) => setTxPages(prev => ({ ...prev, [pageKey]: nextPage }));
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <span style={{ display: 'inline-block', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to sellable inventory so it can be listed again later.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>Customer</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; const daysUntilTarget = showDaysListed ? getDaysUntilTargetSale(tx, settings) : null; return (<tr key={tx.ref}><td style={S.td}><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></td><td style={S.td}>{tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><span style={{ display: 'inline-block', width: 'fit-content', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span>{daysUntilTarget !== null && daysUntilTarget < 0 && <span style={{ fontSize: '11px', color: '#dc2626', fontWeight: 700 }}>⚠ {Math.abs(daysUntilTarget)}d past target</span>}{daysUntilTarget !== null && daysUntilTarget >= 0 && daysUntilTarget <= 7 && <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 700 }}>{daysUntilTarget}d to target</span>}</div> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}><span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span></td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to sellable inventory so it can be listed again later.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -6033,7 +6063,10 @@ export default function App() {
         const listedDaysArr = forSaleTxs.map(t => getForSaleDaysListed(t) || 0).filter(d => d > 0);
         const avgDaysListed = listedDaysArr.length > 0 ? Math.round(listedDaysArr.reduce((a, b) => a + b, 0) / listedDaysArr.length) : 0;
         const targetDeadlineDays = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
-        const pastDeadline = forSaleTxs.filter(t => (getForSaleDaysListed(t) || 0) > targetDeadlineDays).length;
+        const pastDeadline = forSaleTxs.filter(t => {
+          const daysUntilTarget = getDaysUntilTargetSale(t, settings);
+          return daysUntilTarget !== null && daysUntilTarget < 0;
+        }).length;
         const SC = {
           wrap: { ...S.stat, flex: '1 1 140px' },
           label: { ...S.statLabel, display: 'flex', alignItems: 'center' },
@@ -6070,7 +6103,7 @@ export default function App() {
               </div>
               {pastDeadline > 0 && (
                 <div style={{ ...SC.wrap, background: '#fef2f2' }}>
-                  <div style={SC.label}>Past Target Deadline<InfoIcon tip="Listed items in the shop longer than your target sale deadline. Consider reducing prices." /></div>
+                  <div style={SC.label}>Past Target Deadline<InfoIcon tip="Listed items whose intake-anchored target sale date has passed. Consider reducing prices." /></div>
                   <div style={{ ...SC.value, color: COLORS.danger }}>{pastDeadline}</div>
                   <div style={{ ...SC.sub, color: '#991b1b' }}>Consider price drops</div>
                 </div>
@@ -6175,8 +6208,7 @@ export default function App() {
         // 3. Sale             – recording an item sale (soldBy)
         // 4. Contact Logged   – logging a contact attempt on an overdue/at-risk loan (loggedBy)
         // 5. Sold at Target   – item sold at/above targetSellPct% of estimated value (completedBy of intake)
-        // 6. Sold On Time     – item sold within targetSaleDeadlineDays of listing (completedBy of intake)
-        const targetSaleDeadlineDays = settings.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays;
+        // 6. Sold On Time     – item sold on or before the target sale date anchored to intake (completedBy of intake)
         const targetSalePct = settings.targetSellPct || 75;
         const taskDefs = ['loan_intake', 'repayment', 'sale', 'contact', 'sold_at_target', 'sold_on_time'];
         const taskLabels = { loan_intake: 'Loan Intake', repayment: 'Repayment', sale: 'Sale', contact: 'Contact Logged', sold_at_target: 'Sold at Target Price', sold_on_time: 'Sold Within Deadline' };
@@ -6211,10 +6243,10 @@ export default function App() {
           if (tx.estimatedValue && tx.salePrice && (tx.salePrice / tx.estimatedValue) * 100 >= targetSalePct) {
             addScore(tx.completedBy, 'sold_at_target');
           }
-          // Task 6: sold within target sale deadline (using listedForSaleDate if available)
-          if (tx.listedForSaleDate && tx.saleDate) {
-            const daysTaken = Math.floor((new Date(tx.saleDate) - new Date(tx.listedForSaleDate)) / 86400000);
-            if (daysTaken >= 0 && daysTaken <= targetSaleDeadlineDays) addScore(tx.completedBy, 'sold_on_time');
+          // Task 6: sold on or before the target sale date anchored to intake
+          if (tx.dateGiven && tx.saleDate) {
+            const targetSaleDate = getTargetSaleDate(tx, settings);
+            if (targetSaleDate && tx.saleDate <= targetSaleDate) addScore(tx.completedBy, 'sold_on_time');
           }
         });
         const rStaffScores = Object.entries(scoreMap).map(([name, scores]) => {
@@ -7264,12 +7296,12 @@ export default function App() {
                 <input style={S.input} type="number" min="0" max="100" step="1" value={es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct} onChange={e => updateSettings({ ...es, staffSharePct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
                 <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Stakeholders receive the remaining <strong>{100 - (es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct)}%</strong>.</div>
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sale Deadline (days)<InfoIcon tip="Staff earn a bonus task point for items they accepted that sell within this many days of being listed for sale. Rewards staff who do thorough valuations that result in quick sales. Default: 14 days." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sale Deadline (days)<InfoIcon tip="Adds extra days after the max loan and grace window to set each item's target sale date. Staff earn a bonus task point when the item sells on or before that intake-anchored target date. Default: 14 days." /></span>}>
                 <input style={S.input} type="number" min="1" max="365" value={es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} onChange={e => updateSettings({ ...es, targetSaleDeadlineDays: Number(e.target.value) })} />
               </Field>
             </div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '12px', padding: '10px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
-              <strong>How staff shares are calculated:</strong> Each period, the staff pool ({es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct}% of net profit) is divided based on task points. Points are earned for: completing a new loan intake (+1), processing a repayment (+1), completing a sale (+1), logging a contact attempt on an overdue loan (+1), selling at or above the target price (+1 bonus), and selling within {es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} days of listing (+1 bonus). Each staff member's share = their points ÷ total points.
+              <strong>How staff shares are calculated:</strong> Each period, the staff pool ({es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct}% of net profit) is divided based on task points. Points are earned for: completing a new loan intake (+1), processing a repayment (+1), completing a sale (+1), logging a contact attempt on an overdue loan (+1), selling at or above the target price (+1 bonus), and selling on or before the intake-anchored target sale date ({es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} days after the max loan and grace window) (+1 bonus). Each staff member's share = their points ÷ total points.
             </div>
           </div>
 
