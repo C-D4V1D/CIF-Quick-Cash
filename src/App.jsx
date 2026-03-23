@@ -82,6 +82,15 @@ const clearAuthCache = () => {
   }
 };
 
+const SHOP_CACHE_KEY = 'cfc_shop_items';
+const SHOP_CACHE_TTL_MS = 5 * 60 * 1000;
+const readShopCache = () => {
+  const cached = readCache(SHOP_CACHE_KEY);
+  if (!cached?.savedAt || Date.now() - cached.savedAt > SHOP_CACHE_TTL_MS) return null;
+  return cached;
+};
+const writeShopCache = (payload) => writeCache(SHOP_CACHE_KEY, { ...payload, savedAt: Date.now() });
+
 const normalizeUser = (user) => {
   if (!user) return null;
   let roles = user.roles;
@@ -1182,13 +1191,14 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
 // PUBLIC SALES PAGE
 // ============================================================
 function SalesPage({ onBack, settings }) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cachedShopData = useMemo(() => readShopCache(), []);
+  const [items, setItems] = useState(cachedShopData?.items || []);
+  const [loading, setLoading] = useState(!cachedShopData);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [sortBy, setSortBy] = useState('newest');
   const [selectedItem, setSelectedItem] = useState(null);
-  const [soldItems, setSoldItems] = useState([]);
+  const [soldItems, setSoldItems] = useState(cachedShopData?.soldItems || []);
   const [photoIdx, setPhotoIdx] = useState(0);
   const isMobile = useMobile();
 
@@ -1199,15 +1209,26 @@ function SalesPage({ onBack, settings }) {
   const hours = s.shopHours ?? 'Monday – Saturday, 8am – 6pm';
 
   useEffect(() => {
+    if (cachedShopData?.soldItems) setSoldItems(cachedShopData.soldItems);
+
+    let cancelled = false;
     const load = async () => {
-      setLoading(true);
+      if (!cachedShopData) setLoading(true);
       const data = await API.get('shop-items');
+      if (cancelled) return;
       if (data?.items) setItems(data.items);
       if (data?.soldItems) setSoldItems(data.soldItems);
+      if (data?.items || data?.soldItems) {
+        writeShopCache({
+          items: data?.items || [],
+          soldItems: data?.soldItems || [],
+        });
+      }
       setLoading(false);
     };
     load();
-  }, []);
+    return () => { cancelled = true; };
+  }, [cachedShopData]);
 
   const categories = useMemo(() => {
     const cats = new Set(items.map(i => i.itemType));
@@ -1293,7 +1314,7 @@ function SalesPage({ onBack, settings }) {
           <div style={{ background: '#fff' }}>
             <div style={{ position: 'relative', height: isMobile ? '320px' : '440px', background: '#f3f4f6', overflow: 'hidden' }}>
               {photos.length > 0 ? (
-                <img src={photos[photoIdx]} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#f3f4f6' }} onError={e => { e.currentTarget.onerror = null; }} />
+                <img src={photos[photoIdx]} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#f3f4f6' }} loading="eager" fetchPriority="high" decoding="async" onError={e => { e.currentTarget.onerror = null; }} />
               ) : (
                 <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '80px', background: 'linear-gradient(135deg, #e8f5ec, #d1fae5)' }}>{itemIcon(item.itemType)}</div>
               )}
@@ -1307,7 +1328,7 @@ function SalesPage({ onBack, settings }) {
               <div style={{ display: 'flex', gap: '6px', padding: '10px 16px', overflowX: 'auto', borderTop: '1px solid #e5e7eb' }}>
                 {photos.map((p, i) => (
                   <button key={i} onClick={() => setPhotoIdx(i)} style={{ flex: '0 0 62px', height: '62px', border: `2.5px solid ${i === photoIdx ? '#1a5f2a' : 'transparent'}`, borderRadius: '8px', overflow: 'hidden', padding: 0, cursor: 'pointer', background: '#f9fafb' }}>
-                    <img src={p} alt={`Thumb ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <img src={p} alt={`Thumb ${i + 1}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" />
                   </button>
                 ))}
               </div>
@@ -1417,7 +1438,7 @@ function SalesPage({ onBack, settings }) {
                 {similarItems.map(sim => (
                   <div key={sim.ref} onClick={() => selectItem(sim)} style={{ background: '#fff', borderRadius: '10px', overflow: 'hidden', border: '1px solid #e5e1d8', cursor: 'pointer' }}>
                     {sim.photoFront ? (
-                      <div style={{ height: '100px', background: '#f3f4f6', overflow: 'hidden' }}><img src={sim.photoFront} alt={sim.brand} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" /></div>
+                      <div style={{ height: '100px', background: '#f3f4f6', overflow: 'hidden' }}><img src={sim.photoFront} alt={sim.brand} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" decoding="async" /></div>
                     ) : (
                       <div style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', background: '#f3f4f6' }}>{itemIcon(sim.itemType)}</div>
                     )}
@@ -1590,8 +1611,7 @@ function SalesPage({ onBack, settings }) {
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(2, 1fr)' : 'repeat(auto-fill, minmax(240px, 1fr))', gap: isMobile ? '10px' : '16px', marginTop: '12px' }}>
-            {filtered.map(item => {
-              const badge = conditionBadge(item.condition);
+            {filtered.map((item, index) => {
               return (
                 <div
                   key={item.ref}
@@ -1608,7 +1628,7 @@ function SalesPage({ onBack, settings }) {
                   {/* Image */}
                   {(item.photoFront || item.photoPowerOn) ? (
                     <div style={{ width: '100%', height: isMobile ? '140px' : '180px', background: '#f3f4f6', overflow: 'hidden' }}>
-                      <img src={item.photoFront || item.photoPowerOn} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+                      <img src={item.photoFront || item.photoPowerOn} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading={index < 4 ? "eager" : "lazy"} fetchPriority={index < 2 ? "high" : "auto"} decoding="async" />
                     </div>
                   ) : (
                     <div style={{ width: '100%', height: isMobile ? '140px' : '180px', background: 'linear-gradient(135deg, #e8f5ec, #d1fae5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: isMobile ? '40px' : '48px' }}>
@@ -1656,7 +1676,7 @@ function SalesPage({ onBack, settings }) {
                   <div style={{ position: 'absolute', top: '8px', left: '8px', background: '#374151', color: '#fff', fontSize: '10px', fontWeight: 800, padding: '3px 8px', borderRadius: '4px', letterSpacing: '0.5px', textTransform: 'uppercase', zIndex: 1 }}>Sold</div>
                   {item.photoFront ? (
                     <div style={{ width: '100%', height: '110px', background: '#f3f4f6', overflow: 'hidden' }}>
-                      <img src={item.photoFront} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'grayscale(25%)' }} loading="lazy" onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
+                      <img src={item.photoFront} alt={`${item.brand} ${item.model}`} style={{ width: '100%', height: '100%', objectFit: 'cover', filter: 'grayscale(25%)' }} loading="lazy" decoding="async" onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
                     </div>
                   ) : (
                     <div style={{ width: '100%', height: '90px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', background: '#f3f4f6' }}>{itemIcon(item.itemType)}</div>
