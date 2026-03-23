@@ -1068,7 +1068,24 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
           <div style={{ display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', marginBottom: '14px', color: '#e0f0e3' }}>
             📍 Enugwu-Aguleri, Anambra
           </div>
-          <div style={{ fontSize: '32px', marginBottom: '6px' }}>💰</div>
+          <div
+            aria-label="Naira icon"
+            style={{
+              width: '54px',
+              height: '54px',
+              margin: '0 auto 10px',
+              borderRadius: '50%',
+              display: 'grid',
+              placeItems: 'center',
+              background: 'radial-gradient(circle at 30% 30%, #ffe08a, #f59e0b 70%, #b45309)',
+              color: '#6b3f00',
+              fontSize: '28px',
+              fontWeight: 800,
+              boxShadow: '0 10px 18px rgba(0, 0, 0, 0.2)',
+            }}
+          >
+            ₦
+          </div>
           <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
           <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
