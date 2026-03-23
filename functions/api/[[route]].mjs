@@ -312,6 +312,7 @@ export async function onRequest(context) {
       ['front', 'back', 'left', 'right', 'powerOn', 'aboutPage'].forEach(k => collect(data.itemPhotos[k]));
       (data.itemPhotos.corners || []).forEach(collect);
     }
+    (data.salePhotos || []).forEach(collect);
     return keys;
   };
 
@@ -742,7 +743,7 @@ export async function onRequest(context) {
         putAction = 'repaid'; putDesc = `✅ Loan repaid — ${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
       } else if (tx.status === 'sold') {
         const profit = (tx.salePrice || 0) - (tx.cashAdvance || 0);
-        putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})`;
+        putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})${tx.saleCondition ? ` — Condition: ${tx.saleCondition}` : ''}`;
       } else if (tx.status === 'for_sale') {
         putAction = 'update'; putDesc = `🏷 Marked for sale — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
       } else {
@@ -1159,6 +1160,7 @@ export async function onRequest(context) {
               model: d.aiModel || '',
               salePrice: d.salePrice || 0,
               saleDate: d.saleDate || null,
+              saleCondition: d.saleCondition || null,
               photoFront: photos[0] || null,
             };
           })

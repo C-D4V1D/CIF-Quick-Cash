@@ -4478,6 +4478,15 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   );
 }
 
+const SALE_CONDITIONS = [
+  { value: 'Excellent', label: 'Excellent — Like new, no visible wear' },
+  { value: 'Good',      label: 'Good — Minor cosmetic marks, fully functional' },
+  { value: 'Fair',      label: 'Fair — Noticeable scratches/dents, fully functional' },
+  { value: 'Poor',      label: 'Poor — Significant wear, may have minor functional issues' },
+  { value: 'For Parts', label: 'For Parts — Not fully functional, sold as-is' },
+];
+const SALE_CONDITION_VALUES = new Set(SALE_CONDITIONS.map(c => c.value));
+
 function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
   const maxHoldDays = (Math.max(1, Number(settings.maxLoanDays) || 30)) + (Math.max(0, Number(settings.graceDays) || 3));
@@ -4487,13 +4496,92 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const [salePrice, setSalePrice] = useState(listedPrice);
   const [saleDate, setSaleDate] = useState(localISODate());
   const [saleBuyer, setSaleBuyer] = useState('');
+
+  // Pre-fill condition from existing intake data if it matches a dropdown option
+  const intakeCondition = tx.shopCondition || tx.aiCondition || tx.conditionDescription || '';
+  const defaultCondition = SALE_CONDITION_VALUES.has(intakeCondition) ? intakeCondition : '';
+  const [saleCondition, setSaleCondition] = useState(defaultCondition);
+  const [salePhotos, setSalePhotos] = useState([]);
+  const [salePhotoNote, setSalePhotoNote] = useState('');
+  const [salePhotoUploading, setSalePhotoUploading] = useState(false);
+  const salePhotoFileRef = useRef();
+
+  const intakePhotos = normalizeItemPhotos(tx.itemPhotos).filter(Boolean);
+
+  const handleAddSalePhoto = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    setSalePhotoUploading(true);
+    try {
+      let base64;
+      try { base64 = await compressImageFile(file); }
+      catch { setSalePhotoUploading(false); return; }
+      const mimeType = base64.split(';')[0].split(':')[1];
+      const data = base64.split(',')[1];
+      const result = await API.post('photos', { data, mimeType });
+      const url = result?.url || base64;
+      setSalePhotos(prev => [...prev, url]);
+    } catch { /* ignore upload errors */ }
+    finally { setSalePhotoUploading(false); }
+  };
+
+  const removeSalePhoto = (idx) => {
+    const url = salePhotos[idx];
+    if (url && url.startsWith('/api/photos/')) API.del(url.slice(5)).catch(() => {});
+    setSalePhotos(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  const canConfirm = salePrice >= minPrice && !!saleCondition;
+
   return (
     <div>
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
       <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
-      <div style={S.grid2}><Field label="Sale Date"><input style={S.input} type="date" value={saleDate} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setSaleDate(e.target.value)} /></Field><Field label="Buyer"><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} /></Field></div>
+      <Field label="Buyer Name"><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} /></Field>
+      <Field label="Condition at Sale" required>
+        <select style={S.select} value={saleCondition} onChange={e => setSaleCondition(e.target.value)}>
+          <option value="">— Select condition —</option>
+          {SALE_CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+        {!saleCondition && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Condition is required before confirming sale</div>}
+      </Field>
+      <Field label="Sale Date"><input style={S.input} type="date" value={saleDate} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setSaleDate(e.target.value)} /></Field>
       <div style={{ ...S.card, background: COLORS.primaryLight, textAlign: 'center', marginTop: '8px' }}><div style={S.statLabel}>Profit</div><div style={{ fontSize: '28px', fontWeight: 800, color: salePrice - tx.cashAdvance > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(salePrice - tx.cashAdvance)}</div></div>
-      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, soldBy: currentUser?.name || '' })} disabled={salePrice < minPrice}>Record Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+
+      {/* Photos at Sale */}
+      <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '16px', paddingTop: '12px' }}>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: COLORS.textMuted, marginBottom: '8px' }}>📷 Photos at Sale <span style={{ fontWeight: 400 }}>(optional)</span></div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+          {salePhotos.map((url, idx) => (
+            <div key={idx} style={{ position: 'relative', width: '72px', height: '72px' }}>
+              <img src={url} alt={`Sale photo ${idx + 1}`} style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '8px', border: `1px solid ${COLORS.border}` }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='72'%3E%3Crect width='72' height='72' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='9' fill='%23dc2626'%3EError%3C/text%3E%3C/svg%3E"; }} />
+              <button type="button" onClick={() => removeSalePhoto(idx)} style={{ position: 'absolute', top: '2px', right: '2px', width: '18px', height: '18px', borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '10px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>✕</button>
+            </div>
+          ))}
+          <button type="button" style={{ ...S.btnSm('secondary'), display: 'flex', alignItems: 'center', gap: '4px' }} onClick={() => salePhotoFileRef.current?.click()} disabled={salePhotoUploading}>
+            {salePhotoUploading ? 'Uploading…' : '+ Add Photo'}
+          </button>
+          <input ref={salePhotoFileRef} type="file" accept="image/*" capture="environment" onChange={handleAddSalePhoto} style={{ display: 'none' }} />
+        </div>
+        <Field label="Note" style={{ marginTop: '10px' }}>
+          <textarea style={{ ...S.input, minHeight: '64px', resize: 'vertical' }} value={salePhotoNote} onChange={e => setSalePhotoNote(e.target.value)} placeholder="e.g. Battery cover missing since intake. New scratch on left edge from storage." />
+        </Field>
+      </div>
+
+      {/* Intake Photos (read-only reference) */}
+      {intakePhotos.length > 0 && (
+        <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '12px', paddingTop: '12px' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: COLORS.textMuted, marginBottom: '8px' }}>📁 Photos from Intake <span style={{ fontWeight: 400 }}>(reference only)</span></div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            {intakePhotos.map((url, idx) => (
+              <img key={idx} src={url} alt={`Intake photo ${idx + 1}`} style={{ width: '64px', height: '64px', objectFit: 'cover', borderRadius: '8px', border: `1px solid ${COLORS.border}`, opacity: 0.85 }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='9' fill='%23dc2626'%3EError%3C/text%3E%3C/svg%3E"; }} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, saleCondition, salePhotos, salePhotoNote, soldBy: currentUser?.name || '' })} disabled={!canConfirm}>✓ Confirm Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
   );
 }
