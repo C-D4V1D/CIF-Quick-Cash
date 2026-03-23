@@ -51,6 +51,7 @@ const buildReportHTML = ({
       <td class="num">${fmtMoney(t.salePrice)}</td>
       <td class="num ${margin >= 0 ? 'green' : 'red'}">${fmtMoney(margin)}</td>
       <td>${esc(t.saleBuyer)}</td>
+      <td>${esc(t.saleCondition || '—')}</td>
       <td>${fmtDate(t.saleDate || t.updated_at)}</td>
     </tr>`;
   }, 7);
@@ -361,7 +362,7 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
   <table class="data">
     <thead>
       <tr>
-        <th>Ref</th><th>Item</th><th>Cash Advanced</th><th>Sale Price</th><th>Margin</th><th>Buyer</th><th>Date</th>
+        <th>Ref</th><th>Item</th><th>Cash Advanced</th><th>Sale Price</th><th>Margin</th><th>Buyer</th><th>Condition</th><th>Date</th>
       </tr>
     </thead>
     <tbody>${saleRows}</tbody>
