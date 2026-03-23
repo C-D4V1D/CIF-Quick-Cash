@@ -4628,11 +4628,32 @@ const normalizeReminderDays = (value, fallback = []) => {
   const parsed = source
     .map(v => Number(v))
     .filter(v => Number.isFinite(v) && v >= 0);
-  const unique = Array.from(new Set(parsed)).sort((a, b) => a - b);
+  const unique = Array.from(new Set(parsed));
   return unique.length ? unique : fallback;
 };
 
 const formatReminderDays = (value, fallback = []) => normalizeReminderDays(value, fallback).join(', ');
+
+// Input that lets the user type freely (e.g. "3, 0") and only
+// normalises/sorts the value when they leave the field (onBlur).
+function ReminderDaysInput({ value, fallback, onChange, style, placeholder }) {
+  const formatted = formatReminderDays(value, fallback);
+  const [draft, setDraft] = useState(formatted);
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setDraft(formatReminderDays(value, fallback));
+  }, [value, fallback, focused]);
+  return (
+    <input
+      style={style}
+      value={focused ? draft : formatted}
+      placeholder={placeholder}
+      onChange={e => setDraft(e.target.value)}
+      onFocus={() => { setFocused(true); setDraft(formatted); }}
+      onBlur={() => { setFocused(false); onChange(normalizeReminderDays(draft, fallback)); }}
+    />
+  );
+}
 
 const isSuccessfulContactEntry = (entry) => SUCCESSFUL_CONTACT_OUTCOMES.has(entry?.result);
 
@@ -6212,7 +6233,38 @@ export default function App() {
             <div style={{ ...S.card, marginBottom: '16px' }}>
               <div style={{ ...S.cardTitle, marginBottom: '8px' }}>Today&apos;s follow-up rules</div>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '1.6' }}>
-                Due-date reminders: <strong>{formatReminderDays(dueDateRules, DEFAULT_SETTINGS.dueDateFollowUpDays) || 'Disabled'}</strong> day(s) before due date · Ownership reminders: <strong>{formatReminderDays(ownershipRules, DEFAULT_SETTINGS.ownershipFollowUpDays) || 'Disabled'}</strong> day(s) before last day of ownership · Overdue follow-up cadence: <strong>{overdueCadence > 0 ? `every ${overdueCadence} day(s)` : 'Disabled'}</strong>.
+                {(() => {
+                  const sortedDue = [...dueDateRules].sort((a, b) => b - a);
+                  const sortedOwnership = [...ownershipRules].sort((a, b) => b - a);
+
+                  const duePhrases = sortedDue.map(d =>
+                    d === 0
+                      ? <strong>on the due date</strong>
+                      : <><strong>{d} day{d !== 1 ? 's' : ''} before</strong> their due date</>
+                  );
+
+                  const ownershipPhrases = sortedOwnership.map(d =>
+                    d === 0
+                      ? <><strong>on the last day</strong> of ownership</>
+                      : <><strong>{d} day{d !== 1 ? 's' : ''} before</strong> it ends</>
+                  );
+
+                  const joinPhrases = (phrases) =>
+                    phrases.length === 0 ? null :
+                    phrases.reduce((acc, phrase, i) =>
+                      i === 0 ? phrase : <>{acc} and again {phrase}</>);
+
+                  const dueJoined = joinPhrases(duePhrases);
+                  const ownershipJoined = joinPhrases(ownershipPhrases);
+
+                  return (
+                    <>
+                      {dueJoined && <>Follow up with clients {dueJoined}.</>}
+                      {ownershipJoined && <>{' '}For ownership, reach out {ownershipJoined}.</>}
+                      {overdueCadence > 0 && <>{' '}For overdue transactions, follow up every <strong>{overdueCadence} day{overdueCadence !== 1 ? 's' : ''}</strong> until resolved.</>}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
@@ -7429,10 +7481,10 @@ export default function App() {
                 <input style={S.input} type="number" step="0.1" min="1" max="5" value={es.penaltyRateMultiplier ?? DEFAULT_SETTINGS.penaltyRateMultiplier} onChange={e => updateSettings({ ...es, penaltyRateMultiplier: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Follow-Up Days<InfoIcon tip="Comma-separated day offsets for when the Daily Follow-ups page should show a loan before its customer due date. Example: 3, 1, 0" /></span>}>
-                <input style={S.input} value={formatReminderDays(es.dueDateFollowUpDays, DEFAULT_SETTINGS.dueDateFollowUpDays)} onChange={e => updateSettings({ ...es, dueDateFollowUpDays: normalizeReminderDays(e.target.value, DEFAULT_SETTINGS.dueDateFollowUpDays) })} placeholder="e.g. 3, 1, 0" />
+                <ReminderDaysInput style={S.input} value={es.dueDateFollowUpDays} fallback={DEFAULT_SETTINGS.dueDateFollowUpDays} onChange={v => updateSettings({ ...es, dueDateFollowUpDays: v })} placeholder="e.g. 3, 1, 0" />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Follow-Up Days<InfoIcon tip="Comma-separated day offsets for reminders before the internal last day of ownership. Example: 3, 0 will show three days before ownership and again on the ownership day." /></span>}>
-                <input style={S.input} value={formatReminderDays(es.ownershipFollowUpDays, DEFAULT_SETTINGS.ownershipFollowUpDays)} onChange={e => updateSettings({ ...es, ownershipFollowUpDays: normalizeReminderDays(e.target.value, DEFAULT_SETTINGS.ownershipFollowUpDays) })} placeholder="e.g. 3, 0" />
+                <ReminderDaysInput style={S.input} value={es.ownershipFollowUpDays} fallback={DEFAULT_SETTINGS.ownershipFollowUpDays} onChange={v => updateSettings({ ...es, ownershipFollowUpDays: v })} placeholder="e.g. 3, 0" />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Contact Reminder (days)<InfoIcon tip="How often (in days) the follow-up page should bring back overdue loans for another contact attempt. Set to 0 to disable overdue reminders." /></span>}>
                 <input style={S.input} type="number" min="0" max="30" value={es.overdueContactReminderDays ?? DEFAULT_SETTINGS.overdueContactReminderDays} onChange={e => updateSettings({ ...es, overdueContactReminderDays: Number(e.target.value) })} />
