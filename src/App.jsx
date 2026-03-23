@@ -1062,126 +1062,127 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
   return (
     <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#1a1a2e', minHeight: '100vh', color: '#fff', fontSize: '16px', lineHeight: 1.6 }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-
-      {/* Hero */}
-      <div style={{ background: '#1a5f2a', padding: '36px 20px 32px', textAlign: 'center' }}>
-        <div style={{ display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', marginBottom: '14px', color: '#e0f0e3' }}>
-          📍 Enugwu-Aguleri, Anambra
-        </div>
-        <div style={{ fontSize: '32px', marginBottom: '6px' }}>💰</div>
-        <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
-        <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
-          <button
-            onClick={onCheckLoan}
-            style={{ background: '#fff', color: '#1a5f2a', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px' }}
-          >
-            Check My Loan Status
-          </button>
-          <button
-            onClick={onShop}
-            style={{ background: '#c8a84e', color: '#fff', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%' }}
-          >
-            🛍 Browse Items for Sale
-          </button>
-        </div>
-      </div>
-
-      {/* Our Two Services */}
-      <div style={{ background: '#111827', padding: '32px 20px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Our two services</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-          <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '12px', padding: '16px' }}>
-            <div style={{ fontWeight: 800, color: '#4ade80', fontSize: '15px', marginBottom: '8px' }}>Cash Advance</div>
-            <div style={{ fontSize: '14px', color: '#a7f3d0', lineHeight: 1.5 }}>Leave your item with us, collect cash, and buy it back within 30 days</div>
+      <div style={{ width: '100%', maxWidth: '1126px', margin: '0 auto', textAlign: 'center', borderInline: '1px solid rgba(229, 228, 231, 0.2)' }}>
+        {/* Hero */}
+        <div style={{ background: '#1a5f2a', padding: '36px 20px 32px', textAlign: 'center' }}>
+          <div style={{ display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', marginBottom: '14px', color: '#e0f0e3' }}>
+            📍 Enugwu-Aguleri, Anambra
           </div>
-          <div style={{ background: '#3d2e00', border: '1.5px solid #c8a84e', borderRadius: '12px', padding: '16px' }}>
-            <div style={{ fontWeight: 800, color: '#fbbf24', fontSize: '15px', marginBottom: '8px' }}>Outright Sale</div>
-            <div style={{ fontSize: '14px', color: '#fde68a', lineHeight: 1.5 }}>Want to sell your item immediately? We buy it from you on the spot</div>
+          <div style={{ fontSize: '32px', marginBottom: '6px' }}>💰</div>
+          <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
+          <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
+            <button
+              onClick={onCheckLoan}
+              style={{ background: '#fff', color: '#1a5f2a', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px' }}
+            >
+              Check My Loan Status
+            </button>
+            <button
+              onClick={onShop}
+              style={{ background: '#c8a84e', color: '#fff', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%' }}
+            >
+              🛍 Browse Items for Sale
+            </button>
           </div>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-          {features.map(f => (
-            <div key={f.title} style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', border: '1px solid #2a3447' }}>
-              <div style={{ fontSize: '22px', marginBottom: '6px' }}>{f.icon}</div>
-              <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>{f.title}</div>
-              <div style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.4 }}>{f.desc}</div>
-            </div>
-          ))}
-        </div>
-      </div>
 
-      {/* Items We Accept */}
-      <div style={{ background: '#0f172a', padding: '28px 20px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>Items we accept</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-          {items.map(item => (
-            <div key={item} style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '8px', padding: '8px 6px', textAlign: 'center', fontSize: '13px', fontWeight: 500, color: '#d1d5db' }}>
-              {item}
+        {/* Our Two Services */}
+        <div style={{ background: '#111827', padding: '32px 20px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Our two services</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+            <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '12px', padding: '16px' }}>
+              <div style={{ fontWeight: 800, color: '#4ade80', fontSize: '15px', marginBottom: '8px' }}>Cash Advance</div>
+              <div style={{ fontSize: '14px', color: '#a7f3d0', lineHeight: 1.5 }}>Leave your item with us, collect cash, and buy it back within 30 days</div>
             </div>
-          ))}
-        </div>
-      </div>
-
-      {/* How It Works */}
-      <div style={{ background: '#111827', padding: '28px 20px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>How it works — step by step</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-          {steps.map((step, i) => (
-            <div key={i} style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
-              <div style={{ background: '#1a5f2a', color: '#fff', borderRadius: '50%', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>{i + 1}</div>
-              <div style={{ fontSize: '15px', color: '#e5e7eb', lineHeight: 1.5 }}>
-                {typeof step === 'string' ? step : <><strong style={{ color: '#fff' }}>{step.bold}</strong>{step.rest}</>}
+            <div style={{ background: '#3d2e00', border: '1.5px solid #c8a84e', borderRadius: '12px', padding: '16px' }}>
+              <div style={{ fontWeight: 800, color: '#fbbf24', fontSize: '15px', marginBottom: '8px' }}>Outright Sale</div>
+              <div style={{ fontSize: '14px', color: '#fde68a', lineHeight: 1.5 }}>Want to sell your item immediately? We buy it from you on the spot</div>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            {features.map(f => (
+              <div key={f.title} style={{ background: '#1e2433', borderRadius: '10px', padding: '14px', border: '1px solid #2a3447' }}>
+                <div style={{ fontSize: '22px', marginBottom: '6px' }}>{f.icon}</div>
+                <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '4px' }}>{f.title}</div>
+                <div style={{ fontSize: '13px', color: '#9ca3af', lineHeight: 1.4 }}>{f.desc}</div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
 
-      {/* What You Need to Bring */}
-      <div style={{ background: '#0f172a', padding: '28px 20px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>What you need to bring</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {needs.map((n, i) => (
-            <div key={i} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-              <div style={{ color: '#4ade80', marginTop: '4px', flexShrink: 0 }}>●</div>
-              <div style={{ fontSize: '15px', color: '#d1d5db', lineHeight: 1.5 }}>{n}</div>
-            </div>
-          ))}
+        {/* Items We Accept */}
+        <div style={{ background: '#0f172a', padding: '28px 20px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>Items we accept</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+            {items.map(item => (
+              <div key={item} style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '8px', padding: '8px 6px', textAlign: 'center', fontSize: '13px', fontWeight: 500, color: '#d1d5db' }}>
+                {item}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
 
-      {/* Contact & Location */}
-      <div style={{ background: '#111827', padding: '28px 20px' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Find us</h2>
-        <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', marginBottom: '16px', border: '1px solid #2a3447' }}>
-          <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Address</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{address}</div></div>
-          <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Phone</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{phone1}{phone2 ? ` / ${phone2}` : ''}</div></div>
-          <div><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Hours</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{hours}</div></div>
+        {/* How It Works */}
+        <div style={{ background: '#111827', padding: '28px 20px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>How it works — step by step</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            {steps.map((step, i) => (
+              <div key={i} style={{ display: 'flex', gap: '14px', alignItems: 'flex-start', textAlign: 'left' }}>
+                <div style={{ background: '#1a5f2a', color: '#fff', borderRadius: '50%', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '14px', flexShrink: 0, marginTop: '2px' }}>{i + 1}</div>
+                <div style={{ fontSize: '15px', color: '#e5e7eb', lineHeight: 1.5 }}>
+                  {typeof step === 'string' ? step : <><strong style={{ color: '#fff' }}>{step.bold}</strong>{step.rest}</>}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <WhatsAppButton whatsAppNumber={whatsApp} />
-          <a
-            href={mapsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '12px', borderRadius: '10px', textDecoration: 'none', fontWeight: 600, fontSize: '15px' }}
+
+        {/* What You Need to Bring */}
+        <div style={{ background: '#0f172a', padding: '28px 20px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', color: '#fff' }}>What you need to bring</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {needs.map((n, i) => (
+              <div key={i} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', textAlign: 'left' }}>
+                <div style={{ color: '#4ade80', marginTop: '4px', flexShrink: 0 }}>●</div>
+                <div style={{ fontSize: '15px', color: '#d1d5db', lineHeight: 1.5 }}>{n}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Contact & Location */}
+        <div style={{ background: '#111827', padding: '28px 20px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 20px', color: '#fff' }}>Find us</h2>
+          <div style={{ background: '#1e2433', borderRadius: '12px', padding: '20px', marginBottom: '16px', border: '1px solid #2a3447', textAlign: 'left' }}>
+            <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Address</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{address}</div></div>
+            <div style={{ marginBottom: '10px' }}><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Phone</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{phone1}{phone2 ? ` / ${phone2}` : ''}</div></div>
+            <div><strong style={{ color: '#9ca3af', fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Hours</strong><div style={{ color: '#e5e7eb', fontSize: '15px', marginTop: '4px' }}>{hours}</div></div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <WhatsAppButton whatsAppNumber={whatsApp} />
+            <a
+              href={mapsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '12px', borderRadius: '10px', textDecoration: 'none', fontWeight: 600, fontSize: '15px' }}
+            >
+              📍 Get Directions
+            </a>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{ background: '#0a0f1a', padding: '20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
+          <div style={{ marginBottom: '10px' }}>© 2026 Christ-in-Fabian Quick Cash. All rights reserved.</div>
+          <div style={{ marginBottom: '12px' }}><PartnershipFootnote dark /></div>
+          <button
+            onClick={onStaffLogin}
+            style={{ background: 'none', border: 'none', color: '#4b5563', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', padding: '4px' }}
           >
-            📍 Get Directions
-          </a>
+            Staff / Admin Login
+          </button>
         </div>
-      </div>
-
-      {/* Footer */}
-      <div style={{ background: '#0a0f1a', padding: '20px', textAlign: 'center', fontSize: '13px', color: '#6b7280' }}>
-        <div style={{ marginBottom: '10px' }}>© 2026 Christ-in-Fabian Quick Cash. All rights reserved.</div>
-        <div style={{ marginBottom: '12px' }}><PartnershipFootnote dark /></div>
-        <button
-          onClick={onStaffLogin}
-          style={{ background: 'none', border: 'none', color: '#4b5563', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline', padding: '4px' }}
-        >
-          Staff / Admin Login
-        </button>
       </div>
     </div>
   );
