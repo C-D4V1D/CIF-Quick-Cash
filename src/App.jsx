@@ -3030,9 +3030,36 @@ const normalizeItemPhotos = (ip) => {
   return [];
 };
 
-const AI_PROMPT_IMEI = `Look at this image carefully. This is a photo of a device screen showing the IMEI number (typically displayed after dialing *#06#, or visible in Settings > About Device / About Phone / About Tablet). Extract the IMEI number. It is a 15-digit number made up entirely of digits. Respond with ONLY the 15 digits, no spaces, no dashes, nothing else. If you cannot find a 15-digit IMEI, respond with exactly: NOT_FOUND`;
+const AI_PROMPT_IMEI = `Look at this image carefully. This is a photo of a device screen showing the IMEI number (typically displayed after dialing *#06#, or visible in Settings > About Device / About Phone / About Tablet). Extract the IMEI number. It is a 15-digit number made up entirely of digits.
 
-const AI_PROMPT_SERIAL = `Look at this image carefully. Find the serial number on the label. A serial number is usually labelled "S/N", "Serial No.", "Serial Number", or "SN:" and is a combination of letters and digits. Respond with ONLY the serial number text exactly as printed, nothing else. If you cannot find any serial number, respond with exactly: NOT_FOUND`;
+Reply in this exact format only:
+IMEI: [15 digits only, no spaces or dashes, or NOT_FOUND]
+CONFIDENCE: [percentage from 0% to 100%]
+
+Set CONFIDENCE based on how clearly you can read every digit. If even 1 digit is uncertain, lower the confidence. If you cannot find a full 15-digit IMEI, reply with IMEI: NOT_FOUND.`;
+
+const AI_PROMPT_SERIAL = `Look at this image carefully. Find the serial number on the label. A serial number is usually labelled "S/N", "Serial No.", "Serial Number", or "SN:" and is a combination of letters and digits.
+
+Reply in this exact format only:
+SERIAL_NUMBER: [serial number exactly as printed, or NOT_FOUND]
+CONFIDENCE: [percentage from 0% to 100%]
+
+Set CONFIDENCE based on how clearly you can read the characters. If any character is uncertain, lower the confidence.`;
+
+const OCR_CONFIRMATION_THRESHOLD = 90;
+const parseAiField = (text, key) => {
+  const escapedKey = String(key || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(?:^|\\n)\\s*(?:\\d+[.)]\\s*)?${escapedKey}:\\s*(.+?)(?=\\n\\s*(?:\\d+[.)]\\s*)?[A-Z][A-Z_]+:|$)`, 'is');
+  const match = String(text || '').match(pattern);
+  return match ? match[1].trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ') : '';
+};
+const parseConfidencePercent = (value) => {
+  const match = String(value || '').match(/(\d{1,3})/);
+  if (!match) return null;
+  return Math.max(0, Math.min(100, Number(match[1])));
+};
+const makeDigitStates = (value = '', count = 15) => Array.from({ length: count }, (_, idx) => value[idx] || '');
+const joinDigitStates = (digits) => (Array.isArray(digits) ? digits.join('').replace(/\D/g, '') : '');
 
 // ============================================================
 // CAPTURE STEP COMPONENT (6A → 6B → 6C → 6D)
@@ -3042,6 +3069,11 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
   const [imeiAiError, setImeiAiError] = useState('');
   const [serialAiLoading, setSerialAiLoading] = useState(false);
   const [serialAiError, setSerialAiError] = useState('');
+  const imeiDigits = Array.isArray(tx.imeiDigits) ? tx.imeiDigits : makeDigitStates(tx.imei);
+  const imeiConfidence = parseConfidencePercent(tx.imeiOcrConfidence);
+  const serialConfidence = parseConfidencePercent(tx.serialOcrConfidence);
+  const imeiNeedsManualConfirmation = !!tx.imei && imeiConfidence !== null && imeiConfidence < OCR_CONFIRMATION_THRESHOLD && !tx.imeiManualConfirmed;
+  const serialNeedsManualConfirmation = !!tx.serialNumber && serialConfidence !== null && serialConfidence < OCR_CONFIRMATION_THRESHOLD && !tx.serialManualConfirmed;
 
   const requiresImei = IMEI_ITEM_TYPES.includes(tx.captureItemType);
   const isNonPowered = NON_POWERED_ITEM_TYPES.includes(tx.captureItemType);
@@ -3059,15 +3091,44 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
     upd('itemPhotos', arr);
   };
 
+  const setImeiDigits = (digits) => {
+    const nextDigits = Array.isArray(digits) ? digits.slice(0, 15) : makeDigitStates('');
+    while (nextDigits.length < 15) nextDigits.push('');
+    upd('imeiDigits', nextDigits);
+    upd('imei', joinDigitStates(nextDigits));
+    upd('imeiManualConfirmed', false);
+  };
+
+  const handleImeiInputChange = (value) => {
+    const digits = value.replace(/\D/g, '').slice(0, 15);
+    upd('imei', digits);
+    upd('imeiDigits', makeDigitStates(digits));
+    upd('imeiManualConfirmed', false);
+  };
+
+  const handleImeiDigitChange = (idx, value) => {
+    const digit = value.replace(/\D/g, '').slice(-1);
+    const next = [...imeiDigits];
+    next[idx] = digit;
+    setImeiDigits(next);
+  };
+
   const handleExtractIMEI = async () => {
     setImeiAiLoading(true); setImeiAiError('');
     if (!tx.imeiPhoto) { setImeiAiError('Upload a photo of the IMEI screen first.'); setImeiAiLoading(false); return; }
     const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.imeiPhoto], AI_PROMPT_IMEI);
     if (result.error) { setImeiAiError(result.error); }
     else {
-      const extracted = result.text.trim().replace(/\D/g, '');
+      const extracted = (parseAiField(result.text, 'IMEI') || result.text || '').trim().replace(/\D/g, '');
+      const confidence = parseConfidencePercent(parseAiField(result.text, 'CONFIDENCE'));
+      upd('imeiOcrConfidence', confidence === null ? '' : String(confidence));
+      upd('imeiManualConfirmed', false);
       if (!extracted || extracted.length !== 15) { setImeiAiError('AI could not read a valid 15-digit IMEI from the photo. Try a clearer, closer shot of the screen.'); }
-      else { upd('imei', extracted); setImeiAiError(''); }
+      else {
+        upd('imei', extracted);
+        upd('imeiDigits', makeDigitStates(extracted));
+        setImeiAiError('');
+      }
     }
     setImeiAiLoading(false);
   };
@@ -3078,7 +3139,10 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
     const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.serialNumberPhoto], AI_PROMPT_SERIAL);
     if (result.error) { setSerialAiError(result.error); }
     else {
-      const extracted = result.text.trim();
+      const extracted = (parseAiField(result.text, 'SERIAL_NUMBER') || result.text || '').trim();
+      const confidence = parseConfidencePercent(parseAiField(result.text, 'CONFIDENCE'));
+      upd('serialOcrConfidence', confidence === null ? '' : String(confidence));
+      upd('serialManualConfirmed', false);
       if (extracted === 'NOT_FOUND' || extracted === '') { setSerialAiError('AI could not find a serial number in the photo. Try a clearer, closer shot of the label.'); }
       else { upd('serialNumber', extracted); setSerialAiError(''); }
     }
@@ -3103,9 +3167,14 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
             upd('partsOnly', false);
             upd('itemPhotos', []);
             upd('imei', '');
+            upd('imeiDigits', makeDigitStates(''));
+            upd('imeiOcrConfidence', '');
+            upd('imeiManualConfirmed', false);
             upd('imeiPhoto', null);
             upd('imeiModelMatch', false);
             upd('serialNumber', '');
+            upd('serialOcrConfidence', '');
+            upd('serialManualConfirmed', false);
             upd('serialNumberPhoto', null);
           }}
         >
@@ -3176,7 +3245,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>📱 IMEI Capture</div>
                 <div style={{ ...S.alert('info'), marginBottom: '12px' }}>
                   📱 The IMEI permanently identifies this specific device. Dial <strong>*#06#</strong> on the device — a number will appear on screen. Take a clear close-up photo. We use the IMEI to confirm this is the exact device the customer says it is. Check that the brand and model on imei.info matches what you see in the device's About/Settings screen.</div>
-                <PhotoUpload label="Photo of IMEI on screen (*#06#)" value={tx.imeiPhoto} onChange={v => { upd('imeiPhoto', v); if (!v) { upd('imei', ''); upd('imeiModelMatch', false); } }} required size={130} />
+                <PhotoUpload label="Photo of IMEI on screen (*#06#)" value={tx.imeiPhoto} onChange={v => { upd('imeiPhoto', v); if (!v) { upd('imei', ''); upd('imeiDigits', makeDigitStates('')); upd('imeiOcrConfidence', ''); upd('imeiManualConfirmed', false); upd('imeiModelMatch', false); } }} required size={130} />
                 {tx.imeiPhoto && (
                   <div style={{ marginTop: '10px' }}>
                     <button style={S.btn('primary')} onClick={handleExtractIMEI} disabled={imeiAiLoading}>
@@ -3187,8 +3256,41 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 {tx.imeiPhoto && !tx.imei && !imeiAiLoading && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ Please extract or enter the IMEI number.</div>}
                 {imeiAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{imeiAiError}</div>}
                 <Field label="IMEI Number" required style={{ marginTop: '12px' }}>
-                  <input style={S.input} inputMode="numeric" value={tx.imei} onChange={e => upd('imei', e.target.value.replace(/\D/g, ''))} placeholder="15-digit IMEI — auto-filled by AI or type manually" />
+                  <input style={S.input} inputMode="numeric" value={tx.imei} onChange={e => handleImeiInputChange(e.target.value)} placeholder="15-digit IMEI — auto-filled by AI or type manually" />
                   {!tx.imei && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>⛔ IMEI is required for this device.</div>}
+                  {imeiConfidence !== null && (
+                    <div style={{ marginTop: '8px', fontSize: '12px', color: imeiConfidence < OCR_CONFIRMATION_THRESHOLD ? COLORS.warn : '#166534', fontWeight: 600 }}>
+                      OCR confidence: {imeiConfidence}%
+                    </div>
+                  )}
+                  {!!tx.imei && (
+                    <div style={{ marginTop: '10px', padding: '12px', background: '#f8fafc', border: `1px solid ${COLORS.border}`, borderRadius: '8px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', color: '#334155' }}>Digit-by-digit IMEI check</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '8px' }}>
+                        {imeiDigits.map((digit, idx) => (
+                          <label key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '11px', color: '#64748b' }}>
+                            <span>#{idx + 1}</span>
+                            <input
+                              style={{ ...S.input, textAlign: 'center', padding: '10px 0', fontFamily: 'monospace', borderColor: digit ? COLORS.border : '#f59e0b' }}
+                              inputMode="numeric"
+                              maxLength={1}
+                              value={digit}
+                              onChange={e => handleImeiDigitChange(idx, e.target.value)}
+                              placeholder="•"
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      <div style={{ marginTop: '8px', fontSize: '12px', color: '#475569' }}>Review each box against the photo so staff can quickly fix any wrong digit.</div>
+                    </div>
+                  )}
+                  {imeiNeedsManualConfirmation && <div style={{ ...S.alert('warning'), marginTop: '8px' }}>⚠ OCR confidence is below {OCR_CONFIRMATION_THRESHOLD}%. A staff member must manually confirm all IMEI digits before continuing.</div>}
+                  {!!tx.imei && imeiConfidence !== null && imeiConfidence < OCR_CONFIRMATION_THRESHOLD && (
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '12px', background: '#fff7ed', borderRadius: '8px', border: '1px solid #fdba74', marginTop: '8px' }}>
+                      <input type="checkbox" checked={!!tx.imeiManualConfirmed} onChange={e => upd('imeiManualConfirmed', e.target.checked)} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
+                      <span style={{ fontSize: '13px' }}>I manually checked every IMEI digit against the photo and corrected any OCR mistakes.</span>
+                    </label>
+                  )}
                 </Field>
                 {tx.imei && (
                   <>
@@ -3211,7 +3313,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 <div style={{ ...S.alert('info'), marginBottom: '12px' }}>
                   📦 Check the back panel, bottom sticker, or inside compartment for a serial/model number. If you find one, photograph the label and let AI read it. This helps identify this specific unit if there is ever a dispute.
                 </div>
-                <PhotoUpload label="Photo of serial number label" value={tx.serialNumberPhoto} onChange={v => { upd('serialNumberPhoto', v); if (!v) upd('serialNumber', ''); }} size={130} />
+                <PhotoUpload label="Photo of serial number label" value={tx.serialNumberPhoto} onChange={v => { upd('serialNumberPhoto', v); if (!v) { upd('serialNumber', ''); upd('serialOcrConfidence', ''); upd('serialManualConfirmed', false); } }} size={130} />
                 {tx.serialNumberPhoto && (
                   <div style={{ marginTop: '10px' }}>
                     <button style={S.btn('primary')} onClick={handleExtractSerial} disabled={serialAiLoading}>
@@ -3222,7 +3324,19 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 {tx.serialNumberPhoto && !tx.serialNumber && !serialAiLoading && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>⛔ You uploaded a serial photo — please extract or enter the serial number.</div>}
                 {serialAiError && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{serialAiError}</div>}
                 <Field label="Serial Number" style={{ marginTop: '12px' }}>
-                  <input style={S.input} value={tx.serialNumber} onChange={e => upd('serialNumber', e.target.value)} placeholder="Auto-filled by AI or type manually (optional)" />
+                  <input style={S.input} value={tx.serialNumber} onChange={e => { upd('serialNumber', e.target.value); upd('serialManualConfirmed', false); }} placeholder="Auto-filled by AI or type manually (optional)" />
+                  {serialConfidence !== null && (
+                    <div style={{ marginTop: '8px', fontSize: '12px', color: serialConfidence < OCR_CONFIRMATION_THRESHOLD ? COLORS.warn : '#166534', fontWeight: 600 }}>
+                      OCR confidence: {serialConfidence}%
+                    </div>
+                  )}
+                  {serialNeedsManualConfirmation && <div style={{ ...S.alert('warning'), marginTop: '8px' }}>⚠ OCR confidence is below {OCR_CONFIRMATION_THRESHOLD}%. Staff must manually confirm the serial number before continuing.</div>}
+                  {!!tx.serialNumber && serialConfidence !== null && serialConfidence < OCR_CONFIRMATION_THRESHOLD && (
+                    <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '12px', background: '#fff7ed', borderRadius: '8px', border: '1px solid #fdba74', marginTop: '8px' }}>
+                      <input type="checkbox" checked={!!tx.serialManualConfirmed} onChange={e => upd('serialManualConfirmed', e.target.checked)} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
+                      <span style={{ fontSize: '13px' }}>I manually checked the serial number against the photo.</span>
+                    </label>
+                  )}
                 </Field>
               </>
             )}
@@ -3374,7 +3488,8 @@ const EMPTY_TX = {
   aiRawResponse: '', aiRawResponse2: '', aiRawResponse3: '',
   aiRun1Done: false, aiRun2Done: false, aiRun3Done: false, aiManualMode: false,
   requiresIMEI: false,
-  imei: '', imeiPhoto: null, imeiModelMatch: false, serialNumber: '', serialNumberPhoto: null,
+  imei: '', imeiDigits: makeDigitStates(''), imeiOcrConfidence: '', imeiManualConfirmed: false, imeiPhoto: null, imeiModelMatch: false,
+  serialNumber: '', serialOcrConfidence: '', serialManualConfirmed: false, serialNumberPhoto: null,
   hasReceipt: null, receiptPhoto: null,
   screeningDuration: '', screeningDurationOther: '', screeningPurchaseLocation: '', screeningPurchaseLocationOther: '', screeningRegistered: '', screeningOthersUsing: '', screeningRedFlag: false,
   estimatedValue: 0, loanCapPct: 40, cashAdvance: 0, dailyFee: 0, loanDays: 30,
@@ -3601,7 +3716,7 @@ Then still reply with ALL 6 fields above with your best guess based on what you 
       const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
       upd('aiRawResponse', result.text);
-      const { confidence } = parseGeminiResult(result.text);
+      parseGeminiResult(result.text);
 
       // Step 3: ALWAYS verify model via Google Search grounding
       // Gemini can be 98% confident but still hallucinate the model number.
@@ -3835,8 +3950,16 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         if (!tx.captureItemType) return false;
         if (tx.itemPowersOn !== true && !tx.partsOnly) return false;
         if (photoCount < 3) return false;
-        if (requiresImei) { if (!tx.imei || !tx.imeiModelMatch) return false; }
-        else { if (tx.serialNumberPhoto && !tx.serialNumber) return false; }
+        if (requiresImei) {
+          const imeiConfidence = parseConfidencePercent(tx.imeiOcrConfidence);
+          if (!tx.imei || !tx.imeiModelMatch) return false;
+          if (imeiConfidence !== null && imeiConfidence < OCR_CONFIRMATION_THRESHOLD && !tx.imeiManualConfirmed) return false;
+        }
+        else {
+          const serialConfidence = parseConfidencePercent(tx.serialOcrConfidence);
+          if (tx.serialNumberPhoto && !tx.serialNumber) return false;
+          if (tx.serialNumber && serialConfidence !== null && serialConfidence < OCR_CONFIRMATION_THRESHOLD && !tx.serialManualConfirmed) return false;
+        }
         if (tx.hasReceipt === true && !tx.receiptPhoto) return false;
         return true;
       }
@@ -3890,10 +4013,14 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         } else {
           if (photoCount < 3) issues.push(`At least 3 item photos are required. You have uploaded ${photoCount} so far.`);
           if (requiresImei) {
+            const imeiConfidence = parseConfidencePercent(tx.imeiOcrConfidence);
             if (!tx.imei) issues.push('IMEI number is required. Upload a photo of the *#06# screen and extract with AI.');
+            if (tx.imei && imeiConfidence !== null && imeiConfidence < OCR_CONFIRMATION_THRESHOLD && !tx.imeiManualConfirmed) issues.push(`OCR confidence for the IMEI is below ${OCR_CONFIRMATION_THRESHOLD}%. A staff member must manually confirm every digit before proceeding.`);
             if (tx.imei && !tx.imeiModelMatch) issues.push('You must confirm the brand and model on imei.info match the device before proceeding.');
           } else {
+            const serialConfidence = parseConfidencePercent(tx.serialOcrConfidence);
             if (tx.serialNumberPhoto && !tx.serialNumber) issues.push('You uploaded a serial number photo — please extract or enter the serial number before proceeding.');
+            if (tx.serialNumber && serialConfidence !== null && serialConfidence < OCR_CONFIRMATION_THRESHOLD && !tx.serialManualConfirmed) issues.push(`OCR confidence for the serial number is below ${OCR_CONFIRMATION_THRESHOLD}%. Staff must manually confirm it before proceeding.`);
           }
           if (tx.hasReceipt === true && !tx.receiptPhoto) issues.push('Receipt photo is required — you indicated a receipt was provided.');
         }
