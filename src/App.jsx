@@ -2698,8 +2698,8 @@ function LoginScreen({ onLogin }) {
         <div style={{ fontSize: '14px', fontWeight: 700, textAlign: 'center', color: COLORS.accent, marginBottom: '4px', letterSpacing: '2px' }}>QUICK CASH</div>
         <div style={S.loginSub}>Staff & Stakeholder Portal</div>
         {error && <div style={S.alert('danger')}>{error}</div>}
-        <Field label="Username"><input style={S.input} value={username} onChange={e => { setUsername(e.target.value); setError(''); }} placeholder="Enter username" /></Field>
-        <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPassword ? 'text' : 'password'} value={password} onChange={e => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" onKeyDown={e => e.key === 'Enter' && handleLogin()} /><button type="button" style={S.btnSm('outline')} onClick={() => setShowPassword(v => !v)}>{showPassword ? '🙈 Hide' : '👁 Show'}</button></div></Field>
+        <Field label="Username" required><input style={S.input} value={username} onChange={e => { setUsername(e.target.value); setError(''); }} placeholder="Enter username" /></Field>
+        <Field label="Password" required><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={showPassword ? 'text' : 'password'} value={password} onChange={e => { setPassword(e.target.value); setError(''); }} placeholder="Enter password" onKeyDown={e => e.key === 'Enter' && handleLogin()} /><button type="button" style={S.btnSm('outline')} onClick={() => setShowPassword(v => !v)}>{showPassword ? '🙈 Hide' : '👁 Show'}</button></div></Field>
         <div style={{ marginTop: '-4px', marginBottom: '14px' }}>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: COLORS.text }}>
             <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
@@ -4394,6 +4394,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
 // WIZARD DECLINE LOG MODAL — pre-filled for staff to review
 // ============================================================
 function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
+  const [showErrors, setShowErrors] = useState(false);
   const [entry, setEntry] = useState({
     date: prefill.date || localISODate(),
     ref: prefill.ref || '',
@@ -4404,13 +4405,15 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
     notes: prefill.notes || '',
   });
   const upd = (k, v) => setEntry(prev => ({ ...prev, [k]: v }));
+  const missingRequired = !entry.date || !entry.item.trim() || !entry.reason;
   return (
     <Modal open onClose={onCancel} title="📋 Log Declined Customer">
       <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
-        ⚠️ Fill in the details below and click <strong>Decline &amp; Save to Log</strong> to record this declined transaction. Clicking Cancel or ✕ returns you to the wizard without saving.
+        ⚠️ Fill in the details below and click <strong>Decline &amp; Save to Log</strong> to record this declined transaction. Fields marked with <strong>*</strong> are mandatory. Ref #, customer name and NIN/BVN are optional because staff may not always have those details when declining. Clicking Cancel or ✕ returns you to the wizard without saving.
       </div>
+      {showErrors && missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ Date, Item Brought, and Decline Reason are required before you can save this decline log entry.</div>}
       <div style={S.grid2}>
-        <Field label="Date">
+        <Field label="Date" required>
           <input style={S.input} type="date" value={entry.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => upd('date', e.target.value)} />
         </Field>
         <Field label="Ref #">
@@ -4425,7 +4428,7 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
           <input style={S.input} value={entry.ninBvn} onChange={e => upd('ninBvn', e.target.value)} placeholder="e.g. NIN: 12345678901" />
         </Field>
       </div>
-      <Field label="Item Brought">
+      <Field label="Item Brought" required>
         <input style={S.input} value={entry.item} onChange={e => upd('item', e.target.value)} placeholder="e.g. Smartphone Samsung Galaxy A14" />
       </Field>
       <Field label="Decline Reason" required>
@@ -4438,7 +4441,7 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
         <textarea style={S.textarea} value={entry.notes} onChange={e => upd('notes', e.target.value)} placeholder="e.g. Customer appeared nervous, gave two different answers about purchase date…" rows={3} />
       </Field>
       <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
-        <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={!entry.item || !entry.reason} onClick={() => onSave(entry)}>
+        <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={missingRequired} onClick={() => { setShowErrors(true); if (missingRequired) return; onSave(entry); }}>
           🚫 Decline &amp; Save to Log
         </button>
         <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={onCancel}>
@@ -4581,7 +4584,7 @@ function ContactLogModal({ tx, onClose, onSave, currentUser }) {
         </div>
       </div>
       <div style={S.grid2}>
-        <Field label="Date"><input style={S.input} type="date" value={date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDate(e.target.value)} /></Field>
+        <Field label="Date" required><input style={S.input} type="date" value={date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDate(e.target.value)} /></Field>
         <Field label="Time"><input style={S.input} type="time" value={time} onChange={e => setTime(e.target.value)} /></Field>
       </div>
       <Field label="Outcome" required style={{ marginTop: '12px' }}>
@@ -4871,7 +4874,7 @@ function SettingsPwdModal({ showSettingsPwdModal, setShowSettingsPwdModal, setti
   return (
     <Modal open={showSettingsPwdModal} onClose={() => { setShowSettingsPwdModal(false); setSettingsPwdError(''); }} title="Confirm Settings Changes">
       <p style={{ fontSize: '14px', color: COLORS.text, marginBottom: '16px' }}>Enter your admin password to apply the settings changes.</p>
-      <Field label="Admin Password">
+      <Field label="Admin Password" required>
         <input
           style={S.input}
           type="password"
@@ -4895,19 +4898,22 @@ function SettingsPwdModal({ showSettingsPwdModal, setShowSettingsPwdModal, setti
 
 function ExpModal({ showAddExpense, setShowAddExpense, expForm, setExpForm, settings, currentUser, setExpenses, loadData }) {
   const expCats = settings.expenseCategories || DEFAULT_SETTINGS.expenseCategories;
+  const missingRequired = !expForm.date || !expForm.description.trim() || !(Number(expForm.amount) > 0);
   return (
     <Modal open={showAddExpense} onClose={() => setShowAddExpense(false)} title="Add Expense">
+      <div style={{ ...S.alert('info'), marginBottom: '12px' }}>Fields marked with <strong>*</strong> are mandatory. Use a clear description so stakeholders understand why money left the business.</div>
+      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ Date, Description, and a valid Amount are required to save an expense.</div>}
       <div style={S.grid2}>
-        <Field label="Date"><input style={S.input} type="date" value={expForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExpForm({ ...expForm, date: e.target.value })} /></Field>
-        <Field label="Category">
+        <Field label="Date" required><input style={S.input} type="date" value={expForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setExpForm({ ...expForm, date: e.target.value })} /></Field>
+        <Field label="Category" required>
           <select style={S.select} value={expForm.category} onChange={e => setExpForm({ ...expForm, category: e.target.value })}>
             {expCats.map(c => <option key={c}>{c}</option>)}
           </select>
         </Field>
       </div>
-      <Field label="Description"><input style={S.input} value={expForm.description} onChange={e => setExpForm({ ...expForm, description: e.target.value })} /></Field>
-      <Field label="Amount (₦)"><input style={S.input} type="number" value={expForm.amount} placeholder="0" onChange={e => setExpForm({ ...expForm, amount: e.target.value })} /></Field>
-      <button style={S.btn('primary')} onClick={async () => {
+      <Field label="Description" required><input style={S.input} value={expForm.description} onChange={e => setExpForm({ ...expForm, description: e.target.value })} /></Field>
+      <Field label="Amount (₦)" required><input style={S.input} type="number" value={expForm.amount} placeholder="0" onChange={e => setExpForm({ ...expForm, amount: e.target.value })} /></Field>
+      <button style={S.btn('primary')} disabled={missingRequired} onClick={async () => {
         const e2 = { ...expForm, amount: Number(expForm.amount) || 0 };
         const registeredBy = currentUser?.username || currentUser?.name || null;
         setExpenses(prev => [{ ...e2, id: Date.now(), registered_by: registeredBy }, ...prev]);
@@ -4927,9 +4933,13 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
   const linkedUser = linkedUserId ? users.find(u => u.id === linkedUserId) : null;
   const availableUsers = users.filter(u => u.id !== 'admin');
   const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); };
+  const missingBaseFields = !capForm.name.trim() || !(Number(capForm.amount) > 0) || !capForm.date || !capForm.method.trim();
+  const requiresExistingUserSelection = !isTopUp && capAccountMode === 'existing' && !capSelectedUserId;
+  const requiresNewAccountCredentials = !isTopUp && capAccountMode === 'new' && (!capForm.username.trim() || !capForm.password.trim());
+  const missingRequired = missingBaseFields || requiresExistingUserSelection || requiresNewAccountCredentials;
   const handleSave = async () => {
     const amount = Number(capForm.amount) || 0;
-    if (!capForm.name.trim() || !amount || !capForm.date || !capForm.method.trim()) return;
+    if (missingRequired) return;
     let userId = linkedUserId;
     if (!isTopUp) {
       if (capAccountMode === 'existing' && capSelectedUserId) {
@@ -4956,8 +4966,10 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
   };
   return (
     <Modal open={showAddCapital} onClose={closeModal} title={isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add New Stakeholder'}>
+      <div style={{ ...S.alert('info'), marginBottom: '12px' }}>Fields marked with <strong>*</strong> are mandatory. A login account is optional unless you choose <strong>Link to existing user</strong> or <strong>Create new stakeholder account</strong>.</div>
+      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ {missingBaseFields ? 'Stakeholder Name, Amount, Date, and Method/Bank are required.' : requiresExistingUserSelection ? 'Select the existing user account you want to link to this stakeholder.' : 'Username and Password are required when creating a new stakeholder login.'}</div>}
       <div style={S.grid2}>
-        <Field label="Stakeholder Name">
+        <Field label="Stakeholder Name" required>
           {isTopUp
             ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={capForm.name} readOnly />
             : <><input style={S.input} list="cap-names" value={capForm.name} onChange={e => setCapForm({ ...capForm, name: e.target.value })} placeholder="Full name" /><datalist id="cap-names">{existingNames.map(n => <option key={n} value={n} />)}</datalist></>}
@@ -4965,14 +4977,14 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
         {isTopUp
           ? <Field label="Account">{linkedUser ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={`@${linkedUser.username}`} readOnly /> : <span style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '40px' }}>No account linked</span>}</Field>
           : <div />}
-        <Field label="Amount (₦)"><input style={S.input} type="number" value={capForm.amount} placeholder="0" onChange={e => setCapForm({ ...capForm, amount: e.target.value })} /></Field>
-        <Field label="Date"><input style={S.input} type="date" value={capForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCapForm({ ...capForm, date: e.target.value })} /></Field>
-        <Field label="Method/Bank" style={{ gridColumn: '1 / -1' }}><input style={S.input} value={capForm.method} onChange={e => setCapForm({ ...capForm, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
+        <Field label="Amount (₦)" required><input style={S.input} type="number" value={capForm.amount} placeholder="0" onChange={e => setCapForm({ ...capForm, amount: e.target.value })} /></Field>
+        <Field label="Date" required><input style={S.input} type="date" value={capForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCapForm({ ...capForm, date: e.target.value })} /></Field>
+        <Field label="Method/Bank" required style={{ gridColumn: '1 / -1' }}><input style={S.input} value={capForm.method} onChange={e => setCapForm({ ...capForm, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
       </div>
       {!isTopUp && (
         <div style={{ margin: '16px 0 8px', padding: '14px', background: COLORS.primaryLight, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
           <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Login Account</div>
-          <Field label="Account type">
+          <Field label="Account type"><div style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '4px' }}>Choose <strong>No account</strong> if this investor should not log in. Choose one of the other options only when business policy requires login access.</div>
             <select style={S.select} value={capAccountMode} onChange={e => { setCapAccountMode(e.target.value); setCapSelectedUserId(''); }}>
               <option value="none">No account — stakeholder without login</option>
               <option value="existing">Link to existing user (e.g. staff who is also a stakeholder)</option>
@@ -4980,7 +4992,7 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
             </select>
           </Field>
           {capAccountMode === 'existing' && (
-            <Field label="Select User">
+            <Field label="Select User" required>
               <select style={S.select} value={capSelectedUserId} onChange={e => { setCapSelectedUserId(e.target.value); const u = availableUsers.find(x => x.id === e.target.value); if (u && !capForm.name.trim()) setCapForm(prev => ({ ...prev, name: u.name })); }}>
                 <option value="">— Select a user —</option>
                 {availableUsers.map(u => <option key={u.id} value={u.id}>{u.name} (@{u.username}) — {u.role}{(u.roles || []).length ? ` + ${u.roles.join(', ')}` : ''}</option>)}
@@ -4990,19 +5002,20 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
           )}
           {capAccountMode === 'new' && (
             <div style={S.grid2}>
-              <Field label="Username"><input style={S.input} value={capForm.username} onChange={e => setCapForm({ ...capForm, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
-              <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={capShowPwd ? 'text' : 'password'} value={capForm.password} onChange={e => setCapForm({ ...capForm, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setCapShowPwd(v => !v)}>{capShowPwd ? '🙈' : '👁'}</button></div></Field>
+              <Field label="Username" required><input style={S.input} value={capForm.username} onChange={e => setCapForm({ ...capForm, username: e.target.value })} placeholder="Login username" autoComplete="off" /></Field>
+              <Field label="Password" required><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={capShowPwd ? 'text' : 'password'} value={capForm.password} onChange={e => setCapForm({ ...capForm, password: e.target.value })} placeholder="Set a password" autoComplete="new-password" /><button type="button" style={S.btnSm('accent')} onClick={() => setCapShowPwd(v => !v)}>{capShowPwd ? '🙈' : '👁'}</button></div></Field>
             </div>
           )}
         </div>
       )}
       <Field label="Transfer Receipt (optional)"><PhotoUpload label="Receipt" value={capForm.receipt} onChange={v => setCapForm({ ...capForm, receipt: v })} size={120} /></Field>
-      <button style={S.btn('primary')} onClick={handleSave}>Save</button>
+      <button style={S.btn('primary')} disabled={missingRequired} onClick={handleSave}>Save</button>
     </Modal>
   );
 }
 
 function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setDistForm, setDistributions, currentUser, loadData }) {
+  const missingRequired = !distForm.date || !(Number(distForm.amount) > 0) || !distForm.method;
   const handleSave = async () => {
     const amount = Number(distForm.amount) || 0;
     if (!amount || !distForm.date || !distForm.method) return;
@@ -5016,12 +5029,13 @@ function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setD
   return (
     <Modal open={showAddDistribution} onClose={() => setShowAddDistribution(false)} title="Record Profit Distribution">
       <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 12px', background: COLORS.primaryLight, borderRadius: '8px' }}>
-        Record a payment made to stakeholders from the business profit. This will be deducted from the available lending capital.
+        Record a payment made to stakeholders from the business profit. Fields marked with <strong>*</strong> are mandatory. This amount will be deducted from the available lending capital.
       </div>
+      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ Date, Total Amount Distributed, and Payment Method are required.</div>}
       <div style={S.grid2}>
-        <Field label="Date"><input style={S.input} type="date" value={distForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDistForm({ ...distForm, date: e.target.value })} /></Field>
-        <Field label="Total Amount Distributed (₦)"><input style={S.input} type="number" value={distForm.amount} placeholder="0" onChange={e => setDistForm({ ...distForm, amount: e.target.value })} /></Field>
-        <Field label="Payment Method" style={{ gridColumn: '1 / -1' }}>
+        <Field label="Date" required><input style={S.input} type="date" value={distForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDistForm({ ...distForm, date: e.target.value })} /></Field>
+        <Field label="Total Amount Distributed (₦)" required><input style={S.input} type="number" value={distForm.amount} placeholder="0" onChange={e => setDistForm({ ...distForm, amount: e.target.value })} /></Field>
+        <Field label="Payment Method" required style={{ gridColumn: '1 / -1' }}>
           <select style={S.select} value={distForm.method} onChange={e => setDistForm({ ...distForm, method: e.target.value })}>
             <option value="">— Select method —</option>
             <option value="Cash">Cash</option>
@@ -5037,16 +5051,19 @@ function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setD
       <Field label="Receipt / Proof of Payment (optional)">
         <PhotoUpload label="Receipt" value={distForm.receipt} onChange={v => setDistForm({ ...distForm, receipt: v })} size={120} />
       </Field>
-      <button style={S.btn('primary')} onClick={handleSave}>Save Distribution</button>
+      <button style={S.btn('primary')} disabled={missingRequired} onClick={handleSave}>Save Distribution</button>
     </Modal>
   );
 }
 
 function DecModal({ showAddDeclined, setShowAddDeclined, decForm, setDecForm, setDeclinedLog, loadData }) {
+  const missingRequired = !decForm.date || !decForm.item.trim() || !decForm.reason;
   return (
     <Modal open={showAddDeclined} onClose={() => setShowAddDeclined(false)} title="Log Declined Customer">
+      <div style={{ ...S.alert('info'), marginBottom: '12px' }}>Fields marked with <strong>*</strong> are mandatory. Customer name and NIN/BVN stay optional because some declines happen before ID capture is complete.</div>
+      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ Date, Item Brought, and Decline Reason are required before saving this log entry.</div>}
       <div style={S.grid2}>
-        <Field label="Date">
+        <Field label="Date" required>
           <input style={S.input} type="date" value={decForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDecForm({ ...decForm, date: e.target.value })} />
         </Field>
         <Field label="Ref # (optional)">
@@ -5073,7 +5090,7 @@ function DecModal({ showAddDeclined, setShowAddDeclined, decForm, setDecForm, se
       <Field label="Additional Notes (optional)">
         <textarea style={S.textarea} value={decForm.notes} onChange={e => setDecForm({ ...decForm, notes: e.target.value })} placeholder="e.g. NIN photo did not match, customer gave two different answers about purchase date…" rows={3} />
       </Field>
-      <button style={S.btn('primary')} disabled={!decForm.item || !decForm.reason} onClick={async () => { const result = await API.post('declined', decForm); if (result?.success) { setDeclinedLog(prev => [{ ...decForm, id: Date.now() }, ...prev]); setShowAddDeclined(false); } loadData(); }}>Save</button>
+      <button style={S.btn('primary')} disabled={missingRequired} onClick={async () => { if (missingRequired) return; const result = await API.post('declined', decForm); if (result?.success) { setDeclinedLog(prev => [{ ...decForm, id: Date.now() }, ...prev]); setShowAddDeclined(false); } loadData(); }}>Save</button>
     </Modal>
   );
 }
@@ -5081,6 +5098,7 @@ function DecModal({ showAddDeclined, setShowAddDeclined, decForm, setDecForm, se
 function DeclineDraftModal({ declineDraftModal, setDeclineDraftModal, declineDraftDec, setDeclineDraftDec, setDeclinedLog, setDrafts, currentUser, loadData }) {
   const d = declineDraftModal;
   if (!d) return null;
+  const missingRequired = !declineDraftDec.date || !declineDraftDec.item.trim() || !declineDraftDec.reason;
   const handleSave = async () => {
     const declinedTx = { ...d, status: 'declined', declineReason: `Declined - ${declineDraftDec.reason}`, wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString() };
     const entry = { ...declineDraftDec, id: Date.now() };
@@ -5095,10 +5113,11 @@ function DeclineDraftModal({ declineDraftModal, setDeclineDraftModal, declineDra
   return (
     <Modal open={!!d} onClose={() => setDeclineDraftModal(null)} title="🚫 Decline In-Progress Draft">
       <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>
-        ⚠️ This will decline and remove the draft. Fill in the reason and save an entry to the Declined Log.
+        ⚠️ This will decline and remove the draft. Fields marked with <strong>*</strong> are mandatory. Customer details stay optional because staff may decline before full ID capture is completed.
       </div>
+      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ Date, Item Brought, and Decline Reason are required before you can decline this draft.</div>}
       <div style={S.grid2}>
-        <Field label="Date">
+        <Field label="Date" required>
           <input style={S.input} type="date" value={declineDraftDec.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDeclineDraftDec({ ...declineDraftDec, date: e.target.value })} />
         </Field>
         <Field label="Ref #">
@@ -5126,7 +5145,7 @@ function DeclineDraftModal({ declineDraftModal, setDeclineDraftModal, declineDra
         <textarea style={S.textarea} value={declineDraftDec.notes} onChange={e => setDeclineDraftDec({ ...declineDraftDec, notes: e.target.value })} placeholder="e.g. Customer gave two different answers about purchase date…" rows={3} />
       </Field>
       <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
-        <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={!declineDraftDec.item || !declineDraftDec.reason} onClick={handleSave}>
+        <button style={{ ...S.btn('danger'), flex: 1, justifyContent: 'center' }} disabled={missingRequired} onClick={handleSave}>
           🚫 Decline &amp; Save to Log
         </button>
         <button style={{ ...S.btn('muted'), flex: 1, justifyContent: 'center' }} onClick={() => setDeclineDraftModal(null)}>
@@ -5161,15 +5180,18 @@ function EditUserModal({ showEditUser, setShowEditUser, editUserUsername, setEdi
 }
 
 function UsrModal({ showAddUser, setShowAddUser, usrForm, setUsrForm, usrShowPwd, setUsrShowPwd, loadData }) {
+  const missingRequired = !usrForm.name.trim() || !usrForm.username.trim() || !usrForm.password.trim() || !usrForm.role;
   return (
     <Modal open={showAddUser} onClose={() => setShowAddUser(false)} title="Add User">
+      <div style={{ ...S.alert('info'), marginBottom: '12px' }}>Fields marked with <strong>*</strong> are mandatory. A single user can later be granted the stakeholder role as an extra permission, so only choose <strong>Stakeholder</strong> as the main role when that person is not staff/admin.</div>
+      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ Name, Username, Password, and Role are required to create a user account.</div>}
       <div style={S.grid2}>
-        <Field label="Name"><input style={S.input} value={usrForm.name} onChange={e => setUsrForm({ ...usrForm, name: e.target.value })} /></Field>
-        <Field label="Username"><input style={S.input} value={usrForm.username} onChange={e => setUsrForm({ ...usrForm, username: e.target.value })} /></Field>
-        <Field label="Password"><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={usrShowPwd ? 'text' : 'password'} value={usrForm.password} onChange={e => setUsrForm({ ...usrForm, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setUsrShowPwd(v => !v)}>{usrShowPwd ? '🙈 Hide' : '👁 Show'}</button></div></Field>
-        <Field label="Role"><select style={S.select} value={usrForm.role} onChange={e => setUsrForm({ ...usrForm, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field>
+        <Field label="Name" required><input style={S.input} value={usrForm.name} onChange={e => setUsrForm({ ...usrForm, name: e.target.value })} /></Field>
+        <Field label="Username" required><input style={S.input} value={usrForm.username} onChange={e => setUsrForm({ ...usrForm, username: e.target.value })} /></Field>
+        <Field label="Password" required><div style={{ display: 'flex', gap: '8px' }}><input style={S.input} type={usrShowPwd ? 'text' : 'password'} value={usrForm.password} onChange={e => setUsrForm({ ...usrForm, password: e.target.value })} /><button type="button" style={S.btnSm('accent')} onClick={() => setUsrShowPwd(v => !v)}>{usrShowPwd ? '🙈 Hide' : '👁 Show'}</button></div></Field>
+        <Field label="Role" required><select style={S.select} value={usrForm.role} onChange={e => setUsrForm({ ...usrForm, role: e.target.value })}><option value="staff">Staff</option><option value="stakeholder">Stakeholder</option><option value="admin">Admin</option></select></Field>
       </div>
-      <button style={S.btn('primary')} onClick={async () => { const payload = { ...usrForm, id: `u-${Date.now()}` }; const res = await API.post('users', payload); if (res?.error) { window.alert(res.error); return; } setShowAddUser(false); setUsrForm({ name: '', username: '', password: '', role: 'staff' }); await loadData(); }}>Add</button>
+      <button style={S.btn('primary')} disabled={missingRequired} onClick={async () => { if (missingRequired) return; const payload = { ...usrForm, id: `u-${Date.now()}` }; const res = await API.post('users', payload); if (res?.error) { window.alert(res.error); return; } setShowAddUser(false); setUsrForm({ name: '', username: '', password: '', role: 'staff' }); await loadData(); }}>Add</button>
     </Modal>
   );
 }
