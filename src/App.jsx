@@ -1068,7 +1068,14 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
           <div style={{ display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', marginBottom: '14px', color: '#e0f0e3' }}>
             📍 Enugwu-Aguleri, Anambra
           </div>
-          <div style={{ fontSize: '32px', marginBottom: '6px' }}>💰</div>
+          <div style={{ marginBottom: '10px', display: 'flex', justifyContent: 'center' }}>
+            <svg width="48" height="48" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <ellipse cx="32" cy="40" rx="22" ry="18" fill="#4ade80" />
+              <rect x="24" y="20" width="16" height="10" rx="4" fill="#4ade80" />
+              <ellipse cx="32" cy="18" rx="8" ry="5" fill="#16a34a" />
+              <text x="32" y="46" textAnchor="middle" fontSize="18" fontWeight="800" fill="#14532d" fontFamily="Arial, sans-serif">₦</text>
+            </svg>
+          </div>
           <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
           <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
