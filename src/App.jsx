@@ -345,6 +345,10 @@ const DEFAULT_SETTINGS = {
   visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
   // Identity Verification
   requireNinVerification: false,
+  ninLowCreditThreshold: 5,
+  ninRechargeBank: '',
+  ninRechargeAccountNumber: '',
+  ninRechargeAccountName: '',
   // Item Categories
   itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other'],
   // Expense Categories
@@ -3525,6 +3529,9 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   const [ninLoading, setNinLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [ninError, setNinError] = useState('');
+  const [ninCredits, setNinCredits] = useState(null); // number of credits, or null if unknown
+  const [ninCreditsLoading, setNinCreditsLoading] = useState(false);
+  const [showRechargeModal, setShowRechargeModal] = useState(false);
   const [redFlagModal, setRedFlagModal] = useState(false);
   // Wizard decline log modal — shown when a transaction is declined during the wizard so staff
   // can review / edit the pre-populated entry before it is saved to the declined log.
@@ -3562,6 +3569,19 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   useEffect(() => {
     return () => { if (pendingDraftRef.current) API.post('drafts', pendingDraftRef.current); };
   }, []);
+
+  // Fetch verification credits when the NIN step becomes active.
+  // Only fetches if the NIN API key is configured.
+  useEffect(() => {
+    if (WIZARD_STEPS[step]?.id !== 'nin') return;
+    if (!settings.ninApiKey) return;
+    setNinCreditsLoading(true);
+    API.get('nin-balance').then(data => {
+      setNinCredits(data?.credits ?? null);
+    }).catch(() => {
+      setNinCredits(null);
+    }).finally(() => setNinCreditsLoading(false));
+  }, [step, settings.ninApiKey]);
 
   // Immediate (non-debounced) draft save — call before navigating away or advancing steps.
   const saveDraftNow = async (nextStep) => {
@@ -4138,7 +4158,74 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
     switch (sid) {
       case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
 
-      case 'nin': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🪪 Identity Verification</h3><div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div><div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>ID Type<InfoIcon tip="NIN is the first choice — the customer dials *346# on their own phone to get it. BVN (from their bank) is a backup, but it won't give us their home address." /></span>} required><select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}><option value="nin">NIN</option><option value="bvn">BVN</option></select></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{tx.idType.toUpperCase()} Number<InfoIcon tip={`The customer's ${tx.idType === 'nin' ? '11-digit ID number from the government. They find it by dialling *346# on their own phone.' : '11-digit number tied to their bank account. Use this if the NIN check fails.'}`} /></span>} required><input style={S.input} inputMode="numeric" value={tx.idNumber} onChange={e => upd('idNumber', e.target.value.replace(/\D/g, ''))} placeholder="Enter 11-digit number" /></Field></div>{tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}<button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>{!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}{tx.ninVerificationAttempted && !ninLoading && <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}><div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>{tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + (tx.ninVerified ? COLORS.primary : COLORS.warning) }} alt="NIN/BVN Photo" />}<div style={{ flex: 1 }}><div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div><div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div><div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>{tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}</div></div></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('NIN photo did not match')}>NIN photo did not match</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer could not provide valid ID')}>Customer could not provide valid ID</button></div></div></div>);
+      case 'nin': {
+        const lowThreshold = Number(settings.ninLowCreditThreshold) || 5;
+        const creditsLow = ninCredits !== null && ninCredits <= lowThreshold;
+        const creditsOut = ninCredits !== null && ninCredits === 0;
+        return (
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 700, margin: 0 }}>🪪 Identity Verification</h3>
+              {settings.ninApiKey && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '20px', background: creditsOut ? COLORS.dangerLight : creditsLow ? COLORS.warningLight : COLORS.primaryLight, border: `1px solid ${creditsOut ? '#f5c6cb' : creditsLow ? '#fde2b3' : '#b7e4c7'}`, fontSize: '12px', fontWeight: 600, color: creditsOut ? COLORS.danger : creditsLow ? COLORS.warning : COLORS.primaryDark }}>
+                  {ninCreditsLoading ? (
+                    <span>⏳ Checking credits…</span>
+                  ) : ninCredits === null ? (
+                    <span>🔑 Credits for New Verification: —</span>
+                  ) : (
+                    <span>{creditsOut ? '🚫' : creditsLow ? '⚠️' : '✅'} Credits for New Verification: <strong>{ninCredits}</strong></span>
+                  )}
+                  <button
+                    onClick={() => setShowRechargeModal(true)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: creditsOut ? COLORS.danger : creditsLow ? COLORS.warning : COLORS.primary, fontWeight: 700, fontSize: '11px', textDecoration: 'underline', padding: 0, lineHeight: 1 }}
+                    title="Learn how to top up verification credits"
+                  >
+                    Recharge
+                  </button>
+                </div>
+              )}
+            </div>
+            {creditsOut && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>🚫 <strong>No verification credits remaining.</strong> New NIN/BVN lookups will fail. Tap <strong>Recharge</strong> above to top up the wallet. Customers already in the system can still be verified at no cost.</div>}
+            {creditsLow && !creditsOut && <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>⚠️ <strong>Only {ninCredits} credit{ninCredits !== 1 ? 's' : ''} remaining.</strong> Consider recharging soon to avoid interruption. Tap <strong>Recharge</strong> above for payment details.</div>}
+            <div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>ID Type<InfoIcon tip="NIN is the first choice — the customer dials *346# on their own phone to get it. BVN (from their bank) is a backup, but it won't give us their home address." /></span>} required>
+                <select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}>
+                  <option value="nin">NIN</option>
+                  <option value="bvn">BVN</option>
+                </select>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{tx.idType.toUpperCase()} Number<InfoIcon tip={`The customer's ${tx.idType === 'nin' ? '11-digit ID number from the government. They find it by dialling *346# on their own phone.' : '11-digit number tied to their bank account. Use this if the NIN check fails.'}`} /></span>} required>
+                <input style={S.input} inputMode="numeric" value={tx.idNumber} onChange={e => upd('idNumber', e.target.value.replace(/\D/g, ''))} placeholder="Enter 11-digit number" />
+              </Field>
+            </div>
+            {tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}
+            <button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>
+            {!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}
+            {tx.ninVerificationAttempted && !ninLoading && (
+              <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}>
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
+                  {tx.ninPhoto && <img src={tx.ninPhoto} style={{ width: '100px', height: '120px', objectFit: 'cover', borderRadius: '8px', border: '2px solid ' + (tx.ninVerified ? COLORS.primary : COLORS.warning) }} alt="NIN/BVN Photo" />}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div>
+                    <div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div>
+                    <div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>
+                    {tx.ninVerified && ninCredits !== null && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '6px' }}>💡 This lookup used 1 credit from your wallet ({Math.max(0, ninCredits - 1)} estimated remaining after this).</div>}
+                    {tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}
+                  </div>
+                </div>
+              </div>
+            )}
+            <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('NIN photo did not match')}>NIN photo did not match</button>
+                <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer could not provide valid ID')}>Customer could not provide valid ID</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
 
       case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value.replace(/\D/g, ''); upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[1]} onChange={e => { const val = e.target.value.replace(/\D/g, ''); const n = [...tx.phoneNumbers]; n[1] = val; upd('phoneNumbers', n); if (!val) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required><input style={S.input} inputMode="numeric" value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value.replace(/\D/g, ''))} placeholder="e.g. 08099887766" /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
@@ -4368,6 +4455,9 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           onCancel={() => setWizDeclineModal(null)}
         />
       )}
+      {showRechargeModal && (
+        <NinRechargeModal onClose={() => setShowRechargeModal(false)} settings={settings} />
+      )}
       <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
         {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
@@ -4387,6 +4477,60 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         </div>
       </div>
     </div>
+  );
+}
+
+// ============================================================
+// NIN/BVN RECHARGE MODAL — shows payment details for topping up
+// the checkmyninbvn.com.ng wallet
+// ============================================================
+function NinRechargeModal({ onClose, settings }) {
+  const bank = settings.ninRechargeBank || '';
+  const accountNumber = settings.ninRechargeAccountNumber || '';
+  const accountName = settings.ninRechargeAccountName || '';
+  const hasDetails = bank || accountNumber || accountName;
+  return (
+    <Modal open onClose={onClose} title="💳 Recharge Verification Credits">
+      <div style={{ ...S.alert('info'), marginBottom: '16px' }}>
+        ℹ️ Each verification credit costs <strong>₦150</strong>. One credit is used each time a new (uncached) NIN or BVN is verified via the API.
+      </div>
+      {hasDetails ? (
+        <div style={{ background: COLORS.primaryLight, border: `1px solid #b7e4c7`, borderRadius: '12px', padding: '20px', marginBottom: '16px' }}>
+          <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '14px' }}>Transfer funds to this account:</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {bank && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 600 }}>Bank</span>
+                <span style={{ fontSize: '15px', fontWeight: 700, color: COLORS.text }}>{bank}</span>
+              </div>
+            )}
+            {accountNumber && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 600 }}>Account Number</span>
+                <span style={{ fontSize: '18px', fontWeight: 800, color: COLORS.primaryDark, letterSpacing: '1px' }}>{accountNumber}</span>
+              </div>
+            )}
+            {accountName && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 600 }}>Account Name</span>
+                <span style={{ fontSize: '15px', fontWeight: 700, color: COLORS.text }}>{accountName}</span>
+              </div>
+            )}
+          </div>
+          <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: `1px solid #b7e4c7`, fontSize: '12px', color: COLORS.textMuted }}>
+            After transferring, log in to <strong>checkmyninbvn.com.ng</strong> to confirm your wallet has been topped up. Credits reflect here automatically when you refresh the page.
+          </div>
+        </div>
+      ) : (
+        <div style={{ ...S.alert('warning'), marginBottom: '16px' }}>
+          ⚠️ No recharge payment details have been configured yet. Ask your admin to set them up in <strong>Settings → Identity Verification</strong>.
+        </div>
+      )}
+      <div style={{ fontSize: '13px', color: COLORS.textMuted, padding: '12px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+        <strong>Tip:</strong> Cached verifications (repeat customers with the same NIN/BVN already stored) do not use credits — only first-time lookups do.
+      </div>
+      <button style={{ ...S.btn('muted'), width: '100%', justifyContent: 'center', marginTop: '16px' }} onClick={onClose}>Close</button>
+    </Modal>
   );
 }
 
@@ -7541,6 +7685,25 @@ export default function App() {
                 <span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span>
               </label>
             </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Low Credit Alert Threshold<InfoIcon tip="Show a warning on the Identity Verification step when the number of remaining NIN/BVN credits falls to or below this number. Each credit costs ₦150 and covers one new verification lookup." /></span>}>
+              <input style={S.input} type="number" min="1" max="100" value={es.ninLowCreditThreshold ?? DEFAULT_SETTINGS.ninLowCreditThreshold} onChange={e => updateSettings({ ...es, ninLowCreditThreshold: Number(e.target.value) })} />
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>A warning badge appears on the Identity step when credits drop to this number or below.</div>
+            </Field>
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💳 Recharge Payment Details</div>
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Staff can view these details by tapping <strong>Recharge</strong> on the Identity Verification step when credits are low. Enter the account where funds should be sent to top up the checkmyninbvn.com.ng wallet.</div>
+              <div style={S.grid2}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Bank Name<InfoIcon tip="The bank where the NIN/BVN wallet is funded. This is shown to staff when they need to top up verification credits." /></span>}>
+                  <input style={S.input} value={es.ninRechargeBank ?? ''} onChange={e => updateSettings({ ...es, ninRechargeBank: e.target.value })} placeholder="e.g. Access Bank" />
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Account Number<InfoIcon tip="The account number for funding the NIN/BVN verification wallet." /></span>}>
+                  <input style={S.input} inputMode="numeric" value={es.ninRechargeAccountNumber ?? ''} onChange={e => updateSettings({ ...es, ninRechargeAccountNumber: e.target.value.replace(/\D/g, '') })} placeholder="e.g. 0123456789" />
+                </Field>
+              </div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Account Name<InfoIcon tip="The account name for the NIN/BVN wallet funding account." /></span>}>
+                <input style={S.input} value={es.ninRechargeAccountName ?? ''} onChange={e => updateSettings({ ...es, ninRechargeAccountName: e.target.value })} placeholder="e.g. CheckMyNinBvn Technology Ltd" />
+              </Field>
+            </div>
           </div>
 
           {/* ── 10. API KEYS ── */}

@@ -1029,6 +1029,35 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // NIN/BVN WALLET BALANCE: GET /api/nin-balance
+    // Fetches the current wallet balance from checkmyninbvn.com.ng
+    // and returns the number of verification credits (balance ÷ 150).
+    // ============================================================
+    if (path === 'nin-balance' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const settingsRow = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      const config = settingsRow ? JSON.parse(settingsRow.value) : {};
+      const apiKey = config.ninApiKey || '';
+      if (!apiKey) return json({ balance: null, credits: null, error: 'NIN/BVN API key not configured.' });
+      try {
+        const resp = await fetch('https://checkmyninbvn.com.ng/api/balance', {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
+        });
+        const data = await resp.json();
+        // API returns { status, balance } where balance is in Naira.
+        // 150 Naira = 1 credit (1 NIN/BVN verification).
+        const rawBalance = data?.balance ?? data?.data?.balance ?? data?.wallet_balance ?? null;
+        const balanceNum = rawBalance !== null ? Number(rawBalance) : null;
+        const credits = balanceNum !== null ? Math.floor(balanceNum / 150) : null;
+        return json({ balance: balanceNum, credits, raw: data });
+      } catch (e) {
+        return json({ balance: null, credits: null, error: 'Failed to fetch balance from checkmyninbvn.com.ng' });
+      }
+    }
+
+    // ============================================================
     // PUBLIC LOAN STATUS CHECK: GET /api/check-loan?ref=CIF-DDMMYY-NNN
     // No authentication required — returns only non-sensitive fields.
     // ============================================================
