@@ -4540,7 +4540,7 @@ const normalizeReminderDays = (value, fallback = []) => {
   const parsed = source
     .map(v => Number(v))
     .filter(v => Number.isFinite(v) && v >= 0);
-  const unique = Array.from(new Set(parsed)).sort((a, b) => a - b);
+  const unique = Array.from(new Set(parsed));
   return unique.length ? unique : fallback;
 };
 
