@@ -2686,7 +2686,14 @@ function LoginScreen({ onLogin }) {
   return (
     <div style={S.loginWrap}>
       <div style={S.loginCard}>
-        <div style={{ textAlign: 'center', marginBottom: '8px' }}><span style={{ fontSize: '36px' }}>💰</span></div>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '8px' }}>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="48" height="48">
+            <path d="M38 35 L25 15 Q50 22 75 15 L62 35 Z" fill="#d2b48c" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/>
+            <path d="M40 35 L60 35 C75 35 85 60 80 80 C75 95 25 95 20 80 C15 60 25 35 40 35 Z" fill="#deb887" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/>
+            <path d="M35 35 Q50 38 65 35" fill="none" stroke="#5c4033" strokeWidth="3" strokeLinecap="round"/>
+            <text x="50" y="72" fontFamily="Arial, sans-serif" fontSize="34" fontWeight="bold" fill="#2c1e16" textAnchor="middle">₦</text>
+          </svg>
+        </div>
         <div style={S.loginTitle}>CHRIST-IN-FABIAN</div>
         <div style={{ fontSize: '14px', fontWeight: 700, textAlign: 'center', color: COLORS.accent, marginBottom: '4px', letterSpacing: '2px' }}>QUICK CASH</div>
         <div style={S.loginSub}>Staff & Stakeholder Portal</div>
@@ -5334,7 +5341,7 @@ export default function App() {
 
   if (authLoading) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div><div style={{ fontWeight: 700 }}>Checking session...</div></div></div>;
 
-  if (loading && currentUser) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ fontSize: '48px', marginBottom: '12px' }}>💰</div><div style={{ fontWeight: 700 }}>Loading essentials...</div></div></div>;
+  if (loading && currentUser) return <div style={{ ...S.app, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><div style={{ textAlign: 'center' }}><div style={{ display: 'flex', justifyContent: 'center', marginBottom: '12px' }}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="48" height="48"><path d="M38 35 L25 15 Q50 22 75 15 L62 35 Z" fill="#d2b48c" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/><path d="M40 35 L60 35 C75 35 85 60 80 80 C75 95 25 95 20 80 C15 60 25 35 40 35 Z" fill="#deb887" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/><path d="M35 35 Q50 38 65 35" fill="none" stroke="#5c4033" strokeWidth="3" strokeLinecap="round"/><text x="50" y="72" fontFamily="Arial, sans-serif" fontSize="34" fontWeight="bold" fill="#2c1e16" textAnchor="middle">₦</text></svg></div><div style={{ fontWeight: 700 }}>Loading essentials...</div></div></div>;
 
   if (!currentUser) {
     return (
@@ -5379,7 +5386,7 @@ export default function App() {
   if (editingTx !== null) return (
     <div style={S.app}>
       <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
-        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px' }}>💰 {isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</div>
+        <div style={{ fontWeight: 700, fontSize: isMobile ? '13px' : '15px', display: 'flex', alignItems: 'center', gap: '6px' }}><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="20" height="20" style={{ flexShrink: 0 }}><path d="M38 35 L25 15 Q50 22 75 15 L62 35 Z" fill="#d2b48c" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/><path d="M40 35 L60 35 C75 35 85 60 80 80 C75 95 25 95 20 80 C15 60 25 35 40 35 Z" fill="#deb887" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/><path d="M35 35 Q50 38 65 35" fill="none" stroke="#5c4033" strokeWidth="3" strokeLinecap="round"/><text x="50" y="72" fontFamily="Arial, sans-serif" fontSize="34" fontWeight="bold" fill="#2c1e16" textAnchor="middle">₦</text></svg><span>{isMobile ? 'New Transaction' : 'CIF Quick Cash — New Transaction'}</span></div>
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
@@ -7445,7 +7452,7 @@ export default function App() {
       <div style={{ ...S.topBar, padding: isMobile ? '0 12px' : '0 24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           {isMobile && <button style={S.hamburger} onClick={() => setSidebarOpen(o => !o)} aria-label="Menu">☰</button>}
-          <span style={{ fontSize: '20px' }}>💰</span>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="20" height="20" style={{ flexShrink: 0 }}><path d="M38 35 L25 15 Q50 22 75 15 L62 35 Z" fill="#d2b48c" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/><path d="M40 35 L60 35 C75 35 85 60 80 80 C75 95 25 95 20 80 C15 60 25 35 40 35 Z" fill="#deb887" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/><path d="M35 35 Q50 38 65 35" fill="none" stroke="#5c4033" strokeWidth="3" strokeLinecap="round"/><text x="50" y="72" fontFamily="Arial, sans-serif" fontSize="34" fontWeight="bold" fill="#2c1e16" textAnchor="middle">₦</text></svg>
           <button onClick={() => navigate('/landing')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
