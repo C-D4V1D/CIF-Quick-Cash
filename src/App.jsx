@@ -6124,7 +6124,38 @@ export default function App() {
             <div style={{ ...S.card, marginBottom: '16px' }}>
               <div style={{ ...S.cardTitle, marginBottom: '8px' }}>Today&apos;s follow-up rules</div>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '1.6' }}>
-                Due-date reminders: <strong>{formatReminderDays(dueDateRules, DEFAULT_SETTINGS.dueDateFollowUpDays) || 'Disabled'}</strong> day(s) before due date · Ownership reminders: <strong>{formatReminderDays(ownershipRules, DEFAULT_SETTINGS.ownershipFollowUpDays) || 'Disabled'}</strong> day(s) before last day of ownership · Overdue follow-up cadence: <strong>{overdueCadence > 0 ? `every ${overdueCadence} day(s)` : 'Disabled'}</strong>.
+                {(() => {
+                  const sortedDue = [...dueDateRules].sort((a, b) => a - b);
+                  const sortedOwnership = [...ownershipRules].sort((a, b) => a - b);
+
+                  const duePhrases = sortedDue.map(d =>
+                    d === 0
+                      ? <strong>on the due date</strong>
+                      : <><strong>{d} day{d !== 1 ? 's' : ''} before</strong> their due date</>
+                  );
+
+                  const ownershipPhrases = sortedOwnership.map(d =>
+                    d === 0
+                      ? <><strong>on the last day</strong> of ownership</>
+                      : <><strong>{d} day{d !== 1 ? 's' : ''} before</strong> it ends</>
+                  );
+
+                  const joinPhrases = (phrases) =>
+                    phrases.length === 0 ? null :
+                    phrases.reduce((acc, phrase, i) =>
+                      i === 0 ? phrase : <>{acc} and again {phrase}</>);
+
+                  const dueJoined = joinPhrases(duePhrases);
+                  const ownershipJoined = joinPhrases(ownershipPhrases);
+
+                  return (
+                    <>
+                      {dueJoined && <>Follow up with clients {dueJoined}.</>}
+                      {ownershipJoined && <>{' '}For ownership, reach out {ownershipJoined}.</>}
+                      {overdueCadence > 0 && <>{' '}For overdue transactions, follow up every <strong>{overdueCadence} day{overdueCadence !== 1 ? 's' : ''}</strong> until resolved.</>}
+                    </>
+                  );
+                })()}
               </div>
             </div>
 
