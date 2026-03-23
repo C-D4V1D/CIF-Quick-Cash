@@ -6146,8 +6146,8 @@ export default function App() {
               <div style={{ ...S.cardTitle, marginBottom: '8px' }}>Today&apos;s follow-up rules</div>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '1.6' }}>
                 {(() => {
-                  const sortedDue = [...dueDateRules].sort((a, b) => a - b);
-                  const sortedOwnership = [...ownershipRules].sort((a, b) => a - b);
+                  const sortedDue = [...dueDateRules].sort((a, b) => b - a);
+                  const sortedOwnership = [...ownershipRules].sort((a, b) => b - a);
 
                   const duePhrases = sortedDue.map(d =>
                     d === 0
