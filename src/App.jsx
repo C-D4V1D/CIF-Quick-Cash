@@ -1068,7 +1068,14 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
           <div style={{ display: 'inline-block', background: 'rgba(255,255,255,0.15)', borderRadius: '20px', padding: '4px 14px', fontSize: '13px', marginBottom: '14px', color: '#e0f0e3' }}>
             📍 Enugwu-Aguleri, Anambra
           </div>
-          <div style={{ fontSize: '32px', marginBottom: '6px' }}>💰</div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '6px' }}>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="56" height="56">
+              <path d="M38 35 L25 15 Q50 22 75 15 L62 35 Z" fill="#d2b48c" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/>
+              <path d="M40 35 L60 35 C75 35 85 60 80 80 C75 95 25 95 20 80 C15 60 25 35 40 35 Z" fill="#deb887" stroke="#8b7355" strokeWidth="2" strokeLinejoin="round"/>
+              <path d="M35 35 Q50 38 65 35" fill="none" stroke="#5c4033" strokeWidth="3" strokeLinecap="round"/>
+              <text x="50" y="72" fontFamily="Arial, sans-serif" fontSize="34" fontWeight="bold" fill="#2c1e16" textAnchor="middle">₦</text>
+            </svg>
+          </div>
           <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
           <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
