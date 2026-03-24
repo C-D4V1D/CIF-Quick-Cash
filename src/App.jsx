@@ -1022,7 +1022,7 @@ function PartnershipFootnote({ dark = false }) {
   const dotColor  = dark ? '#6b7280' : COLORS.textMuted;
   return (
     <div style={{ fontSize: '11px', color: textMain, textAlign: 'center', lineHeight: 1.6, letterSpacing: '0.1px' }}>
-      <span>A joint venture between <strong style={{ color: textBold }}>Christ-in-Fabian</strong> &amp; <strong style={{ color: textBold }}>Vido Hub</strong></span>
+      <span>A joint venture between <strong style={{ color: textBold }}>Vido Hub</strong> &amp; <strong style={{ color: textBold }}>FATK Enterprises</strong></span>
       <span style={{ margin: '0 6px', color: dotColor, opacity: 0.5 }}>·</span>
       <span>Platform developed &amp; managed by <strong style={{ color: textBold }}>Vido Hub</strong></span>
     </div>
@@ -2735,7 +2735,7 @@ const DECLINE_REASONS = [
   'Item appeared modified',
   'Customer gave inconsistent answers',
   'Item does not power on',
-  'Item appears stolen / suspicious provenance',
+  'Item appears stolen / suspicious origin',
   'Customer could not provide valid ID',
   'Item in poor or heavily damaged condition',
   'Item not acceptable as collateral',
@@ -2818,7 +2818,7 @@ function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
         <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <button style={S.btnSm('muted')} onClick={() => onDecline('Customer gave inconsistent answers')}>Inconsistent answers</button>
-          <button style={S.btnSm('muted')} onClick={() => onDecline('Item appears stolen / suspicious provenance')}>Suspicious provenance</button>
+          <button style={S.btnSm('muted')} onClick={() => onDecline('Item appears stolen / suspicious origin')}>Suspicious origin</button>
           <button style={S.btnSm('muted')} onClick={() => onDecline('Flagged by staff during screening')}>Flagged by staff</button>
         </div>
       </div>
@@ -3612,6 +3612,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
         upd('ninVerified', true);
         upd('ninVerificationStatus', 'verified');
         upd('ninData', d);
+        upd('ninSource', result._source === 'cache' ? 'cache' : 'api');
 
         const first = d.firstname || d.firstName;
         const middle = d.middlename || d.middleName;
@@ -4260,7 +4261,8 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                     <div style={{ fontSize: '15px', fontWeight: 700, color: tx.ninVerified ? COLORS.primary : COLORS.warning, marginBottom: '4px' }}>{tx.ninVerified ? `✅ ${tx.idType.toUpperCase()} Verified` : `⚠ ${tx.idType.toUpperCase()} API unavailable — Demo Placeholder Data`}</div>
                     <div style={{ fontSize: '14px' }}><strong>Name:</strong> {tx.fullName || 'Not available'}</div>
                     <div style={{ fontSize: '14px' }}><strong>Address:</strong> {tx.address || 'Not available'}</div>
-                    {tx.ninVerified && ninCredits !== null && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '6px' }}>💡 This lookup used 1 credit from your wallet ({Math.max(0, ninCredits - 1)} estimated remaining after this).</div>}
+                    {tx.ninVerified && tx.ninSource === 'cache' && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '6px' }}>💡 This record was retrieved from our local database — no credit was spent.</div>}
+                    {tx.ninVerified && tx.ninSource === 'api' && ninCredits !== null && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '6px' }}>💡 This lookup used 1 credit from your wallet ({Math.max(0, ninCredits - 1)} estimated remaining after this).</div>}
                     {tx.ninPhoto && <div style={{ marginTop: '8px', padding: '8px', background: '#fff', borderRadius: '6px', fontSize: '12px', color: COLORS.warning, fontWeight: 600 }}>👁 Compare this photo with the customer standing in front of you</div>}
                   </div>
                 </div>
