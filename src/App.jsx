@@ -3282,7 +3282,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                       OCR confidence: {imeiConfidence}%
                     </div>
                   )}
-                  {!!tx.imei && (
+                  {!!tx.imei && imeiConfidence !== 100 && (
                     <div style={{ marginTop: '10px', padding: '12px', background: '#f8fafc', border: `1px solid ${COLORS.border}`, borderRadius: '8px' }}>
                       <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px', color: '#334155' }}>Digit-by-digit IMEI check</div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', gap: '8px' }}>
