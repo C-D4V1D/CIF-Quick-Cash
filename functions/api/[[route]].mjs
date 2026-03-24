@@ -1474,6 +1474,31 @@ export async function onRequest(context) {
       return json({ ok: true, sent, failed, skipped });
     }
 
+    // ============================================================
+    // SERPAPI GOOGLE LENS PROXY: POST /api/serpapi-lens
+    // Accepts { imageUrl, apiKey } and proxies to SerpApi to keep
+    // the key server-side. Requires a valid authenticated session.
+    // ============================================================
+    if (path === 'serpapi-lens' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { imageUrl, apiKey } = await request.json();
+      if (!apiKey) return error('No SerpApi key provided');
+      if (!imageUrl || !imageUrl.startsWith('https://')) return error('A valid HTTPS image URL is required');
+      const serpUrl = new URL('https://serpapi.com/search.json');
+      serpUrl.searchParams.set('engine', 'google_lens');
+      serpUrl.searchParams.set('url', imageUrl);
+      serpUrl.searchParams.set('api_key', apiKey);
+      const resp = await fetch(serpUrl.toString());
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) return error(data?.error || data?.message || `SerpApi request failed with status ${resp.status}`, resp.status);
+      return json({
+        visual_matches: data.visual_matches || [],
+        text_results: data.text_results || [],
+        knowledge_graph: data.knowledge_graph || null,
+      });
+    }
+
     return error('Not found', 404);
 
   } catch (e) {
