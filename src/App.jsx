@@ -6641,12 +6641,20 @@ export default function App() {
                 {settings.smsEnabled && (() => {
                   const smsDue = normalizeReminderDays(settings.smsDueDateReminderDays, DEFAULT_SETTINGS.smsDueDateReminderDays).sort((a, b) => b - a);
                   const smsOwnership = normalizeReminderDays(settings.smsOwnershipReminderDays, DEFAULT_SETTINGS.smsOwnershipReminderDays).sort((a, b) => b - a);
-                  const fmtDueDays = (days) => days.map(d => d === 0 ? 'on the return date' : `${d} day${d !== 1 ? 's' : ''} before`).join(' & ') || '—';
-                  const fmtOwnershipDays = (days) => days.map(d => d === 0 ? 'on the deadline' : `${d} day${d !== 1 ? 's' : ''} before`).join(' & ') || '—';
+                  const buildPhrase = (days, suffix) => {
+                    const befores = days.filter(d => d > 0).map(d => `${d} day${d !== 1 ? 's' : ''} before`);
+                    const hasOnDay = days.includes(0);
+                    if (befores.length === 0 && !hasOnDay) return '—';
+                    const parts = [...befores, ...(hasOnDay ? ['on'] : [])];
+                    const joined = parts.slice(0, -1).join(', ') + (parts.length > 1 ? ' & ' : '') + parts[parts.length - 1];
+                    return joined + ' ' + suffix;
+                  };
+                  const fmtDueDays = (days) => buildPhrase(days, 'the agreed return date');
+                  const fmtOwnershipDays = (days) => buildPhrase(days, 'the last day of ownership');
                   return (
                     <div style={{ fontSize: '12px', color: COLORS.textMuted, lineHeight: '1.6', borderTop: `1px solid ${COLORS.border}`, paddingTop: '8px' }}>
-                      🤖 Auto-SMS is <strong>on</strong>. Due-date reminders go out <strong>{fmtDueDays(smsDue)}</strong>.
-                      {' '}Ownership reminders go out <strong>{fmtOwnershipDays(smsOwnership)}</strong> the ownership deadline.
+                      🤖 Auto-SMS is <strong>on</strong>. Due-date SMS reminders go out <strong>{fmtDueDays(smsDue)}</strong>.
+                      {' '}Ownership reminders go out <strong>{fmtOwnershipDays(smsOwnership)}</strong>.
                     </div>
                   );
                 })()}
