@@ -6617,40 +6617,37 @@ export default function App() {
             {/* SMS status card — shown when Termii is configured */}
             {settings.termiiApiKey && isStaff && (
               <div style={{ ...S.card, marginBottom: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: settings.smsEnabled ? '10px' : 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ ...S.cardTitle, margin: 0 }}>📱 SMS Credits</span>
-                    <span
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '4px',
-                        padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 700,
-                        background: smsCredits === null ? COLORS.primaryLight :
-                                    smsCredits === 0   ? '#fee2e2' :
-                                    smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#fef3c7' :
-                                    '#dcfce7',
-                        color: smsCredits === null ? COLORS.primary :
-                               smsCredits === 0   ? '#dc2626' :
-                               smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#92400e' :
-                               '#166534',
-                        border: `1px solid ${COLORS.border}`,
-                      }}
-                      title={smsBalance !== null ? `SMS wallet balance: ₦${Number(smsBalance).toLocaleString('en-NG')}` : 'SMS credit balance'}
-                    >
-                      {smsCreditsLoading ? '…' : smsCredits === null ? 'Balance unavailable' : `${smsCredits} credit${smsCredits !== 1 ? 's' : ''} remaining`}
-                      {smsBalance !== null && !smsCreditsLoading && <span style={{ fontWeight: 400, opacity: 0.75 }}> · ₦{Number(smsBalance).toLocaleString('en-NG')}</span>}
-                    </span>
-                  </div>
-                  <button style={S.btnSm('primary')} onClick={() => setShowSmsRechargeModal(true)}>💳 Recharge</button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: settings.smsEnabled ? '10px' : 0 }}>
+                  <span
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '4px',
+                      padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: 700,
+                      background: smsCredits === null ? COLORS.primaryLight :
+                                  smsCredits === 0   ? '#fee2e2' :
+                                  smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#fef3c7' :
+                                  '#dcfce7',
+                      color: smsCredits === null ? COLORS.primary :
+                             smsCredits === 0   ? '#dc2626' :
+                             smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#92400e' :
+                             '#166534',
+                      border: `1px solid ${COLORS.border}`,
+                    }}
+                    title={smsBalance !== null ? `SMS wallet balance: ₦${Number(smsBalance).toLocaleString('en-NG')}` : 'SMS credit balance'}
+                  >
+                    📱 {smsCreditsLoading ? '…' : smsCredits === null ? '—' : `${smsCredits} cr.`}
+                    {smsBalance !== null && !smsCreditsLoading && <span style={{ fontWeight: 400, opacity: 0.7 }}> · ₦{Number(smsBalance).toLocaleString('en-NG')}</span>}
+                  </span>
+                  <button style={{ ...S.btnSm('primary'), padding: '2px 10px', fontSize: '11px' }} onClick={() => setShowSmsRechargeModal(true)}>Recharge</button>
                 </div>
                 {settings.smsEnabled && (() => {
                   const smsDue = normalizeReminderDays(settings.smsDueDateReminderDays, DEFAULT_SETTINGS.smsDueDateReminderDays).sort((a, b) => b - a);
                   const smsOwnership = normalizeReminderDays(settings.smsOwnershipReminderDays, DEFAULT_SETTINGS.smsOwnershipReminderDays).sort((a, b) => b - a);
-                  const fmtDays = (days) => days.map(d => d === 0 ? 'on the day' : `${d} day${d !== 1 ? 's' : ''} before`).join(', ') || '—';
+                  const fmtDueDays = (days) => days.map(d => d === 0 ? 'on the return date' : `${d} day${d !== 1 ? 's' : ''} before`).join(' & ') || '—';
+                  const fmtOwnershipDays = (days) => days.map(d => d === 0 ? 'on the deadline' : `${d} day${d !== 1 ? 's' : ''} before`).join(' & ') || '—';
                   return (
-                    <div style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '1.6', borderTop: `1px solid ${COLORS.border}`, paddingTop: '10px' }}>
-                      🤖 Auto-SMS is <strong>on</strong>. Due-date reminders: <strong>{fmtDays(smsDue)}</strong> the return date.
-                      {' '}Ownership reminders: <strong>{fmtDays(smsOwnership)}</strong> the ownership deadline.
-                      {' '}Each message is sent at most once per trigger per day.
+                    <div style={{ fontSize: '12px', color: COLORS.textMuted, lineHeight: '1.6', borderTop: `1px solid ${COLORS.border}`, paddingTop: '8px' }}>
+                      🤖 Auto-SMS is <strong>on</strong>. Due-date reminders go out <strong>{fmtDueDays(smsDue)}</strong>.
+                      {' '}Ownership reminders go out <strong>{fmtOwnershipDays(smsOwnership)}</strong> the ownership deadline.
                     </div>
                   );
                 })()}
