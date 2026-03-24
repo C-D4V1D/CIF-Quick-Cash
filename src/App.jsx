@@ -6590,72 +6590,48 @@ export default function App() {
         return (
           <div>
             {listLoadingNotice}
-            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '8px', color: COLORS.primaryDark }}>📞 Daily Follow-ups</h2>
+            {/* Page title row — SMS badge + Recharge sit inline on the right */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, margin: 0 }}>📞 Daily Follow-ups</h2>
+              {settings.termiiApiKey && isStaff && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '4px',
+                      padding: '3px 8px', borderRadius: '14px', fontSize: '11px', fontWeight: 700,
+                      background: smsCredits === null ? COLORS.primaryLight :
+                                  smsCredits === 0   ? '#fee2e2' :
+                                  smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#fef3c7' :
+                                  COLORS.primaryLight,
+                      color: smsCredits === null ? COLORS.primary :
+                             smsCredits === 0   ? '#dc2626' :
+                             smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#92400e' :
+                             COLORS.primary,
+                      border: `1px solid ${COLORS.border}`,
+                    }}
+                    title={smsBalance !== null ? `SMS wallet balance: ₦${Number(smsBalance).toLocaleString('en-NG')}` : 'SMS credit balance'}
+                  >
+                    📱 {smsCreditsLoading ? '…' : smsCredits === null ? '—' : `${smsCredits} SMS cr.`}
+                  </span>
+                  <button
+                    style={S.btnSm('primary')}
+                    onClick={() => setShowSmsRechargeModal(true)}
+                    title="Recharge SMS credits"
+                  >
+                    Recharge
+                  </button>
+                </div>
+              )}
+            </div>
             <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px', lineHeight: '1.5' }}>
               This is the daily follow-up queue. It only shows loans that match today&apos;s contact schedule, and a loan clears once staff logs a successful contact attempt.
+              {settings.smsEnabled && settings.termiiApiKey && (() => {
+                const smsDue = normalizeReminderDays(settings.smsDueDateReminderDays, DEFAULT_SETTINGS.smsDueDateReminderDays).sort((a, b) => b - a);
+                const smsOwnership = normalizeReminderDays(settings.smsOwnershipReminderDays, DEFAULT_SETTINGS.smsOwnershipReminderDays).sort((a, b) => b - a);
+                const fmtDays = (days) => days.map(d => d === 0 ? 'on the day' : `${d}d before`).join(' & ') || '—';
+                return <>{' '}Auto-SMS is on: reminders go out {fmtDays(smsDue)} the due date and {fmtDays(smsOwnership)} the ownership deadline.</>;
+              })()}
             </p>
-
-            {/* SMS credit balance panel — only shown when Termii is configured */}
-            {settings.termiiApiKey && isStaff && (
-              <div style={{ ...S.card, marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: COLORS.primaryDark }}>📱 SMS Credits</span>
-                  {smsCreditsLoading ? (
-                    <span style={{ fontSize: '13px', color: COLORS.textMuted }}>Checking balance…</span>
-                  ) : smsCredits === null ? (
-                    <span style={{ fontSize: '13px', color: COLORS.textMuted }}>Balance unavailable</span>
-                  ) : (
-                    <span style={{
-                      display: 'inline-flex', alignItems: 'center', gap: '4px',
-                      padding: '3px 10px', borderRadius: '14px', fontSize: '12px', fontWeight: 700,
-                      background: smsCredits === 0 ? '#fee2e2' : smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#fef3c7' : '#dcfce7',
-                      color: smsCredits === 0 ? '#dc2626' : smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#92400e' : '#166534',
-                    }}>
-                      {smsCredits} credit{smsCredits !== 1 ? 's' : ''} remaining
-                      {smsBalance !== null && <span style={{ fontWeight: 400, opacity: 0.8 }}> (₦{Number(smsBalance).toLocaleString('en-NG')})</span>}
-                    </span>
-                  )}
-                  {smsCredits === 0 && <span style={{ fontSize: '12px', color: '#dc2626' }}>⚠️ No credits — automated SMS will fail until recharged.</span>}
-                  {smsCredits !== null && smsCredits > 0 && smsCredits <= (settings.smsLowCreditThreshold ?? 20) && (
-                    <span style={{ fontSize: '12px', color: '#92400e' }}>⚠️ Credits are low — consider recharging soon.</span>
-                  )}
-                </div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <button style={S.btnSm('outline')} onClick={refreshSmsBalance} title="Refresh balance">↻ Refresh</button>
-                  <button style={S.btnSm('primary')} onClick={() => setShowSmsRechargeModal(true)}>💳 Recharge</button>
-                </div>
-              </div>
-            )}
-
-            {/* Automated SMS schedule description — only shown when SMS is enabled */}
-            {settings.smsEnabled && settings.termiiApiKey && (
-              <div style={{ ...S.card, marginBottom: '16px', background: '#f0f9ff', borderLeft: '4px solid #0ea5e9' }}>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#0369a1', marginBottom: '6px' }}>🤖 What the automated SMS does</div>
-                <div style={{ fontSize: '13px', color: '#0c4a6e', lineHeight: '1.7' }}>
-                  {(() => {
-                    const smsDue = normalizeReminderDays(settings.smsDueDateReminderDays, DEFAULT_SETTINGS.smsDueDateReminderDays).sort((a, b) => b - a);
-                    const smsOwnership = normalizeReminderDays(settings.smsOwnershipReminderDays, DEFAULT_SETTINGS.smsOwnershipReminderDays).sort((a, b) => b - a);
-
-                    const fmtDays = (days) => days.map(d =>
-                      d === 0 ? 'on the due date' : `${d} day${d !== 1 ? 's' : ''} before`
-                    ).join(', ') || 'never';
-
-                    return (
-                      <ul style={{ margin: 0, paddingLeft: '18px' }}>
-                        <li>Every day when the app loads, it automatically sends reminder SMS messages to active loan customers.</li>
-                        <li>
-                          <strong>Due-date reminders:</strong> SMS is sent {fmtDays(smsDue)} the customer&apos;s agreed return date.
-                        </li>
-                        <li>
-                          <strong>Ownership reminders:</strong> SMS is sent {fmtDays(smsOwnership)} the internal ownership deadline.
-                        </li>
-                        <li>Each message is only sent once per trigger per day — no duplicates if the app is opened multiple times.</li>
-                      </ul>
-                    );
-                  })()}
-                </div>
-              </div>
-            )}
 
             <div style={{ ...S.grid4, marginBottom: '20px' }}>
               <div style={{ ...S.stat, background: pendingFollowUps.length > 0 ? '#fef3c7' : COLORS.primaryLight }}>
