@@ -4232,15 +4232,16 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                   />
                   {showNinSuggestions && ninSuggestions.length > 0 && (
                     <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100, background: '#fff', border: `1px solid ${COLORS.border}`, borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.12)', marginTop: '2px', overflow: 'hidden' }}>
-                      {ninSuggestions.map(num => (
+                      {ninSuggestions.map(s => (
                         <div
-                          key={num}
-                          onMouseDown={e => { e.preventDefault(); upd('idNumber', num); setShowNinSuggestions(false); setNinSuggestions([]); }}
-                          style={{ padding: '10px 14px', cursor: 'pointer', fontSize: '14px', fontFamily: 'monospace', borderBottom: `1px solid ${COLORS.border}`, color: COLORS.text }}
+                          key={s.number}
+                          onMouseDown={e => { e.preventDefault(); upd('idNumber', s.number); setShowNinSuggestions(false); setNinSuggestions([]); }}
+                          style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: `1px solid ${COLORS.border}` }}
                           onMouseEnter={e => { e.currentTarget.style.background = COLORS.primaryLight; }}
                           onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
                         >
-                          {num}
+                          <span style={{ fontFamily: 'monospace', fontSize: '14px', color: COLORS.text }}>{s.number}</span>
+                          {s.name && <span style={{ marginLeft: '10px', fontSize: '13px', color: COLORS.textMuted }}>{s.name}</span>}
                         </div>
                       ))}
                     </div>

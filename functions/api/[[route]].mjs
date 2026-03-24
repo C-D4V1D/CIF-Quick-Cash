@@ -1070,9 +1070,22 @@ export async function onRequest(context) {
       const idType = url.searchParams.get('type') === 'bvn' ? 'bvn' : 'nin';
       if (!prefix) return json({ suggestions: [] });
       const rows = await db.prepare(
-        'SELECT id_number FROM nin_bvn_cache WHERE id_type = ? AND id_number LIKE ? ORDER BY created_at DESC LIMIT 8 /* up to 8 suggestions keeps the dropdown concise */'
+        'SELECT id_number, data FROM nin_bvn_cache WHERE id_type = ? AND id_number LIKE ? ORDER BY created_at DESC LIMIT 8 /* up to 8 suggestions keeps the dropdown concise */'
       ).bind(idType, `${prefix}%`).all();
-      return json({ suggestions: (rows?.results || []).map(r => r.id_number) });
+      const suggestions = (rows?.results || []).map(r => {
+        let name = '';
+        try {
+          const parsed = JSON.parse(r.data);
+          // Mirror the name-extraction logic used on the frontend (verify-nin/bvn result unpacking)
+          const d = (parsed?.data?.firstname || parsed?.data?.firstName) ? parsed.data : (parsed?.data?.data || parsed?.data || parsed?.response || {});
+          const first = d.firstname || d.firstName || '';
+          const middle = d.middlename || d.middleName || '';
+          const last = d.surname || d.lastname || d.lastName || '';
+          name = [first, middle, last].filter(Boolean).join(' ');
+        } catch (_) { /* ignore malformed cache entries */ }
+        return { number: r.id_number, name };
+      });
+      return json({ suggestions });
     }
 
     // ============================================================
