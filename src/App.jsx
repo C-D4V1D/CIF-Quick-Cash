@@ -4641,7 +4641,7 @@ function SmsRechargeModal({ onClose, settings, smsBalance, smsCredits, smsNairaP
             )}
           </div>
           <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: `1px solid #b7e4c7`, fontSize: '12px', color: COLORS.textMuted }}>
-            After transferring, log in to <strong>termii.com</strong> to top up your wallet. The balance shown here updates after you refresh the page.
+            The balance shown here updates after you refresh the page.
           </div>
         </div>
       ) : (
@@ -6634,8 +6634,7 @@ export default function App() {
                     }}
                     title={smsBalance !== null ? `SMS wallet balance: ₦${Number(smsBalance).toLocaleString('en-NG')}` : 'SMS credit balance'}
                   >
-                    📱 {smsCreditsLoading ? '…' : smsCredits === null ? '—' : `${smsCredits} cr.`}
-                    {smsBalance !== null && !smsCreditsLoading && <span style={{ fontWeight: 400, opacity: 0.7 }}> · ₦{Number(smsBalance).toLocaleString('en-NG')}</span>}
+                    📱 {smsCreditsLoading ? '…' : smsCredits === null ? '—' : `${smsCredits} SMS cr.`}
                   </span>
                   <button style={{ ...S.btnSm('primary'), padding: '2px 10px', fontSize: '11px' }} onClick={() => setShowSmsRechargeModal(true)}>Recharge</button>
                 </div>
