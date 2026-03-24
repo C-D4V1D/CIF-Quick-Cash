@@ -466,6 +466,8 @@ const trackGeminiCall = () => {
   const keys = Object.keys(usage.gemini).sort();
   if (keys.length > 7) { for (const k of keys.slice(0, -7)) delete usage.gemini[k]; }
   saveApiUsage(usage);
+  // Persist to DB (fire-and-forget — survives deployments and works across devices)
+  API.post('usage/track', { service: 'gemini', date: today }).catch(() => {});
 };
 
 const trackSerpApiCall = (imageCount = 1) => {
@@ -477,6 +479,41 @@ const trackSerpApiCall = (imageCount = 1) => {
   const keys = Object.keys(usage.serpapi).sort();
   if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.serpapi[k]; }
   saveApiUsage(usage);
+  // Persist to DB (fire-and-forget — survives deployments and works across devices)
+  API.post('usage/track', { service: 'serpapi', month, count: imageCount }).catch(() => {});
+};
+
+// Sync API usage counts from DB into localStorage so that:
+// (a) counts survive app re-deployments, and (b) multiple devices share the same counts.
+// RPM timestamps are NOT synced — they are ephemeral and intentionally device-local.
+const syncApiUsageFromDb = async () => {
+  try {
+    const dbUsage = await API.get('usage');
+    if (!dbUsage) return;
+    const local = getApiUsage();
+    let changed = false;
+    if (dbUsage.gemini) {
+      if (!local.gemini) local.gemini = {};
+      for (const [date, dbCount] of Object.entries(dbUsage.gemini)) {
+        const localCount = local.gemini[date]?.count || 0;
+        if (dbCount > localCount) {
+          if (!local.gemini[date]) local.gemini[date] = { count: 0, timestamps: [] };
+          local.gemini[date].count = dbCount;
+          changed = true;
+        }
+      }
+    }
+    if (dbUsage.serpapi) {
+      if (!local.serpapi) local.serpapi = {};
+      for (const [month, dbCount] of Object.entries(dbUsage.serpapi)) {
+        if (dbCount > (local.serpapi[month] || 0)) {
+          local.serpapi[month] = dbCount;
+          changed = true;
+        }
+      }
+    }
+    if (changed) saveApiUsage(local);
+  } catch (e) { console.error('Failed to sync API usage from DB:', e); }
 };
 
 const getSerpApiUsageThisMonth = () => {
@@ -5791,6 +5828,9 @@ export default function App() {
     }
 
     setLoading(false);
+
+    // Sync API usage counts from DB so they survive deployments and work across devices.
+    syncApiUsageFromDb();
 
     // Load large list datasets in the background so navigation/header remain interactive.
     const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');

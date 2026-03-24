@@ -1475,6 +1475,53 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // API USAGE TRACKING: GET /api/usage, POST /api/usage/track
+    // Persists Gemini and SerpApi usage counts in D1 so they
+    // survive app re-deployments and work across devices/browsers.
+    // RPM timestamps are ephemeral and intentionally not persisted.
+    // ============================================================
+    if (path === 'usage' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const row = await db.prepare("SELECT value FROM settings WHERE key = 'api_usage'").first();
+      return json(row ? JSON.parse(row.value) : {});
+    }
+
+    if (path === 'usage/track' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { service, date, month, count = 1 } = await request.json();
+      if (!service) return error('Missing service');
+      if (service === 'gemini' && !date) return error('Missing date for gemini');
+      if (service === 'serpapi' && !month) return error('Missing month for serpapi');
+
+      const row = await db.prepare("SELECT value FROM settings WHERE key = 'api_usage'").first();
+      const usage = row ? JSON.parse(row.value) : {};
+
+      if (service === 'gemini') {
+        if (!usage.gemini) usage.gemini = {};
+        usage.gemini[date] = (usage.gemini[date] || 0) + 1;
+        // Keep last 7 days only
+        const keys = Object.keys(usage.gemini).sort();
+        if (keys.length > 7) { for (const k of keys.slice(0, -7)) delete usage.gemini[k]; }
+      } else if (service === 'serpapi') {
+        if (!usage.serpapi) usage.serpapi = {};
+        usage.serpapi[month] = (usage.serpapi[month] || 0) + Number(count);
+        // Keep last 3 months only
+        const keys = Object.keys(usage.serpapi).sort();
+        if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.serpapi[k]; }
+      } else {
+        return error('Unknown service');
+      }
+
+      await db
+        .prepare("INSERT INTO settings (key, value, updated_at) VALUES ('api_usage', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
+        .bind(JSON.stringify(usage))
+        .run();
+      return json({ success: true });
+    }
+
+    // ============================================================
     // SERPAPI GOOGLE LENS PROXY: POST /api/serpapi-lens
     // Accepts { imageUrl, apiKey } and proxies to SerpApi to keep
     // the key server-side. Requires a valid authenticated session.
