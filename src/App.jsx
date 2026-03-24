@@ -5016,8 +5016,11 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   };
   const getSmsLabel = (trigger) => {
     if (SMS_TRIGGER_LABELS[trigger]) return SMS_TRIGGER_LABELS[trigger];
-    if (trigger?.startsWith('due_')) return `⏰ ${trigger.replace('due_', '').replace('d', '')}d Before Due`;
-    if (trigger?.startsWith('ownership_')) return `⚠️ ${trigger.replace('ownership_', '').replace('d', '')}d Before Ownership End`;
+    // Trigger format: 'due_Nd' or 'ownership_Nd' — extract N using regex
+    const dueMatch = trigger?.match(/^due_(\d+)d$/);
+    if (dueMatch) return `⏰ ${dueMatch[1]}d Before Due`;
+    const ownMatch = trigger?.match(/^ownership_(\d+)d$/);
+    if (ownMatch) return `⚠️ ${ownMatch[1]}d Before Ownership End`;
     return trigger;
   };
   const row = (label, value, color) => (value !== null && value !== undefined && value !== '') ? (
@@ -5864,7 +5867,7 @@ export default function App() {
         refreshSmsBalance(); // refresh balance after sending
       }
     }).catch(() => {});
-  }, [currentUser, listLoading, settings.smsEnabled, settings.termiiApiKey]);
+  }, [currentUser, listLoading, settings.smsEnabled, settings.termiiApiKey]); // smsAutoSendDone & refreshSmsBalance intentionally omitted — stable refs
 
   // Reset transaction table to page 1 when route, search, filters, or list data changes
   useEffect(() => { setTxPages({}); }, [location.pathname, searchQuery, txStatusFilter, txDateFrom, txDateTo, txTypeFilter, txSortKey, txSortDir, listLoading]);

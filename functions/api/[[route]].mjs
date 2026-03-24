@@ -1271,9 +1271,9 @@ export async function onRequest(context) {
     // Helper: normalise a Nigerian phone number to international format (234XXXXXXXXXX)
     const toIntlPhone = (raw = '') => {
       const digits = raw.replace(/\D/g, '');
-      if (digits.startsWith('234') && digits.length >= 13) return digits;
+      if (digits.startsWith('234') && digits.length === 13) return digits;
       if (digits.startsWith('0') && digits.length === 11) return '234' + digits.slice(1);
-      return digits; // best-effort
+      return digits; // best-effort for non-standard formats
     };
 
     // Helper: fill template variables
@@ -1450,10 +1450,10 @@ export async function onRequest(context) {
         }
 
         for (const { triggerType, message } of triggers) {
-          // Idempotency: skip if already sent today for this trigger
+          // Idempotency: skip if already sent today (Nigeria date) for this trigger
           const alreadySent = await db.prepare(
-            "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at) = date('now')"
-          ).bind(row.ref, triggerType).first();
+            "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+          ).bind(row.ref, triggerType, today).first();
           if (alreadySent) { skipped.push({ ref: row.ref, triggerType, reason: 'already_sent_today' }); continue; }
 
           const { ok, response } = await termiiSend(smsCfg, phone, message);
