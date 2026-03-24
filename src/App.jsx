@@ -6592,8 +6592,70 @@ export default function App() {
             {listLoadingNotice}
             <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '8px', color: COLORS.primaryDark }}>📞 Daily Follow-ups</h2>
             <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px', lineHeight: '1.5' }}>
-              This page is the daily follow-up queue. It only shows loans that match the admin-configured contact schedule for today, and a loan clears from this list once staff logs a successful contact attempt today.
+              This is the daily follow-up queue. It only shows loans that match today&apos;s contact schedule, and a loan clears once staff logs a successful contact attempt.
             </p>
+
+            {/* SMS credit balance panel — only shown when Termii is configured */}
+            {settings.termiiApiKey && isStaff && (
+              <div style={{ ...S.card, marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: COLORS.primaryDark }}>📱 SMS Credits</span>
+                  {smsCreditsLoading ? (
+                    <span style={{ fontSize: '13px', color: COLORS.textMuted }}>Checking balance…</span>
+                  ) : smsCredits === null ? (
+                    <span style={{ fontSize: '13px', color: COLORS.textMuted }}>Balance unavailable</span>
+                  ) : (
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', gap: '4px',
+                      padding: '3px 10px', borderRadius: '14px', fontSize: '12px', fontWeight: 700,
+                      background: smsCredits === 0 ? '#fee2e2' : smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#fef3c7' : '#dcfce7',
+                      color: smsCredits === 0 ? '#dc2626' : smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#92400e' : '#166534',
+                    }}>
+                      {smsCredits} credit{smsCredits !== 1 ? 's' : ''} remaining
+                      {smsBalance !== null && <span style={{ fontWeight: 400, opacity: 0.8 }}> (₦{Number(smsBalance).toLocaleString('en-NG')})</span>}
+                    </span>
+                  )}
+                  {smsCredits === 0 && <span style={{ fontSize: '12px', color: '#dc2626' }}>⚠️ No credits — automated SMS will fail until recharged.</span>}
+                  {smsCredits !== null && smsCredits > 0 && smsCredits <= (settings.smsLowCreditThreshold ?? 20) && (
+                    <span style={{ fontSize: '12px', color: '#92400e' }}>⚠️ Credits are low — consider recharging soon.</span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button style={S.btnSm('outline')} onClick={refreshSmsBalance} title="Refresh balance">↻ Refresh</button>
+                  <button style={S.btnSm('primary')} onClick={() => setShowSmsRechargeModal(true)}>💳 Recharge</button>
+                </div>
+              </div>
+            )}
+
+            {/* Automated SMS schedule description — only shown when SMS is enabled */}
+            {settings.smsEnabled && settings.termiiApiKey && (
+              <div style={{ ...S.card, marginBottom: '16px', background: '#f0f9ff', borderLeft: '4px solid #0ea5e9' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#0369a1', marginBottom: '6px' }}>🤖 What the automated SMS does</div>
+                <div style={{ fontSize: '13px', color: '#0c4a6e', lineHeight: '1.7' }}>
+                  {(() => {
+                    const smsDue = normalizeReminderDays(settings.smsDueDateReminderDays, DEFAULT_SETTINGS.smsDueDateReminderDays).sort((a, b) => b - a);
+                    const smsOwnership = normalizeReminderDays(settings.smsOwnershipReminderDays, DEFAULT_SETTINGS.smsOwnershipReminderDays).sort((a, b) => b - a);
+
+                    const fmtDays = (days) => days.map(d =>
+                      d === 0 ? 'on the due date' : `${d} day${d !== 1 ? 's' : ''} before`
+                    ).join(', ') || 'never';
+
+                    return (
+                      <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                        <li>Every day when the app loads, it automatically sends reminder SMS messages to active loan customers.</li>
+                        <li>
+                          <strong>Due-date reminders:</strong> SMS is sent {fmtDays(smsDue)} the customer&apos;s agreed return date.
+                        </li>
+                        <li>
+                          <strong>Ownership reminders:</strong> SMS is sent {fmtDays(smsOwnership)} the internal ownership deadline.
+                        </li>
+                        <li>Each message is only sent once per trigger per day — no duplicates if the app is opened multiple times.</li>
+                      </ul>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
 
             <div style={{ ...S.grid4, marginBottom: '20px' }}>
               <div style={{ ...S.stat, background: pendingFollowUps.length > 0 ? '#fef3c7' : COLORS.primaryLight }}>
@@ -8047,7 +8109,7 @@ export default function App() {
                   <input style={S.input} type="number" min="1" value={es.smsNairaPerCredit ?? DEFAULT_SETTINGS.smsNairaPerCredit} onChange={e => updateSettings({ ...es, smsNairaPerCredit: Math.max(1, Number(e.target.value)) })} />
                   <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Currently set to <strong>₦{(es.smsNairaPerCredit ?? DEFAULT_SETTINGS.smsNairaPerCredit).toLocaleString()}</strong> per credit. 1 credit = 1 page of SMS (≈ 160 characters).</div>
                 </Field>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Low Credit Alert Threshold<InfoIcon tip="Show a warning in the top bar when SMS credits drop to or below this number." /></span>}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Low Credit Alert Threshold<InfoIcon tip="Show a warning on the Daily Follow-ups page when SMS credits drop to or below this number." /></span>}>
                   <input style={S.input} type="number" min="1" max="500" value={es.smsLowCreditThreshold ?? DEFAULT_SETTINGS.smsLowCreditThreshold} onChange={e => updateSettings({ ...es, smsLowCreditThreshold: Number(e.target.value) })} />
                 </Field>
               </div>
@@ -8091,7 +8153,7 @@ export default function App() {
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💳 SMS Credit Recharge Details</div>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>
-                Staff see these bank details when they tap <strong>Recharge</strong> in the top bar. Enter the account where funds should be transferred to top up your Termii wallet.
+                Staff see these bank details when they tap <strong>Recharge</strong> on the Daily Follow-ups page. Enter the account where funds should be transferred to top up your Termii wallet.
               </div>
               <div style={S.grid2}>
                 <Field label="Bank Name">
@@ -8253,38 +8315,6 @@ export default function App() {
           <button onClick={() => navigate('/landing')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
-          {/* SMS Credit Balance — visible to admin and staff when Termii is configured */}
-          {settings.termiiApiKey && isStaff && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '4px',
-                  padding: '3px 8px', borderRadius: '14px', fontSize: '11px', fontWeight: 700,
-                  background: smsCredits === null ? 'rgba(255,255,255,0.15)' :
-                              smsCredits === 0   ? '#dc2626' :
-                              smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#d97706' :
-                              'rgba(255,255,255,0.15)',
-                  color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
-                  cursor: 'default',
-                }}
-                title={smsBalance !== null ? `SMS wallet balance: ₦${Number(smsBalance).toLocaleString('en-NG')}` : 'SMS credit balance'}
-              >
-                📱
-                {smsCreditsLoading ? '…' : smsCredits === null ? '—' : `${smsCredits} SMS cr.`}
-              </span>
-              <button
-                style={{
-                  background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)',
-                  color: '#fff', borderRadius: '10px', fontSize: '10px', fontWeight: 700,
-                  padding: '2px 7px', cursor: 'pointer', lineHeight: 1.4,
-                }}
-                onClick={() => setShowSmsRechargeModal(true)}
-                title="Recharge SMS credits"
-              >
-                Recharge
-              </button>
-            </div>
-          )}
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
           <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}{(currentUser.roles || []).length > 0 ? ` + ${(currentUser.roles || []).join(', ')}` : ''}</span>
           <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); clearAuthCache(); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
