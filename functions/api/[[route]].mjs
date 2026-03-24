@@ -1241,6 +1241,239 @@ export async function onRequest(context) {
       );
     }
 
+    // ============================================================
+    // SMS (Termii) — /api/sms/*
+    // ============================================================
+
+    // Helper: load SMS config from settings
+    const loadSmsConfig = async () => {
+      const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      const cfg = row ? JSON.parse(row.value) : {};
+      return {
+        apiKey:           cfg.termiiApiKey || '',
+        baseUrl:          (cfg.termiiBaseUrl || 'https://v3.api.termii.com').replace(/\/$/, ''),
+        senderId:         cfg.termiiSenderId || 'N-Alert',
+        enabled:          cfg.smsEnabled === true,
+        nairaPerCredit:   Math.max(1, Number(cfg.smsNairaPerCredit) || 5),
+        dueDateDays:      Array.isArray(cfg.smsDueDateReminderDays)    ? cfg.smsDueDateReminderDays.map(Number)    : [2, 1, 0],
+        ownershipDays:    Array.isArray(cfg.smsOwnershipReminderDays)  ? cfg.smsOwnershipReminderDays.map(Number)  : [3, 0],
+        tmplDueReminder:  cfg.smsDueDateReminder  || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due in {daysLeft} day(s). Please visit {businessName} to make payment.',
+        tmplDueToday:     cfg.smsDueTodayReminder || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
+        tmplOwnReminder:  cfg.smsOwnershipReminder || 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
+        tmplOwnToday:     cfg.smsOwnershipLastDay  || 'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
+        businessName:     cfg.businessName || 'CIF Quick Cash',
+        shopPhone:        cfg.shopPhone1 || '',
+        maxLoanDays:      Math.max(1, Number(cfg.maxLoanDays) || 30),
+        graceDays:        Math.max(0, Number(cfg.graceDays) || 3),
+      };
+    };
+
+    // Helper: normalise a Nigerian phone number to international format (234XXXXXXXXXX)
+    const toIntlPhone = (raw = '') => {
+      const digits = raw.replace(/\D/g, '');
+      if (digits.startsWith('234') && digits.length === 13) return digits;
+      if (digits.startsWith('0') && digits.length === 11) return '234' + digits.slice(1);
+      return digits; // best-effort for non-standard formats
+    };
+
+    // Helper: fill template variables
+    const fillSmsTemplate = (template, vars = {}) =>
+      template
+        .replace(/\{customerName\}/g, vars.customerName || '')
+        .replace(/\{ref\}/g,          vars.ref || '')
+        .replace(/\{amount\}/g,        vars.amount || '')
+        .replace(/\{daysLeft\}/g,      String(vars.daysLeft ?? ''))
+        .replace(/\{daysOverdue\}/g,   String(vars.daysOverdue ?? ''))
+        .replace(/\{businessName\}/g,  vars.businessName || '')
+        .replace(/\{shopPhone\}/g,     vars.shopPhone || '');
+
+    // Helper: send one SMS via Termii, returns { ok, response }
+    const termiiSend = async (smsCfg, phone, message) => {
+      const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: phone,
+          from: smsCfg.senderId,
+          sms: message,
+          type: 'plain',
+          channel: 'generic',
+          api_key: smsCfg.apiKey,
+        }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      const ok = data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok;
+      return { ok, response: data };
+    };
+
+    // ── GET /api/sms/balance — Termii wallet balance + credit count ──
+    if (path === 'sms/balance' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const smsCfg = await loadSmsConfig();
+      if (!smsCfg.apiKey) return json({ balance: null, credits: null, error: 'Termii API key not configured.' });
+      try {
+        const resp = await fetch(`${smsCfg.baseUrl}/api/get-balance?api_key=${encodeURIComponent(smsCfg.apiKey)}`);
+        const data = await resp.json().catch(() => ({}));
+        const rawBalance = data?.balance ?? data?.data?.balance ?? null;
+        const balanceNum = rawBalance !== null ? Number(rawBalance) : null;
+        const credits = balanceNum !== null ? Math.floor(balanceNum / smsCfg.nairaPerCredit) : null;
+        return json({ balance: balanceNum, credits, nairaPerCredit: smsCfg.nairaPerCredit, raw: data });
+      } catch {
+        return json({ balance: null, credits: null, error: 'Failed to reach Termii API.' });
+      }
+    }
+
+    // ── GET /api/sms/logs — all SMS logs (optionally filtered by ?ref=) ──
+    if (path === 'sms/logs' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const refFilter = (url.searchParams.get('ref') || '').trim();
+      let query = 'SELECT id, transaction_ref, sent_at, trigger_type, message, recipient, status, termii_response FROM sms_logs';
+      const params = [];
+      if (refFilter) { query += ' WHERE transaction_ref = ?'; params.push(refFilter); }
+      query += ' ORDER BY sent_at DESC LIMIT 500';
+      const { results } = await db.prepare(query).bind(...params).all();
+      return json(results);
+    }
+
+    // ── POST /api/sms/send — send a manual SMS to a transaction's phone ──
+    if (path === 'sms/send' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { ref: txRef, message: customMsg, phone: customPhone } = await request.json();
+      if (!txRef) return error('ref is required', 400);
+
+      const smsCfg = await loadSmsConfig();
+      if (!smsCfg.apiKey) return error('Termii API key not configured in Settings.', 400);
+      if (!smsCfg.enabled) return error('SMS is disabled. Enable it in Settings → SMS.', 400);
+
+      const txRow = await db.prepare('SELECT data FROM transactions WHERE ref = ?').bind(txRef).first();
+      if (!txRow) return error('Transaction not found', 404);
+      const txData = JSON.parse(txRow.data);
+
+      const rawPhone = customPhone || txData.phoneNumbers?.[0] || '';
+      if (!rawPhone) return error('No phone number for this transaction.', 400);
+      const phone = toIntlPhone(rawPhone);
+
+      const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+      const message = customMsg || fillSmsTemplate(smsCfg.tmplDueReminder, {
+        customerName: txData.fullName,
+        ref: txRef,
+        amount: fmtN(txData.cashAdvance),
+        businessName: smsCfg.businessName,
+        shopPhone: smsCfg.shopPhone,
+      });
+
+      const { ok, response } = await termiiSend(smsCfg, phone, message);
+      const inserted = await db.prepare(
+        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, 'manual', ?, ?, ?, ?)"
+      ).bind(txRef, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response)).run();
+
+      await logActivity({
+        user: auth.user, action: 'sms', entityType: 'transaction', entityId: txRef,
+        description: `📱 Manual SMS ${ok ? 'sent' : 'failed'} to ${phone} for ${txRef}`,
+      });
+      return json({ ok, logId: inserted.meta.last_row_id, response });
+    }
+
+    // ── POST /api/sms/auto-send — fire automated SMS for all eligible active loans ──
+    if (path === 'sms/auto-send' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+
+      const smsCfg = await loadSmsConfig();
+      if (!smsCfg.apiKey) return json({ skipped: true, reason: 'Termii API key not configured.' });
+      if (!smsCfg.enabled) return json({ skipped: true, reason: 'Automated SMS is disabled.' });
+
+      const today = todayNigeria();
+      const { results: activeTxs } = await db.prepare(
+        "SELECT ref, data FROM transactions WHERE status = 'active'"
+      ).all();
+
+      const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+      const sent = [], failed = [], skipped = [];
+
+      for (const row of activeTxs) {
+        const txData = JSON.parse(row.data);
+        if (txData.type !== 'advance') { skipped.push({ ref: row.ref, reason: 'not_advance' }); continue; }
+
+        const rawPhone = txData.phoneNumbers?.[0] || '';
+        if (!rawPhone) { skipped.push({ ref: row.ref, reason: 'no_phone' }); continue; }
+        const phone = toIntlPhone(rawPhone);
+
+        const internalDeadline = addDaysToDate(txData.dateGiven, smsCfg.maxLoanDays);
+        const customerDueDate  = txData.deadlineDate || addDaysToDate(txData.dateGiven, Number(txData.loanDays) || smsCfg.maxLoanDays);
+
+        // Build the list of (triggerType, template, daysLeft) tuples for today
+        const triggers = [];
+
+        // Due-date reminders
+        for (const daysBefore of smsCfg.dueDateDays) {
+          const triggerDate = addDaysToDate(customerDueDate, -daysBefore);
+          if (triggerDate === today) {
+            const triggerType = daysBefore === 0 ? 'due_today' : `due_${daysBefore}d`;
+            triggers.push({
+              triggerType,
+              message: fillSmsTemplate(daysBefore === 0 ? smsCfg.tmplDueToday : smsCfg.tmplDueReminder, {
+                customerName: txData.fullName,
+                ref: row.ref,
+                amount: fmtN(txData.cashAdvance),
+                daysLeft: daysBefore,
+                businessName: smsCfg.businessName,
+                shopPhone: smsCfg.shopPhone,
+              }),
+            });
+          }
+        }
+
+        // Ownership reminders
+        for (const daysBefore of smsCfg.ownershipDays) {
+          const triggerDate = addDaysToDate(internalDeadline, -daysBefore);
+          if (triggerDate === today) {
+            const triggerType = daysBefore === 0 ? 'ownership_today' : `ownership_${daysBefore}d`;
+            // Avoid double-firing if due-date and ownership reminders land on the same day with the same ref
+            if (!triggers.find(t => t.triggerType === triggerType)) {
+              triggers.push({
+                triggerType,
+                message: fillSmsTemplate(daysBefore === 0 ? smsCfg.tmplOwnToday : smsCfg.tmplOwnReminder, {
+                  customerName: txData.fullName,
+                  ref: row.ref,
+                  amount: fmtN(txData.cashAdvance),
+                  daysLeft: daysBefore,
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                }),
+              });
+            }
+          }
+        }
+
+        for (const { triggerType, message } of triggers) {
+          // Idempotency: skip if already sent today (Nigeria date) for this trigger
+          const alreadySent = await db.prepare(
+            "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+          ).bind(row.ref, triggerType, today).first();
+          if (alreadySent) { skipped.push({ ref: row.ref, triggerType, reason: 'already_sent_today' }); continue; }
+
+          const { ok, response } = await termiiSend(smsCfg, phone, message);
+          await db.prepare(
+            'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, ?, ?, ?, ?, ?)'
+          ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response)).run();
+
+          (ok ? sent : failed).push({ ref: row.ref, triggerType, phone });
+        }
+      }
+
+      if (sent.length > 0) {
+        await logActivity({
+          user: auth.user, action: 'sms', entityType: 'settings', entityId: 'auto',
+          description: `📱 Auto-SMS run: ${sent.length} sent, ${failed.length} failed, ${skipped.length} skipped`,
+        });
+      }
+      return json({ ok: true, sent, failed, skipped });
+    }
+
     return error('Not found', 404);
 
   } catch (e) {
