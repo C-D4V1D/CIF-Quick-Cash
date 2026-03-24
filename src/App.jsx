@@ -377,6 +377,22 @@ const DEFAULT_SETTINGS = {
   whatsappLoanReminder: 'Hello {customerName}, this is a reminder that your loan (Ref: {ref}) of ₦{amount} is due in {daysLeft} day(s). Please visit our shop to make payment. Thank you!',
   whatsappOverdueNotice: 'Dear {customerName}, your loan (Ref: {ref}) of ₦{amount} is now {daysOverdue} day(s) overdue. Please come in immediately to avoid your item being listed for sale. Contact us: {shopPhone}',
   whatsappPickupReady: 'Hello {customerName}, your item is ready for pickup at our shop. Please bring your agreement form and valid ID. Ref: {ref}. Thank you for choosing {businessName}!',
+  // Termii SMS Automation
+  smsEnabled: false,
+  termiiApiKey: '',
+  termiiBaseUrl: 'https://v3.api.termii.com',
+  termiiSenderId: 'N-Alert',
+  smsNairaPerCredit: 5,
+  smsLowCreditThreshold: 20,
+  smsDueDateReminderDays: [2, 1, 0],
+  smsOwnershipReminderDays: [3, 0],
+  smsDueDateReminder:  'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due in {daysLeft} day(s). Please visit {businessName} to make payment.',
+  smsDueTodayReminder: 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
+  smsOwnershipReminder: 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
+  smsOwnershipLastDay:  'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
+  smsRechargeBank: '',
+  smsRechargeAccountNumber: '',
+  smsRechargeAccountName: '',
   // Receipt & Agreement
   agreementTermsExtra: '',
   receiptFooter: 'Thank you for your patronage!',
@@ -4587,8 +4603,56 @@ function NinRechargeModal({ onClose, settings }) {
 }
 
 // ============================================================
-// WIZARD DECLINE LOG MODAL — pre-filled for staff to review
+// SMS RECHARGE MODAL — shows bank details for topping up Termii credits
 // ============================================================
+function SmsRechargeModal({ onClose, settings, smsBalance, smsCredits, smsNairaPerCredit }) {
+  const bank          = settings.smsRechargeBank || '';
+  const accountNumber = settings.smsRechargeAccountNumber || '';
+  const accountName   = settings.smsRechargeAccountName || '';
+  const hasDetails    = bank || accountNumber || accountName;
+  const nairaPerCredit = smsNairaPerCredit ?? settings.smsNairaPerCredit ?? 5;
+  return (
+    <Modal open onClose={onClose} title="📱 Recharge SMS Credits">
+      <div style={{ ...S.alert('info'), marginBottom: '16px' }}>
+        ℹ️ 1 SMS credit = 1 page of SMS = <strong>₦{nairaPerCredit.toLocaleString()}</strong>.
+        {smsBalance !== null && <> Current wallet balance: <strong>₦{Number(smsBalance).toLocaleString('en-NG')}</strong> ({smsCredits !== null ? smsCredits : '—'} credit{smsCredits !== 1 ? 's' : ''} remaining).</>}
+      </div>
+      {hasDetails ? (
+        <div style={{ background: COLORS.primaryLight, border: `1px solid #b7e4c7`, borderRadius: '12px', padding: '20px', marginBottom: '16px' }}>
+          <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '14px' }}>Transfer funds to this account to top up SMS credits:</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {bank && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 600 }}>Bank</span>
+                <span style={{ fontSize: '15px', fontWeight: 700, color: COLORS.text }}>{bank}</span>
+              </div>
+            )}
+            {accountNumber && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 600 }}>Account Number</span>
+                <span style={{ fontSize: '18px', fontWeight: 800, color: COLORS.primaryDark, letterSpacing: '1px' }}>{accountNumber}</span>
+              </div>
+            )}
+            {accountName && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 600 }}>Account Name</span>
+                <span style={{ fontSize: '15px', fontWeight: 700, color: COLORS.text }}>{accountName}</span>
+              </div>
+            )}
+          </div>
+          <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: `1px solid #b7e4c7`, fontSize: '12px', color: COLORS.textMuted }}>
+            After transferring, log in to <strong>termii.com</strong> to top up your wallet. The balance shown here updates after you refresh the page.
+          </div>
+        </div>
+      ) : (
+        <div style={{ ...S.alert('warning'), marginBottom: '16px' }}>
+          ⚠️ No recharge payment details configured yet. Ask your admin to set them in <strong>Settings → SMS Automation</strong>.
+        </div>
+      )}
+      <button style={{ ...S.btn('muted'), width: '100%', justifyContent: 'center', marginTop: '8px' }} onClick={onClose}>Close</button>
+    </Modal>
+  );
+}
 function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
   const [showErrors, setShowErrors] = useState(false);
   const [entry, setEntry] = useState({
@@ -4919,6 +4983,43 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const dailyInterest = tx.cashAdvance ? Math.floor((tx.cashAdvance * (settings.interestRate || 1)) / 100) : 0;
   const daysOut = timeline ? timeline.elapsedDays : 0;
   const amountDueToday = tx.cashAdvance ? tx.cashAdvance + daysOut * dailyInterest : 0;
+  const [smsLogs, setSmsLogs] = useState(null);
+  const [smsLogsLoading, setSmsLogsLoading] = useState(false);
+  const [sendingSms, setSendingSms] = useState(false);
+  const [smsSendMsg, setSmsSendMsg] = useState('');
+  const [smsResult, setSmsResult] = useState(null);
+  useEffect(() => {
+    if (!tx?.ref) return;
+    setSmsLogsLoading(true);
+    API.get(`sms/logs?ref=${encodeURIComponent(tx.ref)}`).then(data => {
+      setSmsLogs(Array.isArray(data) ? data : []);
+    }).finally(() => setSmsLogsLoading(false));
+  }, [tx.ref]);
+  const sendManualSms = async () => {
+    if (!smsSendMsg.trim()) return;
+    setSendingSms(true);
+    setSmsResult(null);
+    const res = await API.post('sms/send', { ref: tx.ref, message: smsSendMsg.trim() });
+    setSendingSms(false);
+    setSmsResult(res);
+    if (res?.ok) {
+      setSmsSendMsg('');
+      // Reload SMS logs
+      const updated = await API.get(`sms/logs?ref=${encodeURIComponent(tx.ref)}`);
+      setSmsLogs(Array.isArray(updated) ? updated : []);
+    }
+  };
+  const SMS_TRIGGER_LABELS = {
+    manual: '📝 Manual',
+    due_today: '🔴 Due Today',
+    ownership_today: '🚨 Last Ownership Day',
+  };
+  const getSmsLabel = (trigger) => {
+    if (SMS_TRIGGER_LABELS[trigger]) return SMS_TRIGGER_LABELS[trigger];
+    if (trigger?.startsWith('due_')) return `⏰ ${trigger.replace('due_', '').replace('d', '')}d Before Due`;
+    if (trigger?.startsWith('ownership_')) return `⚠️ ${trigger.replace('ownership_', '').replace('d', '')}d Before Ownership End`;
+    return trigger;
+  };
   const row = (label, value, color) => (value !== null && value !== undefined && value !== '') ? (
     <div style={{ display: 'grid', gridTemplateColumns: '165px 1fr', gap: '8px', padding: '6px 0', borderBottom: `1px solid ${COLORS.border}`, fontSize: '13px', alignItems: 'start' }}>
       <div style={{ fontWeight: 600, color: COLORS.textMuted, fontSize: '11.5px', textTransform: 'uppercase', letterSpacing: '0.3px', paddingTop: '2px' }}>{label}</div>
@@ -5152,6 +5253,57 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         <button style={S.btn('danger')} onClick={() => navigate(txSellPath(tx.ref))}>🏷 Record Sale</button>
       )}
     </div>
+
+    {/* ── SMS Log ── */}
+    {settings.termiiApiKey && (
+      <div style={S.card}>
+        <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>📱 SMS Log</span>
+        </div>
+        {smsLogsLoading ? (
+          <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>Loading SMS history…</div>
+        ) : smsLogs && smsLogs.length > 0 ? (
+          <div>
+            {smsLogs.map((entry, i) => (
+              <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < smsLogs.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <span style={{ ...S.badge(entry.status === 'sent' ? '#10b981' : '#dc2626'), fontSize: '11px' }}>{entry.status === 'sent' ? '✓ Sent' : '✗ Failed'}</span>
+                    <span style={{ ...S.badge('#6b7280'), fontSize: '11px' }}>{getSmsLabel(entry.trigger_type)}</span>
+                  </div>
+                  <span style={{ fontSize: '11px', color: COLORS.textMuted }}>{new Date(entry.sent_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                <div style={{ fontSize: '12px', color: COLORS.text, marginTop: '2px' }}>To: <strong>{entry.recipient}</strong></div>
+                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', fontStyle: 'italic' }}>{entry.message}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No SMS messages sent for this transaction yet.</div>
+        )}
+        {/* Manual SMS send (staff only, active loans) */}
+        {isStaff && settings.smsEnabled && tx.phoneNumbers?.[0] && (
+          <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>Send Manual SMS</div>
+            <textarea
+              style={{ ...S.textarea, fontSize: '13px', marginBottom: '8px' }}
+              rows={3}
+              value={smsSendMsg}
+              onChange={e => setSmsSendMsg(e.target.value)}
+              placeholder="Type your SMS message here…"
+            />
+            {smsResult && (
+              <div style={{ ...S.alert(smsResult.ok ? 'success' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
+                {smsResult.ok ? '✅ SMS sent successfully.' : `❌ Failed to send SMS: ${smsResult.error || JSON.stringify(smsResult.response)}`}
+              </div>
+            )}
+            <button style={S.btnSm('primary')} onClick={sendManualSms} disabled={sendingSms || !smsSendMsg.trim()}>
+              {sendingSms ? 'Sending…' : '📤 Send SMS'}
+            </button>
+          </div>
+        )}
+      </div>
+    )}
   </div>);
 }
 
@@ -5581,6 +5733,11 @@ export default function App() {
   const isMobile = useMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [zoomedPhoto, setZoomedPhoto] = useState(null);
+  const [smsCredits, setSmsCredits] = useState(null);      // number | null
+  const [smsBalance, setSmsBalance] = useState(null);      // raw balance in naira | null
+  const [smsCreditsLoading, setSmsCreditsLoading] = useState(false);
+  const [showSmsRechargeModal, setShowSmsRechargeModal] = useState(false);
+  const [smsAutoSendDone, setSmsAutoSendDone] = useState(false); // prevent firing twice per session
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -5680,6 +5837,34 @@ export default function App() {
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
+
+  // Fetch Termii SMS balance when user is authenticated
+  const refreshSmsBalance = async () => {
+    if (!currentUser) return;
+    setSmsCreditsLoading(true);
+    const data = await API.get('sms/balance');
+    setSmsCreditsLoading(false);
+    if (data && data.balance !== null && data.balance !== undefined) {
+      setSmsBalance(data.balance);
+      setSmsCredits(data.credits);
+    } else {
+      setSmsBalance(null);
+      setSmsCredits(null);
+    }
+  };
+  useEffect(() => { if (currentUser) refreshSmsBalance(); }, [currentUser]);
+
+  // Auto-send scheduled SMS once per session (after transactions are loaded)
+  useEffect(() => {
+    if (!currentUser || smsAutoSendDone || listLoading) return;
+    if (!settings.smsEnabled || !settings.termiiApiKey) return;
+    setSmsAutoSendDone(true);
+    API.post('sms/auto-send', {}).then(result => {
+      if (result?.sent?.length > 0) {
+        refreshSmsBalance(); // refresh balance after sending
+      }
+    }).catch(() => {});
+  }, [currentUser, listLoading, settings.smsEnabled, settings.termiiApiKey]);
 
   // Reset transaction table to page 1 when route, search, filters, or list data changes
   useEffect(() => { setTxPages({}); }, [location.pathname, searchQuery, txStatusFilter, txDateFrom, txDateTo, txTypeFilter, txSortKey, txSortDir, listLoading]);
@@ -7820,7 +8005,106 @@ export default function App() {
             </Field>
           </div>
 
-          {/* ── 12. RECEIPT & AGREEMENT ── */}
+          {/* ── 12. SMS AUTOMATION ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>📱 SMS Automation (Termii)</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+              Automatically send SMS reminders to customers via Termii. The system fires SMS once per day for each eligible active loan based on the schedule below. Requires a Termii account and API key.
+            </div>
+
+            {/* Master toggle */}
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Enable Automated SMS<InfoIcon tip="Master switch. Turn this on to allow the system to automatically send SMS messages to customers. The system sends at most one SMS per trigger per transaction per day." /></span>}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!es.smsEnabled} onChange={e => updateSettings({ ...es, smsEnabled: e.target.checked })} style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }} />
+                <span style={{ fontSize: '13px' }}>When enabled, the app automatically checks and sends SMS reminders each time a staff member opens the app (once per session). SMS are sent only for active advance loans with a phone number on file.</span>
+              </label>
+            </Field>
+
+            {/* Termii credentials */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>🔑 Termii API Credentials</div>
+              <div style={S.grid2}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii API Key<InfoIcon tip="Your live API key from Termii. Find it in your Termii dashboard under API Keys." /></span>}>
+                  <input style={S.input} type="password" value={es.termiiApiKey ?? ''} onChange={e => updateSettings({ ...es, termiiApiKey: e.target.value })} placeholder="From Termii dashboard" />
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Default is 'N-Alert'." /></span>}>
+                  <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => updateSettings({ ...es, termiiSenderId: e.target.value })} placeholder="e.g. N-Alert or CIF Cash" />
+                </Field>
+              </div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii Base URL<InfoIcon tip="The Termii API base URL. Default is https://v3.api.termii.com. Only change this if Termii updates their API endpoint." /></span>}>
+                <input style={S.input} value={es.termiiBaseUrl ?? DEFAULT_SETTINGS.termiiBaseUrl} onChange={e => updateSettings({ ...es, termiiBaseUrl: e.target.value })} placeholder="https://v3.api.termii.com" />
+              </Field>
+            </div>
+
+            {/* Credit cost */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '10px' }}>💳 SMS Credit Settings</div>
+              <div style={S.grid2}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Cost per SMS Credit (₦)<InfoIcon tip="The Naira cost of 1 SMS credit (= 1 page of SMS) on Termii. Used to calculate how many credits remain from your wallet balance. Update this if Termii changes their pricing." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.smsNairaPerCredit ?? DEFAULT_SETTINGS.smsNairaPerCredit} onChange={e => updateSettings({ ...es, smsNairaPerCredit: Math.max(1, Number(e.target.value)) })} />
+                  <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Currently set to <strong>₦{(es.smsNairaPerCredit ?? DEFAULT_SETTINGS.smsNairaPerCredit).toLocaleString()}</strong> per credit. 1 credit = 1 page of SMS (≈ 160 characters).</div>
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Low Credit Alert Threshold<InfoIcon tip="Show a warning in the top bar when SMS credits drop to or below this number." /></span>}>
+                  <input style={S.input} type="number" min="1" max="500" value={es.smsLowCreditThreshold ?? DEFAULT_SETTINGS.smsLowCreditThreshold} onChange={e => updateSettings({ ...es, smsLowCreditThreshold: Number(e.target.value) })} />
+                </Field>
+              </div>
+            </div>
+
+            {/* Trigger schedule */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>⏰ Automated SMS Schedule</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Enter comma-separated days before each event (0 = on the day, 1 = 1 day before, 2 = 2 days before, etc.).</div>
+              <div style={S.grid2}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Reminders (days before)<InfoIcon tip="Days before the customer's agreed due date to send reminders. E.g. '2, 1, 0' sends SMS 2 days before, 1 day before, and on the due date itself." /></span>}>
+                  <ReminderDaysInput style={S.input} value={es.smsDueDateReminderDays} fallback={DEFAULT_SETTINGS.smsDueDateReminderDays} onChange={v => updateSettings({ ...es, smsDueDateReminderDays: v })} placeholder="e.g. 2, 1, 0" />
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminders (days before last day)<InfoIcon tip="Days before the internal ownership deadline to send reminders. E.g. '3, 0' sends SMS 3 days before the ownership date and on the last ownership day." /></span>}>
+                  <ReminderDaysInput style={S.input} value={es.smsOwnershipReminderDays} fallback={DEFAULT_SETTINGS.smsOwnershipReminderDays} onChange={v => updateSettings({ ...es, smsOwnershipReminderDays: v })} placeholder="e.g. 3, 0" />
+                </Field>
+              </div>
+            </div>
+
+            {/* SMS message templates */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💬 SMS Message Templates</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
+                Customize each auto-SMS. Available placeholders: <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{customerName}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{ref}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{amount}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{businessName}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{shopPhone}'}</code>
+              </div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Date Reminder (X days before)<InfoIcon tip="Sent X days before the customer's agreed due date. The {daysLeft} placeholder shows how many days remain." /></span>}>
+                <textarea style={S.textarea} value={es.smsDueDateReminder ?? DEFAULT_SETTINGS.smsDueDateReminder} onChange={e => updateSettings({ ...es, smsDueDateReminder: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Today Reminder<InfoIcon tip="Sent on the exact day the customer's loan is due." /></span>}>
+                <textarea style={S.textarea} value={es.smsDueTodayReminder ?? DEFAULT_SETTINGS.smsDueTodayReminder} onChange={e => updateSettings({ ...es, smsDueTodayReminder: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminder (X days before last day)<InfoIcon tip="Sent X days before the internal deadline (the day the business takes ownership). Urgent recovery message." /></span>}>
+                <textarea style={S.textarea} value={es.smsOwnershipReminder ?? DEFAULT_SETTINGS.smsOwnershipReminder} onChange={e => updateSettings({ ...es, smsOwnershipReminder: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Last Day of Ownership<InfoIcon tip="Sent on the internal deadline day — the final day before the business fully owns the item. This is the most urgent message." /></span>}>
+                <textarea style={S.textarea} value={es.smsOwnershipLastDay ?? DEFAULT_SETTINGS.smsOwnershipLastDay} onChange={e => updateSettings({ ...es, smsOwnershipLastDay: e.target.value })} />
+              </Field>
+            </div>
+
+            {/* Recharge payment details */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💳 SMS Credit Recharge Details</div>
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>
+                Staff see these bank details when they tap <strong>Recharge</strong> in the top bar. Enter the account where funds should be transferred to top up your Termii wallet.
+              </div>
+              <div style={S.grid2}>
+                <Field label="Bank Name">
+                  <input style={S.input} value={es.smsRechargeBank ?? ''} onChange={e => updateSettings({ ...es, smsRechargeBank: e.target.value })} placeholder="e.g. Access Bank" />
+                </Field>
+                <Field label="Account Number">
+                  <input style={S.input} inputMode="numeric" value={es.smsRechargeAccountNumber ?? ''} onChange={e => updateSettings({ ...es, smsRechargeAccountNumber: e.target.value.replace(/\D/g, '') })} placeholder="e.g. 0123456789" />
+                </Field>
+              </div>
+              <Field label="Account Name">
+                <input style={S.input} value={es.smsRechargeAccountName ?? ''} onChange={e => updateSettings({ ...es, smsRechargeAccountName: e.target.value })} placeholder="e.g. Christ-in-Fabian Technologies" />
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 13. RECEIPT & AGREEMENT ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🧾 Receipt &amp; Agreement Customization</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Customize the text that appears on printed agreements and receipts.</div>
@@ -7966,6 +8250,38 @@ export default function App() {
           <button onClick={() => navigate('/landing')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
+          {/* SMS Credit Balance — visible to admin and staff when Termii is configured */}
+          {settings.termiiApiKey && isStaff && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '4px',
+                  padding: '3px 8px', borderRadius: '14px', fontSize: '11px', fontWeight: 700,
+                  background: smsCredits === null ? 'rgba(255,255,255,0.15)' :
+                              smsCredits === 0   ? '#dc2626' :
+                              smsCredits <= (settings.smsLowCreditThreshold ?? 20) ? '#d97706' :
+                              'rgba(255,255,255,0.15)',
+                  color: '#fff', border: '1px solid rgba(255,255,255,0.3)',
+                  cursor: 'default',
+                }}
+                title={smsBalance !== null ? `SMS wallet balance: ₦${Number(smsBalance).toLocaleString('en-NG')}` : 'SMS credit balance'}
+              >
+                📱
+                {smsCreditsLoading ? '…' : smsCredits === null ? '—' : `${smsCredits} SMS cr.`}
+              </span>
+              <button
+                style={{
+                  background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)',
+                  color: '#fff', borderRadius: '10px', fontSize: '10px', fontWeight: 700,
+                  padding: '2px 7px', cursor: 'pointer', lineHeight: 1.4,
+                }}
+                onClick={() => setShowSmsRechargeModal(true)}
+                title="Recharge SMS credits"
+              >
+                Recharge
+              </button>
+            </div>
+          )}
           {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
           <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}{(currentUser.roles || []).length > 0 ? ` + ${(currentUser.roles || []).join(', ')}` : ''}</span>
           <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); clearAuthCache(); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
@@ -8039,6 +8355,7 @@ export default function App() {
       <SettingsPwdModal showSettingsPwdModal={showSettingsPwdModal} setShowSettingsPwdModal={setShowSettingsPwdModal} settingsPwdInput={settingsPwdInput} setSettingsPwdInput={setSettingsPwdInput} settingsPwdError={settingsPwdError} setSettingsPwdError={setSettingsPwdError} settingsPwdLoading={settingsPwdLoading} setSettingsPwdLoading={setSettingsPwdLoading} pendingSettings={pendingSettings} setPendingSettings={setPendingSettings} saveSettings={saveSettings} />
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); }} />}</Modal>
       <Modal open={!!shopListingTx} onClose={() => setShopListingTx(null)} title={shopListingTx?.status === 'for_sale' ? '🏪 Edit Shop Listing' : '🏪 List Item in Shop'} wide>{shopListingTx && <ShopListingModal tx={shopListingTx} settings={settings} onClose={() => setShopListingTx(null)} onSave={async (tx) => { await saveTx(tx); loadData(); setShopListingTx(null); }} />}</Modal>
+      {showSmsRechargeModal && <SmsRechargeModal onClose={() => setShowSmsRechargeModal(false)} settings={settings} smsBalance={smsBalance} smsCredits={smsCredits} smsNairaPerCredit={settings.smsNairaPerCredit ?? 5} />}
       <style>{`
         input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}
         ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}
