@@ -343,6 +343,7 @@ const DEFAULT_SETTINGS = {
   geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
   geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
   visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
+  serpApiMonthlyLimit: 250, // SerpApi free Developer plan: 250 searches/month
   // Identity Verification
   requireNinVerification: false,
   ninCreditCost: 150,
@@ -508,6 +509,13 @@ const checkGeminiLimit = (settings) => {
   return { blocked: false, remaining: dailyLimit - usedToday };
 };
 
+const checkSerpApiLimit = (settings) => {
+  const monthlyLimit = settings.serpApiMonthlyLimit || 250;
+  const usedThisMonth = getSerpApiUsageThisMonth();
+  if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
+  return { blocked: false, remaining: monthlyLimit - usedThisMonth };
+};
+
 
 // ============================================================
 // GEMINI AI INTEGRATION
@@ -654,6 +662,7 @@ const callSerpApiLens = async (apiKey, photo) => {
   let imageUrl = photo;
   if (imageUrl.startsWith('data:')) return { error: 'Photo is stored as local data — upload to storage first.' };
   if (imageUrl.startsWith('/')) imageUrl = window.location.origin + imageUrl;
+  if (imageUrl.includes('localhost') || imageUrl.includes('127.0.0.1')) return { error: 'Cannot send localhost URLs to SerpApi — use a tunnel (ngrok/Cloudflare) for local testing.' };
   if (!imageUrl.startsWith('https://')) return { error: 'Photo URL is not publicly accessible.' };
 
   try {
@@ -3703,25 +3712,34 @@ Then still reply with ALL 6 fields above with your best guess. Your CONFIDENCE s
       // visual identifier, and About Page/Spec Label (index 0) for OCR grounding.
       // Gemini will still see ALL photos; SerpApi only analyses these 2 most informative ones.
       if (hasSerpKey) {
-        setAiLoadingPhase('run1_vision');
-        const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
-        const lensTargets = [
-          { photo: photoArr[2], label: 'Back Panel' },
-          { photo: photoArr[0], label: 'About Page / Spec Label' },
-        ].filter(t => t.photo);
+        const serpCheck = checkSerpApiLimit(settings);
+        if (serpCheck.blocked) {
+          console.warn('SerpApi skipped:', serpCheck.reason);
+        } else {
+          try {
+            setAiLoadingPhase('run1_vision');
+            const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
+            const lensTargets = [
+              { photo: photoArr[2], label: 'Back Panel' },
+              { photo: photoArr[0], label: 'About Page / Spec Label' },
+            ].filter(t => t.photo);
 
-        const lensResults = [];
-        const allMatchTitles = [];
-        for (const { photo } of lensTargets) {
-          const lr = await callWithTimeout(() => callSerpApiLens(settings.serpApiKey, photo), 30000);
-          if (!lr.error && lr.summary) lensResults.push(lr.summary);
-          if (!lr.error && lr.visualMatches) allMatchTitles.push(...lr.visualMatches);
-        }
-        const uniqueTitles = [...new Set(allMatchTitles.filter(Boolean))];
-        if (uniqueTitles.length > 0) upd('aiVisionLabels', uniqueTitles.join(', '));
-        if (lensResults.length > 0) {
-          upd('aiVisionUsed', true);
-          lensContext = lensResults.join('\n---\n');
+            const lensResults = [];
+            const allMatchTitles = [];
+            for (const { photo } of lensTargets) {
+              const lr = await callWithTimeout(() => callSerpApiLens(settings.serpApiKey, photo), 30000);
+              if (!lr.error && lr.summary) lensResults.push(lr.summary);
+              if (!lr.error && lr.visualMatches) allMatchTitles.push(...lr.visualMatches);
+            }
+            const uniqueTitles = [...new Set(allMatchTitles.filter(Boolean))];
+            if (uniqueTitles.length > 0) upd('aiVisionLabels', uniqueTitles.join(', '));
+            if (lensResults.length > 0) {
+              upd('aiVisionUsed', true);
+              lensContext = lensResults.join('\n---\n');
+            }
+          } catch (e) {
+            console.error('Google Lens (SerpApi) failed, continuing without it:', e.message);
+          }
         }
       }
 
@@ -4288,7 +4306,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           {/* API Usage Indicator */}
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>
             <span>Gemini: {getGeminiUsageToday()}/{settings.geminiDailyLimit || 100} today</span>
-            {settings.serpApiKey && <span>Google Lens: {getSerpApiUsageThisMonth()} this month</span>}
+            {settings.serpApiKey && <span>Google Lens: {getSerpApiUsageThisMonth()}/{settings.serpApiMonthlyLimit || 250} this month</span>}
           </div>
 
           {/* ══════════════ RUN 1: Item Identification ══════════════ */}
@@ -7990,7 +8008,7 @@ export default function App() {
                 <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '12px' }}>
                   <div>Gemini today: <strong>{getGeminiUsageToday()}</strong> / {es.geminiDailyLimit ?? DEFAULT_SETTINGS.geminiDailyLimit}</div>
                   <div>Gemini RPM: <strong>{getGeminiRpm()}</strong> / {es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit}</div>
-                  <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong></div>
+                  <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong> / {es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit}</div>
                 </div>
               </div>
             </div>
