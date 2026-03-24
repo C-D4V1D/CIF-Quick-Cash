@@ -345,6 +345,7 @@ const DEFAULT_SETTINGS = {
   visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
   // Identity Verification
   requireNinVerification: false,
+  ninCreditCost: 150,
   ninLowCreditThreshold: 5,
   ninRechargeBank: '',
   ninRechargeAccountNumber: '',
@@ -4492,7 +4493,7 @@ function NinRechargeModal({ onClose, settings }) {
   return (
     <Modal open onClose={onClose} title="💳 Recharge Verification Credits">
       <div style={{ ...S.alert('info'), marginBottom: '16px' }}>
-        ℹ️ Each verification credit costs <strong>₦150</strong>. One credit is used each time a new (uncached) NIN or BVN is verified via the API.
+        ℹ️ Each verification credit costs <strong>₦{(settings.ninCreditCost ?? 150).toLocaleString()}</strong>. One credit is used each time a new (uncached) NIN or BVN is verified via the API.
       </div>
       {hasDetails ? (
         <div style={{ background: COLORS.primaryLight, border: `1px solid #b7e4c7`, borderRadius: '12px', padding: '20px', marginBottom: '16px' }}>
@@ -7685,10 +7686,16 @@ export default function App() {
                 <span style={{ fontSize: '13px' }}>When enabled, staff <strong>cannot</strong> advance past the Identity step unless the NIN or BVN has been successfully verified via the API <em>and</em> a photo has been retrieved. When disabled (default), any verification attempt (including failed ones) is enough to proceed.</span>
               </label>
             </Field>
-            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Low Credit Alert Threshold<InfoIcon tip="Show a warning on the Identity Verification step when the number of remaining NIN/BVN credits falls to or below this number. Each credit costs ₦150 and covers one new verification lookup." /></span>}>
-              <input style={S.input} type="number" min="1" max="100" value={es.ninLowCreditThreshold ?? DEFAULT_SETTINGS.ninLowCreditThreshold} onChange={e => updateSettings({ ...es, ninLowCreditThreshold: Number(e.target.value) })} />
-              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>A warning badge appears on the Identity step when credits drop to this number or below.</div>
-            </Field>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Cost per Verification Credit (₦)<InfoIcon tip="The Naira cost of one NIN/BVN verification credit on checkmyninbvn.com.ng. The system divides your wallet balance by this number to show how many new verifications you can still make. Update this if the provider changes their price." /></span>}>
+                <input style={S.input} type="number" min="1" value={es.ninCreditCost ?? DEFAULT_SETTINGS.ninCreditCost} onChange={e => updateSettings({ ...es, ninCreditCost: Math.max(1, Number(e.target.value) || DEFAULT_SETTINGS.ninCreditCost) })} />
+                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Currently set to <strong>₦{(es.ninCreditCost ?? DEFAULT_SETTINGS.ninCreditCost).toLocaleString()}</strong> per credit as charged by checkmyninbvn.com.ng. Update this if their pricing changes.</div>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Low Credit Alert Threshold<InfoIcon tip={`Show a warning on the Identity Verification step when the number of remaining NIN/BVN credits falls to or below this number. Each credit covers one new verification lookup (currently ₦${(es.ninCreditCost ?? DEFAULT_SETTINGS.ninCreditCost).toLocaleString()} each).`} /></span>}>
+                <input style={S.input} type="number" min="1" max="100" value={es.ninLowCreditThreshold ?? DEFAULT_SETTINGS.ninLowCreditThreshold} onChange={e => updateSettings({ ...es, ninLowCreditThreshold: Number(e.target.value) })} />
+                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>A warning badge appears on the Identity step when credits drop to this number or below.</div>
+              </Field>
+            </div>
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💳 Recharge Payment Details</div>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Staff can view these details by tapping <strong>Recharge</strong> on the Identity Verification step when credits are low. Enter the account where funds should be sent to top up the checkmyninbvn.com.ng wallet.</div>

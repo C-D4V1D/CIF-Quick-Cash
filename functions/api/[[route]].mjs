@@ -1031,7 +1031,7 @@ export async function onRequest(context) {
     // ============================================================
     // NIN/BVN WALLET BALANCE: GET /api/nin-balance
     // Fetches the current wallet balance from checkmyninbvn.com.ng
-    // and returns the number of verification credits (balance ÷ 150).
+    // and returns the number of verification credits (balance ÷ ninCreditCost).
     // ============================================================
     if (path === 'nin-balance' && method === 'GET') {
       const auth = requireAuth(request);
@@ -1040,6 +1040,7 @@ export async function onRequest(context) {
       const config = settingsRow ? JSON.parse(settingsRow.value) : {};
       const apiKey = config.ninApiKey || '';
       if (!apiKey) return json({ balance: null, credits: null, error: 'NIN/BVN API key not configured.' });
+      const creditCost = Math.max(1, Number(config.ninCreditCost) || 150);
       try {
         const resp = await fetch('https://checkmyninbvn.com.ng/api/balance', {
           method: 'GET',
@@ -1047,11 +1048,11 @@ export async function onRequest(context) {
         });
         const data = await resp.json();
         // API returns { status, balance } where balance is in Naira.
-        // 150 Naira = 1 credit (1 NIN/BVN verification).
+        // Cost per credit is configurable (default 150 Naira = 1 NIN/BVN verification).
         const rawBalance = data?.balance ?? data?.data?.balance ?? data?.wallet_balance ?? null;
         const balanceNum = rawBalance !== null ? Number(rawBalance) : null;
-        const credits = balanceNum !== null ? Math.floor(balanceNum / 150) : null;
-        return json({ balance: balanceNum, credits, raw: data });
+        const credits = balanceNum !== null ? Math.floor(balanceNum / creditCost) : null;
+        return json({ balance: balanceNum, credits, creditCost, raw: data });
       } catch (e) {
         return json({ balance: null, credits: null, error: 'Failed to fetch balance from checkmyninbvn.com.ng' });
       }
