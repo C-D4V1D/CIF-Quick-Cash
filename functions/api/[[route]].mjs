@@ -1059,6 +1059,23 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // NIN/BVN AUTOCOMPLETE SUGGESTIONS: GET /api/nin-suggestions?prefix=XX&type=nin
+    // Returns a list of cached ID numbers whose prefix matches what the user is typing.
+    // Requires authentication — ID numbers are sensitive data.
+    // ============================================================
+    if (path === 'nin-suggestions' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const prefix = (url.searchParams.get('prefix') || '').replace(/\D/g, '');
+      const idType = url.searchParams.get('type') === 'bvn' ? 'bvn' : 'nin';
+      if (!prefix) return json({ suggestions: [] });
+      const rows = await db.prepare(
+        'SELECT id_number FROM nin_bvn_cache WHERE id_type = ? AND id_number LIKE ? ORDER BY created_at DESC LIMIT 8 /* up to 8 suggestions keeps the dropdown concise */'
+      ).bind(idType, `${prefix}%`).all();
+      return json({ suggestions: (rows?.results || []).map(r => r.id_number) });
+    }
+
+    // ============================================================
     // PUBLIC LOAN STATUS CHECK: GET /api/check-loan?ref=CIF-DDMMYY-NNN
     // No authentication required — returns only non-sensitive fields.
     // ============================================================
