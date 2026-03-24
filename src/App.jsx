@@ -8002,6 +8002,9 @@ export default function App() {
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini RPM Limit<InfoIcon tip="Maximum Gemini calls per minute. Free tier: Pro=5, Flash=10, Flash-Lite=15. Prevents rate-limit errors from Google." /></span>}>
                   <input style={S.input} type="number" min="1" value={es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit} onChange={e => updateSettings({ ...es, geminiRpmLimit: Number(e.target.value) || DEFAULT_SETTINGS.geminiRpmLimit })} />
                 </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Monthly Limit<InfoIcon tip="Maximum Google Lens (SerpApi) searches per month. Free Developer plan: 250/month. Upgrade your SerpApi plan and increase this if you need more." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit} onChange={e => updateSettings({ ...es, serpApiMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.serpApiMonthlyLimit })} />
+                </Field>
               </div>
               <div style={{ ...S.card, background: COLORS.bg, padding: '12px', marginTop: '10px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px' }}>Current Usage</div>
