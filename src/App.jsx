@@ -3534,6 +3534,9 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   const [ninCreditsLoading, setNinCreditsLoading] = useState(false);
   const [showRechargeModal, setShowRechargeModal] = useState(false);
   const [redFlagModal, setRedFlagModal] = useState(false);
+  const [ninSuggestions, setNinSuggestions] = useState([]);
+  const [showNinSuggestions, setShowNinSuggestions] = useState(false);
+  const ninSuggestTimerRef = useRef(null);
   // Wizard decline log modal — shown when a transaction is declined during the wizard so staff
   // can review / edit the pre-populated entry before it is saved to the declined log.
   // Shape: { date, item, reason, notes, onAfter } | null
@@ -4191,13 +4194,59 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
             <div style={S.alert('info')}>📋 Dial <strong>*346#</strong> on the customer's phone to get their NIN. Type it in and click Verify. If NIN fails, switch to BVN as a backup.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>ID Type<InfoIcon tip="NIN is the first choice — the customer dials *346# on their own phone to get it. BVN (from their bank) is a backup, but it won't give us their home address." /></span>} required>
-                <select style={S.select} value={tx.idType} onChange={e => upd('idType', e.target.value)}>
+                <select style={S.select} value={tx.idType} onChange={e => { upd('idType', e.target.value); setNinSuggestions([]); setShowNinSuggestions(false); }}>
                   <option value="nin">NIN</option>
                   <option value="bvn">BVN</option>
                 </select>
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{tx.idType.toUpperCase()} Number<InfoIcon tip={`The customer's ${tx.idType === 'nin' ? '11-digit ID number from the government. They find it by dialling *346# on their own phone.' : '11-digit number tied to their bank account. Use this if the NIN check fails.'}`} /></span>} required>
-                <input style={S.input} inputMode="numeric" value={tx.idNumber} onChange={e => upd('idNumber', e.target.value.replace(/\D/g, ''))} placeholder="Enter 11-digit number" />
+                <div style={{ position: 'relative' }}>
+                  <input
+                    style={S.input}
+                    inputMode="numeric"
+                    value={tx.idNumber}
+                    autoComplete="off"
+                    onChange={e => {
+                      const val = e.target.value.replace(/\D/g, '');
+                      upd('idNumber', val);
+                      clearTimeout(ninSuggestTimerRef.current);
+                      if (val.length >= 2) {
+                        ninSuggestTimerRef.current = setTimeout(async () => {
+                          const data = await API.get(`nin-suggestions?prefix=${encodeURIComponent(val)}&type=${tx.idType}`);
+                          if (data?.suggestions?.length > 0) {
+                            setNinSuggestions(data.suggestions);
+                            setShowNinSuggestions(true);
+                          } else {
+                            setNinSuggestions([]);
+                            setShowNinSuggestions(false);
+                          }
+                        }, 250);
+                      } else {
+                        setNinSuggestions([]);
+                        setShowNinSuggestions(false);
+                      }
+                    }}
+                    onBlur={() => setTimeout(() => setShowNinSuggestions(false), 150 /* allow onMouseDown on suggestions to fire before blur hides the list */)}
+                    onFocus={() => { if (ninSuggestions.length > 0) setShowNinSuggestions(true); }}
+                    placeholder="Enter 11-digit number"
+                  />
+                  {showNinSuggestions && ninSuggestions.length > 0 && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100, background: '#fff', border: `1px solid ${COLORS.border}`, borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.12)', marginTop: '2px', overflow: 'hidden' }}>
+                      {ninSuggestions.map(s => (
+                        <div
+                          key={s.number}
+                          onMouseDown={e => { e.preventDefault(); upd('idNumber', s.number); setShowNinSuggestions(false); setNinSuggestions([]); }}
+                          style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: `1px solid ${COLORS.border}` }}
+                          onMouseEnter={e => { e.currentTarget.style.background = COLORS.primaryLight; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+                        >
+                          <span style={{ fontFamily: 'monospace', fontSize: '14px', color: COLORS.text }}>{s.number}</span>
+                          {s.name && <span style={{ marginLeft: '10px', fontSize: '13px', color: COLORS.textMuted }}>{s.name}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </Field>
             </div>
             {tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}
