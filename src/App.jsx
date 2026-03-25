@@ -4971,9 +4971,49 @@ function SenderIdPicker({ value, onChange, termiiApiKey, inputStyle }) {
   );
 }
 
-
+function SmsTestPanel({ inputStyle }) {
+  const [phone, setPhone] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const send = async () => {
+    if (!phone.trim()) return;
+    setLoading(true); setResult(null);
+    const res = await API.post('sms/test-send', { phone: phone.trim() });
+    setLoading(false); setResult(res);
+  };
+  return (
+    <div style={{ marginTop: '12px', padding: '12px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #dee2e6' }}>
+      <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>🧪 Test SMS Configuration</div>
+      <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>
+        Send a real test SMS using your saved credentials. <strong>Save Settings first</strong>, then enter a phone number and tap Send.
+      </div>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <input style={{ ...inputStyle, flex: 1, minWidth: '160px' }} value={phone} onChange={e => setPhone(e.target.value)}
+          placeholder="Phone number (e.g. 08012345678)" inputMode="tel" />
+        <button style={S.btnSm('primary')} onClick={send} disabled={loading || !phone.trim()}>
+          {loading ? '⏳ Sending…' : '📤 Send Test SMS'}
+        </button>
+      </div>
+      {result && (
+        <div style={{ marginTop: '10px', fontSize: '12px' }}>
+          {result.ok
+            ? <div style={S.alert('success')}>✅ Test SMS sent! Message ID: {result.messageId || '(none)'}</div>
+            : <div style={S.alert('danger')}>
+                <div style={{ fontWeight: 700, marginBottom: '4px' }}>❌ Test SMS failed</div>
+                <div style={{ marginBottom: '4px' }}><strong>Termii says:</strong> {result.response?.message || JSON.stringify(result.response)}</div>
+                <div style={{ marginBottom: '4px' }}><strong>Config used:</strong> from=<code>{result.debug?.from}</code> channel=<code>{result.debug?.channel}</code> to=<code>{result.debug?.to}</code></div>
+                <div style={{ color: COLORS.textMuted }}>API key prefix: <code>{result.debug?.apiKeyPrefix}</code> — verify this matches your <strong>Live</strong> key in the Termii dashboard → API Keys.</div>
+              </div>
+          }
+          {result.error && <div style={{ color: COLORS.danger, marginTop: '4px' }}>{result.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const hasSuccessfulContactToday = (tx) => (tx?.contactLog || []).some(entry => entry?.date === localISODate() && isSuccessfulContactEntry(entry));
+
 
 function ContactLogModal({ tx, onClose, onSave, currentUser }) {
   const [date, setDate] = useState(localISODate());
@@ -5382,9 +5422,16 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                   if (termiiMsg.includes('ApplicationSenderId not found')) {
                     const nameMatch = termiiMsg.match(/senderName:\s*(\S+)/);
                     const senderName = nameMatch?.[1] || 'your custom Sender ID';
-                    return <span>❌ Failed to send SMS: Termii could not find sender ID <strong>"{senderName}"</strong> in your account. Please check: (1) the Sender ID is listed &amp; approved in your <strong>Termii dashboard → Sender IDs</strong>, (2) the spelling and capitalisation match exactly, and (3) the API key belongs to the same Termii account where it was approved. Newly approved IDs can take up to 24 hours to activate.</span>;
+                    return (
+                      <span>
+                        ❌ <strong>Termii error:</strong> {termiiMsg}<br />
+                        The sender ID <strong>"{senderName}"</strong> was not found for the API key saved in Settings.
+                        Go to <strong>Settings → Termii Credentials</strong>, click <strong>"Fetch from Termii"</strong> to see which sender IDs your API key can access,
+                        and use <strong>"Test SMS Configuration"</strong> to verify. Make sure you are using your <strong>Live</strong> API key (not a test key).
+                      </span>
+                    );
                   }
-                  return `❌ Failed to send SMS: ${smsResult.error || JSON.stringify(smsResult.response)}`;
+                  return `❌ Failed to send SMS: ${termiiMsg || smsResult.error || JSON.stringify(smsResult.response)}`;
                 })()}
               </div>
             )}
@@ -8195,6 +8242,7 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii Base URL<InfoIcon tip="The Termii API base URL. Default is https://v3.api.termii.com. Only change this if Termii updates their API endpoint." /></span>}>
                 <input style={S.input} value={es.termiiBaseUrl ?? DEFAULT_SETTINGS.termiiBaseUrl} onChange={e => updateSettings({ ...es, termiiBaseUrl: e.target.value })} placeholder="https://v3.api.termii.com" />
               </Field>
+              <SmsTestPanel inputStyle={S.input} />
             </div>
 
             {/* Credit cost */}

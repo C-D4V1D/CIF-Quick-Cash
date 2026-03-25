@@ -1399,7 +1399,34 @@ export async function onRequest(context) {
       return json({ ok, logId: inserted.meta.last_row_id, response });
     }
 
-    // ── POST /api/sms/auto-send — fire automated SMS for all eligible active loans ──
+    // ── POST /api/sms/test-send — diagnostic: send a test SMS and return full Termii response ──
+    if (path === 'sms/test-send' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { phone: rawPhone } = await request.json();
+      if (!rawPhone) return error('phone is required', 400);
+
+      const smsCfg = await loadSmsConfig();
+      if (!smsCfg.apiKey) return error('Termii API key not configured in Settings.', 400);
+
+      const phone = toIntlPhone(rawPhone);
+      const message = `${smsCfg.businessName}: This is a test SMS from your CIF Cash app. If you received this, your Termii configuration is working!`;
+      const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+      return json({
+        ok,
+        messageId,
+        response,
+        debug: {
+          to: phone,
+          from: smsCfg.senderId,
+          channel: smsCfg.channel,
+          baseUrl: smsCfg.baseUrl,
+          apiKeyPrefix: smsCfg.apiKey.slice(0, 8) + '…',
+        },
+      });
+    }
+
+
     if (path === 'sms/auto-send' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
