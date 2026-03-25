@@ -1263,10 +1263,13 @@ export async function onRequest(context) {
         tmplDueToday:     cfg.smsDueTodayReminder || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
         tmplOwnReminder:  cfg.smsOwnershipReminder || 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
         tmplOwnToday:     cfg.smsOwnershipLastDay  || 'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
+        tmplOwnTransferred: cfg.smsOwnershipTransferred || 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
+        tmplOutrightConfirmation: cfg.smsOutrightConfirmation || 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
         businessName:     cfg.businessName || 'CIF Quick Cash',
         shopPhone:        cfg.shopPhone1 || '',
         maxLoanDays:      Math.max(1, Number(cfg.maxLoanDays) || 30),
         graceDays:        Math.max(0, Number(cfg.graceDays) || 3),
+        interestRate:     Math.max(0, Number(cfg.interestRate) || 1),
       };
     };
 
@@ -1472,13 +1475,42 @@ export async function onRequest(context) {
 
       for (const row of activeTxs) {
         const txData = JSON.parse(row.data);
-        if (txData.type !== 'advance') { skipped.push({ ref: row.ref, reason: 'not_advance' }); continue; }
+        if (txData.type !== 'advance' && txData.type !== 'outright') { skipped.push({ ref: row.ref, reason: 'not_advance_or_outright' }); continue; }
 
         const rawPhone = txData.phoneNumbers?.[0] || '';
         if (!rawPhone) { skipped.push({ ref: row.ref, reason: 'no_phone' }); continue; }
         const phone = toIntlPhone(rawPhone);
         const rawPhone2 = txData.phoneNumbers?.[1] || '';
         const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
+
+        // ── Outright purchase: send a one-time purchase confirmation on the day of the transaction ──
+        if (txData.type === 'outright') {
+          if (txData.dateGiven === today) {
+            const triggerType = 'outright_confirmation';
+            const alreadySent = await db.prepare(
+              "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+            ).bind(row.ref, triggerType, today).first();
+            if (!alreadySent) {
+              const message = fillSmsTemplate(smsCfg.tmplOutrightConfirmation, {
+                customerName: txData.fullName,
+                ref: row.ref,
+                amount: fmtN(txData.cashAdvance),
+                businessName: smsCfg.businessName,
+                shopPhone: smsCfg.shopPhone,
+              });
+              const { ok, messageId, response, usedFallback } = await termiiSend(smsCfg, phone, message);
+              await db.prepare(
+                'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+              ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+              (ok ? sent : failed).push({ ref: row.ref, triggerType, phone, usedFallback });
+            } else {
+              skipped.push({ ref: row.ref, triggerType, reason: 'already_sent_today' });
+            }
+          } else {
+            skipped.push({ ref: row.ref, reason: 'outright_not_today' });
+          }
+          continue;
+        }
 
         const internalDeadline = addDaysToDate(txData.dateGiven, smsCfg.maxLoanDays);
         const customerDueDate  = txData.deadlineDate || addDaysToDate(txData.dateGiven, Number(txData.loanDays) || smsCfg.maxLoanDays);
@@ -1525,6 +1557,23 @@ export async function onRequest(context) {
               });
             }
           }
+        }
+
+        // Ownership-transferred receipt: fires the day AFTER the internal deadline (ownership day + 1)
+        const dayAfterDeadline = addDaysToDate(internalDeadline, 1);
+        if (dayAfterDeadline === today) {
+          const dailyFee = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
+          const settlementAmount = (txData.cashAdvance || 0) + smsCfg.maxLoanDays * dailyFee;
+          triggers.push({
+            triggerType: 'ownership_transferred',
+            message: fillSmsTemplate(smsCfg.tmplOwnTransferred, {
+              customerName: txData.fullName,
+              ref: row.ref,
+              amount: fmtN(settlementAmount),
+              businessName: smsCfg.businessName,
+              shopPhone: smsCfg.shopPhone,
+            }),
+          });
         }
 
         for (const { triggerType, message } of triggers) {
