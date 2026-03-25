@@ -1253,6 +1253,7 @@ export async function onRequest(context) {
         apiKey:           cfg.termiiApiKey || '',
         baseUrl:          (cfg.termiiBaseUrl || 'https://v3.api.termii.com').replace(/\/$/, ''),
         senderId:         cfg.termiiSenderId || 'N-Alert',
+        channel:          cfg.termiiChannel  || 'generic',
         enabled:          cfg.smsEnabled === true,
         nairaPerCredit:   Math.max(1, Number(cfg.smsNairaPerCredit) || 5),
         dueDateDays:      Array.isArray(cfg.smsDueDateReminderDays)    ? cfg.smsDueDateReminderDays.map(Number)    : [2, 1, 0],
@@ -1297,7 +1298,7 @@ export async function onRequest(context) {
           from: smsCfg.senderId,
           sms: message,
           type: 'plain',
-          channel: 'generic',
+          channel: smsCfg.channel || 'generic',
           api_key: smsCfg.apiKey,
         }),
       });
