@@ -1264,7 +1264,9 @@ export async function onRequest(context) {
         tmplOwnReminder:  cfg.smsOwnershipReminder || 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
         tmplOwnToday:     cfg.smsOwnershipLastDay  || 'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
         tmplOwnTransferred: cfg.smsOwnershipTransferred || 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
+        ownTransferredEnabled: cfg.smsOwnershipTransferredEnabled !== false,
         tmplOutrightConfirmation: cfg.smsOutrightConfirmation || 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
+        outrightConfirmationEnabled: cfg.smsOutrightConfirmationEnabled !== false,
         businessName:     cfg.businessName || 'CIF Quick Cash',
         shopPhone:        cfg.shopPhone1 || '',
         maxLoanDays:      Math.max(1, Number(cfg.maxLoanDays) || 30),
@@ -1485,6 +1487,7 @@ export async function onRequest(context) {
 
         // ── Outright purchase: send a one-time purchase confirmation on the day of the transaction ──
         if (txData.type === 'outright') {
+          if (!smsCfg.outrightConfirmationEnabled) { skipped.push({ ref: row.ref, reason: 'outright_confirmation_disabled' }); continue; }
           if (txData.dateGiven === today) {
             const triggerType = 'outright_confirmation';
             const alreadySent = await db.prepare(
@@ -1561,7 +1564,7 @@ export async function onRequest(context) {
 
         // Ownership-transferred receipt: fires the day AFTER the internal deadline (ownership day + 1)
         const dayAfterDeadline = addDaysToDate(internalDeadline, 1);
-        if (dayAfterDeadline === today) {
+        if (dayAfterDeadline === today && smsCfg.ownTransferredEnabled) {
           const dailyFee = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
           const settlementAmount = (txData.cashAdvance || 0) + smsCfg.maxLoanDays * dailyFee;
           triggers.push({

@@ -392,7 +392,9 @@ const DEFAULT_SETTINGS = {
   smsDueTodayReminder: 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
   smsOwnershipReminder: 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
   smsOwnershipLastDay:  'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
+  smsOwnershipTransferredEnabled: true,
   smsOwnershipTransferred: 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
+  smsOutrightConfirmationEnabled: true,
   smsOutrightConfirmation: 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
   smsRechargeBank: '',
   smsRechargeAccountNumber: '',
@@ -8388,10 +8390,18 @@ export default function App() {
                 <textarea style={S.textarea} value={es.smsOwnershipLastDay ?? DEFAULT_SETTINGS.smsOwnershipLastDay} onChange={e => updateSettings({ ...es, smsOwnershipLastDay: e.target.value })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Transferred (day after last day)<InfoIcon tip="Sent the morning after the internal deadline — a receipt/confirmation that the business has acquired the item and it will be listed for public sale. Placeholders: {customerName}, {ref}, {amount} (cashAdvance + accumulated interest), {businessName}, {shopPhone}." /></span>}>
-                <textarea style={S.textarea} value={es.smsOwnershipTransferred ?? DEFAULT_SETTINGS.smsOwnershipTransferred} onChange={e => updateSettings({ ...es, smsOwnershipTransferred: e.target.value })} />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled} onChange={e => updateSettings({ ...es, smsOwnershipTransferredEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled) ? 1 : 0.45 }} value={es.smsOwnershipTransferred ?? DEFAULT_SETTINGS.smsOwnershipTransferred} onChange={e => updateSettings({ ...es, smsOwnershipTransferred: e.target.value })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Confirmation<InfoIcon tip="Sent on the day of an outright purchase — a receipt confirming we received the item and paid the seller. Placeholders: {customerName}, {ref}, {amount} (price paid), {businessName}, {shopPhone}." /></span>}>
-                <textarea style={S.textarea} value={es.smsOutrightConfirmation ?? DEFAULT_SETTINGS.smsOutrightConfirmation} onChange={e => updateSettings({ ...es, smsOutrightConfirmation: e.target.value })} />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled} onChange={e => updateSettings({ ...es, smsOutrightConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled) ? 1 : 0.45 }} value={es.smsOutrightConfirmation ?? DEFAULT_SETTINGS.smsOutrightConfirmation} onChange={e => updateSettings({ ...es, smsOutrightConfirmation: e.target.value })} />
               </Field>
             </div>
 
