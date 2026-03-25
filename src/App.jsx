@@ -5343,7 +5343,15 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
             />
             {smsResult && (
               <div style={{ ...S.alert(smsResult.ok ? 'success' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
-                {smsResult.ok ? '✅ SMS sent successfully.' : `❌ Failed to send SMS: ${smsResult.error || JSON.stringify(smsResult.response)}`}
+                {smsResult.ok ? '✅ SMS sent successfully.' : (() => {
+                  const termiiMsg = smsResult.response?.message || '';
+                  if (termiiMsg.includes('ApplicationSenderId not found')) {
+                    const nameMatch = termiiMsg.match(/senderName:\s*(\S+)/);
+                    const senderName = nameMatch?.[1] || 'your custom Sender ID';
+                    return <span>❌ Failed to send SMS: Termii could not find sender ID <strong>"{senderName}"</strong> in your account. Please check: (1) the Sender ID is listed &amp; approved in your <strong>Termii dashboard → Sender IDs</strong>, (2) the spelling and capitalisation match exactly, and (3) the API key belongs to the same Termii account where it was approved. Newly approved IDs can take up to 24 hours to activate.</span>;
+                  }
+                  return `❌ Failed to send SMS: ${smsResult.error || JSON.stringify(smsResult.response)}`;
+                })()}
               </div>
             )}
             <button style={S.btnSm('primary')} onClick={sendManualSms} disabled={sendingSms || !smsSendMsg.trim()}>

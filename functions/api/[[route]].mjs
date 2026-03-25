@@ -1252,7 +1252,7 @@ export async function onRequest(context) {
       return {
         apiKey:           cfg.termiiApiKey || '',
         baseUrl:          (cfg.termiiBaseUrl || 'https://v3.api.termii.com').replace(/\/$/, ''),
-        senderId:         cfg.termiiSenderId || 'N-Alert',
+        senderId:         (cfg.termiiSenderId || 'N-Alert').trim(),
         channel:          (cfg.termiiSenderId?.trim() && cfg.termiiSenderId.trim() !== 'N-Alert') ? 'dnd' : (cfg.termiiChannel || 'generic'),
         enabled:          cfg.smsEnabled === true,
         nairaPerCredit:   Math.max(1, Number(cfg.smsNairaPerCredit) || 5),
@@ -1303,7 +1303,7 @@ export async function onRequest(context) {
         }),
       });
       const data = await resp.json().catch(() => ({}));
-      const ok = data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok;
+      const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
       const messageId = data?.message_id ? String(data.message_id) : null;
       return { ok, messageId, response: data };
     };
