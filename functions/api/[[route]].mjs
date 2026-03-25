@@ -1249,11 +1249,13 @@ export async function onRequest(context) {
     const loadSmsConfig = async () => {
       const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
       const cfg = row ? JSON.parse(row.value) : {};
+      const senderId = String(cfg.termiiSenderId || 'N-Alert').trim();
+      const channel = String(cfg.termiiChannel || 'generic').trim().toLowerCase();
       return {
-        apiKey:           cfg.termiiApiKey || '',
-        baseUrl:          (cfg.termiiBaseUrl || 'https://v3.api.termii.com').replace(/\/$/, ''),
-        senderId:         cfg.termiiSenderId || 'N-Alert',
-        channel:          cfg.termiiChannel  || 'generic',
+        apiKey:           String(cfg.termiiApiKey || '').trim(),
+        baseUrl:          (String(cfg.termiiBaseUrl || 'https://v3.api.termii.com').trim() || 'https://v3.api.termii.com').replace(/\/$/, ''),
+        senderId:         senderId || 'N-Alert',
+        channel:          (channel === 'dnd' || channel === 'generic' || channel === 'whatsapp' || channel === 'voice') ? channel : 'generic',
         enabled:          cfg.smsEnabled === true,
         nairaPerCredit:   Math.max(1, Number(cfg.smsNairaPerCredit) || 5),
         dueDateDays:      Array.isArray(cfg.smsDueDateReminderDays)    ? cfg.smsDueDateReminderDays.map(Number)    : [2, 1, 0],
@@ -1290,6 +1292,63 @@ export async function onRequest(context) {
 
     // Helper: send one SMS via Termii, returns { ok, messageId, response }
     const termiiSend = async (smsCfg, phone, message) => {
+      // Preflight validation for custom Sender IDs on DND route:
+      // catches API-key/account mismatch early and returns actionable errors.
+      if (smsCfg.channel === 'dnd' && smsCfg.senderId !== 'N-Alert') {
+        try {
+          const senderResp = await fetch(`${smsCfg.baseUrl}/api/sender-id?api_key=${encodeURIComponent(smsCfg.apiKey)}`);
+          const senderData = await senderResp.json().catch(() => ({}));
+          const senderList = Array.isArray(senderData?.content) ? senderData.content : [];
+          const wanted = smsCfg.senderId.trim();
+          const exact = senderList.find((s) => String(s?.sender_id || '') === wanted);
+          const caseInsensitive = senderList.find((s) => String(s?.sender_id || '').toLowerCase() === wanted.toLowerCase());
+
+          if (!exact) {
+            if (caseInsensitive) {
+              return {
+                ok: false,
+                messageId: null,
+                response: {
+                  code: 404,
+                  status: 'error',
+                  message: `Sender ID case mismatch. Configured "${wanted}" but account has "${caseInsensitive.sender_id}". Use the exact approved casing in Settings.`,
+                  configured_sender_id: wanted,
+                  account_sender_id: caseInsensitive.sender_id,
+                  account_sender_status: caseInsensitive.status || 'unknown',
+                },
+              };
+            }
+
+            return {
+              ok: false,
+              messageId: null,
+              response: {
+                code: 404,
+                status: 'error',
+                message: `Sender ID "${wanted}" was not found on this Termii account/API key. Confirm your API key belongs to the same Termii account where the Sender ID was approved.`,
+                configured_sender_id: wanted,
+              },
+            };
+          }
+
+          if (String(exact?.status || '').toLowerCase() !== 'active') {
+            return {
+              ok: false,
+              messageId: null,
+              response: {
+                code: 422,
+                status: 'error',
+                message: `Sender ID "${wanted}" exists but is not active (status: ${exact.status || 'unknown'}).`,
+                configured_sender_id: wanted,
+                account_sender_status: exact.status || 'unknown',
+              },
+            };
+          }
+        } catch (_) {
+          // If sender-id lookup fails, continue with normal send request.
+        }
+      }
+
       const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

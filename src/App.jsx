@@ -8137,6 +8137,9 @@ export default function App() {
                 </Field>
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Default is 'N-Alert'." /></span>}>
                   <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => updateSettings({ ...es, termiiSenderId: e.target.value })} placeholder="e.g. N-Alert or CIF Cash" />
+                  <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>
+                    Use the <strong>exact</strong> approved Sender ID spelling/casing from your Termii dashboard (no extra spaces), and ensure this API key is from the same Termii account.
+                  </div>
                 </Field>
               </div>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. Use 'generic' for the default N-Alert sender. Use 'dnd' if you have a registered custom Sender ID and want to reach DND numbers with it." /></span>}>
