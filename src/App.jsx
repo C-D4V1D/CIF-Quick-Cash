@@ -4937,7 +4937,41 @@ function ReminderDaysInput({ value, fallback, onChange, style, placeholder }) {
   );
 }
 
-const isSuccessfulContactEntry = (entry) => SUCCESSFUL_CONTACT_OUTCOMES.has(entry?.result);
+function SenderIdPicker({ value, onChange, termiiApiKey, inputStyle }) {
+  const [fetching, setFetching] = useState(false);
+  const [sids, setSids] = useState(null); // null = not fetched; [] = empty; [...] = list
+  const [err, setErr] = useState('');
+  const doFetch = async () => {
+    if (!termiiApiKey) { setErr('Enter your Termii API key first.'); return; }
+    setFetching(true); setErr('');
+    const data = await API.get('sms/sender-ids');
+    setFetching(false);
+    if (data?.error) { setErr(data.error); return; }
+    setSids(data?.senderIds || []);
+  };
+  return (
+    <div>
+      {sids !== null && sids.length > 0 ? (
+        <select style={inputStyle} value={value} onChange={e => onChange(e.target.value)}>
+          {sids.map(s => <option key={s.name} value={s.name}>{s.name} ({s.country || 'approved'})</option>)}
+        </select>
+      ) : (
+        <input style={inputStyle} value={value} onChange={e => onChange(e.target.value)} placeholder="e.g. N-Alert or CiFabian" />
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+        <button style={S.btnSm('secondary')} onClick={doFetch} disabled={fetching}>
+          {fetching ? '⏳ Fetching…' : '🔄 Fetch from Termii'}
+        </button>
+        {sids !== null && sids.length === 0 && !err && (
+          <span style={{ fontSize: '12px', color: COLORS.textMuted }}>No approved Sender IDs found on this account.</span>
+        )}
+        {err && <span style={{ fontSize: '12px', color: COLORS.danger }}>{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+
 
 const hasSuccessfulContactToday = (tx) => (tx?.contactLog || []).some(entry => entry?.date === localISODate() && isSuccessfulContactEntry(entry));
 
@@ -8144,62 +8178,19 @@ export default function App() {
                   <input style={S.input} type="password" value={es.termiiApiKey ?? ''} onChange={e => updateSettings({ ...es, termiiApiKey: e.target.value })} placeholder="From Termii dashboard" />
                 </Field>
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Click 'Fetch from Termii' to load your approved Sender IDs directly from your account." /></span>}>
-                  {(() => {
-                    const [fetchingSids, setFetchingSids] = React.useState(false);
-                    const [sids, setSids] = React.useState(null); // null = not fetched yet; [] = fetched but empty; [...] = list
-                    const [sidFetchErr, setSidFetchErr] = React.useState('');
-                    const fetchSenderIds = async () => {
-                      if (!es.termiiApiKey) { setSidFetchErr('Enter your Termii API key first.'); return; }
-                      setFetchingSids(true); setSidFetchErr('');
-                      const data = await API.get('sms/sender-ids');
-                      setFetchingSids(false);
-                      if (data?.error) { setSidFetchErr(data.error); return; }
-                      setSids(data?.senderIds || []);
-                    };
-                    const selectSid = (name) => {
-                      const trimmedId = name.trim();
-                      const autoChannel = (trimmedId && trimmedId !== 'N-Alert') ? 'dnd' : 'generic';
-                      updateSettings({ ...es, termiiSenderId: name, termiiChannel: autoChannel });
-                    };
-                    return (
-                      <div>
-                        {sids !== null && sids.length > 0 ? (
-                          <select style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}
-                            onChange={e => selectSid(e.target.value)}>
-                            {sids.map(s => <option key={s.name} value={s.name}>{s.name} ({s.country || 'approved'})</option>)}
-                          </select>
-                        ) : (
-                          <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => {
-                            const newId = e.target.value;
-                            const trimmedId = newId.trim();
-                            const autoChannel = (trimmedId && trimmedId !== 'N-Alert') ? 'dnd' : 'generic';
-                            updateSettings({ ...es, termiiSenderId: newId, termiiChannel: autoChannel });
-                          }} placeholder="e.g. N-Alert or CIF Cash" />
-                        )}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
-                          <button style={S.btnSm('secondary')} onClick={fetchSenderIds} disabled={fetchingSids}>
-                            {fetchingSids ? '⏳ Fetching…' : '🔄 Fetch from Termii'}
-                          </button>
-                          {sids !== null && sids.length === 0 && !sidFetchErr && (
-                            <span style={{ fontSize: '12px', color: COLORS.textMuted }}>No approved Sender IDs found on this account.</span>
-                          )}
-                          {sidFetchErr && <span style={{ fontSize: '12px', color: COLORS.danger }}>{sidFetchErr}</span>}
-                        </div>
-                      </div>
-                    );
-                  })()}
+                  <SenderIdPicker
+                    value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}
+                    onChange={name => updateSettings({ ...es, termiiSenderId: name })}
+                    termiiApiKey={es.termiiApiKey}
+                    inputStyle={S.input}
+                  />
                 </Field>
               </div>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. Use 'generic' for the default N-Alert sender. Use 'dnd' if you have a registered custom Sender ID and want to reach DND numbers with it." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. 'generic' works for both N-Alert and custom approved Sender IDs on most accounts. Use 'dnd' only if Termii has specifically granted you DND access." /></span>}>
                 <select style={S.input} value={es.termiiChannel ?? DEFAULT_SETTINGS.termiiChannel} onChange={e => updateSettings({ ...es, termiiChannel: e.target.value })}>
-                  <option value="generic">generic (default — uses N-Alert for DND numbers)</option>
-                  <option value="dnd">dnd (custom Sender ID, reaches DND numbers)</option>
+                  <option value="generic">generic (default — recommended for most accounts)</option>
+                  <option value="dnd">dnd (reach DND numbers — requires special Termii approval)</option>
                 </select>
-                {(es.termiiChannel ?? DEFAULT_SETTINGS.termiiChannel) === 'generic' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId) !== 'N-Alert' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId).trim() !== '' && (
-                  <div style={{ ...S.alert('warning'), marginTop: '6px', fontSize: '12px' }}>
-                    ⚠️ You have a custom Sender ID ("<strong>{es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}</strong>") but the channel is set to <strong>generic</strong>. Custom Sender IDs require the <strong>dnd</strong> channel — SMS will fail with an "ApplicationSenderId not found" error until you switch to <strong>dnd</strong>.
-                  </div>
-                )}
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii Base URL<InfoIcon tip="The Termii API base URL. Default is https://v3.api.termii.com. Only change this if Termii updates their API endpoint." /></span>}>
                 <input style={S.input} value={es.termiiBaseUrl ?? DEFAULT_SETTINGS.termiiBaseUrl} onChange={e => updateSettings({ ...es, termiiBaseUrl: e.target.value })} placeholder="https://v3.api.termii.com" />
