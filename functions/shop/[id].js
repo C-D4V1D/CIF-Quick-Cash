@@ -46,7 +46,7 @@ export async function onRequestGet({ params, env, request }) {
         itemType: d.aiItemType || d.captureItemType || 'Item',
         salePrice: d.salePrice || 0,
         condition: d.shopCondition || d.aiCondition || '',
-        shopNote: d.shopListingNote || '',
+        keySpecs: d.aiKeySpecs || '',
         photoFront: photos[0] || null,
       };
     }
@@ -62,16 +62,18 @@ export async function onRequestGet({ params, env, request }) {
     const title = [nameParts, priceStr ? `\u2014 ${priceStr}` : '', '| CIF Quick Cash'].filter(Boolean).join(' ');
 
     let desc = '';
-    if (item.shopNote) {
-      desc = item.shopNote.slice(0, MAX_DESC_LENGTH) + (item.shopNote.length > MAX_DESC_LENGTH ? '\u2026' : '');
-    } else {
+    {
       const parts = [];
       if (item.condition) parts.push(item.condition);
-      parts.push(item.itemType);
-      if (item.brand) parts.push(`by ${item.brand}`);
+      if (item.keySpecs) parts.push(`Key Specs: ${item.keySpecs}`);
+      if (!item.condition && !item.keySpecs) {
+        parts.push(item.itemType);
+        if (item.brand) parts.push(`by ${item.brand}`);
+      }
       if (priceStr) parts.push(`for ${priceStr}`);
       parts.push('\u2014 CIF Quick Cash, Enugwu-Aguleri, Anambra.');
-      desc = parts.join(' ');
+      desc = parts.join(' | ');
+      if (desc.length > MAX_DESC_LENGTH) desc = desc.slice(0, MAX_DESC_LENGTH - 1) + '\u2026';
     }
 
     const imageUrl = item.photoFront
