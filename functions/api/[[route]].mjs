@@ -700,6 +700,41 @@ export async function onRequest(context) {
         txAction = 'update'; txDesc = `🔄 Transaction updated — ${tx.ref}`;
       }
       await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
+
+      // ── Immediate outright-purchase confirmation SMS ──
+      // Sent right when the transaction is created, not via the nightly cron.
+      if (tx.type === 'outright') {
+        try {
+          const smsCfg = await loadSmsConfig();
+          if (smsCfg.enabled && smsCfg.outrightConfirmationEnabled) {
+            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const phone = toIntlPhone(rawPhone);
+            if (phone) {
+              const triggerType = 'outright_confirmation';
+              const today = todayNigeria();
+              const alreadySent = await db.prepare(
+                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+              ).bind(tx.ref, triggerType, today).first();
+              if (!alreadySent) {
+                const message = fillSmsTemplate(smsCfg.tmplOutrightConfirmation, {
+                  customerName: tx.fullName,
+                  ref: tx.ref,
+                  amount: fmtN(tx.cashAdvance),
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await db.prepare(
+                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(tx.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+              }
+            }
+          }
+        } catch (_smsErr) {
+          // SMS failure must never block the transaction save
+        }
+      }
+
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'PUT') {
@@ -1477,43 +1512,13 @@ export async function onRequest(context) {
 
       for (const row of activeTxs) {
         const txData = JSON.parse(row.data);
-        if (txData.type !== 'advance' && txData.type !== 'outright') { skipped.push({ ref: row.ref, reason: 'not_advance_or_outright' }); continue; }
+        if (txData.type !== 'advance') { skipped.push({ ref: row.ref, reason: 'not_advance' }); continue; }
 
         const rawPhone = txData.phoneNumbers?.[0] || '';
         if (!rawPhone) { skipped.push({ ref: row.ref, reason: 'no_phone' }); continue; }
         const phone = toIntlPhone(rawPhone);
         const rawPhone2 = txData.phoneNumbers?.[1] || '';
         const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
-
-        // ── Outright purchase: send a one-time purchase confirmation on the day of the transaction ──
-        if (txData.type === 'outright') {
-          if (!smsCfg.outrightConfirmationEnabled) { skipped.push({ ref: row.ref, reason: 'outright_confirmation_disabled' }); continue; }
-          if (txData.dateGiven === today) {
-            const triggerType = 'outright_confirmation';
-            const alreadySent = await db.prepare(
-              "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
-            ).bind(row.ref, triggerType, today).first();
-            if (!alreadySent) {
-              const message = fillSmsTemplate(smsCfg.tmplOutrightConfirmation, {
-                customerName: txData.fullName,
-                ref: row.ref,
-                amount: fmtN(txData.cashAdvance),
-                businessName: smsCfg.businessName,
-                shopPhone: smsCfg.shopPhone,
-              });
-              const { ok, messageId, response, usedFallback } = await termiiSend(smsCfg, phone, message);
-              await db.prepare(
-                'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-              ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
-              (ok ? sent : failed).push({ ref: row.ref, triggerType, phone, usedFallback });
-            } else {
-              skipped.push({ ref: row.ref, triggerType, reason: 'already_sent_today' });
-            }
-          } else {
-            skipped.push({ ref: row.ref, reason: 'outright_not_today' });
-          }
-          continue;
-        }
 
         const internalDeadline = addDaysToDate(txData.dateGiven, smsCfg.maxLoanDays);
         const customerDueDate  = txData.deadlineDate || addDaysToDate(txData.dateGiven, Number(txData.loanDays) || smsCfg.maxLoanDays);
