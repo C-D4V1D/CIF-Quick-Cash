@@ -74,7 +74,13 @@ export async function onRequestGet({ params, env, request }) {
       desc = parts.join(' ');
     }
 
-    const imageUrl = item.photoFront || `${origin}/og-image.png`;
+    const imageUrl = item.photoFront
+      // Photos are stored as relative paths (/api/photos/KEY); make absolute for OG tags
+      ? (item.photoFront.startsWith('http') ? item.photoFront : `${origin}${item.photoFront.startsWith('/') ? '' : '/'}${item.photoFront}`)
+      : `${origin}/og-image.png`;
+
+    // Whether the image is an item photo (unknown dimensions) or the generic site image
+    const isItemPhoto = !!item.photoFront;
 
     // Replace meta tags with item-specific values.
     // Patterns match the known structure of index.html; content is always double-quoted
@@ -104,6 +110,20 @@ export async function onRequestGet({ params, env, request }) {
       .replace(
         /<meta property="og:image" content="[^"]*" \/>/,
         `<meta property="og:image" content="${escHtml(imageUrl)}" />`
+      )
+      // When serving an item photo the dimensions are unknown — remove fixed width/height/type
+      // so crawlers don't reject the image for dimension mismatch. Keep them for the fallback.
+      .replace(
+        /<meta property="og:image:type" content="[^"]*" \/>/,
+        isItemPhoto ? '' : '<meta property="og:image:type" content="image/png" />'
+      )
+      .replace(
+        /<meta property="og:image:width" content="[^"]*" \/>/,
+        isItemPhoto ? '' : '<meta property="og:image:width" content="1200" />'
+      )
+      .replace(
+        /<meta property="og:image:height" content="[^"]*" \/>/,
+        isItemPhoto ? '' : '<meta property="og:image:height" content="630" />'
       )
       .replace(
         /<meta property="og:image:alt" content="[^"]*" \/>/,
