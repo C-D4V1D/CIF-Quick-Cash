@@ -1288,24 +1288,41 @@ export async function onRequest(context) {
         .replace(/\{businessName\}/g,  vars.businessName || '')
         .replace(/\{shopPhone\}/g,     vars.shopPhone || '');
 
-    // Helper: send one SMS via Termii, returns { ok, messageId, response }
+    // Helper: send one SMS via Termii, returns { ok, messageId, response, usedFallback }
     const termiiSend = async (smsCfg, phone, message) => {
-      const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: phone,
-          from: smsCfg.senderId,
-          sms: message,
-          type: 'plain',
-          channel: smsCfg.channel || 'generic',
-          api_key: smsCfg.apiKey,
-        }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
-      const messageId = data?.message_id ? String(data.message_id) : null;
-      return { ok, messageId, response: data };
+      const doSend = async (from, channel) => {
+        const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: phone,
+            from,
+            sms: message,
+            type: 'plain',
+            channel,
+            api_key: smsCfg.apiKey,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
+        const messageId = data?.message_id ? String(data.message_id) : null;
+        return { ok, messageId, response: data };
+      };
+
+      // Primary attempt with configured sender ID
+      const primary = await doSend(smsCfg.senderId, smsCfg.channel || 'generic');
+      if (primary.ok) return { ...primary, usedFallback: false };
+
+      // If Termii rejected the sender ID, fall back to N-Alert (pre-approved on every account)
+      const termiiMsg = primary.response?.message || '';
+      const senderIdRejected = termiiMsg.includes('ApplicationSenderId not found') ||
+                               termiiMsg.toLowerCase().includes('sender') && termiiMsg.toLowerCase().includes('not found');
+      if (senderIdRejected && smsCfg.senderId !== 'N-Alert') {
+        const fallback = await doSend('N-Alert', 'generic');
+        return { ...fallback, usedFallback: true, primaryResponse: primary.response };
+      }
+
+      return { ...primary, usedFallback: false };
     };
 
     // ── GET /api/sms/balance — Termii wallet balance + credit count ──
@@ -1387,16 +1404,16 @@ export async function onRequest(context) {
         shopPhone: smsCfg.shopPhone,
       });
 
-      const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+      const { ok, messageId, response, usedFallback, primaryResponse } = await termiiSend(smsCfg, phone, message);
       const inserted = await db.prepare(
         "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'manual', ?, ?, ?, ?, ?)"
       ).bind(txRef, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
 
       await logActivity({
         user: auth.user, action: 'sms', entityType: 'transaction', entityId: txRef,
-        description: `📱 Manual SMS ${ok ? 'sent' : 'failed'} to ${phone} for ${txRef}`,
+        description: `📱 Manual SMS ${ok ? 'sent' : 'failed'}${usedFallback ? ' (via N-Alert fallback)' : ''} to ${phone} for ${txRef}`,
       });
-      return json({ ok, logId: inserted.meta.last_row_id, response });
+      return json({ ok, logId: inserted.meta.last_row_id, response, usedFallback, primaryResponse });
     }
 
     // ── POST /api/sms/test-send — diagnostic: send a test SMS and return full Termii response ──
@@ -1411,11 +1428,13 @@ export async function onRequest(context) {
 
       const phone = toIntlPhone(rawPhone);
       const message = `${smsCfg.businessName}: This is a test SMS from your CIF Cash app. If you received this, your Termii configuration is working!`;
-      const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+      const { ok, messageId, response, usedFallback, primaryResponse } = await termiiSend(smsCfg, phone, message);
       return json({
         ok,
         messageId,
         response,
+        usedFallback,
+        primaryResponse,
         debug: {
           to: phone,
           from: smsCfg.senderId,
@@ -1512,12 +1531,12 @@ export async function onRequest(context) {
           ).bind(row.ref, triggerType, today).first();
           if (alreadySent) { skipped.push({ ref: row.ref, triggerType, reason: 'already_sent_today' }); continue; }
 
-          const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+          const { ok, messageId, response, usedFallback } = await termiiSend(smsCfg, phone, message);
           await db.prepare(
             'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
           ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
 
-          (ok ? sent : failed).push({ ref: row.ref, triggerType, phone });
+          (ok ? sent : failed).push({ ref: row.ref, triggerType, phone, usedFallback });
         }
       }
 

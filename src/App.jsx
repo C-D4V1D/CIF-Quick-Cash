@@ -4997,13 +4997,30 @@ function SmsTestPanel({ inputStyle }) {
       {result && (
         <div style={{ marginTop: '10px', fontSize: '12px' }}>
           {result.ok
-            ? <div style={S.alert('success')}>✅ Test SMS sent! Message ID: {result.messageId || '(none)'}</div>
-            : <div style={S.alert('danger')}>
-                <div style={{ fontWeight: 700, marginBottom: '4px' }}>❌ Test SMS failed</div>
-                <div style={{ marginBottom: '4px' }}><strong>Termii says:</strong> {result.response?.message || JSON.stringify(result.response)}</div>
-                <div style={{ marginBottom: '4px' }}><strong>Config used:</strong> from=<code>{result.debug?.from}</code> channel=<code>{result.debug?.channel}</code> to=<code>{result.debug?.to}</code></div>
-                <div style={{ color: COLORS.textMuted }}>API key prefix: <code>{result.debug?.apiKeyPrefix}</code> — verify this matches your <strong>Live</strong> key in the Termii dashboard → API Keys.</div>
+            ? <div style={S.alert('success')}>
+                {result.usedFallback
+                  ? <span>⚠️ Sent via <strong>N-Alert fallback</strong> (your custom sender ID was rejected). SMS delivered but shown as "N-Alert" to the recipient.<br />Tell Termii support: <em>"Please link my approved sender ID '{result.debug?.from}' to <strong>applicationId {result.primaryResponse?.message?.match?.(/applicationId:\s*(\d+)/)?.[1] || '?'}</strong> on my account."</em></span>
+                  : <span>✅ Test SMS sent! Message ID: {result.messageId || '(none)'}</span>
+                }
               </div>
+            : (() => {
+                const termiiMsg = result.response?.message || '';
+                const appIdMatch = termiiMsg.match(/applicationId:\s*(\d+)/);
+                const appId = appIdMatch?.[1] || '';
+                return (
+                  <div style={S.alert('danger')}>
+                    <div style={{ fontWeight: 700, marginBottom: '4px' }}>❌ Test SMS failed</div>
+                    <div style={{ marginBottom: '4px' }}><strong>Termii says:</strong> {termiiMsg || JSON.stringify(result.response)}</div>
+                    {appId && (
+                      <div style={{ marginBottom: '4px', background: '#fff3cd', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ffc107' }}>
+                        📋 <strong>Tell Termii support:</strong> "Please link my approved sender ID '<strong>{result.debug?.from}</strong>' to <strong>applicationId {appId}</strong> on my account."
+                      </div>
+                    )}
+                    <div style={{ marginBottom: '4px' }}><strong>Config used:</strong> from=<code>{result.debug?.from}</code> channel=<code>{result.debug?.channel}</code> to=<code>{result.debug?.to}</code></div>
+                    <div style={{ color: COLORS.textMuted }}>API key prefix: <code>{result.debug?.apiKeyPrefix}</code></div>
+                  </div>
+                );
+              })()
           }
           {result.error && <div style={{ color: COLORS.danger, marginTop: '4px' }}>{result.error}</div>}
         </div>
@@ -5417,22 +5434,25 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
             />
             {smsResult && (
               <div style={{ ...S.alert(smsResult.ok ? 'success' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
-                {smsResult.ok ? '✅ SMS sent successfully.' : (() => {
-                  const termiiMsg = smsResult.response?.message || '';
-                  if (termiiMsg.includes('ApplicationSenderId not found')) {
-                    const nameMatch = termiiMsg.match(/senderName:\s*(\S+)/);
-                    const senderName = nameMatch?.[1] || 'your custom Sender ID';
-                    return (
-                      <span>
-                        ❌ <strong>Termii error:</strong> {termiiMsg}<br />
-                        The sender ID <strong>"{senderName}"</strong> was not found for the API key saved in Settings.
-                        Go to <strong>Settings → Termii Credentials</strong>, click <strong>"Fetch from Termii"</strong> to see which sender IDs your API key can access,
-                        and use <strong>"Test SMS Configuration"</strong> to verify. Make sure you are using your <strong>Live</strong> API key (not a test key).
-                      </span>
-                    );
-                  }
-                  return `❌ Failed to send SMS: ${termiiMsg || smsResult.error || JSON.stringify(smsResult.response)}`;
-                })()}
+                {smsResult.ok
+                  ? (smsResult.usedFallback
+                    ? '✅ SMS sent via N-Alert (fallback). Your custom sender ID was rejected by Termii — contact Termii support to link it to your account.'
+                    : '✅ SMS sent successfully.')
+                  : (() => {
+                    const termiiMsg = smsResult.response?.message || '';
+                    if (termiiMsg.includes('ApplicationSenderId not found')) {
+                      const appIdMatch = termiiMsg.match(/applicationId:\s*(\d+)/);
+                      const appId = appIdMatch?.[1] || '';
+                      return (
+                        <span>
+                          ❌ <strong>Termii rejected the sender ID:</strong> {termiiMsg}<br />
+                          {appId && <span>Tell Termii support: <em>"Please link my approved sender ID 'CiFabian' to <strong>applicationId {appId}</strong> on my account."</em><br /></span>}
+                          While waiting, you can switch the Sender ID to <strong>N-Alert</strong> in Settings to keep sending.
+                        </span>
+                      );
+                    }
+                    return `❌ Failed to send SMS: ${termiiMsg || smsResult.error || JSON.stringify(smsResult.response)}`;
+                  })()}
               </div>
             )}
             <button style={S.btnSm('primary')} onClick={sendManualSms} disabled={sendingSms || !smsSendMsg.trim()}>
