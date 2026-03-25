@@ -4937,9 +4937,100 @@ function ReminderDaysInput({ value, fallback, onChange, style, placeholder }) {
   );
 }
 
-const isSuccessfulContactEntry = (entry) => SUCCESSFUL_CONTACT_OUTCOMES.has(entry?.result);
+function SenderIdPicker({ value, onChange, termiiApiKey, inputStyle }) {
+  const [fetching, setFetching] = useState(false);
+  const [sids, setSids] = useState(null); // null = not fetched; [] = empty; [...] = list
+  const [err, setErr] = useState('');
+  const doFetch = async () => {
+    if (!termiiApiKey) { setErr('Enter your Termii API key first.'); return; }
+    setFetching(true); setErr('');
+    const data = await API.get('sms/sender-ids');
+    setFetching(false);
+    if (data?.error) { setErr(data.error); return; }
+    setSids(data?.senderIds || []);
+  };
+  return (
+    <div>
+      {sids !== null && sids.length > 0 ? (
+        <select style={inputStyle} value={value} onChange={e => onChange(e.target.value)}>
+          {sids.map(s => <option key={s.name} value={s.name}>{s.name} ({s.country || 'approved'})</option>)}
+        </select>
+      ) : (
+        <input style={inputStyle} value={value} onChange={e => onChange(e.target.value)} placeholder="e.g. N-Alert or CiFabian" />
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+        <button style={S.btnSm('secondary')} onClick={doFetch} disabled={fetching}>
+          {fetching ? '⏳ Fetching…' : '🔄 Fetch from Termii'}
+        </button>
+        {sids !== null && sids.length === 0 && !err && (
+          <span style={{ fontSize: '12px', color: COLORS.textMuted }}>No approved Sender IDs found on this account.</span>
+        )}
+        {err && <span style={{ fontSize: '12px', color: COLORS.danger }}>{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+function SmsTestPanel({ inputStyle }) {
+  const [phone, setPhone] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const send = async () => {
+    if (!phone.trim()) return;
+    setLoading(true); setResult(null);
+    const res = await API.post('sms/test-send', { phone: phone.trim() });
+    setLoading(false); setResult(res);
+  };
+  return (
+    <div style={{ marginTop: '12px', padding: '12px', background: '#f8f9fa', borderRadius: '8px', border: '1px solid #dee2e6' }}>
+      <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>🧪 Test SMS Configuration</div>
+      <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>
+        Send a real test SMS using your saved credentials. <strong>Save Settings first</strong>, then enter a phone number and tap Send.
+      </div>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+        <input style={{ ...inputStyle, flex: 1, minWidth: '160px' }} value={phone} onChange={e => setPhone(e.target.value)}
+          placeholder="Phone number (e.g. 08012345678)" inputMode="tel" />
+        <button style={S.btnSm('primary')} onClick={send} disabled={loading || !phone.trim()}>
+          {loading ? '⏳ Sending…' : '📤 Send Test SMS'}
+        </button>
+      </div>
+      {result && (
+        <div style={{ marginTop: '10px', fontSize: '12px' }}>
+          {result.ok
+            ? <div style={S.alert('success')}>
+                {result.usedFallback
+                  ? <span>⚠️ Sent via <strong>N-Alert fallback</strong> (your custom sender ID was rejected). SMS delivered but shown as "N-Alert" to the recipient.<br />Tell Termii support: <em>"Please link my approved sender ID '{result.debug?.from}' to <strong>applicationId {result.primaryResponse?.message?.match?.(/applicationId:\s*(\d+)/)?.[1] || '?'}</strong> on my account."</em></span>
+                  : <span>✅ Test SMS sent! Message ID: {result.messageId || '(none)'}</span>
+                }
+              </div>
+            : (() => {
+                const termiiMsg = result.response?.message || '';
+                const appIdMatch = termiiMsg.match(/applicationId:\s*(\d+)/);
+                const appId = appIdMatch?.[1] || '';
+                return (
+                  <div style={S.alert('danger')}>
+                    <div style={{ fontWeight: 700, marginBottom: '4px' }}>❌ Test SMS failed</div>
+                    <div style={{ marginBottom: '4px' }}><strong>Termii says:</strong> {termiiMsg || JSON.stringify(result.response)}</div>
+                    {appId && (
+                      <div style={{ marginBottom: '4px', background: '#fff3cd', padding: '6px 8px', borderRadius: '4px', border: '1px solid #ffc107' }}>
+                        📋 <strong>Tell Termii support:</strong> "Please link my approved sender ID '<strong>{result.debug?.from}</strong>' to <strong>applicationId {appId}</strong> on my account."
+                      </div>
+                    )}
+                    <div style={{ marginBottom: '4px' }}><strong>Config used:</strong> from=<code>{result.debug?.from}</code> channel=<code>{result.debug?.channel}</code> to=<code>{result.debug?.to}</code></div>
+                    <div style={{ color: COLORS.textMuted }}>API key prefix: <code>{result.debug?.apiKeyPrefix}</code></div>
+                  </div>
+                );
+              })()
+          }
+          {result.error && <div style={{ color: COLORS.danger, marginTop: '4px' }}>{result.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const hasSuccessfulContactToday = (tx) => (tx?.contactLog || []).some(entry => entry?.date === localISODate() && isSuccessfulContactEntry(entry));
+
 
 function ContactLogModal({ tx, onClose, onSave, currentUser }) {
   const [date, setDate] = useState(localISODate());
@@ -5343,7 +5434,25 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
             />
             {smsResult && (
               <div style={{ ...S.alert(smsResult.ok ? 'success' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
-                {smsResult.ok ? '✅ SMS sent successfully.' : `❌ Failed to send SMS: ${smsResult.error || JSON.stringify(smsResult.response)}`}
+                {smsResult.ok
+                  ? (smsResult.usedFallback
+                    ? '✅ SMS sent via N-Alert (fallback). Your custom sender ID was rejected by Termii — contact Termii support to link it to your account.'
+                    : '✅ SMS sent successfully.')
+                  : (() => {
+                    const termiiMsg = smsResult.response?.message || '';
+                    if (termiiMsg.includes('ApplicationSenderId not found')) {
+                      const appIdMatch = termiiMsg.match(/applicationId:\s*(\d+)/);
+                      const appId = appIdMatch?.[1] || '';
+                      return (
+                        <span>
+                          ❌ <strong>Termii rejected the sender ID:</strong> {termiiMsg}<br />
+                          {appId && <span>Tell Termii support: <em>"Please link my approved sender ID 'CiFabian' to <strong>applicationId {appId}</strong> on my account."</em><br /></span>}
+                          While waiting, you can switch the Sender ID to <strong>N-Alert</strong> in Settings to keep sending.
+                        </span>
+                      );
+                    }
+                    return `❌ Failed to send SMS: ${termiiMsg || smsResult.error || JSON.stringify(smsResult.response)}`;
+                  })()}
               </div>
             )}
             <button style={S.btnSm('primary')} onClick={sendManualSms} disabled={sendingSms || !smsSendMsg.trim()}>
@@ -8135,24 +8244,25 @@ export default function App() {
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii API Key<InfoIcon tip="Your live API key from Termii. Find it in your Termii dashboard under API Keys." /></span>}>
                   <input style={S.input} type="password" value={es.termiiApiKey ?? ''} onChange={e => updateSettings({ ...es, termiiApiKey: e.target.value })} placeholder="From Termii dashboard" />
                 </Field>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Default is 'N-Alert'." /></span>}>
-                  <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => updateSettings({ ...es, termiiSenderId: e.target.value })} placeholder="e.g. N-Alert or CIF Cash" />
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Click 'Fetch from Termii' to load your approved Sender IDs directly from your account." /></span>}>
+                  <SenderIdPicker
+                    value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}
+                    onChange={name => updateSettings({ ...es, termiiSenderId: name })}
+                    termiiApiKey={es.termiiApiKey}
+                    inputStyle={S.input}
+                  />
                 </Field>
               </div>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. Use 'generic' for the default N-Alert sender. Use 'dnd' if you have a registered custom Sender ID and want to reach DND numbers with it." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. 'generic' works for both N-Alert and custom approved Sender IDs on most accounts. Use 'dnd' only if Termii has specifically granted you DND access." /></span>}>
                 <select style={S.input} value={es.termiiChannel ?? DEFAULT_SETTINGS.termiiChannel} onChange={e => updateSettings({ ...es, termiiChannel: e.target.value })}>
-                  <option value="generic">generic (default — uses N-Alert for DND numbers)</option>
-                  <option value="dnd">dnd (custom Sender ID, reaches DND numbers)</option>
+                  <option value="generic">generic (default — recommended for most accounts)</option>
+                  <option value="dnd">dnd (reach DND numbers — requires special Termii approval)</option>
                 </select>
-                {(es.termiiChannel ?? DEFAULT_SETTINGS.termiiChannel) === 'generic' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId) !== 'N-Alert' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId).trim() !== '' && (
-                  <div style={{ ...S.alert('warning'), marginTop: '6px', fontSize: '12px' }}>
-                    ⚠️ You have a custom Sender ID ("<strong>{es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}</strong>") but the channel is set to <strong>generic</strong>. Custom Sender IDs require the <strong>dnd</strong> channel — SMS will fail with an "ApplicationSenderId not found" error until you switch to <strong>dnd</strong>.
-                  </div>
-                )}
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii Base URL<InfoIcon tip="The Termii API base URL. Default is https://v3.api.termii.com. Only change this if Termii updates their API endpoint." /></span>}>
                 <input style={S.input} value={es.termiiBaseUrl ?? DEFAULT_SETTINGS.termiiBaseUrl} onChange={e => updateSettings({ ...es, termiiBaseUrl: e.target.value })} placeholder="https://v3.api.termii.com" />
               </Field>
+              <SmsTestPanel inputStyle={S.input} />
             </div>
 
             {/* Credit cost */}
