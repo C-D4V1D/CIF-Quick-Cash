@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
-import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
+import { useNavigate, useLocation, useParams, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
 
@@ -1240,7 +1240,7 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
 // ============================================================
 // PUBLIC SALES PAGE
 // ============================================================
-function SalesPage({ onBack, settings }) {
+function SalesPage({ onBack, settings, initialItemId: propItemId }) {
   const cachedShopData = useMemo(() => readShopCache(), []);
   const [items, setItems] = useState(cachedShopData?.items || []);
   const [loading, setLoading] = useState(!cachedShopData);
@@ -1250,7 +1250,12 @@ function SalesPage({ onBack, settings }) {
   const [selectedItem, setSelectedItem] = useState(null);
   const [soldItems, setSoldItems] = useState(cachedShopData?.soldItems || []);
   const [photoIdx, setPhotoIdx] = useState(0);
+  const [shareToast, setShareToast] = useState(false);
   const isMobile = useMobile();
+  const shopNavigate = useNavigate();
+  const shopLocation = useLocation();
+  const routeParams = useParams();
+  const initialItemId = routeParams.itemId || propItemId || null;
 
   const s = settings || {};
   const phone1 = s.shopPhone1 ?? '08165491908';
@@ -1336,7 +1341,43 @@ function SalesPage({ onBack, settings }) {
     return { label: cond, color };
   };
 
-  const selectItem = (item) => { setSelectedItem(item); setPhotoIdx(0); };
+  // Sync selectedItem with URL when navigating (direct links / browser back-forward)
+  useEffect(() => {
+    const match = shopLocation.pathname.match(/^\/shop\/(.+)$/);
+    if (match) {
+      const id = decodeURIComponent(match[1]);
+      if (items.length > 0) {
+        const found = items.find(i => (i.shopId && i.shopId === id) || i.ref === id);
+        if (found && found.ref !== selectedItem?.ref) { setSelectedItem(found); setPhotoIdx(0); }
+      }
+    } else if (shopLocation.pathname === '/shop' && selectedItem) {
+      setSelectedItem(null);
+    }
+  }, [shopLocation.pathname, items]); // selectedItem intentionally omitted — including it would cause an infinite loop (effect selects item → state changes → effect runs again)
+
+  const selectItem = (item) => {
+    setSelectedItem(item);
+    setPhotoIdx(0);
+    shopNavigate('/shop/' + encodeURIComponent(item.shopId || item.ref), { replace: false });
+  };
+
+  const handleShare = async (item) => {
+    const url = window.location.href;
+    const title = `${item.brand} ${item.model} — ${item.salePrice ? fmtMoney(item.salePrice) : 'Contact for price'} | CIF Quick Cash`;
+    const text = `Check out this ${item.itemType} for sale at CIF Quick Cash, Enugwu-Aguleri!`;
+    if (navigator.share) {
+      try { await navigator.share({ title, text, url }); } catch { /* cancelled */ }
+    } else {
+      let copied = false;
+      try { await navigator.clipboard.writeText(url); copied = true; } catch { /* ignore */ }
+      if (!copied) {
+        window.prompt('Copy this link to share:', url);
+        return;
+      }
+      setShareToast(true);
+      setTimeout(() => setShareToast(false), 2500);
+    }
+  };
 
   // ── Full-page item detail view ──
   if (selectedItem) {
@@ -1352,10 +1393,18 @@ function SalesPage({ onBack, settings }) {
 
         {/* Header */}
         <div style={{ background: '#1a5f2a', padding: '12px 20px', position: 'sticky', top: 0, zIndex: 100, boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}>
-          <div style={{ maxWidth: '1000px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <button onClick={() => setSelectedItem(null)} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>← Back to Shop</button>
-            <div style={{ fontSize: '13px', fontWeight: 700, color: '#a7f3d0' }}>Christ-in-Fabian Quick Cash</div>
-            <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ background: '#25D366', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 12px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '5px' }}>{WA_SVG}{isMobile ? '' : 'Chat'}</a>
+          <div style={{ maxWidth: '1000px', margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+            <button onClick={() => shopNavigate('/shop')} style={{ background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 14px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>← Back</button>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#a7f3d0', textAlign: 'center', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Christ-in-Fabian Quick Cash</div>
+            <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+              <button
+                onClick={() => handleShare(item)}
+                style={{ position: 'relative', background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 12px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}
+              >
+                {shareToast ? '✓ Copied!' : (isMobile ? '🔗' : '🔗 Share')}
+              </button>
+              <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ background: '#25D366', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 12px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '5px', whiteSpace: 'nowrap' }}>{WA_SVG}{isMobile ? '' : 'Chat'}</a>
+            </div>
           </div>
         </div>
 
@@ -1478,6 +1527,12 @@ function SalesPage({ onBack, settings }) {
               <a href={getWhatsAppLink(item)} target="_blank" rel="noopener noreferrer" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#25D366', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>{WA_SVG} I Want to Buy This</a>
               <a href={getCallLink()} style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', background: '#1a5f2a', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '16px' }}>📞 Call Us Now</a>
             </div>
+            <button
+              onClick={() => handleShare(item)}
+              style={{ width: '100%', marginTop: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#f3f4f6', color: '#374151', padding: '13px', borderRadius: '12px', border: '1.5px solid #e5e7eb', fontWeight: 700, fontSize: '15px', cursor: 'pointer' }}
+            >
+              🔗 {shareToast ? 'Link Copied!' : 'Share This Item'}
+            </button>
             <div style={{ fontSize: '12px', color: '#9ca3af', textAlign: 'center', marginTop: '10px' }}>Visit our shop to inspect the item before buying</div>
           </div>
 
@@ -6198,6 +6253,7 @@ export default function App() {
         <Route path="/check-loan-status" element={<CustomerPortal settings={settings} onBack={() => navigate('/')} />} />
         <Route path="/checkloanstatus" element={<Navigate to="/check-loan-status" replace />} />
         <Route path="/shop" element={<SalesPage settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/shop/:itemId" element={<SalesPage settings={settings} onBack={() => navigate('/')} />} />
         <Route path="/login" element={<LoginScreen onLogin={(u) => {
           const normalizedUser = normalizeUser(u);
           writeCache('cfc_user', normalizedUser);
@@ -6209,9 +6265,11 @@ export default function App() {
     );
   }
 
-  // Allow authenticated users to view the public shop page
-  if (location.pathname === '/shop') {
-    return <SalesPage settings={settings} onBack={() => navigate('/dashboard')} />;
+  // Allow authenticated users to view the public shop page (including direct item links)
+  if (location.pathname === '/shop' || location.pathname.startsWith('/shop/')) {
+    const match = location.pathname.match(/^\/shop\/(.+)$/);
+    const itemId = match ? decodeURIComponent(match[1]) : null;
+    return <SalesPage settings={settings} onBack={() => navigate('/dashboard')} initialItemId={itemId} />;
   }
 
   // Allow authenticated users to view the landing page
