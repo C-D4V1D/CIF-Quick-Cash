@@ -5301,11 +5301,22 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>Loading SMS history…</div>
         ) : smsLogs && smsLogs.length > 0 ? (
           <div>
-            {smsLogs.map((entry, i) => (
+            {smsLogs.map((entry, i) => {
+                const dlr = entry.delivery_status;
+                const dlrColor = dlr === 'DeliveredToTerminal' ? '#10b981'
+                  : dlr === 'Expired' || dlr === 'DND' || dlr === 'Undeliverable' ? '#dc2626'
+                  : dlr ? '#f59e0b' : null;
+                const dlrLabel = dlr === 'DeliveredToTerminal' ? '✓ Delivered'
+                  : dlr === 'Expired' ? '✗ Expired'
+                  : dlr === 'DND' ? '✗ DND'
+                  : dlr === 'Undeliverable' ? '✗ Undeliverable'
+                  : dlr || null;
+                return (
               <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < smsLogs.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                     <span style={{ ...S.badge(entry.status === 'sent' ? '#10b981' : '#dc2626'), fontSize: '11px' }}>{entry.status === 'sent' ? '✓ Sent' : '✗ Failed'}</span>
+                    {dlrLabel && <span style={{ ...S.badge(dlrColor), fontSize: '11px' }}>{dlrLabel}</span>}
                     <span style={{ ...S.badge('#6b7280'), fontSize: '11px' }}>{getSmsLabel(entry.trigger_type)}</span>
                   </div>
                   <span style={{ fontSize: '11px', color: COLORS.textMuted }}>{new Date(entry.sent_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
@@ -5313,7 +5324,8 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 <div style={{ fontSize: '12px', color: COLORS.text, marginTop: '2px' }}>To: <strong>{entry.recipient}</strong></div>
                 <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', fontStyle: 'italic' }}>{entry.message}</div>
               </div>
-            ))}
+                );
+            })}
           </div>
         ) : (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No SMS messages sent for this transaction yet.</div>

@@ -1288,7 +1288,7 @@ export async function onRequest(context) {
         .replace(/\{businessName\}/g,  vars.businessName || '')
         .replace(/\{shopPhone\}/g,     vars.shopPhone || '');
 
-    // Helper: send one SMS via Termii, returns { ok, response }
+    // Helper: send one SMS via Termii, returns { ok, messageId, response }
     const termiiSend = async (smsCfg, phone, message) => {
       const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
         method: 'POST',
@@ -1304,7 +1304,8 @@ export async function onRequest(context) {
       });
       const data = await resp.json().catch(() => ({}));
       const ok = data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok;
-      return { ok, response: data };
+      const messageId = data?.message_id ? String(data.message_id) : null;
+      return { ok, messageId, response: data };
     };
 
     // ── GET /api/sms/balance — Termii wallet balance + credit count ──
@@ -1330,7 +1331,7 @@ export async function onRequest(context) {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const refFilter = (url.searchParams.get('ref') || '').trim();
-      let query = 'SELECT id, transaction_ref, sent_at, trigger_type, message, recipient, status, termii_response FROM sms_logs';
+      let query = 'SELECT id, transaction_ref, sent_at, trigger_type, message, recipient, status, termii_response, message_id, delivery_status FROM sms_logs';
       const params = [];
       if (refFilter) { query += ' WHERE transaction_ref = ?'; params.push(refFilter); }
       query += ' ORDER BY sent_at DESC LIMIT 500';
@@ -1366,10 +1367,10 @@ export async function onRequest(context) {
         shopPhone: smsCfg.shopPhone,
       });
 
-      const { ok, response } = await termiiSend(smsCfg, phone, message);
+      const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
       const inserted = await db.prepare(
-        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, 'manual', ?, ?, ?, ?)"
-      ).bind(txRef, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response)).run();
+        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'manual', ?, ?, ?, ?, ?)"
+      ).bind(txRef, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
 
       await logActivity({
         user: auth.user, action: 'sms', entityType: 'transaction', entityId: txRef,
@@ -1464,10 +1465,10 @@ export async function onRequest(context) {
           ).bind(row.ref, triggerType, today).first();
           if (alreadySent) { skipped.push({ ref: row.ref, triggerType, reason: 'already_sent_today' }); continue; }
 
-          const { ok, response } = await termiiSend(smsCfg, phone, message);
+          const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
           await db.prepare(
-            'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, ?, ?, ?, ?, ?)'
-          ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response)).run();
+            'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
 
           (ok ? sent : failed).push({ ref: row.ref, triggerType, phone });
         }
@@ -1480,6 +1481,21 @@ export async function onRequest(context) {
         });
       }
       return json({ ok: true, sent, failed, skipped });
+    }
+
+    // ── POST /api/sms/webhook — Termii delivery receipt (DLR) callback ──
+    // No authentication required — Termii calls this URL directly.
+    // Configure this URL in your Termii dashboard: <your-app-domain>/api/sms/webhook
+    if (path === 'sms/webhook' && method === 'POST') {
+      const payload = await request.json().catch(() => ({}));
+      // Termii DLR payload: { message_id, status, time, ... }
+      const messageId = payload?.message_id ? String(payload.message_id) : null;
+      const deliveryStatus = payload?.status ? String(payload.status) : null;
+      if (!messageId || !deliveryStatus) return json({ ok: false, error: 'Missing message_id or status' }, 400);
+      await db.prepare(
+        "UPDATE sms_logs SET delivery_status = ? WHERE message_id = ?"
+      ).bind(deliveryStatus, messageId).run();
+      return json({ ok: true });
     }
 
     // ============================================================
