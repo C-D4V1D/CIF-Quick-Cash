@@ -5008,7 +5008,19 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const [smsLogs, setSmsLogs] = useState(null);
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
-  const [smsSendMsg, setSmsSendMsg] = useState('');
+  const [smsSendMsg, setSmsSendMsg] = useState(() => {
+    if (tx.type !== 'advance') return '';
+    const tmpl = settings.smsDueDateReminder || DEFAULT_SETTINGS.smsDueDateReminder;
+    const fmtN = n => '₦' + Number(n || 0).toLocaleString('en-NG');
+    return tmpl
+      .replace(/\{customerName\}/g, tx.fullName || '')
+      .replace(/\{ref\}/g, tx.ref || '')
+      .replace(/\{amount\}/g, fmtN(tx.cashAdvance))
+      .replace(/\{daysLeft\}/g, customerDaysLeft != null ? String(customerDaysLeft) : '')
+      .replace(/\{daysOverdue\}/g, '')
+      .replace(/\{businessName\}/g, settings.businessName || 'CIF Quick Cash')
+      .replace(/\{shopPhone\}/g, settings.shopPhone1 || '');
+  });
   const [smsResult, setSmsResult] = useState(null);
   useEffect(() => {
     if (!tx?.ref) return;
@@ -5289,11 +5301,22 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>Loading SMS history…</div>
         ) : smsLogs && smsLogs.length > 0 ? (
           <div>
-            {smsLogs.map((entry, i) => (
+            {smsLogs.map((entry, i) => {
+                const dlr = entry.delivery_status;
+                const dlrColor = dlr === 'DeliveredToTerminal' ? '#10b981'
+                  : dlr === 'Expired' || dlr === 'DND' || dlr === 'Undeliverable' ? '#dc2626'
+                  : dlr ? '#f59e0b' : null;
+                const dlrLabel = dlr === 'DeliveredToTerminal' ? '✓ Delivered'
+                  : dlr === 'Expired' ? '✗ Expired'
+                  : dlr === 'DND' ? '✗ DND'
+                  : dlr === 'Undeliverable' ? '✗ Undeliverable'
+                  : dlr || null;
+                return (
               <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < smsLogs.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                     <span style={{ ...S.badge(entry.status === 'sent' ? '#10b981' : '#dc2626'), fontSize: '11px' }}>{entry.status === 'sent' ? '✓ Sent' : '✗ Failed'}</span>
+                    {dlrLabel && <span style={{ ...S.badge(dlrColor), fontSize: '11px' }}>{dlrLabel}</span>}
                     <span style={{ ...S.badge('#6b7280'), fontSize: '11px' }}>{getSmsLabel(entry.trigger_type)}</span>
                   </div>
                   <span style={{ fontSize: '11px', color: COLORS.textMuted }}>{new Date(entry.sent_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
@@ -5301,7 +5324,8 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 <div style={{ fontSize: '12px', color: COLORS.text, marginTop: '2px' }}>To: <strong>{entry.recipient}</strong></div>
                 <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', fontStyle: 'italic' }}>{entry.message}</div>
               </div>
-            ))}
+                );
+            })}
           </div>
         ) : (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No SMS messages sent for this transaction yet.</div>
@@ -8120,6 +8144,11 @@ export default function App() {
                   <option value="generic">generic (default — uses N-Alert for DND numbers)</option>
                   <option value="dnd">dnd (custom Sender ID, reaches DND numbers)</option>
                 </select>
+                {(es.termiiChannel ?? DEFAULT_SETTINGS.termiiChannel) === 'generic' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId) !== 'N-Alert' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId).trim() !== '' && (
+                  <div style={{ ...S.alert('warning'), marginTop: '6px', fontSize: '12px' }}>
+                    ⚠️ You have a custom Sender ID ("<strong>{es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}</strong>") but the channel is set to <strong>generic</strong>. Custom Sender IDs require the <strong>dnd</strong> channel — SMS will fail with an "ApplicationSenderId not found" error until you switch to <strong>dnd</strong>.
+                  </div>
+                )}
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii Base URL<InfoIcon tip="The Termii API base URL. Default is https://v3.api.termii.com. Only change this if Termii updates their API endpoint." /></span>}>
                 <input style={S.input} value={es.termiiBaseUrl ?? DEFAULT_SETTINGS.termiiBaseUrl} onChange={e => updateSettings({ ...es, termiiBaseUrl: e.target.value })} placeholder="https://v3.api.termii.com" />

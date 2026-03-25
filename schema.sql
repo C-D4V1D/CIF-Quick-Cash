@@ -135,7 +135,9 @@ CREATE TABLE IF NOT EXISTS sms_logs (
   message         TEXT    NOT NULL,
   recipient       TEXT    NOT NULL,  -- phone number (international format)
   status          TEXT    NOT NULL DEFAULT 'pending',  -- 'sent', 'failed'
-  termii_response TEXT               -- raw JSON from Termii
+  termii_response TEXT,              -- raw JSON from Termii send response
+  message_id      TEXT,              -- Termii message_id, used to correlate DLR callbacks
+  delivery_status TEXT               -- delivery receipt from Termii webhook, e.g. 'DeliveredToTerminal', 'Expired', 'DND'
 );
 
 CREATE INDEX IF NOT EXISTS idx_sms_logs_transaction_ref ON sms_logs (transaction_ref);
