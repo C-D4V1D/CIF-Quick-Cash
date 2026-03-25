@@ -8138,7 +8138,8 @@ export default function App() {
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Default is 'N-Alert'." /></span>}>
                   <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => {
                     const newId = e.target.value;
-                    const autoChannel = (newId && newId !== 'N-Alert') ? 'dnd' : 'generic';
+                    const trimmedId = newId.trim();
+                    const autoChannel = (trimmedId && trimmedId !== 'N-Alert') ? 'dnd' : 'generic';
                     updateSettings({ ...es, termiiSenderId: newId, termiiChannel: autoChannel });
                   }} placeholder="e.g. N-Alert or CIF Cash" />
                 </Field>
