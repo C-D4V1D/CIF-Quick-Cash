@@ -1326,6 +1326,26 @@ export async function onRequest(context) {
       }
     }
 
+    // ── GET /api/sms/sender-ids — fetch approved sender IDs from Termii ──
+    if (path === 'sms/sender-ids' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const smsCfg = await loadSmsConfig();
+      if (!smsCfg.apiKey) return json({ senderIds: [], error: 'Termii API key not configured.' });
+      try {
+        const resp = await fetch(`${smsCfg.baseUrl}/api/sender-id?api_key=${encodeURIComponent(smsCfg.apiKey)}`);
+        const data = await resp.json().catch(() => ({}));
+        // Termii returns { data: [...] } or { content: [...] } depending on API version
+        const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data?.content) ? data.content : []);
+        const senderIds = list
+          .filter(s => (s.status || '').toLowerCase() === 'active' || (s.status || '').toLowerCase() === 'unblock')
+          .map(s => ({ name: s.sender_id, status: s.status, country: s.country }));
+        return json({ senderIds, raw: data });
+      } catch {
+        return json({ senderIds: [], error: 'Failed to reach Termii API.' });
+      }
+    }
+
     // ── GET /api/sms/logs — all SMS logs (optionally filtered by ?ref=) ──
     if (path === 'sms/logs' && method === 'GET') {
       const auth = requireAuth(request);

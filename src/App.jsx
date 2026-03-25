@@ -8143,13 +8143,51 @@ export default function App() {
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii API Key<InfoIcon tip="Your live API key from Termii. Find it in your Termii dashboard under API Keys." /></span>}>
                   <input style={S.input} type="password" value={es.termiiApiKey ?? ''} onChange={e => updateSettings({ ...es, termiiApiKey: e.target.value })} placeholder="From Termii dashboard" />
                 </Field>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Default is 'N-Alert'." /></span>}>
-                  <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => {
-                    const newId = e.target.value;
-                    const trimmedId = newId.trim();
-                    const autoChannel = (trimmedId && trimmedId !== 'N-Alert') ? 'dnd' : 'generic';
-                    updateSettings({ ...es, termiiSenderId: newId, termiiChannel: autoChannel });
-                  }} placeholder="e.g. N-Alert or CIF Cash" />
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Click 'Fetch from Termii' to load your approved Sender IDs directly from your account." /></span>}>
+                  {(() => {
+                    const [fetchingSids, setFetchingSids] = React.useState(false);
+                    const [sids, setSids] = React.useState(null); // null = not fetched yet; [] = fetched but empty; [...] = list
+                    const [sidFetchErr, setSidFetchErr] = React.useState('');
+                    const fetchSenderIds = async () => {
+                      if (!es.termiiApiKey) { setSidFetchErr('Enter your Termii API key first.'); return; }
+                      setFetchingSids(true); setSidFetchErr('');
+                      const data = await API.get('sms/sender-ids');
+                      setFetchingSids(false);
+                      if (data?.error) { setSidFetchErr(data.error); return; }
+                      setSids(data?.senderIds || []);
+                    };
+                    const selectSid = (name) => {
+                      const trimmedId = name.trim();
+                      const autoChannel = (trimmedId && trimmedId !== 'N-Alert') ? 'dnd' : 'generic';
+                      updateSettings({ ...es, termiiSenderId: name, termiiChannel: autoChannel });
+                    };
+                    return (
+                      <div>
+                        {sids !== null && sids.length > 0 ? (
+                          <select style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}
+                            onChange={e => selectSid(e.target.value)}>
+                            {sids.map(s => <option key={s.name} value={s.name}>{s.name} ({s.country || 'approved'})</option>)}
+                          </select>
+                        ) : (
+                          <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => {
+                            const newId = e.target.value;
+                            const trimmedId = newId.trim();
+                            const autoChannel = (trimmedId && trimmedId !== 'N-Alert') ? 'dnd' : 'generic';
+                            updateSettings({ ...es, termiiSenderId: newId, termiiChannel: autoChannel });
+                          }} placeholder="e.g. N-Alert or CIF Cash" />
+                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+                          <button style={S.btnSm('secondary')} onClick={fetchSenderIds} disabled={fetchingSids}>
+                            {fetchingSids ? '⏳ Fetching…' : '🔄 Fetch from Termii'}
+                          </button>
+                          {sids !== null && sids.length === 0 && !sidFetchErr && (
+                            <span style={{ fontSize: '12px', color: COLORS.textMuted }}>No approved Sender IDs found on this account.</span>
+                          )}
+                          {sidFetchErr && <span style={{ fontSize: '12px', color: COLORS.danger }}>{sidFetchErr}</span>}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </Field>
               </div>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. Use 'generic' for the default N-Alert sender. Use 'dnd' if you have a registered custom Sender ID and want to reach DND numbers with it." /></span>}>
