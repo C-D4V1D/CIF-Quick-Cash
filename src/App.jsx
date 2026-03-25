@@ -5113,6 +5113,13 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       .replace(/\{shopPhone\}/g, settings.shopPhone1 || '');
   });
   const [smsResult, setSmsResult] = useState(null);
+  const refreshSmsLogs = () => {
+    if (!tx?.ref) return;
+    setSmsLogsLoading(true);
+    API.get(`sms/logs?ref=${encodeURIComponent(tx.ref)}`).then(data => {
+      setSmsLogs(Array.isArray(data) ? data : []);
+    }).finally(() => setSmsLogsLoading(false));
+  };
   useEffect(() => {
     if (!tx?.ref) return;
     setSmsLogsLoading(true);
@@ -5130,8 +5137,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     if (res?.ok) {
       setSmsSendMsg('');
       // Reload SMS logs
-      const updated = await API.get(`sms/logs?ref=${encodeURIComponent(tx.ref)}`);
-      setSmsLogs(Array.isArray(updated) ? updated : []);
+      refreshSmsLogs();
     }
   };
   const SMS_TRIGGER_LABELS = {
@@ -5387,6 +5393,9 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       <div style={S.card}>
         <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
           <span>📱 SMS Log</span>
+          <button style={S.btnSm('secondary')} onClick={refreshSmsLogs} disabled={smsLogsLoading}>
+            {smsLogsLoading ? '⏳' : '🔄'} Refresh
+          </button>
         </div>
         {smsLogsLoading ? (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>Loading SMS history…</div>
