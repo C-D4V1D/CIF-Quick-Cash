@@ -1387,6 +1387,13 @@ export async function onRequest(context) {
       if (!smsCfg.apiKey) return json({ skipped: true, reason: 'Termii API key not configured.' });
       if (!smsCfg.enabled) return json({ skipped: true, reason: 'Automated SMS is disabled.' });
 
+      // NCC policy: operators block delivery of SMS between 8:00 PM and 8:00 AM Nigeria time.
+      // Skip auto-send outside that window to avoid failed/rejected messages.
+      const nigeriaHour = Number(new Intl.DateTimeFormat('en-NG', { timeZone: 'Africa/Lagos', hour: 'numeric', hour12: false }).format(new Date()));
+      if (nigeriaHour < 8 || nigeriaHour >= 20) {
+        return json({ skipped: true, reason: 'quiet_hours', detail: 'NCC policy restricts SMS delivery between 8 PM and 8 AM Nigeria time.' });
+      }
+
       const today = todayNigeria();
       const { results: activeTxs } = await db.prepare(
         "SELECT ref, data FROM transactions WHERE status = 'active'"
