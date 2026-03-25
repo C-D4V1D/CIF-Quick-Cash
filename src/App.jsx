@@ -383,6 +383,7 @@ const DEFAULT_SETTINGS = {
   termiiApiKey: '',
   termiiBaseUrl: 'https://v3.api.termii.com',
   termiiSenderId: 'N-Alert',
+  termiiChannel: 'generic',
   smsNairaPerCredit: 5,
   smsLowCreditThreshold: 20,
   smsDueDateReminderDays: [2, 1, 0],
@@ -8114,6 +8115,12 @@ export default function App() {
                   <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => updateSettings({ ...es, termiiSenderId: e.target.value })} placeholder="e.g. N-Alert or CIF Cash" />
                 </Field>
               </div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. Use 'generic' for the default N-Alert sender. Use 'dnd' if you have a registered custom Sender ID and want to reach DND numbers with it." /></span>}>
+                <select style={S.input} value={es.termiiChannel ?? DEFAULT_SETTINGS.termiiChannel} onChange={e => updateSettings({ ...es, termiiChannel: e.target.value })}>
+                  <option value="generic">generic (default — uses N-Alert for DND numbers)</option>
+                  <option value="dnd">dnd (custom Sender ID, reaches DND numbers)</option>
+                </select>
+              </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii Base URL<InfoIcon tip="The Termii API base URL. Default is https://v3.api.termii.com. Only change this if Termii updates their API endpoint." /></span>}>
                 <input style={S.input} value={es.termiiBaseUrl ?? DEFAULT_SETTINGS.termiiBaseUrl} onChange={e => updateSettings({ ...es, termiiBaseUrl: e.target.value })} placeholder="https://v3.api.termii.com" />
               </Field>
