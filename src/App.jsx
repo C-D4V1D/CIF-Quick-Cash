@@ -338,11 +338,12 @@ const DEFAULT_SETTINGS = {
   priceDropEnabled: false, priceDropIntervalDays: 3,
   shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', cloudVisionApiKey: '', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', serpApiKey: '', ninApiKey: '',
   // API Free Tier Limits (adjustable in case Google changes them)
   geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
   geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
   visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
+  serpApiMonthlyLimit: 250, // SerpApi free Developer plan: 250 searches/month
   // Identity Verification
   requireNinVerification: false,
   ninCreditCost: 150,
@@ -465,18 +466,60 @@ const trackGeminiCall = () => {
   const keys = Object.keys(usage.gemini).sort();
   if (keys.length > 7) { for (const k of keys.slice(0, -7)) delete usage.gemini[k]; }
   saveApiUsage(usage);
+  // Persist to DB (fire-and-forget — survives deployments and works across devices)
+  API.post('usage/track', { service: 'gemini', date: today }).catch(() => {});
 };
 
-const trackVisionCall = (imageCount = 1) => {
+const trackSerpApiCall = (imageCount = 1) => {
   const usage = getApiUsage();
   const month = getMonthKey();
-  if (!usage.vision) usage.vision = {};
-  if (!usage.vision[month]) usage.vision[month] = 0;
-  usage.vision[month] += imageCount;
-  // Clean up old months (keep last 3)
-  const keys = Object.keys(usage.vision).sort();
-  if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.vision[k]; }
+  if (!usage.serpapi) usage.serpapi = {};
+  if (!usage.serpapi[month]) usage.serpapi[month] = 0;
+  usage.serpapi[month] += imageCount;
+  const keys = Object.keys(usage.serpapi).sort();
+  if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.serpapi[k]; }
   saveApiUsage(usage);
+  // Persist to DB (fire-and-forget — survives deployments and works across devices)
+  API.post('usage/track', { service: 'serpapi', month, count: imageCount }).catch(() => {});
+};
+
+// Sync API usage counts from DB into localStorage so that:
+// (a) counts survive app re-deployments, and (b) multiple devices share the same counts.
+// RPM timestamps are NOT synced — they are ephemeral and intentionally device-local.
+const syncApiUsageFromDb = async () => {
+  try {
+    const dbUsage = await API.get('usage');
+    if (!dbUsage) return;
+    const local = getApiUsage();
+    let changed = false;
+    if (dbUsage.gemini) {
+      if (!local.gemini) local.gemini = {};
+      for (const [date, dbCount] of Object.entries(dbUsage.gemini)) {
+        const localCount = local.gemini[date]?.count || 0;
+        if (dbCount > localCount) {
+          if (!local.gemini[date]) local.gemini[date] = { count: 0, timestamps: [] };
+          local.gemini[date].count = dbCount;
+          changed = true;
+        }
+      }
+    }
+    if (dbUsage.serpapi) {
+      if (!local.serpapi) local.serpapi = {};
+      for (const [month, dbCount] of Object.entries(dbUsage.serpapi)) {
+        if (dbCount > (local.serpapi[month] || 0)) {
+          local.serpapi[month] = dbCount;
+          changed = true;
+        }
+      }
+    }
+    if (changed) saveApiUsage(local);
+  } catch (e) { console.error('Failed to sync API usage from DB:', e); }
+};
+
+const getSerpApiUsageThisMonth = () => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  return (usage.serpapi?.[month]) || 0;
 };
 
 const getGeminiUsageToday = () => {
@@ -493,12 +536,6 @@ const getGeminiRpm = () => {
   return timestamps.filter(t => t > oneMinAgo).length;
 };
 
-const getVisionUsageThisMonth = () => {
-  const usage = getApiUsage();
-  const month = getMonthKey();
-  return (usage.vision?.[month]) || 0;
-};
-
 const checkGeminiLimit = (settings) => {
   const dailyLimit = settings.geminiDailyLimit || 100;
   const rpmLimit = settings.geminiRpmLimit || 5;
@@ -509,12 +546,17 @@ const checkGeminiLimit = (settings) => {
   return { blocked: false, remaining: dailyLimit - usedToday };
 };
 
-const checkVisionLimit = (settings) => {
-  const monthlyLimit = settings.visionMonthlyLimit || 1000;
-  const usedThisMonth = getVisionUsageThisMonth();
-  if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `Cloud Vision monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets next month. AI will use Gemini only.` };
+const checkSerpApiLimit = (settings, liveAccount = null) => {
+  if (liveAccount && typeof liveAccount.total_searches_left === 'number') {
+    if (liveAccount.total_searches_left <= 0) return { blocked: true, reason: `SerpApi monthly limit reached (${liveAccount.this_month_usage}/${liveAccount.searches_per_month}). Resets at the start of next month.` };
+    return { blocked: false, remaining: liveAccount.total_searches_left };
+  }
+  const monthlyLimit = settings.serpApiMonthlyLimit || 250;
+  const usedThisMonth = getSerpApiUsageThisMonth();
+  if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
   return { blocked: false, remaining: monthlyLimit - usedThisMonth };
 };
+
 
 // ============================================================
 // GEMINI AI INTEGRATION
@@ -650,69 +692,34 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
   } catch (e) { return { error: e.message }; }
 };
 
-// Google Cloud Vision API — reverse image search for item identification
-const callCloudVision = async (apiKey, imageData) => {
-  if (!apiKey) return { error: 'No Cloud Vision API key set.' };
+// SerpApi Google Lens — shopping-first reverse image search for item identification.
+// Accepts a photo value (R2 relative path, full HTTPS URL, or base64 data URI).
+// Returns { visualMatches, textResults, summary } or { error }.
+const callSerpApiLens = async (apiKey, photo) => {
+  if (!apiKey) return { error: 'No SerpApi key set.' };
+  if (!photo) return { error: 'No photo provided.' };
+
+  // Build a publicly accessible HTTPS URL from the stored photo value.
+  let imageUrl = photo;
+  if (imageUrl.startsWith('data:')) return { error: 'Photo is stored as local data — upload to storage first.' };
+  if (imageUrl.startsWith('/')) imageUrl = window.location.origin + imageUrl;
+  if (imageUrl.includes('localhost') || imageUrl.includes('127.0.0.1')) return { error: 'Cannot send localhost URLs to SerpApi — use a tunnel (ngrok/Cloudflare) for local testing.' };
+  if (!imageUrl.startsWith('https://')) return { error: 'Photo URL is not publicly accessible.' };
+
   try {
-    // imageData can be a data URI or a URL
-    let request;
-    if (imageData.startsWith('data:')) {
-      const base64 = imageData.split(',')[1] || '';
-      request = { image: { content: base64 }, features: [
-        { type: 'LOGO_DETECTION', maxResults: 5 },
-        { type: 'LABEL_DETECTION', maxResults: 15 },
-        { type: 'TEXT_DETECTION', maxResults: 5 },
-        { type: 'WEB_DETECTION', maxResults: 10 },
-        { type: 'OBJECT_LOCALIZATION', maxResults: 5 }
-      ] };
-    } else {
-      // Fetch and convert URL to base64
-      const resp = await fetch(imageData);
-      if (!resp.ok) return { error: 'Failed to load image for Vision analysis.' };
-      const blob = await resp.blob();
-      const base64 = await toBase64(blob);
-      request = { image: { content: base64 }, features: [
-        { type: 'LOGO_DETECTION', maxResults: 5 },
-        { type: 'LABEL_DETECTION', maxResults: 15 },
-        { type: 'TEXT_DETECTION', maxResults: 5 },
-        { type: 'WEB_DETECTION', maxResults: 10 },
-        { type: 'OBJECT_LOCALIZATION', maxResults: 5 }
-      ] };
-    }
+    trackSerpApiCall(1);
+    const resp = await API.post('serpapi-lens', { imageUrl, apiKey });
+    if (resp?.error) return { error: resp.error };
 
-    trackVisionCall(1);
-    const resp = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requests: [request] })
-    });
-    const data = await resp.json().catch(() => null);
-    if (data?.error) return { error: data.error.message || 'Cloud Vision request failed.' };
-    const result = data?.responses?.[0];
-    if (!result) return { error: 'Cloud Vision returned no results.' };
+    const visualMatches = (resp.visual_matches || []).slice(0, 5).map(m => m.title).filter(Boolean);
+    const textResults = (resp.text_results || []).slice(0, 3).map(t => t.text).filter(Boolean).join(' ');
 
-    // Extract useful information
-    const logos = (result.logoAnnotations || []).map(l => l.description).filter(Boolean);
-    const labels = (result.labelAnnotations || []).map(l => `${l.description} (${Math.round((l.score || 0) * 100)}%)`).filter(Boolean);
-    const texts = (result.textAnnotations || []).slice(0, 1).map(t => t.description).filter(Boolean);
-    const webEntities = (result.webDetection?.webEntities || []).filter(e => e.description && (e.score || 0) > 0.3).map(e => `${e.description} (${Math.round((e.score || 0) * 100)}%)`);
-    const bestGuess = (result.webDetection?.bestGuessLabels || []).map(l => l.label).filter(Boolean);
-    const pagesWithMatch = (result.webDetection?.pagesWithMatchingImages || []).slice(0, 5).map(p => p.pageTitle || p.url).filter(Boolean);
+    const summary = [
+      visualMatches.length > 0 ? `Google Lens Top Matches: ${visualMatches.map((t, i) => `[${i + 1}] ${t}`).join(', ')}` : '',
+      textResults ? `Google Lens Text Read: "${textResults.substring(0, 400)}"` : '',
+    ].filter(Boolean).join('\n');
 
-    return {
-      logos,
-      labels,
-      texts: texts[0] || '',
-      webEntities,
-      bestGuess,
-      pagesWithMatch,
-      summary: [
-        bestGuess.length > 0 ? `Best guess: ${bestGuess.join(', ')}` : '',
-        logos.length > 0 ? `Logos: ${logos.join(', ')}` : '',
-        webEntities.length > 0 ? `Web matches: ${webEntities.slice(0, 5).join(', ')}` : '',
-        pagesWithMatch.length > 0 ? `Found on: ${pagesWithMatch.slice(0, 3).join('; ')}` : '',
-        texts[0] ? `Text detected on device: ${texts[0].substring(0, 500)}` : '',
-      ].filter(Boolean).join('\n')
-    };
+    return { visualMatches, textResults, summary };
   } catch (e) { return { error: e.message }; }
 };
 
@@ -3534,7 +3541,7 @@ const EMPTY_TX = {
   contactLog: [], notes: '',
 };
 
-function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
+function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount }) {
   const [step, setStep] = useState(draft?.wizardStep || 0);
   const [tx, setTx] = useState(() => {
     const base = draft || { ...EMPTY_TX, ref: genRef(), createdBy: currentUser?.name || '', createdAt: new Date().toISOString() };
@@ -3696,9 +3703,9 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
   };
 
   // RUN 1: Item Identification & Spec Verification
-  // Strategy: Gemini first. If confidence is 100%, done. Otherwise, if Cloud Vision API key
-  // is configured, run reverse image search to get additional context, then re-ask Gemini
-  // with the Vision data to improve accuracy.
+  // Strategy: Google Lens (SerpApi) first — uses the Back Panel and About Page photos to get
+  // exact visual matches and OCR text. This grounding context is then passed to Gemini, which
+  // synthesises all uploaded photos + Lens data for near-100% identification accuracy.
   const handleAIRun1 = async () => {
     setAiLoading(true); setAiLoadingPhase('run1'); setAiError(''); upd('aiModelVerified', '');
     // Check API usage limits before making calls
@@ -3707,23 +3714,23 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser }) {
     const photos = getPhotos();
     if (photos.length === 0) { setAiError('Please upload at least one item photo first.'); setAiLoading(false); setAiLoadingPhase(''); return; }
     const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
-    const basePrompt = (visionContext) => `You are helping a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at all the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'} Tell me the exact details of the item. Use simple everyday English — no big grammar words.
-${visionContext ? `\nADDITIONAL CONTEXT FROM IMAGE ANALYSIS AND WEB SEARCH (use this to confirm or correct your identification — pay special attention to any "Text detected on device" as it may contain the exact model number):\n${visionContext}\n` : ''}
+    const basePrompt = (lensContext) => `You are an expert appraiser for a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at ALL the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'}
+${lensContext ? `\nTo guarantee accuracy, we ran a Google Lens search on this item. ${lensContext}\n\nCross-reference the Google Lens matches with what you see in the photos to deduce the exact details. Google Lens is very precise — treat its top matches as strong evidence of the real model.\n` : ''}
 IMPORTANT: Look carefully at ALL text visible on the item — labels, stickers, printed text on the body, capacity markings (e.g. mAh for power banks), serial number plates, About screens, spec sheets. The model name/number is often printed directly on the device.
 
-CRITICAL INSTRUCTION: Reply in this exact format (no numbered prefixes, no markdown, no extra text):
+CRITICAL INSTRUCTION: Reply ONLY in this exact format (no numbered prefixes, no markdown, no extra text):
 
 AI_ITEM_TYPE: [what the item is]
 BRAND: [brand name]
-MODEL: [exact model name or number as printed on the device]
-KEY_SPECS: [the most important specs that affect resale value — keep it under 12 words]
+MODEL: [exact model name and number as it appears on the device, e.g. iPhone 14 Pro Max or Galaxy S23 Ultra]
+KEY_SPECS: [Storage, RAM, capacity, etc. — keep it under 12 words]
 COLOUR: [colour(s)]
 CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
 
 If text on the device is blurry, unreadable, or missing, you MUST ALSO include this line BEFORE the other fields:
 SPECS_UNREADABLE: [List exactly what you cannot read and why (very concise)]
 
-Then still reply with ALL 6 fields above with your best guess based on what you can see in the photos and any internet research. Your CONFIDENCE score should reflect how certain you are about the MODEL and KEY_SPECS.`;
+Then still reply with ALL 6 fields above with your best guess. Your CONFIDENCE score should reflect how certain you are about the MODEL and KEY_SPECS.`;
 
     const parseGeminiResult = (text) => {
       const specsUnreadable = aiParseField(text, 'SPECS_UNREADABLE');
@@ -3739,36 +3746,47 @@ Then still reply with ALL 6 fields above with your best guess based on what you 
     };
 
     try {
-      const hasVisionKey = !!(settings.cloudVisionApiKey || '').trim();
-      let visionContext = '';
+      const hasSerpKey = !!(settings.serpApiKey || '').trim();
+      let lensContext = '';
 
-      // Step 1: Run Cloud Vision FIRST (if configured) for OCR + web detection
-      // Vision provides OCR text, logo detection, and web entity matching that
-      // significantly improves Gemini's ability to identify exact model numbers
-      const visionCheck = checkVisionLimit(settings);
-      if (hasVisionKey && !visionCheck.blocked) {
-        setAiLoadingPhase('run1_vision');
-        const visionPhotos = photos.slice(0, 2);
-        const visionResults = [];
-        const allVisionLabels = [];
-        for (const photo of visionPhotos) {
-          const vr = await callWithTimeout(() => callCloudVision(settings.cloudVisionApiKey, photo), 30000);
-          if (!vr.error && vr.summary) visionResults.push(vr.summary);
-          if (!vr.error) {
-            allVisionLabels.push(...(vr.bestGuess || []), ...(vr.logos || []), ...((vr.webEntities || []).slice(0, 3).map(e => e.split(' (')[0])));
+      // Step 1: Google Lens via SerpApi (if configured) — use Back Panel (index 2) as primary
+      // visual identifier, and About Page/Spec Label (index 0) for OCR grounding.
+      // Gemini will still see ALL photos; SerpApi only analyses these 2 most informative ones.
+      if (hasSerpKey) {
+        const serpCheck = checkSerpApiLimit(settings, serpApiAccount);
+        if (serpCheck.blocked) {
+          console.warn('SerpApi skipped:', serpCheck.reason);
+        } else {
+          try {
+            setAiLoadingPhase('run1_vision');
+            const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
+            const lensTargets = [
+              { photo: photoArr[2], label: 'Back Panel' },
+              { photo: photoArr[0], label: 'About Page / Spec Label' },
+            ].filter(t => t.photo);
+
+            const lensResults = [];
+            const allMatchTitles = [];
+            for (const { photo } of lensTargets) {
+              const lr = await callWithTimeout(() => callSerpApiLens(settings.serpApiKey, photo), 30000);
+              if (!lr.error && lr.summary) lensResults.push(lr.summary);
+              if (!lr.error && lr.visualMatches) allMatchTitles.push(...lr.visualMatches);
+            }
+            const uniqueTitles = [...new Set(allMatchTitles.filter(Boolean))];
+            if (uniqueTitles.length > 0) upd('aiVisionLabels', uniqueTitles.join(', '));
+            if (lensResults.length > 0) {
+              upd('aiVisionUsed', true);
+              lensContext = lensResults.join('\n---\n');
+            }
+          } catch (e) {
+            console.error('Google Lens (SerpApi) failed, continuing without it:', e.message);
           }
-        }
-        const uniqueLabels = [...new Set(allVisionLabels.filter(Boolean))];
-        if (uniqueLabels.length > 0) upd('aiVisionLabels', uniqueLabels.join(', '));
-        if (visionResults.length > 0) {
-          upd('aiVisionUsed', true);
-          visionContext = visionResults.join('\n---\n');
         }
       }
 
-      // Step 2: Gemini with Vision context (or without if no Vision key)
+      // Step 2: Gemini synthesises all uploaded photos + Lens grounding context
       setAiLoadingPhase('run1');
-      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(visionContext)), AI_TIMEOUT);
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(lensContext)), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
       upd('aiRawResponse', result.text);
       parseGeminiResult(result.text);
@@ -3789,7 +3807,7 @@ The AI identified this item from photos:
 - Brand: ${identBrand}
 - Model: ${identModel}
 - Key specs: ${identKeySpecs}
-${visionContext ? `\nImage analysis context:\n${visionContext}\n` : ''}
+${lensContext ? `\nGoogle Lens grounding context:\n${lensContext}\n` : ''}
 YOUR TASK: Search the internet for "${identBrand} ${identModel}" and verify ALL of these:
 1. Does "${identBrand} ${identModel}" exist as a real product?
 2. Is it a ${identItemType}? (Not a different type of product from the same brand)
@@ -4329,7 +4347,10 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           {/* API Usage Indicator */}
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>
             <span>Gemini: {getGeminiUsageToday()}/{settings.geminiDailyLimit || 100} today</span>
-            {settings.cloudVisionApiKey && <span>Vision: {getVisionUsageThisMonth()}/{settings.visionMonthlyLimit || 1000} this month</span>}
+            {settings.serpApiKey && (serpApiAccount
+              ? <span>Google Lens: {serpApiAccount.this_month_usage}/{serpApiAccount.searches_per_month} this month</span>
+              : <span>Google Lens: {getSerpApiUsageThisMonth()}/{settings.serpApiMonthlyLimit || 250} this month</span>
+            )}
           </div>
 
           {/* ══════════════ RUN 1: Item Identification ══════════════ */}
@@ -4348,7 +4369,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
             </button>
             {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
             {tx.aiSpecsUnreadable && <div style={{ ...S.alert('warning'), marginTop: '8px' }}>⚠️ <strong>Specs unreadable:</strong> {tx.aiSpecsUnreadable}</div>}
-            {tx.aiVisionUsed && <div style={{ ...S.alert('info'), marginTop: '8px' }}>🔍 <strong>Cloud Vision used</strong> — reverse image search helped refine identification.{tx.aiVisionLabels && <span style={{ display: 'block', fontSize: '11px', marginTop: '4px', color: COLORS.textMuted }}>Detected: {tx.aiVisionLabels}</span>}</div>}
+            {tx.aiVisionUsed && <div style={{ ...S.alert('info'), marginTop: '8px' }}>🔍 <strong>Google Lens used</strong> — shopping-first reverse image search helped refine identification.{tx.aiVisionLabels && <span style={{ display: 'block', fontSize: '11px', marginTop: '4px', color: COLORS.textMuted }}>Top matches: {tx.aiVisionLabels}</span>}</div>}
 
             {/* Editable fields — always visible */}
             <div style={{ ...S.grid2, marginTop: '12px' }}>
@@ -5074,7 +5095,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
         {tx.aiPriceRangeLow && tx.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(tx.aiPriceRangeLow))} — ${fmtMoney(Number(tx.aiPriceRangeHigh))}`)}
         {tx.aiValuationConfidence && row('Valuation Confidence', tx.aiValuationConfidence)}
-        {tx.aiVisionUsed && row('Cloud Vision', 'Used for identification')}
+        {tx.aiVisionUsed && row('Google Lens', 'Used for identification')}
       </div>
     </div>
 
@@ -5741,6 +5762,7 @@ export default function App() {
   const [smsCreditsLoading, setSmsCreditsLoading] = useState(false);
   const [showSmsRechargeModal, setShowSmsRechargeModal] = useState(false);
   const [smsAutoSendDone, setSmsAutoSendDone] = useState(false); // prevent firing twice per session
+  const [serpApiAccount, setSerpApiAccount] = useState(null); // live data from serpapi.com/account.json
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -5814,6 +5836,14 @@ export default function App() {
     }
 
     setLoading(false);
+
+    // Sync API usage counts from DB so they survive deployments and work across devices.
+    syncApiUsageFromDb();
+
+    // Fetch live SerpApi account stats (usage + plan limit) — does not consume quota.
+    API.get('serpapi-account').then(data => {
+      if (data && typeof data.this_month_usage === 'number') setSerpApiAccount(data);
+    }).catch(() => {});
 
     // Load large list datasets in the background so navigation/header remain interactive.
     const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');
@@ -6032,7 +6062,7 @@ export default function App() {
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
-        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
+        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
       </div>
     </div>
   );
@@ -8009,8 +8039,8 @@ export default function App() {
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Leave it as default — the system will switch to a backup automatically if needed." /></span>}>
               <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
             </Field>
-            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Google Cloud Vision API Key<InfoIcon tip="Optional. Used for reverse image search when Gemini cannot clearly identify the item model or specs. Get one from console.cloud.google.com — enable the Cloud Vision API, then create an API key. If not set, only Gemini will be used for identification." /></span>}>
-              <input style={S.input} type="password" value={es.cloudVisionApiKey || ''} onChange={e => updateSettings({ ...es, cloudVisionApiKey: e.target.value })} placeholder="From console.cloud.google.com (optional)" />
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Key (Google Lens)<InfoIcon tip="Recommended. Used for Google Lens reverse image search — identifies exact device models by matching against real product listings. Much more accurate than generic image analysis. Get a free key at serpapi.com." /></span>}>
+              <input style={S.input} type="password" value={es.serpApiKey || ''} onChange={e => updateSettings({ ...es, serpApiKey: e.target.value })} placeholder="From serpapi.com (recommended)" />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
               <input style={S.input} type="password" value={es.ninApiKey} onChange={e => updateSettings({ ...es, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
@@ -8025,8 +8055,8 @@ export default function App() {
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini RPM Limit<InfoIcon tip="Maximum Gemini calls per minute. Free tier: Pro=5, Flash=10, Flash-Lite=15. Prevents rate-limit errors from Google." /></span>}>
                   <input style={S.input} type="number" min="1" value={es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit} onChange={e => updateSettings({ ...es, geminiRpmLimit: Number(e.target.value) || DEFAULT_SETTINGS.geminiRpmLimit })} />
                 </Field>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Vision Monthly Limit<InfoIcon tip="Maximum Cloud Vision images per month. Free tier: 1,000 images/month. Each transaction uses up to 2 images for Vision analysis." /></span>}>
-                  <input style={S.input} type="number" min="1" value={es.visionMonthlyLimit ?? DEFAULT_SETTINGS.visionMonthlyLimit} onChange={e => updateSettings({ ...es, visionMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.visionMonthlyLimit })} />
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Monthly Limit<InfoIcon tip="Maximum Google Lens (SerpApi) searches per month. Free Developer plan: 250/month. Upgrade your SerpApi plan and increase this if you need more." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit} onChange={e => updateSettings({ ...es, serpApiMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.serpApiMonthlyLimit })} />
                 </Field>
               </div>
               <div style={{ ...S.card, background: COLORS.bg, padding: '12px', marginTop: '10px' }}>
@@ -8034,7 +8064,10 @@ export default function App() {
                 <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '12px' }}>
                   <div>Gemini today: <strong>{getGeminiUsageToday()}</strong> / {es.geminiDailyLimit ?? DEFAULT_SETTINGS.geminiDailyLimit}</div>
                   <div>Gemini RPM: <strong>{getGeminiRpm()}</strong> / {es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit}</div>
-                  <div>Vision this month: <strong>{getVisionUsageThisMonth()}</strong> / {es.visionMonthlyLimit ?? DEFAULT_SETTINGS.visionMonthlyLimit}</div>
+                  {serpApiAccount
+                    ? <div>Google Lens this month: <strong>{serpApiAccount.this_month_usage}</strong> / {serpApiAccount.searches_per_month} <span style={{ color: COLORS.textMuted }}>(live from SerpApi{serpApiAccount.plan_name ? ` · ${serpApiAccount.plan_name}` : ''})</span></div>
+                    : <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong> / {es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit}</div>
+                  }
                 </div>
               </div>
             </div>
