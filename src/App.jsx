@@ -5113,9 +5113,20 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       .replace(/\{shopPhone\}/g, settings.shopPhone1 || '');
   });
   const [smsResult, setSmsResult] = useState(null);
+  const [smsLogPage, setSmsLogPage] = useState(0);
+  const SMS_PAGE_SIZE = 3;
+  const refreshSmsLogs = () => {
+    if (!tx?.ref) return;
+    setSmsLogsLoading(true);
+    setSmsLogPage(0);
+    API.get(`sms/logs?ref=${encodeURIComponent(tx.ref)}`).then(data => {
+      setSmsLogs(Array.isArray(data) ? data : []);
+    }).finally(() => setSmsLogsLoading(false));
+  };
   useEffect(() => {
     if (!tx?.ref) return;
     setSmsLogsLoading(true);
+    setSmsLogPage(0);
     API.get(`sms/logs?ref=${encodeURIComponent(tx.ref)}`).then(data => {
       setSmsLogs(Array.isArray(data) ? data : []);
     }).finally(() => setSmsLogsLoading(false));
@@ -5130,8 +5141,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     if (res?.ok) {
       setSmsSendMsg('');
       // Reload SMS logs
-      const updated = await API.get(`sms/logs?ref=${encodeURIComponent(tx.ref)}`);
-      setSmsLogs(Array.isArray(updated) ? updated : []);
+      refreshSmsLogs();
     }
   };
   const SMS_TRIGGER_LABELS = {
@@ -5387,12 +5397,15 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       <div style={S.card}>
         <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
           <span>📱 SMS Log</span>
+          <button style={S.btnSm('secondary')} onClick={refreshSmsLogs} disabled={smsLogsLoading}>
+            {smsLogsLoading ? '⏳' : '🔄'} Refresh
+          </button>
         </div>
         {smsLogsLoading ? (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>Loading SMS history…</div>
         ) : smsLogs && smsLogs.length > 0 ? (
           <div>
-            {smsLogs.map((entry, i) => {
+            {smsLogs.slice(smsLogPage * SMS_PAGE_SIZE, (smsLogPage + 1) * SMS_PAGE_SIZE).map((entry, i, page) => {
                 const dlr = entry.delivery_status;
                 const dlrColor = dlr === 'DeliveredToTerminal' ? '#10b981'
                   : dlr === 'Expired' || dlr === 'DND' || dlr === 'Undeliverable' ? '#dc2626'
@@ -5403,7 +5416,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                   : dlr === 'Undeliverable' ? '✗ Undeliverable'
                   : dlr || null;
                 return (
-              <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < smsLogs.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
+              <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < page.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                     <span style={{ ...S.badge(entry.status === 'sent' ? '#10b981' : '#dc2626'), fontSize: '11px' }}>{entry.status === 'sent' ? '✓ Sent' : '✗ Failed'}</span>
@@ -5417,6 +5430,15 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
               </div>
                 );
             })}
+            {smsLogs.length > SMS_PAGE_SIZE && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${COLORS.border}` }}>
+                <button style={S.btnSm('secondary')} onClick={() => setSmsLogPage(p => p - 1)} disabled={smsLogPage === 0}>← Prev</button>
+                <span style={{ fontSize: '12px', color: COLORS.textMuted }}>
+                  Page {smsLogPage + 1} of {Math.ceil(smsLogs.length / SMS_PAGE_SIZE)}
+                </span>
+                <button style={S.btnSm('secondary')} onClick={() => setSmsLogPage(p => p + 1)} disabled={(smsLogPage + 1) * SMS_PAGE_SIZE >= smsLogs.length}>Next →</button>
+              </div>
+            )}
           </div>
         ) : (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No SMS messages sent for this transaction yet.</div>
