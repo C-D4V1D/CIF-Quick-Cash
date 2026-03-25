@@ -1253,7 +1253,7 @@ export async function onRequest(context) {
         apiKey:           cfg.termiiApiKey || '',
         baseUrl:          (cfg.termiiBaseUrl || 'https://v3.api.termii.com').replace(/\/$/, ''),
         senderId:         cfg.termiiSenderId || 'N-Alert',
-        channel:          cfg.termiiChannel  || 'generic',
+        channel:          (cfg.termiiSenderId && cfg.termiiSenderId !== 'N-Alert') ? 'dnd' : (cfg.termiiChannel || 'generic'),
         enabled:          cfg.smsEnabled === true,
         nairaPerCredit:   Math.max(1, Number(cfg.smsNairaPerCredit) || 5),
         dueDateDays:      Array.isArray(cfg.smsDueDateReminderDays)    ? cfg.smsDueDateReminderDays.map(Number)    : [2, 1, 0],

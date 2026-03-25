@@ -8136,7 +8136,11 @@ export default function App() {
                   <input style={S.input} type="password" value={es.termiiApiKey ?? ''} onChange={e => updateSettings({ ...es, termiiApiKey: e.target.value })} placeholder="From Termii dashboard" />
                 </Field>
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sender ID (From Name)<InfoIcon tip="The name that appears as the SMS sender. Must be approved by Termii. Default is 'N-Alert'." /></span>}>
-                  <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => updateSettings({ ...es, termiiSenderId: e.target.value })} placeholder="e.g. N-Alert or CIF Cash" />
+                  <input style={S.input} value={es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId} onChange={e => {
+                    const newId = e.target.value;
+                    const autoChannel = (newId && newId !== 'N-Alert') ? 'dnd' : 'generic';
+                    updateSettings({ ...es, termiiSenderId: newId, termiiChannel: autoChannel });
+                  }} placeholder="e.g. N-Alert or CIF Cash" />
                 </Field>
               </div>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SMS Channel<InfoIcon tip="Termii channel to use. Use 'generic' for the default N-Alert sender. Use 'dnd' if you have a registered custom Sender ID and want to reach DND numbers with it." /></span>}>
