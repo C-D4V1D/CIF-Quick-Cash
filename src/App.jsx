@@ -546,7 +546,11 @@ const checkGeminiLimit = (settings) => {
   return { blocked: false, remaining: dailyLimit - usedToday };
 };
 
-const checkSerpApiLimit = (settings) => {
+const checkSerpApiLimit = (settings, liveAccount = null) => {
+  if (liveAccount && typeof liveAccount.total_searches_left === 'number') {
+    if (liveAccount.total_searches_left <= 0) return { blocked: true, reason: `SerpApi monthly limit reached (${liveAccount.this_month_usage}/${liveAccount.searches_per_month}). Resets at the start of next month.` };
+    return { blocked: false, remaining: liveAccount.total_searches_left };
+  }
   const monthlyLimit = settings.serpApiMonthlyLimit || 250;
   const usedThisMonth = getSerpApiUsageThisMonth();
   if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
@@ -3749,7 +3753,7 @@ Then still reply with ALL 6 fields above with your best guess. Your CONFIDENCE s
       // visual identifier, and About Page/Spec Label (index 0) for OCR grounding.
       // Gemini will still see ALL photos; SerpApi only analyses these 2 most informative ones.
       if (hasSerpKey) {
-        const serpCheck = checkSerpApiLimit(settings);
+        const serpCheck = checkSerpApiLimit(settings, serpApiAccount);
         if (serpCheck.blocked) {
           console.warn('SerpApi skipped:', serpCheck.reason);
         } else {
@@ -4343,7 +4347,10 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           {/* API Usage Indicator */}
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: COLORS.textMuted, marginTop: '8px' }}>
             <span>Gemini: {getGeminiUsageToday()}/{settings.geminiDailyLimit || 100} today</span>
-            {settings.serpApiKey && <span>Google Lens: {getSerpApiUsageThisMonth()}/{settings.serpApiMonthlyLimit || 250} this month</span>}
+            {settings.serpApiKey && (serpApiAccount
+              ? <span>Google Lens: {serpApiAccount.this_month_usage}/{serpApiAccount.searches_per_month} this month</span>
+              : <span>Google Lens: {getSerpApiUsageThisMonth()}/{settings.serpApiMonthlyLimit || 250} this month</span>
+            )}
           </div>
 
           {/* ══════════════ RUN 1: Item Identification ══════════════ */}
@@ -5755,6 +5762,7 @@ export default function App() {
   const [smsCreditsLoading, setSmsCreditsLoading] = useState(false);
   const [showSmsRechargeModal, setShowSmsRechargeModal] = useState(false);
   const [smsAutoSendDone, setSmsAutoSendDone] = useState(false); // prevent firing twice per session
+  const [serpApiAccount, setSerpApiAccount] = useState(null); // live data from serpapi.com/account.json
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -5831,6 +5839,11 @@ export default function App() {
 
     // Sync API usage counts from DB so they survive deployments and work across devices.
     syncApiUsageFromDb();
+
+    // Fetch live SerpApi account stats (usage + plan limit) — does not consume quota.
+    API.get('serpapi-account').then(data => {
+      if (data && typeof data.this_month_usage === 'number') setSerpApiAccount(data);
+    }).catch(() => {});
 
     // Load large list datasets in the background so navigation/header remain interactive.
     const lists = await API.get('bootstrap?scope=transactions&limit=200&offset=0');
@@ -8051,7 +8064,10 @@ export default function App() {
                 <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '12px' }}>
                   <div>Gemini today: <strong>{getGeminiUsageToday()}</strong> / {es.geminiDailyLimit ?? DEFAULT_SETTINGS.geminiDailyLimit}</div>
                   <div>Gemini RPM: <strong>{getGeminiRpm()}</strong> / {es.geminiRpmLimit ?? DEFAULT_SETTINGS.geminiRpmLimit}</div>
-                  <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong> / {es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit}</div>
+                  {serpApiAccount
+                    ? <div>Google Lens this month: <strong>{serpApiAccount.this_month_usage}</strong> / {serpApiAccount.searches_per_month} <span style={{ color: COLORS.textMuted }}>(live from SerpApi{serpApiAccount.plan_name ? ` · ${serpApiAccount.plan_name}` : ''})</span></div>
+                    : <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong> / {es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit}</div>
+                  }
                 </div>
               </div>
             </div>
