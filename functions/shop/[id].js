@@ -45,6 +45,7 @@ export async function onRequestGet({ params, env, request }) {
         model: d.aiModel || '',
         itemType: d.aiItemType || d.captureItemType || 'Item',
         salePrice: d.salePrice || 0,
+        itemNewPrice: d.itemNewPrice > 0 ? d.itemNewPrice : (Number(d.aiNewMarketPrice) > 0 ? Number(d.aiNewMarketPrice) : 0),
         condition: d.shopCondition || d.aiCondition || '',
         keySpecs: d.aiKeySpecs || '',
         photoFront: photos[0] || null,
@@ -59,19 +60,24 @@ export async function onRequestGet({ params, env, request }) {
     const pageUrl = `${origin}/shop/${encodeURIComponent(id)}`;
     const priceStr = fmtPrice(item.salePrice);
     const nameParts = [item.brand, item.model].filter(Boolean).join(' ') || item.itemType;
-    const title = [nameParts, priceStr ? `\u2014 ${priceStr}` : '', '| CIF Quick Cash'].filter(Boolean).join(' ');
 
+    // Title: "Item Type | Brand Model — ₦Price | CIF Quick Cash"
+    const titleParts = [item.itemType];
+    const nameAndPrice = [nameParts, priceStr ? `\u2014 ${priceStr}` : ''].filter(Boolean).join(' ');
+    if (nameAndPrice) titleParts.push(nameAndPrice);
+    titleParts.push('CIF Quick Cash');
+    const title = titleParts.join(' | ');
+
+    // Description: "condition | Key Specs: ... | You save X% off new price: Selling fast - Buy now!"
     let desc = '';
     {
       const parts = [];
       if (item.condition) parts.push(item.condition);
       if (item.keySpecs) parts.push(`Key Specs: ${item.keySpecs}`);
-      if (!item.condition && !item.keySpecs) {
-        parts.push(item.itemType);
-        if (item.brand) parts.push(`by ${item.brand}`);
-      }
-      if (priceStr) parts.push(`for ${priceStr}`);
-      parts.push('\u2014 CIF Quick Cash, Enugwu-Aguleri, Anambra.');
+      const savingsPct = (item.itemNewPrice > 0 && item.salePrice > 0 && item.itemNewPrice > item.salePrice)
+        ? Math.round((item.itemNewPrice - item.salePrice) / item.itemNewPrice * 100)
+        : 0;
+      if (savingsPct > 0) parts.push(`You save ${savingsPct}% off new price: Selling fast - Buy now!`);
       desc = parts.join(' | ');
       if (desc.length > MAX_DESC_LENGTH) desc = desc.slice(0, MAX_DESC_LENGTH - 1) + '\u2026';
     }
