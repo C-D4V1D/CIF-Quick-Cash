@@ -392,6 +392,10 @@ const DEFAULT_SETTINGS = {
   smsDueTodayReminder: 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
   smsOwnershipReminder: 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
   smsOwnershipLastDay:  'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
+  smsOwnershipTransferredEnabled: true,
+  smsOwnershipTransferred: 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
+  smsOutrightConfirmationEnabled: true,
+  smsOutrightConfirmation: 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
   smsRechargeBank: '',
   smsRechargeAccountNumber: '',
   smsRechargeAccountName: '',
@@ -1425,6 +1429,7 @@ function SalesPage({ onBack, settings }) {
               )}
               {item.brand && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Brand: <strong>{item.brand}</strong></span>}
               {item.colour && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Colour: <strong>{item.colour}</strong></span>}
+              {item.keySpecs && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Key Specs: <strong>{item.keySpecs}</strong></span>}
             </div>
 
             {/* Description (shop note) */}
@@ -4015,7 +4020,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
     switch (WIZARD_STEPS[step]?.id) {
       case 'type': return true;
       case 'nin': return settings.requireNinVerification ? (tx.ninVerified && !!tx.ninPhoto) : tx.ninVerificationAttempted;
-      case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.familyName && tx.familyPhone && (tx.phonesVerified[0] || tx.phonesVerified[1]));
+      case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.phoneNumbers[0].length === 11 && (!tx.phoneNumbers[1] || tx.phoneNumbers[1].length === 11) && tx.familyName && tx.familyPhone && tx.familyPhone.length === 11 && (tx.phonesVerified[0] || tx.phonesVerified[1]));
       case 'custPhotos': return !!tx.photoCustomerHolding;
       case 'screening': {
         if (!tx.screeningDuration) return false;
@@ -4075,8 +4080,11 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         if (!tx.fullName) issues.push('Full name is required.');
         if (!tx.address) issues.push('Address is required.');
         if (!tx.phoneNumbers[0]) issues.push('Phone 1 is required.');
+        if (tx.phoneNumbers[0] && tx.phoneNumbers[0].length !== 11) issues.push('Phone 1 must be exactly 11 digits.');
+        if (tx.phoneNumbers[1] && tx.phoneNumbers[1].length !== 11) issues.push('Phone 2 must be exactly 11 digits.');
         if (!tx.familyName) issues.push('Family contact name is required.');
         if (!tx.familyPhone) issues.push('Family contact phone is required.');
+        if (tx.familyPhone && tx.familyPhone.length !== 11) issues.push('Family contact phone must be exactly 11 digits.');
         if (!tx.phonesVerified[0] && !tx.phonesVerified[1]) issues.push('You must mark at least one phone number as called before proceeding.');
         break;
       case 'custPhotos':
@@ -4205,7 +4213,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
   const renderStep = () => {
     const sid = WIZARD_STEPS[step]?.id;
     switch (sid) {
-      case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
+      case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div></div>);
 
       case 'nin': {
         const lowThreshold = Number(settings.ninLowCreditThreshold) || 5;
@@ -4323,7 +4331,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         );
       }
 
-      case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value.replace(/\D/g, ''); upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div></Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" value={tx.phoneNumbers[1]} onChange={e => { const val = e.target.value.replace(/\D/g, ''); const n = [...tx.phoneNumbers]; n[1] = val; upd('phoneNumbers', n); if (!val) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div></Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required><input style={S.input} inputMode="numeric" value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value.replace(/\D/g, ''))} placeholder="e.g. 08099887766" /></Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
+      case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" maxLength={11} value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value.replace(/\D/g, '').slice(0, 11); upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div>{tx.phoneNumbers[0] && tx.phoneNumbers[0].length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.phoneNumbers[0].length}/11)</div>}</Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" maxLength={11} value={tx.phoneNumbers[1]} onChange={e => { const val = e.target.value.replace(/\D/g, '').slice(0, 11); const n = [...tx.phoneNumbers]; n[1] = val; upd('phoneNumbers', n); if (!val) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div>{tx.phoneNumbers[1] && tx.phoneNumbers[1].length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.phoneNumbers[1].length}/11)</div>}</Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required><input style={S.input} inputMode="numeric" maxLength={11} value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08099887766" />{tx.familyPhone && tx.familyPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.familyPhone.length}/11)</div>}</Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
       case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
 
@@ -4561,6 +4569,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
       <div style={S.card}>{renderStep()}</div>
+      {tx.ref && <div style={{ textAlign: 'center', marginTop: '6px', fontSize: '11px', color: COLORS.textMuted }}>Ref: <strong>{tx.ref}</strong></div>}
       <div style={{ marginTop: '12px' }}>
         {step < WIZARD_STEPS.length - 1 && !canProceed() && blockReasons().length > 0 && (
           <div style={{ ...S.alert('danger'), marginBottom: '8px' }}>
@@ -4787,6 +4796,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const [salePrice, setSalePrice] = useState(listedPrice);
   const [saleDate, setSaleDate] = useState(localISODate());
   const [saleBuyer, setSaleBuyer] = useState('');
+  const [saleBuyerPhone, setSaleBuyerPhone] = useState('');
 
   // Pre-fill condition from existing intake data if it matches a dropdown option
   const intakeCondition = tx.shopCondition || tx.aiCondition || tx.conditionDescription || '';
@@ -4823,13 +4833,14 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
     setSalePhotos(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const canConfirm = salePrice >= minPrice && !!saleCondition;
+  const canConfirm = salePrice >= minPrice && !!saleCondition && !!saleBuyer.trim() && saleBuyerPhone.length === 11;
 
   return (
     <div>
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
       <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
-      <Field label="Buyer Name"><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} /></Field>
+      <Field label="Buyer Name" required><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} />{!saleBuyer.trim() && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer name is required</div>}</Field>
+      <Field label="Buyer Phone" required><input style={S.input} inputMode="numeric" maxLength={11} value={saleBuyerPhone} onChange={e => setSaleBuyerPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08012345678" />{saleBuyerPhone && saleBuyerPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Phone must be exactly 11 digits ({saleBuyerPhone.length}/11)</div>}{!saleBuyerPhone && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer phone is required</div>}</Field>
       <Field label="Condition at Sale" required>
         <select style={S.select} value={saleCondition} onChange={e => setSaleCondition(e.target.value)}>
           <option value="">— Select condition —</option>
@@ -4838,7 +4849,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
         {!saleCondition && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Condition is required before confirming sale</div>}
       </Field>
       <Field label="Sale Date"><input style={S.input} type="date" value={saleDate} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setSaleDate(e.target.value)} /></Field>
-      <div style={{ ...S.card, background: COLORS.primaryLight, textAlign: 'center', marginTop: '8px' }}><div style={S.statLabel}>Profit</div><div style={{ fontSize: '28px', fontWeight: 800, color: salePrice - tx.cashAdvance > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(salePrice - tx.cashAdvance)}</div></div>
+      <div style={{ ...S.card, background: COLORS.primaryLight, textAlign: 'center', marginTop: '8px' }}><div style={{ display: 'flex', justifyContent: 'space-around', gap: '12px', marginBottom: '8px' }}><div><div style={S.statLabel}>Amount Due (Cost)</div><div style={{ fontSize: '16px', fontWeight: 700, color: COLORS.text }}>{fmtMoney(tx.cashAdvance)}</div></div><div><div style={S.statLabel}>Sale Price</div><div style={{ fontSize: '16px', fontWeight: 700, color: COLORS.text }}>{fmtMoney(salePrice)}</div></div></div><div style={S.statLabel}>Profit</div><div style={{ fontSize: '28px', fontWeight: 800, color: salePrice - tx.cashAdvance > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(salePrice - tx.cashAdvance)}</div></div>
 
       {/* Photos at Sale */}
       <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '16px', paddingTop: '12px' }}>
@@ -4872,7 +4883,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, saleCondition, salePhotos, salePhotoNote, soldBy: currentUser?.name || '' })} disabled={!canConfirm}>✓ Confirm Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, saleBuyerPhone, saleCondition, salePhotos, salePhotoNote, soldBy: currentUser?.name || '' })} disabled={!canConfirm}>✓ Confirm Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
   );
 }
@@ -7028,7 +7039,10 @@ export default function App() {
         return (
           <div>
             {listLoadingNotice}
-            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🏷 For Sale</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🏷 For Sale</h2>
+              <a href="/shop" target="_blank" rel="noopener noreferrer" style={{ fontSize: '13px', fontWeight: 600, color: COLORS.primary, textDecoration: 'underline', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>🛍 View Public Shop ↗</a>
+            </div>
 
             {/* ── Stat Cards ── */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
@@ -8374,6 +8388,20 @@ export default function App() {
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Last Day of Ownership<InfoIcon tip="Sent on the internal deadline day — the final day before the business fully owns the item. This is the most urgent message." /></span>}>
                 <textarea style={S.textarea} value={es.smsOwnershipLastDay ?? DEFAULT_SETTINGS.smsOwnershipLastDay} onChange={e => updateSettings({ ...es, smsOwnershipLastDay: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Transferred (day after last day)<InfoIcon tip="Sent the morning after the internal deadline — a receipt/confirmation that the business has acquired the item and it will be listed for public sale. Placeholders: {customerName}, {ref}, {amount} (cashAdvance + accumulated interest), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled} onChange={e => updateSettings({ ...es, smsOwnershipTransferredEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled) ? 1 : 0.45 }} value={es.smsOwnershipTransferred ?? DEFAULT_SETTINGS.smsOwnershipTransferred} onChange={e => updateSettings({ ...es, smsOwnershipTransferred: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Confirmation<InfoIcon tip="Sent on the day of an outright purchase — a receipt confirming we received the item and paid the seller. Placeholders: {customerName}, {ref}, {amount} (price paid), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled} onChange={e => updateSettings({ ...es, smsOutrightConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled) ? 1 : 0.45 }} value={es.smsOutrightConfirmation ?? DEFAULT_SETTINGS.smsOutrightConfirmation} onChange={e => updateSettings({ ...es, smsOutrightConfirmation: e.target.value })} />
               </Field>
             </div>
 

@@ -700,6 +700,41 @@ export async function onRequest(context) {
         txAction = 'update'; txDesc = `🔄 Transaction updated — ${tx.ref}`;
       }
       await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
+
+      // ── Immediate outright-purchase confirmation SMS ──
+      // Sent right when the transaction is created, not via the nightly cron.
+      if (tx.type === 'outright') {
+        try {
+          const smsCfg = await loadSmsConfig();
+          if (smsCfg.enabled && smsCfg.outrightConfirmationEnabled) {
+            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const phone = toIntlPhone(rawPhone);
+            if (phone) {
+              const triggerType = 'outright_confirmation';
+              const today = todayNigeria();
+              const alreadySent = await db.prepare(
+                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+              ).bind(tx.ref, triggerType, today).first();
+              if (!alreadySent) {
+                const message = fillSmsTemplate(smsCfg.tmplOutrightConfirmation, {
+                  customerName: tx.fullName,
+                  ref: tx.ref,
+                  amount: fmtN(tx.cashAdvance),
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await db.prepare(
+                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(tx.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+              }
+            }
+          }
+        } catch (_smsErr) {
+          // SMS failure must never block the transaction save
+        }
+      }
+
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'PUT') {
@@ -1206,6 +1241,7 @@ export async function onRequest(context) {
           // Device identifiers — shown publicly to help buyers verify authenticity
           imei: d.imei || null,
           serialNumber: d.serialNumber || null,
+          keySpecs: d.aiKeySpecs || '',
         };
       });
 
@@ -1262,10 +1298,15 @@ export async function onRequest(context) {
         tmplDueToday:     cfg.smsDueTodayReminder || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
         tmplOwnReminder:  cfg.smsOwnershipReminder || 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
         tmplOwnToday:     cfg.smsOwnershipLastDay  || 'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
+        tmplOwnTransferred: cfg.smsOwnershipTransferred || 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
+        ownTransferredEnabled: cfg.smsOwnershipTransferredEnabled !== false,
+        tmplOutrightConfirmation: cfg.smsOutrightConfirmation || 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
+        outrightConfirmationEnabled: cfg.smsOutrightConfirmationEnabled !== false,
         businessName:     cfg.businessName || 'CIF Quick Cash',
         shopPhone:        cfg.shopPhone1 || '',
         maxLoanDays:      Math.max(1, Number(cfg.maxLoanDays) || 30),
         graceDays:        Math.max(0, Number(cfg.graceDays) || 3),
+        interestRate:     Math.max(0, Number(cfg.interestRate) || 1),
       };
     };
 
@@ -1476,6 +1517,8 @@ export async function onRequest(context) {
         const rawPhone = txData.phoneNumbers?.[0] || '';
         if (!rawPhone) { skipped.push({ ref: row.ref, reason: 'no_phone' }); continue; }
         const phone = toIntlPhone(rawPhone);
+        const rawPhone2 = txData.phoneNumbers?.[1] || '';
+        const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
 
         const internalDeadline = addDaysToDate(txData.dateGiven, smsCfg.maxLoanDays);
         const customerDueDate  = txData.deadlineDate || addDaysToDate(txData.dateGiven, Number(txData.loanDays) || smsCfg.maxLoanDays);
@@ -1524,6 +1567,23 @@ export async function onRequest(context) {
           }
         }
 
+        // Ownership-transferred receipt: fires the day AFTER the internal deadline (ownership day + 1)
+        const dayAfterDeadline = addDaysToDate(internalDeadline, 1);
+        if (dayAfterDeadline === today && smsCfg.ownTransferredEnabled) {
+          const dailyFee = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
+          const settlementAmount = (txData.cashAdvance || 0) + smsCfg.maxLoanDays * dailyFee;
+          triggers.push({
+            triggerType: 'ownership_transferred',
+            message: fillSmsTemplate(smsCfg.tmplOwnTransferred, {
+              customerName: txData.fullName,
+              ref: row.ref,
+              amount: fmtN(settlementAmount),
+              businessName: smsCfg.businessName,
+              shopPhone: smsCfg.shopPhone,
+            }),
+          });
+        }
+
         for (const { triggerType, message } of triggers) {
           // Idempotency: skip if already sent today (Nigeria date) for this trigger
           const alreadySent = await db.prepare(
@@ -1537,6 +1597,16 @@ export async function onRequest(context) {
           ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
 
           (ok ? sent : failed).push({ ref: row.ref, triggerType, phone, usedFallback });
+
+          // Also send to phone 2 if provided and different from phone 1
+          if (phone2) {
+            const { ok: ok2, messageId: messageId2, response: response2, usedFallback: usedFallback2 } = await termiiSend(smsCfg, phone2, message);
+            await db.prepare(
+              'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            ).bind(row.ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+
+            (ok2 ? sent : failed).push({ ref: row.ref, triggerType: triggerType + '_phone2', phone: phone2, usedFallback: usedFallback2 });
+          }
         }
       }
 
