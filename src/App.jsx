@@ -5008,7 +5008,19 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const [smsLogs, setSmsLogs] = useState(null);
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
-  const [smsSendMsg, setSmsSendMsg] = useState('');
+  const [smsSendMsg, setSmsSendMsg] = useState(() => {
+    if (tx.type !== 'advance') return '';
+    const tmpl = settings.smsDueDateReminder || DEFAULT_SETTINGS.smsDueDateReminder;
+    const fmtN = n => '₦' + Number(n || 0).toLocaleString('en-NG');
+    return tmpl
+      .replace(/\{customerName\}/g, tx.fullName || '')
+      .replace(/\{ref\}/g, tx.ref || '')
+      .replace(/\{amount\}/g, fmtN(tx.cashAdvance))
+      .replace(/\{daysLeft\}/g, customerDaysLeft != null ? String(customerDaysLeft) : '')
+      .replace(/\{daysOverdue\}/g, '')
+      .replace(/\{businessName\}/g, settings.businessName || 'CIF Quick Cash')
+      .replace(/\{shopPhone\}/g, settings.shopPhone1 || '');
+  });
   const [smsResult, setSmsResult] = useState(null);
   useEffect(() => {
     if (!tx?.ref) return;
@@ -8120,6 +8132,11 @@ export default function App() {
                   <option value="generic">generic (default — uses N-Alert for DND numbers)</option>
                   <option value="dnd">dnd (custom Sender ID, reaches DND numbers)</option>
                 </select>
+                {(es.termiiChannel ?? DEFAULT_SETTINGS.termiiChannel) === 'generic' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId) !== 'N-Alert' && (es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId).trim() !== '' && (
+                  <div style={{ ...S.alert('warning'), marginTop: '6px', fontSize: '12px' }}>
+                    ⚠️ You have a custom Sender ID ("<strong>{es.termiiSenderId ?? DEFAULT_SETTINGS.termiiSenderId}</strong>") but the channel is set to <strong>generic</strong>. Custom Sender IDs require the <strong>dnd</strong> channel — SMS will fail with an "ApplicationSenderId not found" error until you switch to <strong>dnd</strong>.
+                  </div>
+                )}
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Termii Base URL<InfoIcon tip="The Termii API base URL. Default is https://v3.api.termii.com. Only change this if Termii updates their API endpoint." /></span>}>
                 <input style={S.input} value={es.termiiBaseUrl ?? DEFAULT_SETTINGS.termiiBaseUrl} onChange={e => updateSettings({ ...es, termiiBaseUrl: e.target.value })} placeholder="https://v3.api.termii.com" />
