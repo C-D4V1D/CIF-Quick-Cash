@@ -1206,6 +1206,7 @@ export async function onRequest(context) {
           // Device identifiers — shown publicly to help buyers verify authenticity
           imei: d.imei || null,
           serialNumber: d.serialNumber || null,
+          keySpecs: d.aiKeySpecs || '',
         };
       });
 
@@ -1476,6 +1477,8 @@ export async function onRequest(context) {
         const rawPhone = txData.phoneNumbers?.[0] || '';
         if (!rawPhone) { skipped.push({ ref: row.ref, reason: 'no_phone' }); continue; }
         const phone = toIntlPhone(rawPhone);
+        const rawPhone2 = txData.phoneNumbers?.[1] || '';
+        const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
 
         const internalDeadline = addDaysToDate(txData.dateGiven, smsCfg.maxLoanDays);
         const customerDueDate  = txData.deadlineDate || addDaysToDate(txData.dateGiven, Number(txData.loanDays) || smsCfg.maxLoanDays);
@@ -1537,6 +1540,16 @@ export async function onRequest(context) {
           ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
 
           (ok ? sent : failed).push({ ref: row.ref, triggerType, phone, usedFallback });
+
+          // Also send to phone 2 if provided and different from phone 1
+          if (phone2) {
+            const { ok: ok2, messageId: messageId2, response: response2, usedFallback: usedFallback2 } = await termiiSend(smsCfg, phone2, message);
+            await db.prepare(
+              'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+            ).bind(row.ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+
+            (ok2 ? sent : failed).push({ ref: row.ref, triggerType: triggerType + '_phone2', phone: phone2, usedFallback: usedFallback2 });
+          }
         }
       }
 

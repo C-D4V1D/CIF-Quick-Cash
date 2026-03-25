@@ -1425,6 +1425,7 @@ function SalesPage({ onBack, settings }) {
               )}
               {item.brand && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Brand: <strong>{item.brand}</strong></span>}
               {item.colour && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Colour: <strong>{item.colour}</strong></span>}
+              {item.keySpecs && <span style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', fontSize: '13px', fontWeight: 500, color: '#374151', background: '#f9fafb' }}>Key Specs: <strong>{item.keySpecs}</strong></span>}
             </div>
 
             {/* Description (shop note) */}
@@ -4205,7 +4206,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
   const renderStep = () => {
     const sid = WIZARD_STEPS[step]?.id;
     switch (sid) {
-      case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div><div style={{ marginTop: '16px', padding: '12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12px', color: COLORS.textMuted }}><strong>Ref:</strong> {tx.ref}</div></div>);
+      case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div></div>);
 
       case 'nin': {
         const lowThreshold = Number(settings.ninLowCreditThreshold) || 5;
@@ -4561,6 +4562,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
       </div>
       <div style={S.card}>{renderStep()}</div>
+      {tx.ref && <div style={{ textAlign: 'center', marginTop: '6px', fontSize: '11px', color: COLORS.textMuted }}>Ref: <strong>{tx.ref}</strong></div>}
       <div style={{ marginTop: '12px' }}>
         {step < WIZARD_STEPS.length - 1 && !canProceed() && blockReasons().length > 0 && (
           <div style={{ ...S.alert('danger'), marginBottom: '8px' }}>
@@ -4787,6 +4789,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const [salePrice, setSalePrice] = useState(listedPrice);
   const [saleDate, setSaleDate] = useState(localISODate());
   const [saleBuyer, setSaleBuyer] = useState('');
+  const [saleBuyerPhone, setSaleBuyerPhone] = useState('');
 
   // Pre-fill condition from existing intake data if it matches a dropdown option
   const intakeCondition = tx.shopCondition || tx.aiCondition || tx.conditionDescription || '';
@@ -4830,6 +4833,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
       <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
       <Field label="Buyer Name"><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} /></Field>
+      <Field label="Buyer Phone"><input style={S.input} inputMode="numeric" value={saleBuyerPhone} onChange={e => setSaleBuyerPhone(e.target.value.replace(/\D/g, ''))} placeholder="e.g. 08012345678" /></Field>
       <Field label="Condition at Sale" required>
         <select style={S.select} value={saleCondition} onChange={e => setSaleCondition(e.target.value)}>
           <option value="">— Select condition —</option>
@@ -4838,7 +4842,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
         {!saleCondition && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Condition is required before confirming sale</div>}
       </Field>
       <Field label="Sale Date"><input style={S.input} type="date" value={saleDate} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setSaleDate(e.target.value)} /></Field>
-      <div style={{ ...S.card, background: COLORS.primaryLight, textAlign: 'center', marginTop: '8px' }}><div style={S.statLabel}>Profit</div><div style={{ fontSize: '28px', fontWeight: 800, color: salePrice - tx.cashAdvance > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(salePrice - tx.cashAdvance)}</div></div>
+      <div style={{ ...S.card, background: COLORS.primaryLight, textAlign: 'center', marginTop: '8px' }}><div style={{ display: 'flex', justifyContent: 'space-around', gap: '12px', marginBottom: '8px' }}><div><div style={S.statLabel}>Amount Due (Cost)</div><div style={{ fontSize: '16px', fontWeight: 700, color: COLORS.text }}>{fmtMoney(tx.cashAdvance)}</div></div><div><div style={S.statLabel}>Sale Price</div><div style={{ fontSize: '16px', fontWeight: 700, color: COLORS.text }}>{fmtMoney(salePrice)}</div></div></div><div style={S.statLabel}>Profit</div><div style={{ fontSize: '28px', fontWeight: 800, color: salePrice - tx.cashAdvance > 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(salePrice - tx.cashAdvance)}</div></div>
 
       {/* Photos at Sale */}
       <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '16px', paddingTop: '12px' }}>
@@ -4872,7 +4876,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, saleCondition, salePhotos, salePhotoNote, soldBy: currentUser?.name || '' })} disabled={!canConfirm}>✓ Confirm Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, saleBuyerPhone, saleCondition, salePhotos, salePhotoNote, soldBy: currentUser?.name || '' })} disabled={!canConfirm}>✓ Confirm Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
   );
 }
@@ -7028,7 +7032,10 @@ export default function App() {
         return (
           <div>
             {listLoadingNotice}
-            <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '16px', color: COLORS.primaryDark }}>🏷 For Sale</h2>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>🏷 For Sale</h2>
+              <a href="/shop" target="_blank" rel="noopener noreferrer" style={{ fontSize: '13px', fontWeight: 600, color: COLORS.primary, textDecoration: 'underline', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>🛍 View Public Shop ↗</a>
+            </div>
 
             {/* ── Stat Cards ── */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '20px' }}>
