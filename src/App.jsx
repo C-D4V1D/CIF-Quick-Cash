@@ -772,6 +772,15 @@ const S = {
   hamburger: { background: 'none', border: 'none', color: '#fff', fontSize: '22px', cursor: 'pointer', padding: '4px 6px', lineHeight: 1, display: 'flex', alignItems: 'center' },
 };
 
+const SETTINGS_TABS = [
+  { id: 'business', label: 'Business', icon: '🏢', desc: 'Profile, contact & receipts' },
+  { id: 'finance', label: 'Finance', icon: '💰', desc: 'Loans, sales & profit' },
+  { id: 'categories', label: 'Categories', icon: '📦', desc: 'Items & expenses' },
+  { id: 'messaging', label: 'Messaging', icon: '💬', desc: 'WhatsApp & SMS' },
+  { id: 'integrations', label: 'Integrations', icon: '🔑', desc: 'APIs & identity' },
+  { id: 'security', label: 'Security', icon: '🔒', desc: 'Access & data' },
+];
+
 // ============================================================
 // REUSABLE COMPONENTS
 // ============================================================
@@ -5882,6 +5891,7 @@ export default function App() {
   const [settingsPwdInput, setSettingsPwdInput] = useState('');
   const [settingsPwdError, setSettingsPwdError] = useState('');
   const [settingsPwdLoading, setSettingsPwdLoading] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('business');
   // Lifted modal form state — prevents form fields resetting when App re-renders while a modal is open
   const [expForm, setExpForm] = useState({ date: '', category: '', description: '', amount: '' });
   const [distForm, setDistForm] = useState({ date: '', amount: '', method: '', note: '', receipt: '' });
@@ -7979,7 +7989,19 @@ export default function App() {
         return (
         <div style={{ paddingBottom: hasUnsaved ? '80px' : 0 }}>
           <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '4px', color: COLORS.primaryDark }}>⚙ Settings</h2>
-          <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px' }}>Manage every aspect of your business from one place. Edit settings below and click <strong>Save Changes</strong> when done.</div>
+          <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Manage every aspect of your business from one place. Edit settings below and click <strong>Save Changes</strong> when done.</div>
+
+          {/* ── SETTINGS TAB NAVIGATION ── */}
+          <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '20px', padding: '6px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}`, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
+            {SETTINGS_TABS.map(tab => (
+              <button key={tab.id} onClick={() => setSettingsTab(tab.id)} title={tab.desc} style={{ padding: '9px 16px', borderRadius: '8px', border: 'none', fontWeight: settingsTab === tab.id ? 700 : 500, fontSize: '13px', cursor: 'pointer', background: settingsTab === tab.id ? COLORS.primary : 'transparent', color: settingsTab === tab.id ? '#fff' : COLORS.text, display: 'inline-flex', alignItems: 'center', gap: '6px', transition: 'all 0.15s', whiteSpace: 'nowrap' }}>
+                {tab.icon} {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* ══════════════════ TAB: BUSINESS ══════════════════ */}
+          {settingsTab === 'business' && <>
 
           {/* ── 1. BUSINESS PROFILE ── */}
           <div style={S.card}>
@@ -8021,6 +8043,11 @@ export default function App() {
               <input style={S.input} value={es.shopMapsUrl || ''} onChange={e => updateSettings({ ...es, shopMapsUrl: e.target.value })} placeholder="Paste a Google Maps share link here. If blank, falls back to a Google Search." />
             </Field>
           </div>
+
+          </>}{/* ── end: business tab (part 1) ── */}
+
+          {/* ══════════════════ TAB: FINANCE ══════════════════ */}
+          {settingsTab === 'finance' && <>
 
           {/* ── 3. LOAN PARAMETERS ── */}
           <div style={S.card}>
@@ -8112,6 +8139,11 @@ export default function App() {
             </div>
           </div>
 
+          </>}{/* ── end: finance tab (part 1) ── */}
+
+          {/* ══════════════════ TAB: CATEGORIES ══════════════════ */}
+          {settingsTab === 'categories' && <>
+
           {/* ── 6. ITEM CATEGORIES ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>📦 Item Categories</div>
@@ -8147,6 +8179,11 @@ export default function App() {
               <button style={S.btn('primary')} onClick={() => { const inp = document.getElementById('newExpCatInput'); if (inp && inp.value.trim()) { const cats = [...(es.expenseCategories || DEFAULT_SETTINGS.expenseCategories), inp.value.trim()]; updateSettings({ ...es, expenseCategories: cats }); inp.value = ''; } }}>+ Add</button>
             </div>
           </div>
+
+          </>}{/* ── end: categories tab ── */}
+
+          {/* ══════════════════ TAB: INTEGRATIONS ══════════════════ */}
+          {settingsTab === 'integrations' && <>
 
           {/* ── 9. IDENTITY VERIFICATION ── */}
           <div style={S.card}>
@@ -8229,10 +8266,15 @@ export default function App() {
             </div>
           </div>
 
+          </>}{/* ── end: integrations tab ── */}
+
+          {/* ══════════════════ TAB: MESSAGING ══════════════════ */}
+          {settingsTab === 'messaging' && <>
+
           {/* ── 11. WHATSAPP MESSAGE TEMPLATES ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>💬 WhatsApp Message Templates</div>
-            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Pre-written messages for common customer communications. Use placeholders: <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{customerName}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{ref}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{amount}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{shopPhone}'}</code> <code style={{ background: COLORS.bg, padding: '2px 6px', borderRadius: '4px', fontSize: '12px' }}>{'{businessName}'}</code></div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Pre-written messages for common customer communications. Use placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 }}>{'{shopPhone}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontWeight: 600 }}>{'{businessName}'}</code></div>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Reminder<InfoIcon tip="Sent to customers a few days before their loan is due. Helps reduce overdue rates." /></span>}>
               <textarea style={S.textarea} value={es.whatsappLoanReminder ?? DEFAULT_SETTINGS.whatsappLoanReminder} onChange={e => updateSettings({ ...es, whatsappLoanReminder: e.target.value })} />
             </Field>
@@ -8319,7 +8361,7 @@ export default function App() {
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💬 SMS Message Templates</div>
               <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
-                Customize each auto-SMS. Available placeholders: <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{customerName}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{ref}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{amount}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{businessName}'}</code> <code style={{ background: COLORS.bg, padding: '1px 5px', borderRadius: '4px' }}>{'{shopPhone}'}</code>
+                Customize each auto-SMS. Available placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{businessName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopPhone}'}</code>
               </div>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Date Reminder (X days before)<InfoIcon tip="Sent X days before the customer's agreed due date. The {daysLeft} placeholder shows how many days remain." /></span>}>
                 <textarea style={S.textarea} value={es.smsDueDateReminder ?? DEFAULT_SETTINGS.smsDueDateReminder} onChange={e => updateSettings({ ...es, smsDueDateReminder: e.target.value })} />
@@ -8355,6 +8397,11 @@ export default function App() {
             </div>
           </div>
 
+          </>}{/* ── end: messaging tab ── */}
+
+          {/* ══════════════════ TAB: BUSINESS (part 2) ══════════════════ */}
+          {settingsTab === 'business' && <>
+
           {/* ── 13. RECEIPT & AGREEMENT ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🧾 Receipt &amp; Agreement Customization</div>
@@ -8366,6 +8413,11 @@ export default function App() {
               <input style={S.input} value={es.receiptFooter ?? DEFAULT_SETTINGS.receiptFooter} onChange={e => updateSettings({ ...es, receiptFooter: e.target.value })} placeholder="Thank you for your patronage!" />
             </Field>
           </div>
+
+          </>}{/* ── end: business tab (part 2) ── */}
+
+          {/* ══════════════════ TAB: FINANCE (part 2) ══════════════════ */}
+          {settingsTab === 'finance' && <>
 
           {/* ── 13. PROFIT SHARING ── */}
           <div style={S.card}>
@@ -8419,6 +8471,11 @@ export default function App() {
             )}
           </div>
 
+          </>}{/* ── end: finance tab (part 2) ── */}
+
+          {/* ══════════════════ TAB: SECURITY ══════════════════ */}
+          {settingsTab === 'security' && <>
+
           {/* ── 15. SECURITY ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>🔒 Security &amp; Access Control</div>
@@ -8458,6 +8515,8 @@ export default function App() {
               <button style={S.btn('danger')} onClick={() => { if (window.confirm('Reset ALL settings to factory defaults? This cannot be undone.') && window.confirm('Are you absolutely sure? This will wipe all your custom settings.')) { updateSettings({ ...DEFAULT_SETTINGS }); } }}>Reset All Settings to Defaults</button>
             </div>
           </div>
+
+          </>}{/* ── end: security tab ── */}
 
           {/* ── STICKY SAVE BAR ── */}
           {hasUnsaved && (
