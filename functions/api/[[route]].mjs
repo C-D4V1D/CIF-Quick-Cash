@@ -293,6 +293,28 @@ export async function onRequest(context) {
       .run();
   };
 
+  // Helper: Normalize Termii delivery status to standard format
+  const normalizeDeliveryStatus = (rawStatus) => {
+    if (!rawStatus) return null;
+    const status = String(rawStatus).toLowerCase().trim();
+
+    // Map various Termii status formats to standardized internal statuses
+    if (status.includes('deliver')) return 'DeliveredToTerminal';
+    if (status.includes('success')) return 'DeliveredToTerminal';
+    if (status.includes('expired') || status.includes('expire')) return 'Expired';
+    if (status.includes('dnd')) return 'DND';
+    if (status.includes('undeliver')) return 'Undeliverable';
+    if (status.includes('fail') || status.includes('failed')) return 'Failed';
+    if (status.includes('reject') || status.includes('rejected')) return 'Rejected';
+    if (status.includes('invalid')) return 'InvalidNumber';
+    if (status.includes('pending')) return 'Pending';
+    if (status === '404' || status.includes('not found')) return 'NotFound';
+
+    // Return the original status if we can't normalize it
+    return String(rawStatus);
+  };
+
+
   // Extract R2 keys from all photo fields in a draft/transaction data object.
   const extractPhotoKeys = (data) => {
     const keys = [];
@@ -1707,20 +1729,23 @@ export async function onRequest(context) {
         }
 
         if (termiiStatus) {
-          // Update our database with the status from Termii
+          // Normalize the status before storing
+          const normalizedStatus = normalizeDeliveryStatus(termiiStatus);
+
+          // Update our database with the normalized status from Termii
           await db.prepare(
             'UPDATE sms_logs SET delivery_status = ? WHERE message_id = ?'
-          ).bind(termiiStatus, messageId).run();
+          ).bind(normalizedStatus, messageId).run();
 
-          console.log(`[SMS STATUS CHECK] ${timestamp} - Updated delivery_status to: ${termiiStatus}`);
+          console.log(`[SMS STATUS CHECK] ${timestamp} - Updated delivery_status to: ${normalizedStatus} (raw: ${termiiStatus})`);
 
           return json({
             ok: true,
             message_id: messageId,
-            termii_status: termiiStatus,
+            termii_status: normalizedStatus,
             local_status: smsLog.delivery_status,
             updated: true,
-            message: `Status updated from Termii: ${termiiStatus}`,
+            message: `Status updated from Termii: ${normalizedStatus}`,
             source: successfulUrl
           });
         } else {
@@ -2063,21 +2088,24 @@ export async function onRequest(context) {
         const timestamp = new Date().toISOString();
 
         // Log webhook received
-        console.log(`[SMS WEBHOOK] ${timestamp} - Received DLR: message_id=${messageId}, status=${deliveryStatus}, full_payload=${JSON.stringify(payload)}`);
+        console.log(`[SMS WEBHOOK] ${timestamp} - Received DLR: message_id=${messageId}, raw_status=${deliveryStatus}, full_payload=${JSON.stringify(payload)}`);
 
         if (!messageId || !deliveryStatus) {
           console.error(`[SMS WEBHOOK] ${timestamp} - ERROR: Missing required fields. message_id=${messageId}, status=${deliveryStatus}`);
           return json({ ok: false, error: 'Missing message_id or status' }, 400);
         }
 
-        // Update database with delivery status
+        // Normalize the delivery status to a standard format
+        const normalizedStatus = normalizeDeliveryStatus(deliveryStatus);
+
+        // Update database with normalized delivery status
         const result = await db.prepare(
           "UPDATE sms_logs SET delivery_status = ? WHERE message_id = ?"
-        ).bind(deliveryStatus, messageId).run();
+        ).bind(normalizedStatus, messageId).run();
 
         // Log the result
         if (result.success) {
-          console.log(`[SMS WEBHOOK] ${timestamp} - SUCCESS: Updated message_id=${messageId} to status=${deliveryStatus}`);
+          console.log(`[SMS WEBHOOK] ${timestamp} - SUCCESS: Updated message_id=${messageId} to status=${normalizedStatus} (raw: ${deliveryStatus})`);
         } else {
           console.warn(`[SMS WEBHOOK] ${timestamp} - WARNING: Database update may have failed. message_id=${messageId}, result=${JSON.stringify(result)}`);
         }
@@ -2087,11 +2115,11 @@ export async function onRequest(context) {
           "SELECT id, delivery_status FROM sms_logs WHERE message_id = ? LIMIT 1"
         ).bind(messageId).first();
 
-        if (updated?.delivery_status === deliveryStatus) {
-          console.log(`[SMS WEBHOOK] ${timestamp} - VERIFIED: Database record confirmed. message_id=${messageId} now has delivery_status=${deliveryStatus}`);
+        if (updated?.delivery_status === normalizedStatus) {
+          console.log(`[SMS WEBHOOK] ${timestamp} - VERIFIED: Database record confirmed. message_id=${messageId} now has delivery_status=${normalizedStatus}`);
           return json({ ok: true, verified: true });
         } else {
-          console.error(`[SMS WEBHOOK] ${timestamp} - ERROR: Database update not verified. message_id=${messageId}, expected=${deliveryStatus}, found=${updated?.delivery_status}`);
+          console.error(`[SMS WEBHOOK] ${timestamp} - ERROR: Database update not verified. message_id=${messageId}, expected=${normalizedStatus}, found=${updated?.delivery_status}`);
           return json({ ok: true, warning: 'Database update may not have succeeded' });
         }
       } catch (e) {

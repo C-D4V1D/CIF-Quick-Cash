@@ -5547,14 +5547,25 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           <div>
             {smsLogs.slice(smsLogPage * SMS_PAGE_SIZE, (smsLogPage + 1) * SMS_PAGE_SIZE).map((entry, i, page) => {
                 const dlr = entry.delivery_status;
-                const dlrColor = dlr === 'DeliveredToTerminal' ? '#10b981'
-                  : dlr === 'Expired' || dlr === 'DND' || dlr === 'Undeliverable' ? '#dc2626'
-                  : dlr ? '#f59e0b' : null;
-                const dlrLabel = dlr === 'DeliveredToTerminal' ? '✓ Delivered'
-                  : dlr === 'Expired' ? '✗ Expired'
-                  : dlr === 'DND' ? '✗ DND'
-                  : dlr === 'Undeliverable' ? '✗ Undeliverable'
-                  : dlr || null;
+                // Map delivery status to user-friendly label and color
+                const getDeliveryStatusDisplay = (status) => {
+                  if (!status) return { label: null, color: null };
+                  const s = status.toLowerCase();
+                  if (s.includes('deliver')) return { label: '✓ Delivered', color: '#10b981' };
+                  if (s.includes('success')) return { label: '✓ Delivered', color: '#10b981' };
+                  if (s === 'expired') return { label: '✗ Expired', color: '#dc2626' };
+                  if (s === 'dnd') return { label: '✗ Do Not Disturb', color: '#dc2626' };
+                  if (s === 'undeliverable') return { label: '✗ Undeliverable', color: '#dc2626' };
+                  if (s === 'failed') return { label: '✗ Failed', color: '#dc2626' };
+                  if (s === 'rejected') return { label: '✗ Rejected', color: '#dc2626' };
+                  if (s === 'invalidnumber') return { label: '✗ Invalid Number', color: '#dc2626' };
+                  if (s === 'notfound') return { label: '⚠ Status Unknown', color: '#f59e0b' };
+                  if (s === 'pending') return { label: '⏳ Pending', color: '#f59e0b' };
+                  return { label: null, color: null };
+                };
+                const dlrDisplay = getDeliveryStatusDisplay(dlr);
+                const dlrLabel = dlrDisplay.label;
+                const dlrColor = dlrDisplay.color;
                 return (
               <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < page.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
