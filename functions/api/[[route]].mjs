@@ -1801,9 +1801,16 @@ export async function onRequest(context) {
       const phone = toIntlPhone(rawPhone);
       const message = `${smsCfg.businessName}: This is a test SMS from your CIF Cash app. If you received this, your Termii configuration is working!`;
       const { ok, messageId, response, usedFallback, primaryResponse } = await termiiSend(smsCfg, phone, message);
+
+      // Log the test SMS to sms_logs so it can be tracked
+      const inserted = await db.prepare(
+        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'test_send', ?, ?, ?, ?, ?)"
+      ).bind('TEST-SMS', message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+
       return json({
         ok,
         messageId,
+        logId: inserted.meta.last_row_id,
         response,
         usedFallback,
         primaryResponse,
