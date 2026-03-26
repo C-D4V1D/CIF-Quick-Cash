@@ -1662,24 +1662,48 @@ export async function onRequest(context) {
           return json({ error: 'SMS not found in logs', message_id: messageId }, 404);
         }
 
-        // Query Termii for delivery status using their fetch endpoint
-        // Try the message history endpoint
-        const termiiUrl = `${smsCfg.baseUrl}/api/sms/message/${messageId}?api_key=${encodeURIComponent(smsCfg.apiKey)}`;
-        console.log(`[SMS STATUS CHECK] ${new Date().toISOString()} - Querying Termii: ${termiiUrl.replace(smsCfg.apiKey, '***')}`);
+        // Query Termii for delivery status - try multiple endpoints
+        const timestamp = new Date().toISOString();
+        const endpoints = [
+          `${smsCfg.baseUrl}/api/sms/message/${messageId}?api_key=${encodeURIComponent(smsCfg.apiKey)}`,
+          `${smsCfg.baseUrl}/api/sms/message?message_id=${messageId}&api_key=${encodeURIComponent(smsCfg.apiKey)}`,
+          `${smsCfg.baseUrl}/api/message-status?message_id=${messageId}&api_key=${encodeURIComponent(smsCfg.apiKey)}`
+        ];
 
-        const resp = await fetch(termiiUrl);
-        const data = await resp.json().catch(() => ({}));
-
-        console.log(`[SMS STATUS CHECK] ${new Date().toISOString()} - Termii response: ${JSON.stringify(data)}`);
-
-        // Parse various response formats from Termii
         let termiiStatus = null;
-        if (data?.delivery_status) {
-          termiiStatus = String(data.delivery_status);
-        } else if (data?.status) {
-          termiiStatus = String(data.status);
-        } else if (data?.message_status) {
-          termiiStatus = String(data.message_status);
+        let termiiResponse = null;
+        let successfulUrl = null;
+
+        for (const url of endpoints) {
+          const cleanUrl = url.replace(smsCfg.apiKey, '***');
+          console.log(`[SMS STATUS CHECK] ${timestamp} - Trying endpoint: ${cleanUrl}`);
+
+          try {
+            const resp = await fetch(url);
+            const data = await resp.json().catch(() => ({}));
+
+            console.log(`[SMS STATUS CHECK] ${timestamp} - Response (${resp.status}): ${JSON.stringify(data)}`);
+
+            // Parse various response formats from Termii
+            if (data?.delivery_status) {
+              termiiStatus = String(data.delivery_status);
+              termiiResponse = data;
+              successfulUrl = cleanUrl;
+              break;
+            } else if (data?.status && data.status !== '404' && !data.status?.includes('not found')) {
+              termiiStatus = String(data.status);
+              termiiResponse = data;
+              successfulUrl = cleanUrl;
+              break;
+            } else if (data?.message_status) {
+              termiiStatus = String(data.message_status);
+              termiiResponse = data;
+              successfulUrl = cleanUrl;
+              break;
+            }
+          } catch (e) {
+            console.warn(`[SMS STATUS CHECK] ${timestamp} - Endpoint error: ${e.message}`);
+          }
         }
 
         if (termiiStatus) {
@@ -1688,7 +1712,7 @@ export async function onRequest(context) {
             'UPDATE sms_logs SET delivery_status = ? WHERE message_id = ?'
           ).bind(termiiStatus, messageId).run();
 
-          console.log(`[SMS STATUS CHECK] ${new Date().toISOString()} - Updated delivery_status to: ${termiiStatus}`);
+          console.log(`[SMS STATUS CHECK] ${timestamp} - Updated delivery_status to: ${termiiStatus}`);
 
           return json({
             ok: true,
@@ -1696,19 +1720,22 @@ export async function onRequest(context) {
             termii_status: termiiStatus,
             local_status: smsLog.delivery_status,
             updated: true,
-            message: `Status updated from Termii: ${termiiStatus}`
+            message: `Status updated from Termii: ${termiiStatus}`,
+            source: successfulUrl
           });
         } else {
           // Termii didn't return a clear status
-          console.warn(`[SMS STATUS CHECK] ${new Date().toISOString()} - Could not parse status from Termii response`);
+          console.warn(`[SMS STATUS CHECK] ${timestamp} - Could not get status from any Termii endpoint`);
 
           return json({
             ok: false,
             message_id: messageId,
             local_status: smsLog.delivery_status,
             updated: false,
-            message: 'Termii did not return a clear delivery status',
-            termii_response: data
+            message: 'Could not retrieve delivery status from Termii API. The message_id may not exist in Termii\'s system, or the API endpoint format may have changed.',
+            termii_response: termiiResponse,
+            endpoints_tried: endpoints.length,
+            hint: 'This could mean: (1) Termii has no record of this message, (2) Termii API endpoint has changed, or (3) The message was never actually sent to Termii'
           });
         }
       } catch (e) {
