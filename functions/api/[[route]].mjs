@@ -805,9 +805,10 @@ export async function onRequest(context) {
         }
       }
 
-      // Auto-assign a shop item ref (shopId) when an item first becomes ready to sell
-      // or is listed for sale without one — so {shopRef} is always available in SMS templates.
-      if ((tx.status === 'ready_to_sell' || tx.status === 'for_sale') && !tx.shopId) {
+      // Auto-assign a shop item ref (shopId) when an item first becomes ready to sell,
+      // is listed for sale, or is sold directly while eligible — so {shopRef} is always
+      // available in SMS templates regardless of which path was taken.
+      if ((tx.status === 'ready_to_sell' || tx.status === 'for_sale' || tx.status === 'sold') && !tx.shopId) {
         tx.shopId = 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
       }
 
