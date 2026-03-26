@@ -805,6 +805,12 @@ export async function onRequest(context) {
         }
       }
 
+      // Auto-assign a shop item ref (shopId) when an item first becomes ready to sell
+      // or is listed for sale without one — so {shopRef} is always available in SMS templates.
+      if ((tx.status === 'ready_to_sell' || tx.status === 'for_sale') && !tx.shopId) {
+        tx.shopId = 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+      }
+
       await db
         .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
         .bind(JSON.stringify(tx), tx.status || 'active', ref)
@@ -912,9 +918,12 @@ export async function onRequest(context) {
               if (!alreadySent) {
                 const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
                 const itemDesc = [tx.aiBrand, tx.aiModel].filter(Boolean).join(' ') || tx.aiItemType || 'item';
+                // shopId is always set before 'sold' because items pass through for_sale/ready_to_sell first;
+                // the ref fallback is purely defensive for legacy records without a shopId.
                 const message = fillSmsTemplate(smsCfg.tmplSaleConfirmation, {
                   buyerName: tx.saleBuyer || '',
                   ref,
+                  shopRef: tx.shopId || ref,
                   amount: fmtSms(tx.salePrice),
                   itemDesc,
                   businessName: smsCfg.businessName,
@@ -1466,7 +1475,7 @@ export async function onRequest(context) {
         tmplListedForSale: cfg.smsListedForSale || 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
         // ── New: Sale confirmation (receipt sent to the new buyer) ──
         saleConfirmationEnabled: cfg.smsSaleConfirmationEnabled !== false,
-        tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Ref: {ref}) from {businessName}. Call {shopPhone} for any queries.',
+        tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Shop Ref: {shopRef}) from {businessName}. Call {shopPhone} for any queries.',
         smsRetryEnabled: cfg.smsRetryEnabled !== false,
         smsRetryDays:    Math.max(1, Math.min(7, Number(cfg.smsRetryDays) || 3)),
         businessName:     cfg.businessName || 'CIF Quick Cash',
@@ -1497,6 +1506,7 @@ export async function onRequest(context) {
         .replace(/\{balanceToday\}/g,   vars.balanceToday || '')
         .replace(/\{buyerName\}/g,      vars.buyerName || '')
         .replace(/\{itemDesc\}/g,       vars.itemDesc || '')
+        .replace(/\{shopRef\}/g,        vars.shopRef || '')
         .replace(/\{businessName\}/g,   vars.businessName || '')
         .replace(/\{shopPhone\}/g,      vars.shopPhone || '');
 

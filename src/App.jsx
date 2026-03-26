@@ -407,7 +407,7 @@ const DEFAULT_SETTINGS = {
   smsListedForSaleEnabled: true,
   smsListedForSale: 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
   smsSaleConfirmationEnabled: true,
-  smsSaleConfirmation: 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Ref: {ref}) from {businessName}. Call {shopPhone} for any queries.',
+  smsSaleConfirmation: 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Shop Ref: {shopRef}) from {businessName}. Call {shopPhone} for any queries.',
   smsRetryEnabled: true,
   smsRetryDays: 3,
   smsRechargeBank: '',
@@ -1983,7 +1983,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
     if (!canSave) return;
     setSaving(true);
     const shopId = (!tx.shopId && isNewListing)
-      ? 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 23)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0')
+      ? 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0')
       : (tx.shopId || undefined);
     const updates = {
       ...tx,
@@ -5188,19 +5188,43 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const [smsLogs, setSmsLogs] = useState(null);
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
-  const [smsSendMsg, setSmsSendMsg] = useState(() => {
-    if (tx.type !== 'advance') return '';
-    const tmpl = settings.smsDueDateReminder || DEFAULT_SETTINGS.smsDueDateReminder;
+  // Determine the most suitable pre-filled SMS template for this transaction's current state
+  const pickSmsTemplate = () => {
     const fmtN = n => '₦' + Number(n || 0).toLocaleString('en-NG');
-    return tmpl
+    const biz = settings.businessName || 'CIF Quick Cash';
+    const phone = settings.shopPhone1 || '';
+    const fill = (tmpl) => (tmpl || '')
       .replace(/\{customerName\}/g, tx.fullName || '')
-      .replace(/\{ref\}/g, tx.ref || '')
-      .replace(/\{amount\}/g, fmtN(tx.cashAdvance))
-      .replace(/\{daysLeft\}/g, customerDaysLeft != null ? String(customerDaysLeft) : '')
-      .replace(/\{daysOverdue\}/g, '')
-      .replace(/\{businessName\}/g, settings.businessName || 'CIF Quick Cash')
-      .replace(/\{shopPhone\}/g, settings.shopPhone1 || '');
-  });
+      .replace(/\{ref\}/g,          tx.ref || '')
+      .replace(/\{shopRef\}/g,      tx.shopId || tx.ref || '')
+      .replace(/\{amount\}/g,       fmtN(tx.cashAdvance))
+      .replace(/\{daysLeft\}/g,     customerDaysLeft != null ? String(customerDaysLeft) : '')
+      .replace(/\{daysOverdue\}/g,  customerDaysLeft != null && customerDaysLeft < 0 ? String(Math.abs(customerDaysLeft)) : '')
+      .replace(/\{dueDate\}/g,      tx.deadlineDate || '')
+      .replace(/\{balanceToday\}/g, fmtN(amountDueToday))
+      .replace(/\{businessName\}/g, biz)
+      .replace(/\{shopPhone\}/g,    phone);
+    if (tx.type !== 'advance') return '';
+    // Closed (fully repaid)
+    if (tx.status === 'closed') return fill(settings.smsRedemptionConfirmation || DEFAULT_SETTINGS.smsRedemptionConfirmation);
+    // Listed / surrendered — no meaningful inbound reminder; use listed-for-sale nudge
+    if (tx.status === 'for_sale' || tx.status === 'ready_to_sell') return fill(settings.smsListedForSale || DEFAULT_SETTINGS.smsListedForSale);
+    // Active loan
+    if (customerDaysLeft != null && customerDaysLeft < 0) {
+      // Overdue
+      return fill(settings.smsOverdueReminder || DEFAULT_SETTINGS.smsOverdueReminder);
+    }
+    if (customerDaysLeft === 0) {
+      // Due today
+      return fill(settings.smsDueTodayReminder || DEFAULT_SETTINGS.smsDueTodayReminder);
+    }
+    // Default: upcoming due date reminder
+    return fill(settings.smsDueDateReminder || DEFAULT_SETTINGS.smsDueDateReminder);
+  };
+  const [smsSendMsg, setSmsSendMsg] = useState(pickSmsTemplate);
+  // Which phone to target for manual SMS
+  const phone2 = tx.phoneNumbers?.[1] || '';
+  const [smsPhoneTarget, setSmsPhoneTarget] = useState('phone1'); // 'phone1' | 'phone2' | 'both'
   const [smsResult, setSmsResult] = useState(null);
   const [smsLogPage, setSmsLogPage] = useState(0);
   const SMS_PAGE_SIZE = 3;
@@ -5224,12 +5248,23 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     if (!smsSendMsg.trim()) return;
     setSendingSms(true);
     setSmsResult(null);
-    const res = await API.post('sms/send', { ref: tx.ref, message: smsSendMsg.trim() });
+    const msg = smsSendMsg.trim();
+    const phone1 = tx.phoneNumbers?.[0] || '';
+    const targets = smsPhoneTarget === 'both'
+      ? [phone1, phone2].filter(Boolean)
+      : smsPhoneTarget === 'phone2' ? [phone2].filter(Boolean) : [phone1].filter(Boolean);
+    const results = [];
+    for (const p of targets) {
+      results.push(await API.post('sms/send', { ref: tx.ref, message: msg, phone: p }));
+    }
     setSendingSms(false);
-    setSmsResult(res);
-    if (res?.ok) {
+    // Expose a combined result: ok only if ALL sends succeeded
+    const allOk = results.every(r => r?.ok);
+    const anyOk = results.some(r => r?.ok);
+    const combined = { ...results[results.length - 1], ok: allOk, _partialOk: anyOk && !allOk, _count: results.length };
+    setSmsResult(combined);
+    if (anyOk) {
       setSmsSendMsg('');
-      // Reload SMS logs
       refreshSmsLogs();
     }
   };
@@ -5548,10 +5583,32 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         ) : (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No SMS messages sent for this transaction yet.</div>
         )}
-        {/* Manual SMS send (staff only, active loans) */}
+        {/* Manual SMS send (staff only) */}
         {isStaff && settings.smsEnabled && tx.phoneNumbers?.[0] && (
           <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>Send Manual SMS</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700 }}>Send Manual SMS</div>
+              <button style={{ ...S.btnSm('secondary'), fontSize: '11px' }} onClick={() => setSmsSendMsg(pickSmsTemplate())}>↩ Reset to template</button>
+            </div>
+            {/* Phone target selector */}
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '10px', fontSize: '13px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                <input type="radio" name="smsPhoneTarget" value="phone1" checked={smsPhoneTarget === 'phone1'} onChange={() => setSmsPhoneTarget('phone1')} />
+                Phone 1 <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>({tx.phoneNumbers[0]})</span>
+              </label>
+              {phone2 && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                  <input type="radio" name="smsPhoneTarget" value="phone2" checked={smsPhoneTarget === 'phone2'} onChange={() => setSmsPhoneTarget('phone2')} />
+                  Phone 2 <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>({phone2})</span>
+                </label>
+              )}
+              {phone2 && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                  <input type="radio" name="smsPhoneTarget" value="both" checked={smsPhoneTarget === 'both'} onChange={() => setSmsPhoneTarget('both')} />
+                  Both phones
+                </label>
+              )}
+            </div>
             <textarea
               style={{ ...S.textarea, fontSize: '13px', marginBottom: '8px' }}
               rows={3}
@@ -5560,11 +5617,13 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
               placeholder="Type your SMS message here…"
             />
             {smsResult && (
-              <div style={{ ...S.alert(smsResult.ok ? 'success' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
-                {smsResult.ok
+              <div style={{ ...S.alert(smsResult.ok ? 'success' : smsResult._partialOk ? 'warning' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
+                {smsResult._partialOk
+                  ? '⚠️ Sent to one phone, but the other failed. Check logs for details.'
+                  : smsResult.ok
                   ? (smsResult.usedFallback
                     ? '✅ SMS sent via N-Alert (fallback). Your custom sender ID was rejected by Termii — contact Termii support to link it to your account.'
-                    : '✅ SMS sent successfully.')
+                    : `✅ SMS sent successfully${smsPhoneTarget === 'both' && smsResult._count > 1 ? ' to both phones' : ''}.`)
                   : (() => {
                     const termiiMsg = smsResult.response?.message || '';
                     if (termiiMsg.includes('ApplicationSenderId not found')) {
@@ -5583,7 +5642,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
               </div>
             )}
             <button style={S.btnSm('primary')} onClick={sendManualSms} disabled={sendingSms || !smsSendMsg.trim()}>
-              {sendingSms ? 'Sending…' : '📤 Send SMS'}
+              {sendingSms ? 'Sending…' : `📤 Send SMS${smsPhoneTarget === 'both' ? ' (×2)' : ''}`}
             </button>
           </div>
         )}
@@ -8449,7 +8508,8 @@ export default function App() {
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💬 SMS Message Templates</div>
               <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
-                Templates are organized in the order they fire during the loan lifecycle. Available placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{dueDate}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{balanceToday}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{buyerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{itemDesc}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{businessName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopPhone}'}</code>
+                Templates are organized in the order they fire during the loan lifecycle. Available placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopRef}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{dueDate}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{balanceToday}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{buyerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{itemDesc}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{businessName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopPhone}'}</code>
+              <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>💡 <strong>{'{shopRef}'}</strong> = the shop item ref (SHP-XXXX) — assigned automatically when an item is surrendered or listed for sale. Use this in the Sale Confirmation template instead of <strong>{'{ref}'}</strong>.</div>
               </div>
 
               {/* ── Phase 1: Loan Intake ── */}
@@ -8533,7 +8593,7 @@ export default function App() {
                 </label>
                 <textarea style={{ ...S.textarea, opacity: (es.smsListedForSaleEnabled ?? DEFAULT_SETTINGS.smsListedForSaleEnabled) ? 1 : 0.45 }} value={es.smsListedForSale ?? DEFAULT_SETTINGS.smsListedForSale} onChange={e => updateSettings({ ...es, smsListedForSale: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sale Confirmation<InfoIcon tip="Sent immediately to the new buyer's phone when a sale is confirmed — serves as a purchase receipt. Uses the Buyer Phone entered on the sale form. Placeholders: {buyerName}, {ref}, {amount} (sale price), {itemDesc} (brand + model), {businessName}, {shopPhone}." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sale Confirmation<InfoIcon tip="Sent immediately to the new buyer's phone when a sale is confirmed — serves as a purchase receipt. Uses the Buyer Phone entered on the sale form. Placeholders: {buyerName}, {shopRef} (shop item ref e.g. SHP-A1234), {amount} (sale price), {itemDesc} (brand + model), {businessName}, {shopPhone}." /></span>}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
                   <input type="checkbox" checked={es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled} onChange={e => updateSettings({ ...es, smsSaleConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
                   {es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
