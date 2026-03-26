@@ -317,6 +317,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
 
 // ---------------------------------------------------------------------------
 // Build HTML for one outright purchase receipt copy (Business or Customer)
+// 2 pages per copy (4 total): page 1 = seller + item, page 2 = purchase + terms + signatures
 // ---------------------------------------------------------------------------
 const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
   const idTypeDisplay = tx.idType === 'bvn' ? 'BVN' : 'NIN';
@@ -331,7 +332,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
   const p1Called = (tx.phonesVerified || [])[0];
   const p2Called = (tx.phonesVerified || [])[1];
 
-  // ── PAGE 1 (customer & item details) ──
+  // ── PAGE 1 (seller details + item details) ──
   const page1 = `
   <div class="page">
     <!-- HEADER -->
@@ -352,7 +353,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
     <div class="section-hdr">PART A — SELLER DETAILS</div>
 
     <div class="staff-note">
-      <i>STAFF: Fill name, address, ID type and ID number from the customer's ID photo.</i>
+      <i>STAFF: Fill name, address, ID type and ID number from the seller's ID photo.</i>
     </div>
 
     <table class="field-tbl">
@@ -374,11 +375,9 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
       </tr>
     </table>
 
-    <!-- Phone Numbers Sub-Header -->
     <div class="sub-hdr">PHONE NUMBERS — SELLER FILLS THIS PART</div>
-
     <div class="staff-note">
-      <i>STAFF: Ask seller to say their numbers. Call at least one number immediately to confirm it is real.</i>
+      <i>STAFF: Ask seller to say their numbers. Call at least one immediately to confirm it rings.</i>
     </div>
 
     <table class="field-tbl">
@@ -395,7 +394,6 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
       ${chk(p2Called)} Number 2 called ✓
     </div>
 
-    <!-- Horizontal rule -->
     <div class="hr-gold"></div>
 
     <!-- PART B -->
@@ -420,7 +418,6 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
       </tr>
     </table>
 
-    <!-- Photos Table -->
     <table class="photos-tbl">
       <tr>
         <td class="photos-hdr" colspan="3">Photos Taken — tick each when done:</td>
@@ -444,10 +441,10 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
     </div>
     ` : ''}
 
-    <div class="page-footer">Page <b>${pageOffset}</b> of <b>6</b></div>
+    <div class="page-footer">Page <b>${pageOffset}</b> of <b>4</b></div>
   </div>`;
 
-  // ── PAGE 2 (purchase details + terms) ──
+  // ── PAGE 2 (purchase details + terms + signatures + official use) ──
   const page2 = `
   <div class="page">
     <!-- PART C -->
@@ -464,70 +461,55 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
       </tr>
     </table>
 
-    <div class="fee-box" style="background:#D5F0E0; border-color:#1A6B3A;">
-      <div style="margin-bottom:4px"><b>This is an outright, permanent sale.</b></div>
-      <div>The seller receives the full amount above in cash today. No repayment is required. Ownership of the item transfers immediately and permanently to Christ-in-Fabian Quick Cash.</div>
+    <div class="fee-box" style="background:#D5F0E0; border-color:#1A6B3A; padding:7px 14px;">
+      <b>Outright permanent sale.</b> The seller receives the full amount above in cash today. No repayment is required. Ownership transfers immediately and permanently to Christ-in-Fabian Quick Cash.
     </div>
 
-    <!-- Horizontal rule -->
     <div class="hr-gold"></div>
 
     <!-- PART D -->
     <div class="section-hdr">PART D — TERMS &nbsp;&nbsp;<span style="font-weight:400;font-size:10pt">(Read every clause aloud to the seller before signing)</span></div>
 
-    <!-- Clause 1 -->
     <div class="clause-hdr c2">1. &nbsp;OWNERSHIP TRANSFER</div>
-    <div class="clause-body cb2">As of the Purchase Date above, full and permanent ownership of the item described in Part B passes to Christ-in-Fabian Quick Cash. We may sell, use, repair, or dispose of it as we choose from this moment forward. The seller has no further claim to the item.</div>
+    <div class="clause-body cb2" style="font-size:10pt; padding:6px 12px;">As of the Purchase Date above, full and permanent ownership of the item in Part B passes to Christ-in-Fabian Quick Cash. We may sell, use, or dispose of it as we choose. The seller has no further claim to the item.</div>
 
-    <!-- Clause 2 -->
     <div class="clause-hdr c3">2. &nbsp;FINAL SALE — NO BUY-BACK OR REFUND</div>
-    <div class="clause-body cb3">This sale is final and cannot be reversed. Once this receipt is signed and the payment has been made, no refund will be given and the item cannot be reclaimed under any circumstances — regardless of the reason.</div>
+    <div class="clause-body cb3" style="font-size:10pt; padding:6px 12px;">This sale is final and cannot be reversed. Once signed and payment made, no refund will be given and the item cannot be reclaimed under any circumstances.</div>
 
-    <!-- Clause 3 -->
     <div class="clause-hdr c4">3. &nbsp;CONDITION ACCEPTED AS SEEN</div>
-    <div class="clause-body cb4">The item has been inspected by our staff today and the condition recorded in Part B above is agreed upon by both parties. Christ-in-Fabian Quick Cash is not responsible for any hidden faults or internal damage not visible during today's inspection.</div>
+    <div class="clause-body cb4" style="font-size:10pt; padding:6px 12px;">The item has been inspected today and the condition in Part B is agreed by both parties. Christ-in-Fabian Quick Cash is not responsible for hidden faults not visible during today's inspection.</div>
 
-    <!-- Clause 4 header (continues on page 3) -->
     <div class="clause-hdr c5">4. &nbsp;DECLARATION OF OWNERSHIP</div>
+    <div class="clause-body cb5" style="font-size:10pt; padding:6px 12px;">I swear I am the true and legal owner of this item. It is NOT stolen. If any authority claims it is stolen or linked to crime, I take full legal and financial responsibility and will protect Christ-in-Fabian Quick Cash from any resulting arrest, seizure, or liability.</div>
 
-    <div class="page-footer">Page <b>${pageOffset + 1}</b> of <b>6</b></div>
-  </div>`;
-
-  // ── PAGE 3 (clause 4 body + clause 5 + signatures + official use) ──
-  const page3 = `
-  <div class="page">
-    <div class="clause-body cb5">I swear that I am the true and legal owner of this item. It is NOT stolen property. If the Nigerian Police or any authority claims this item is stolen or linked to any crime, I take full legal and financial responsibility. I will protect Christ-in-Fabian Quick Cash from any arrest, seizure, or liability that arises from my false claim of ownership.</div>
-
-    <!-- Clause 5 -->
     <div class="clause-hdr c6">5. &nbsp;DATA CONSENT</div>
-    <div class="clause-body cb6">The seller consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction and for regulatory compliance.</div>
+    <div class="clause-body cb6" style="font-size:10pt; padding:6px 12px;">The seller consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction and regulatory compliance.</div>
 
-    <!-- Horizontal rule -->
     <div class="hr-gold"></div>
 
     <!-- PART E -->
     <div class="section-hdr">PART E — SIGNATURES &amp; AUTHORIZATION</div>
 
-    <p class="consent"><i>I have read and understood all the terms above (or they have been read and explained to me fully). I confirm I am voluntarily selling the item described in Part B to Christ-in-Fabian Quick Cash. I have received the full amount of <b>₦ ${(tx.cashAdvance || 0).toLocaleString()}</b> in cash. I understand this sale is permanent and final.</i></p>
+    <p class="consent" style="margin:8px 0;"><i>I have read and understood all the terms above (or they were read and explained to me). I confirm I am voluntarily selling the item in Part B to Christ-in-Fabian Quick Cash. I have received <b>₦ ${(tx.cashAdvance || 0).toLocaleString()}</b> in cash. This sale is permanent and final.</i></p>
 
     <table class="sig-tbl">
       <tr>
         <td class="sig-left">
           <div><b>Seller Signature:</b></div>
-          <div class="sig-space"></div>
+          <div class="sig-space" style="height:45px;"></div>
           <div class="sig-line"></div>
           <div class="sig-sub"><i>Name &amp; Date</i></div>
         </td>
         <td class="sig-right">
           <div><b>Right Thumbprint — Press firmly:</b></div>
-          <div class="thumb-box">
+          <div class="thumb-box" style="height:80px;">
             <span class="thumb-text">RIGHT THUMBPRINT</span>
           </div>
         </td>
       </tr>
     </table>
 
-    <table class="field-tbl" style="margin-top:16px">
+    <table class="field-tbl" style="margin-top:10px">
       <tr>
         <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
         <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
@@ -536,45 +518,37 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
       </tr>
     </table>
 
-    <div class="photo-note">
-      <i>Note: Photographs of the seller holding the item, the seller signing this receipt, ID card if provided, and the item (front and back/sides) have been taken and stored securely with this transaction record.</i>
+    <div class="photo-note" style="margin-top:10px;">
+      <i>Photos of the seller holding the item, seller signing this receipt, ID card if provided, and item front/back have been taken and stored with this transaction record.</i>
     </div>
 
     ${isBusinessCopy ? `
-    <!-- Horizontal rule -->
     <div class="hr-gold"></div>
-
-    <!-- OFFICIAL USE ONLY -->
     <div class="official-hdr">OFFICIAL USE ONLY</div>
-
     <table class="field-tbl">
       <tr>
-        <td class="fl" style="width:18%"><b>Listed for Sale: &nbsp;☐</b></td>
-        <td class="fv" style="width:32%"></td>
-        <td class="fl" style="width:16%"><b>Date Listed:</b></td>
-        <td class="fv" style="width:34%"></td>
+        <td class="fl" style="width:22%"><b>Listed for Sale: &nbsp;☐</b></td>
+        <td class="fv" style="width:28%"></td>
+        <td class="fl" style="width:14%"><b>Date Listed:</b></td>
+        <td class="fv" style="width:36%"></td>
       </tr>
       <tr>
-        <td class="fl"><b>Listing Price (₦):</b></td>
+        <td class="fl"><b>Listing Price:</b></td>
         <td class="fv">₦</td>
         <td class="fl"><b>Shop Ref:</b></td>
         <td class="fv">${tx.shopId || ''}</td>
       </tr>
       <tr>
         <td class="fl"><b>Item Sold: &nbsp;☐</b></td>
-        <td class="fv" colspan="3"><span class="muted-italic">Date Sold: _______________ &nbsp;&nbsp; Sale Amount: ₦ _______________</span></td>
-      </tr>
-      <tr>
-        <td class="fl"><b>Profit (₦):</b></td>
-        <td class="fv" colspan="3"><span class="muted-italic">Sale Amount − ₦${(tx.cashAdvance || 0).toLocaleString()} paid to seller = ₦ _______________</span></td>
+        <td class="fv" colspan="3"><span class="muted-italic">Date: _______________ &nbsp;&nbsp; Sale Amount: ₦ _______________ &nbsp;&nbsp; Profit: ₦ _______________</span></td>
       </tr>
     </table>
     ` : ''}
 
-    <div class="page-footer">Page <b>${pageOffset + 2}</b> of <b>6</b></div>
+    <div class="page-footer">Page <b>${pageOffset + 1}</b> of <b>4</b></div>
   </div>`;
 
-  return page1 + page2 + page3;
+  return page1 + page2;
 };
 
 // ---------------------------------------------------------------------------
@@ -583,8 +557,11 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
 export const printAgreement = (tx, settings = {}) => {
   const isOutright = tx.type === 'outright';
   const buildFn = isOutright ? buildOutrightCopyHTML : buildCopyHTML;
+  // Advance: 3 pages/copy → customer copy starts at page 4
+  // Outright: 2 pages/copy → customer copy starts at page 3
+  const customerPageOffset = isOutright ? 3 : 4;
   const businessHTML = buildFn(tx, settings, 'BUSINESS COPY', true, 1);
-  const customerHTML = buildFn(tx, settings, 'CUSTOMER COPY', false, 4);
+  const customerHTML = buildFn(tx, settings, isOutright ? 'SELLER COPY' : 'CUSTOMER COPY', false, customerPageOffset);
 
   const fullHTML = `<!DOCTYPE html>
 <html lang="en">
