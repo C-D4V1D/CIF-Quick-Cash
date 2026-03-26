@@ -5566,12 +5566,20 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 const dlrDisplay = getDeliveryStatusDisplay(dlr);
                 const dlrLabel = dlrDisplay.label;
                 const dlrColor = dlrDisplay.color;
+
+                // Determine which badges to show
+                const showAcceptedBadge = entry.status === 'sent';
+                const showPendingBadge = entry.status === 'sent' && !dlr; // Show "Pending Delivery" if sent but no delivery status yet
+                const showFailedBadge = entry.status === 'failed';
+
                 return (
               <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < page.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
-                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                    <span style={{ ...S.badge(entry.status === 'sent' ? '#10b981' : '#dc2626'), fontSize: '11px' }}>{entry.status === 'sent' ? '✓ Sent' : '✗ Failed'}</span>
+                  <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {showAcceptedBadge && <span style={{ ...S.badge('#10b981'), fontSize: '11px' }}>✓ Accepted</span>}
+                    {showPendingBadge && <span style={{ ...S.badge('#f59e0b'), fontSize: '11px' }}>⏳ Pending Delivery</span>}
                     {dlrLabel && <span style={{ ...S.badge(dlrColor), fontSize: '11px' }}>{dlrLabel}</span>}
+                    {showFailedBadge && <span style={{ ...S.badge('#dc2626'), fontSize: '11px' }}>✗ Failed</span>}
                     <span style={{ ...S.badge('#6b7280'), fontSize: '11px' }}>{getSmsLabel(entry.trigger_type)}</span>
                   </div>
                   <span style={{ fontSize: '11px', color: COLORS.textMuted }}>{new Date(entry.sent_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
