@@ -699,6 +699,12 @@ export async function onRequest(context) {
       if (existing) {
         return error('Transaction already exists; use PUT /transactions/{ref} to update it.', 409);
       }
+      // Auto-assign a shop item ref (shopId) when an outright purchase is first created so
+      // it is available immediately in the public shop and SMS templates without waiting for
+      // the first PUT (which is when advance loans get their shopId).
+      if ((tx.status === 'for_sale' || tx.type === 'outright') && !tx.shopId) {
+        tx.shopId = 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+      }
       await db
         .prepare("INSERT INTO transactions (ref, data, status, updated_at) VALUES (?, ?, ?, datetime('now'))")
         .bind(tx.ref, JSON.stringify(tx), tx.status || 'active')
