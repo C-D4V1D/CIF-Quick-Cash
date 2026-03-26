@@ -4089,7 +4089,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
     switch (WIZARD_STEPS[step]?.id) {
       case 'type': return true;
       case 'nin': return settings.requireNinVerification ? (tx.ninVerified && !!tx.ninPhoto) : tx.ninVerificationAttempted;
-      case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.phoneNumbers[0].length === 11 && (!tx.phoneNumbers[1] || tx.phoneNumbers[1].length === 11) && tx.familyName && tx.familyPhone && tx.familyPhone.length === 11 && (tx.phonesVerified[0] || tx.phonesVerified[1]));
+      case 'customer': return !!(tx.fullName && tx.address && tx.phoneNumbers[0] && tx.phoneNumbers[0].length === 11 && (!tx.phoneNumbers[1] || tx.phoneNumbers[1].length === 11) && (tx.type === 'outright' || (tx.familyName && tx.familyPhone && tx.familyPhone.length === 11)) && (tx.phonesVerified[0] || tx.phonesVerified[1]));
       case 'custPhotos': return !!tx.photoCustomerHolding;
       case 'screening': {
         if (!tx.screeningDuration) return false;
@@ -4151,8 +4151,8 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         if (!tx.phoneNumbers[0]) issues.push('Phone 1 is required.');
         if (tx.phoneNumbers[0] && tx.phoneNumbers[0].length !== 11) issues.push('Phone 1 must be exactly 11 digits.');
         if (tx.phoneNumbers[1] && tx.phoneNumbers[1].length !== 11) issues.push('Phone 2 must be exactly 11 digits.');
-        if (!tx.familyName) issues.push('Family contact name is required.');
-        if (!tx.familyPhone) issues.push('Family contact phone is required.');
+        if (tx.type !== 'outright' && !tx.familyName) issues.push('Family contact name is required.');
+        if (tx.type !== 'outright' && !tx.familyPhone) issues.push('Family contact phone is required.');
         if (tx.familyPhone && tx.familyPhone.length !== 11) issues.push('Family contact phone must be exactly 11 digits.');
         if (!tx.phonesVerified[0] && !tx.phonesVerified[1]) issues.push('You must mark at least one phone number as called before proceeding.');
         break;
