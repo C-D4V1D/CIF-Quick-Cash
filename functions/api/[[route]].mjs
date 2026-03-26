@@ -1641,6 +1641,86 @@ export async function onRequest(context) {
       });
     }
 
+    // ── GET /api/sms/status/:messageId — manually check SMS status from Termii ──
+    if (path.match(/^sms\/status\/[a-zA-Z0-9]+$/) && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+
+      const messageId = url.pathname.split('/').pop();
+      if (!messageId) return error('message_id required', 400);
+
+      try {
+        const smsCfg = await loadSmsConfig();
+        if (!smsCfg.apiKey) return json({ error: 'Termii API key not configured' }, 400);
+
+        // Find the SMS log entry
+        const smsLog = await db.prepare(
+          'SELECT id, message_id, delivery_status FROM sms_logs WHERE message_id = ? LIMIT 1'
+        ).bind(messageId).first();
+
+        if (!smsLog) {
+          return json({ error: 'SMS not found in logs', message_id: messageId }, 404);
+        }
+
+        // Query Termii for delivery status using their fetch endpoint
+        // Try the message history endpoint
+        const termiiUrl = `${smsCfg.baseUrl}/api/sms/message/${messageId}?api_key=${encodeURIComponent(smsCfg.apiKey)}`;
+        console.log(`[SMS STATUS CHECK] ${new Date().toISOString()} - Querying Termii: ${termiiUrl.replace(smsCfg.apiKey, '***')}`);
+
+        const resp = await fetch(termiiUrl);
+        const data = await resp.json().catch(() => ({}));
+
+        console.log(`[SMS STATUS CHECK] ${new Date().toISOString()} - Termii response: ${JSON.stringify(data)}`);
+
+        // Parse various response formats from Termii
+        let termiiStatus = null;
+        if (data?.delivery_status) {
+          termiiStatus = String(data.delivery_status);
+        } else if (data?.status) {
+          termiiStatus = String(data.status);
+        } else if (data?.message_status) {
+          termiiStatus = String(data.message_status);
+        }
+
+        if (termiiStatus) {
+          // Update our database with the status from Termii
+          await db.prepare(
+            'UPDATE sms_logs SET delivery_status = ? WHERE message_id = ?'
+          ).bind(termiiStatus, messageId).run();
+
+          console.log(`[SMS STATUS CHECK] ${new Date().toISOString()} - Updated delivery_status to: ${termiiStatus}`);
+
+          return json({
+            ok: true,
+            message_id: messageId,
+            termii_status: termiiStatus,
+            local_status: smsLog.delivery_status,
+            updated: true,
+            message: `Status updated from Termii: ${termiiStatus}`
+          });
+        } else {
+          // Termii didn't return a clear status
+          console.warn(`[SMS STATUS CHECK] ${new Date().toISOString()} - Could not parse status from Termii response`);
+
+          return json({
+            ok: false,
+            message_id: messageId,
+            local_status: smsLog.delivery_status,
+            updated: false,
+            message: 'Termii did not return a clear delivery status',
+            termii_response: data
+          });
+        }
+      } catch (e) {
+        console.error(`[SMS STATUS CHECK] ${new Date().toISOString()} - ERROR: ${e.message}`, e);
+        return json({
+          ok: false,
+          error: e.message,
+          message: 'Failed to query Termii for status'
+        }, 500);
+      }
+    }
+
     // ── POST /api/sms/send — send a manual SMS to a transaction's phone ──
     if (path === 'sms/send' && method === 'POST') {
       const auth = requireAuth(request);
