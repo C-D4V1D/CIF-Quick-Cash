@@ -1599,6 +1599,48 @@ export async function onRequest(context) {
       return json(results);
     }
 
+    // ── GET /api/sms/webhook-stats — check webhook activity ──
+    if (path === 'sms/webhook-stats' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+
+      // Count SMS with and without delivery_status
+      const stats = await db.prepare(`
+        SELECT
+          COUNT(*) as total_sms,
+          SUM(CASE WHEN delivery_status IS NOT NULL THEN 1 ELSE 0 END) as received_webhooks,
+          SUM(CASE WHEN delivery_status IS NULL THEN 1 ELSE 0 END) as pending_webhooks
+        FROM sms_logs
+        WHERE sent_at > datetime('now', '-7 days')
+      `).first();
+
+      // Get recent SMS still waiting for webhook (last 10)
+      const { results: pending } = await db.prepare(`
+        SELECT id, message_id, recipient, sent_at, status, delivery_status
+        FROM sms_logs
+        WHERE delivery_status IS NULL AND sent_at > datetime('now', '-7 days')
+        ORDER BY sent_at DESC
+        LIMIT 10
+      `).all();
+
+      // Get recent webhooks received (last 10)
+      const { results: recent } = await db.prepare(`
+        SELECT id, message_id, recipient, sent_at, delivery_status
+        FROM sms_logs
+        WHERE delivery_status IS NOT NULL AND sent_at > datetime('now', '-7 days')
+        ORDER BY sent_at DESC
+        LIMIT 10
+      `).all();
+
+      return json({
+        stats,
+        pending_webhooks: pending,
+        recent_webhooks: recent,
+        webhook_url: 'https://cifcash.pages.dev/api/sms/webhook',
+        status: pending.length === 0 ? 'webhook_working' : (pending.length > 5 ? 'webhook_may_not_be_working' : 'webhook_working_but_slow')
+      });
+    }
+
     // ── POST /api/sms/send — send a manual SMS to a transaction's phone ──
     if (path === 'sms/send' && method === 'POST') {
       const auth = requireAuth(request);
@@ -1899,15 +1941,49 @@ export async function onRequest(context) {
     // No authentication required — Termii calls this URL directly.
     // Configure this URL in your Termii dashboard: <your-app-domain>/api/sms/webhook
     if (path === 'sms/webhook' && method === 'POST') {
-      const payload = await request.json().catch(() => ({}));
-      // Termii DLR payload: { message_id, status, time, ... }
-      const messageId = payload?.message_id ? String(payload.message_id) : null;
-      const deliveryStatus = payload?.status ? String(payload.status) : null;
-      if (!messageId || !deliveryStatus) return json({ ok: false, error: 'Missing message_id or status' }, 400);
-      await db.prepare(
-        "UPDATE sms_logs SET delivery_status = ? WHERE message_id = ?"
-      ).bind(deliveryStatus, messageId).run();
-      return json({ ok: true });
+      try {
+        const payload = await request.json().catch(() => ({}));
+        // Termii DLR payload: { message_id, status, time, ... }
+        const messageId = payload?.message_id ? String(payload.message_id) : null;
+        const deliveryStatus = payload?.status ? String(payload.status) : null;
+        const timestamp = new Date().toISOString();
+
+        // Log webhook received
+        console.log(`[SMS WEBHOOK] ${timestamp} - Received DLR: message_id=${messageId}, status=${deliveryStatus}, full_payload=${JSON.stringify(payload)}`);
+
+        if (!messageId || !deliveryStatus) {
+          console.error(`[SMS WEBHOOK] ${timestamp} - ERROR: Missing required fields. message_id=${messageId}, status=${deliveryStatus}`);
+          return json({ ok: false, error: 'Missing message_id or status' }, 400);
+        }
+
+        // Update database with delivery status
+        const result = await db.prepare(
+          "UPDATE sms_logs SET delivery_status = ? WHERE message_id = ?"
+        ).bind(deliveryStatus, messageId).run();
+
+        // Log the result
+        if (result.success) {
+          console.log(`[SMS WEBHOOK] ${timestamp} - SUCCESS: Updated message_id=${messageId} to status=${deliveryStatus}`);
+        } else {
+          console.warn(`[SMS WEBHOOK] ${timestamp} - WARNING: Database update may have failed. message_id=${messageId}, result=${JSON.stringify(result)}`);
+        }
+
+        // Verify the update worked by querying the record
+        const updated = await db.prepare(
+          "SELECT id, delivery_status FROM sms_logs WHERE message_id = ? LIMIT 1"
+        ).bind(messageId).first();
+
+        if (updated?.delivery_status === deliveryStatus) {
+          console.log(`[SMS WEBHOOK] ${timestamp} - VERIFIED: Database record confirmed. message_id=${messageId} now has delivery_status=${deliveryStatus}`);
+          return json({ ok: true, verified: true });
+        } else {
+          console.error(`[SMS WEBHOOK] ${timestamp} - ERROR: Database update not verified. message_id=${messageId}, expected=${deliveryStatus}, found=${updated?.delivery_status}`);
+          return json({ ok: true, warning: 'Database update may not have succeeded' });
+        }
+      } catch (e) {
+        console.error(`[SMS WEBHOOK] ${new Date().toISOString()} - EXCEPTION: ${e.message}`, e);
+        return json({ ok: false, error: e.message }, 500);
+      }
     }
 
     // ============================================================
