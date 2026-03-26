@@ -4592,7 +4592,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         style={{ ...S.btn('accent'), marginTop: '16px', padding: '12px 24px', fontSize: '15px' }}
         onClick={() => printAgreement(tx, settings)}
       >
-        🖨 Print Agreement (Both Copies)
+        🖨 {tx.type === 'outright' ? 'Print Receipt (Both Copies)' : 'Print Agreement (Both Copies)'}
       </button>
       <div style={{ marginTop: '16px' }}>
         <PhotoUpload label="Photo of Signing / Thumbprint" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} />
