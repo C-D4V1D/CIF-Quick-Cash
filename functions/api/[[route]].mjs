@@ -894,14 +894,14 @@ export async function onRequest(context) {
         }
       }
 
-      // ── Sale confirmation SMS ──
-      // Sent immediately when an item is marked as sold — notifies the original
-      // customer (previous owner) that their item has been sold, closing the loop.
+      // ── Sale confirmation SMS (receipt to the buyer) ──
+      // Sent immediately when an item is marked as sold — goes to the new buyer's
+      // phone (saleBuyerPhone) as a purchase receipt, not the original customer.
       if (tx.status === 'sold') {
         try {
           const smsCfg = await loadSmsConfig();
           if (smsCfg.enabled && smsCfg.saleConfirmationEnabled) {
-            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const rawPhone = tx.saleBuyerPhone || '';
             const phone = toIntlPhone(rawPhone);
             if (phone) {
               const triggerType = 'sale_confirmation';
@@ -911,10 +911,12 @@ export async function onRequest(context) {
               ).bind(ref, triggerType, todaySold).first();
               if (!alreadySent) {
                 const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+                const itemDesc = [tx.aiBrand, tx.aiModel].filter(Boolean).join(' ') || tx.aiItemType || 'item';
                 const message = fillSmsTemplate(smsCfg.tmplSaleConfirmation, {
-                  customerName: tx.fullName,
+                  buyerName: tx.saleBuyer || '',
                   ref,
                   amount: fmtSms(tx.salePrice),
+                  itemDesc,
                   businessName: smsCfg.businessName,
                   shopPhone: smsCfg.shopPhone,
                 });
@@ -1462,10 +1464,9 @@ export async function onRequest(context) {
         // ── New: Item listed for sale (advance → for_sale transition) ──
         listedForSaleEnabled: cfg.smsListedForSaleEnabled !== false,
         tmplListedForSale: cfg.smsListedForSale || 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
-        // ── New: Retry failed SMS ──
-        // ── New: Sale confirmation (when an item is marked sold) ──
+        // ── New: Sale confirmation (receipt sent to the new buyer) ──
         saleConfirmationEnabled: cfg.smsSaleConfirmationEnabled !== false,
-        tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {customerName}, your item (Ref: {ref}) has been sold by {businessName}. All obligations under your signed agreement have been fulfilled. Thank you.',
+        tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Ref: {ref}) from {businessName}. Call {shopPhone} for any queries.',
         smsRetryEnabled: cfg.smsRetryEnabled !== false,
         smsRetryDays:    Math.max(1, Math.min(7, Number(cfg.smsRetryDays) || 3)),
         businessName:     cfg.businessName || 'CIF Quick Cash',
@@ -1494,6 +1495,8 @@ export async function onRequest(context) {
         .replace(/\{daysOverdue\}/g,    String(vars.daysOverdue ?? ''))
         .replace(/\{dueDate\}/g,        vars.dueDate || '')
         .replace(/\{balanceToday\}/g,   vars.balanceToday || '')
+        .replace(/\{buyerName\}/g,      vars.buyerName || '')
+        .replace(/\{itemDesc\}/g,       vars.itemDesc || '')
         .replace(/\{businessName\}/g,   vars.businessName || '')
         .replace(/\{shopPhone\}/g,      vars.shopPhone || '');
 
