@@ -735,6 +735,43 @@ export async function onRequest(context) {
         }
       }
 
+      // ── Immediate cash advance confirmation SMS ──
+      // Sent right when the advance transaction is created — gives the customer
+      // a reference number, amount, and return date they can keep on their phone.
+      if (tx.type === 'advance') {
+        try {
+          const smsCfg = await loadSmsConfig();
+          if (smsCfg.enabled && smsCfg.advanceConfirmationEnabled) {
+            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const phone = toIntlPhone(rawPhone);
+            if (phone) {
+              const triggerType = 'advance_confirmation';
+              const today = todayNigeria();
+              const alreadySent = await db.prepare(
+                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+              ).bind(tx.ref, triggerType, today).first();
+              if (!alreadySent) {
+                const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+                const message = fillSmsTemplate(smsCfg.tmplAdvanceConfirmation, {
+                  customerName: tx.fullName,
+                  ref: tx.ref,
+                  amount: fmtSms(tx.cashAdvance),
+                  dueDate: tx.deadlineDate || '',
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await db.prepare(
+                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(tx.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+              }
+            }
+          }
+        } catch (_smsErr) {
+          // SMS failure must never block the transaction save
+        }
+      }
+
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'PUT') {
@@ -785,6 +822,78 @@ export async function onRequest(context) {
         putAction = 'update'; putDesc = `🔄 Transaction updated — ${ref}`;
       }
       await logActivity({ user: auth.user, action: putAction, entityType: 'transaction', entityId: ref, description: putDesc });
+
+      // ── Redemption/full repayment confirmation SMS ──
+      // Sent immediately when a customer repays in full and collects their item.
+      if (tx.status === 'closed' && tx.type === 'advance') {
+        try {
+          const smsCfg = await loadSmsConfig();
+          if (smsCfg.enabled && smsCfg.redemptionConfirmationEnabled) {
+            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const phone = toIntlPhone(rawPhone);
+            if (phone) {
+              const triggerType = 'redemption_confirmation';
+              const todayClosed = todayNigeria();
+              const alreadySent = await db.prepare(
+                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+              ).bind(ref, triggerType, todayClosed).first();
+              if (!alreadySent) {
+                const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+                const message = fillSmsTemplate(smsCfg.tmplRedemptionConfirmation, {
+                  customerName: tx.fullName,
+                  ref,
+                  amount: fmtSms(tx.amountRepaid || tx.cashAdvance),
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await db.prepare(
+                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+              }
+            }
+          }
+        } catch (_smsErr) {
+          // SMS failure must never block the transaction save
+        }
+      }
+
+      // ── Item listed for sale SMS ──
+      // Sent when an advance loan item is listed for public sale for the first time.
+      // Not sent for outright transactions (they already get outright_confirmation).
+      if (tx.status === 'for_sale' && tx.type === 'advance' && existing?.status !== 'for_sale') {
+        try {
+          const smsCfg = await loadSmsConfig();
+          if (smsCfg.enabled && smsCfg.listedForSaleEnabled) {
+            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const phone = toIntlPhone(rawPhone);
+            if (phone) {
+              const triggerType = 'listed_for_sale';
+              const todayListed = todayNigeria();
+              const alreadySent = await db.prepare(
+                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+              ).bind(ref, triggerType, todayListed).first();
+              if (!alreadySent) {
+                const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+                const message = fillSmsTemplate(smsCfg.tmplListedForSale, {
+                  customerName: tx.fullName,
+                  ref,
+                  amount: fmtSms(tx.cashAdvance),
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await db.prepare(
+                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+              }
+            }
+          }
+        } catch (_smsErr) {
+          // SMS failure must never block the transaction save
+        }
+      }
+
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'DELETE') {
@@ -1302,6 +1411,24 @@ export async function onRequest(context) {
         ownTransferredEnabled: cfg.smsOwnershipTransferredEnabled !== false,
         tmplOutrightConfirmation: cfg.smsOutrightConfirmation || 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
         outrightConfirmationEnabled: cfg.smsOutrightConfirmationEnabled !== false,
+        // ── New: Advance loan confirmation ──
+        advanceConfirmationEnabled: cfg.smsAdvanceConfirmationEnabled !== false,
+        tmplAdvanceConfirmation: cfg.smsAdvanceConfirmation || 'Dear {customerName}, your cash advance of {amount} (Ref: {ref}) has been processed. Your return date is {dueDate}. Repay on time to avoid penalties. {businessName}. Call: {shopPhone}',
+        // ── New: Overdue reminders (post-due-date, pre-internal-deadline) ──
+        overdueReminderDays: Array.isArray(cfg.smsOverdueReminderDays) ? cfg.smsOverdueReminderDays.map(Number).filter(d => Number.isFinite(d) && d >= 1) : [1, 3, 5],
+        tmplOverdueReminder: cfg.smsOverdueReminder || 'Dear {customerName}, your loan (Ref: {ref}) is {daysOverdue} day(s) overdue. Balance if repaid today: {balanceToday}. Visit {businessName} now to avoid losing your item. Call: {shopPhone}',
+        // ── New: Redemption/repayment confirmation ──
+        redemptionConfirmationEnabled: cfg.smsRedemptionConfirmationEnabled !== false,
+        tmplRedemptionConfirmation: cfg.smsRedemptionConfirmation || 'Dear {customerName}, your loan (Ref: {ref}) has been fully repaid. You paid {amount} and your item has been returned. Thank you for choosing {businessName}!',
+        // ── New: Mid-loan balance reminder ──
+        midLoanReminderEnabled: cfg.smsMidLoanReminderEnabled !== false,
+        tmplMidLoanReminder: cfg.smsMidLoanReminder || 'Hello {customerName}, your loan (Ref: {ref}) is at its midpoint. Your balance if repaid today is {balanceToday}. Early repayment is always welcome at {businessName}. Call: {shopPhone}',
+        // ── New: Item listed for sale (advance → for_sale transition) ──
+        listedForSaleEnabled: cfg.smsListedForSaleEnabled !== false,
+        tmplListedForSale: cfg.smsListedForSale || 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
+        // ── New: Retry failed SMS ──
+        smsRetryEnabled: cfg.smsRetryEnabled !== false,
+        smsRetryDays:    Math.max(1, Math.min(7, Number(cfg.smsRetryDays) || 3)),
         businessName:     cfg.businessName || 'CIF Quick Cash',
         shopPhone:        cfg.shopPhone1 || '',
         maxLoanDays:      Math.max(1, Number(cfg.maxLoanDays) || 30),
@@ -1321,13 +1448,15 @@ export async function onRequest(context) {
     // Helper: fill template variables
     const fillSmsTemplate = (template, vars = {}) =>
       template
-        .replace(/\{customerName\}/g, vars.customerName || '')
-        .replace(/\{ref\}/g,          vars.ref || '')
-        .replace(/\{amount\}/g,        vars.amount || '')
-        .replace(/\{daysLeft\}/g,      String(vars.daysLeft ?? ''))
-        .replace(/\{daysOverdue\}/g,   String(vars.daysOverdue ?? ''))
-        .replace(/\{businessName\}/g,  vars.businessName || '')
-        .replace(/\{shopPhone\}/g,     vars.shopPhone || '');
+        .replace(/\{customerName\}/g,  vars.customerName || '')
+        .replace(/\{ref\}/g,           vars.ref || '')
+        .replace(/\{amount\}/g,         vars.amount || '')
+        .replace(/\{daysLeft\}/g,       String(vars.daysLeft ?? ''))
+        .replace(/\{daysOverdue\}/g,    String(vars.daysOverdue ?? ''))
+        .replace(/\{dueDate\}/g,        vars.dueDate || '')
+        .replace(/\{balanceToday\}/g,   vars.balanceToday || '')
+        .replace(/\{businessName\}/g,   vars.businessName || '')
+        .replace(/\{shopPhone\}/g,      vars.shopPhone || '');
 
     // Helper: send one SMS via Termii, returns { ok, messageId, response, usedFallback }
     const termiiSend = async (smsCfg, phone, message) => {
@@ -1584,6 +1713,60 @@ export async function onRequest(context) {
           });
         }
 
+        // Shared balance calculation for overdue and mid-loan triggers.
+        // Computed once per transaction to avoid duplication.
+        const dailyFeeAmt = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
+        const elapsedDays = elapsedDaysSince(txData.dateGiven);
+        const currentBalance = (txData.cashAdvance || 0) + elapsedDays * dailyFeeAmt;
+
+        // Overdue reminders: fired N days AFTER the customer due date while still
+        // within the internal deadline. Gives daysOverdue and the current balance.
+        for (const daysAfter of smsCfg.overdueReminderDays) {
+          if (daysAfter < 1) continue; // guard: overdue reminders must be after due date
+          const triggerDate = addDaysToDate(customerDueDate, daysAfter);
+          // Only fire if still within the internal deadline window
+          if (triggerDate === today && today <= internalDeadline) {
+            triggers.push({
+              triggerType: `overdue_${daysAfter}d`,
+              message: fillSmsTemplate(smsCfg.tmplOverdueReminder, {
+                customerName: txData.fullName,
+                ref: row.ref,
+                amount: fmtN(txData.cashAdvance),
+                daysOverdue: daysAfter,
+                balanceToday: fmtN(currentBalance),
+                businessName: smsCfg.businessName,
+                shopPhone: smsCfg.shopPhone,
+              }),
+            });
+          }
+        }
+
+        // Mid-loan balance reminder: fired at the midpoint of the loan duration,
+        // only if still before the customer's due date (no point sending mid-loan
+        // after they're already overdue).
+        // Uses Math.floor so the reminder fires slightly before the exact midpoint,
+        // giving the customer as much advance notice as possible.
+        if (smsCfg.midLoanReminderEnabled) {
+          const effectiveLoanDays = Number(txData.loanDays) || smsCfg.maxLoanDays;
+          const midpointDay = Math.floor(effectiveLoanDays / 2);
+          if (midpointDay >= 1) {
+            const midpointDate = addDaysToDate(txData.dateGiven, midpointDay);
+            if (midpointDate === today && today < customerDueDate) {
+              triggers.push({
+                triggerType: 'mid_loan',
+                message: fillSmsTemplate(smsCfg.tmplMidLoanReminder, {
+                  customerName: txData.fullName,
+                  ref: row.ref,
+                  amount: fmtN(txData.cashAdvance),
+                  balanceToday: fmtN(currentBalance),
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                }),
+              });
+            }
+          }
+        }
+
         for (const { triggerType, message } of triggers) {
           // Idempotency: skip if already sent today (Nigeria date) for this trigger
           const alreadySent = await db.prepare(
@@ -1616,6 +1799,46 @@ export async function onRequest(context) {
           description: `📱 Auto-SMS run: ${sent.length} sent, ${failed.length} failed, ${skipped.length} skipped`,
         });
       }
+
+      // ── Retry failed SMS from previous days ──
+      // Any SMS that failed (not a _retry or _phone2 attempt) within the past
+      // smsRetryDays days is re-attempted once, using a separate trigger_type
+      // suffix so it is logged and idempotency is preserved.
+      if (smsCfg.smsRetryEnabled) {
+        const retryAfterDate = addDaysToDate(today, -smsCfg.smsRetryDays);
+        const { results: failedLogs } = await db.prepare(
+          "SELECT id, transaction_ref, trigger_type, recipient, message FROM sms_logs WHERE status = 'failed' AND trigger_type NOT LIKE '%_retry' AND trigger_type NOT LIKE '%_phone2' AND date(sent_at, '+1 hour') >= ? AND date(sent_at, '+1 hour') < ?"
+        ).bind(retryAfterDate, today).all();
+
+        // Deduplicate: only retry each (ref, trigger_type) pair once per run
+        const seen = new Set();
+        for (const log of (failedLogs || [])) {
+          const key = `${log.transaction_ref}:${log.trigger_type}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          // Skip if a successful send for this ref+trigger_type already exists
+          const succeeded = await db.prepare(
+            "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND status = 'sent'"
+          ).bind(log.transaction_ref, log.trigger_type).first();
+          if (succeeded) continue;
+
+          // Skip if a retry was already attempted today
+          const retryType = log.trigger_type + '_retry';
+          const alreadyRetried = await db.prepare(
+            "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+          ).bind(log.transaction_ref, retryType, today).first();
+          if (alreadyRetried) continue;
+
+          const { ok: retryOk, messageId: retryMsgId, response: retryResp } = await termiiSend(smsCfg, log.recipient, log.message);
+          await db.prepare(
+            'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+          ).bind(log.transaction_ref, retryType, log.message, log.recipient, retryOk ? 'sent' : 'failed', JSON.stringify(retryResp), retryMsgId).run();
+
+          (retryOk ? sent : failed).push({ ref: log.transaction_ref, triggerType: retryType, phone: log.recipient, isRetry: true });
+        }
+      }
+
       return json({ ok: true, sent, failed, skipped });
     }
 
