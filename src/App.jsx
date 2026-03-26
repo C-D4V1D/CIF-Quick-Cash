@@ -396,6 +396,20 @@ const DEFAULT_SETTINGS = {
   smsOwnershipTransferred: 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
   smsOutrightConfirmationEnabled: true,
   smsOutrightConfirmation: 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
+  smsAdvanceConfirmationEnabled: true,
+  smsAdvanceConfirmation: 'Dear {customerName}, your cash advance of {amount} (Ref: {ref}) has been processed. Your return date is {dueDate}. Repay on time to avoid penalties. {businessName}. Call: {shopPhone}',
+  smsOverdueReminderDays: [1, 3, 5],
+  smsOverdueReminder: 'Dear {customerName}, your loan (Ref: {ref}) is {daysOverdue} day(s) overdue. Balance if repaid today: {balanceToday}. Visit {businessName} now to avoid losing your item. Call: {shopPhone}',
+  smsRedemptionConfirmationEnabled: true,
+  smsRedemptionConfirmation: 'Dear {customerName}, your loan (Ref: {ref}) has been fully repaid. You paid {amount} and your item has been returned. Thank you for choosing {businessName}!',
+  smsMidLoanReminderEnabled: true,
+  smsMidLoanReminder: 'Hello {customerName}, your loan (Ref: {ref}) is at its midpoint. Your balance if repaid today is {balanceToday}. Early repayment is always welcome at {businessName}. Call: {shopPhone}',
+  smsListedForSaleEnabled: true,
+  smsListedForSale: 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
+  smsSaleConfirmationEnabled: true,
+  smsSaleConfirmation: 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Shop Ref: {shopRef}) from {businessName}. Call {shopPhone} for any queries.',
+  smsRetryEnabled: true,
+  smsRetryDays: 3,
   smsRechargeBank: '',
   smsRechargeAccountNumber: '',
   smsRechargeAccountName: '',
@@ -1969,7 +1983,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
     if (!canSave) return;
     setSaving(true);
     const shopId = (!tx.shopId && isNewListing)
-      ? 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 23)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0')
+      ? 'SHP-' + 'ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random() * 24)] + String(Math.floor(Math.random() * 10000)).padStart(4, '0')
       : (tx.shopId || undefined);
     const updates = {
       ...tx,
@@ -5174,19 +5188,43 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const [smsLogs, setSmsLogs] = useState(null);
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
-  const [smsSendMsg, setSmsSendMsg] = useState(() => {
-    if (tx.type !== 'advance') return '';
-    const tmpl = settings.smsDueDateReminder || DEFAULT_SETTINGS.smsDueDateReminder;
+  // Determine the most suitable pre-filled SMS template for this transaction's current state
+  const pickSmsTemplate = () => {
     const fmtN = n => '₦' + Number(n || 0).toLocaleString('en-NG');
-    return tmpl
+    const biz = settings.businessName || 'CIF Quick Cash';
+    const phone = settings.shopPhone1 || '';
+    const fill = (tmpl) => (tmpl || '')
       .replace(/\{customerName\}/g, tx.fullName || '')
-      .replace(/\{ref\}/g, tx.ref || '')
-      .replace(/\{amount\}/g, fmtN(tx.cashAdvance))
-      .replace(/\{daysLeft\}/g, customerDaysLeft != null ? String(customerDaysLeft) : '')
-      .replace(/\{daysOverdue\}/g, '')
-      .replace(/\{businessName\}/g, settings.businessName || 'CIF Quick Cash')
-      .replace(/\{shopPhone\}/g, settings.shopPhone1 || '');
-  });
+      .replace(/\{ref\}/g,          tx.ref || '')
+      .replace(/\{shopRef\}/g,      tx.shopId || tx.ref || '')
+      .replace(/\{amount\}/g,       fmtN(tx.cashAdvance))
+      .replace(/\{daysLeft\}/g,     customerDaysLeft != null ? String(customerDaysLeft) : '')
+      .replace(/\{daysOverdue\}/g,  customerDaysLeft != null && customerDaysLeft < 0 ? String(Math.abs(customerDaysLeft)) : '')
+      .replace(/\{dueDate\}/g,      tx.deadlineDate || '')
+      .replace(/\{balanceToday\}/g, fmtN(amountDueToday))
+      .replace(/\{businessName\}/g, biz)
+      .replace(/\{shopPhone\}/g,    phone);
+    if (tx.type !== 'advance') return '';
+    // Closed (fully repaid)
+    if (tx.status === 'closed') return fill(settings.smsRedemptionConfirmation || DEFAULT_SETTINGS.smsRedemptionConfirmation);
+    // Listed / surrendered — no meaningful inbound reminder; use listed-for-sale nudge
+    if (tx.status === 'for_sale' || tx.status === 'ready_to_sell') return fill(settings.smsListedForSale || DEFAULT_SETTINGS.smsListedForSale);
+    // Active loan
+    if (customerDaysLeft != null && customerDaysLeft < 0) {
+      // Overdue
+      return fill(settings.smsOverdueReminder || DEFAULT_SETTINGS.smsOverdueReminder);
+    }
+    if (customerDaysLeft === 0) {
+      // Due today
+      return fill(settings.smsDueTodayReminder || DEFAULT_SETTINGS.smsDueTodayReminder);
+    }
+    // Default: upcoming due date reminder
+    return fill(settings.smsDueDateReminder || DEFAULT_SETTINGS.smsDueDateReminder);
+  };
+  const [smsSendMsg, setSmsSendMsg] = useState(pickSmsTemplate);
+  // Which phone to target for manual SMS
+  const phone2 = tx.phoneNumbers?.[1] || '';
+  const [smsPhoneTarget, setSmsPhoneTarget] = useState('phone1'); // 'phone1' | 'phone2' | 'both'
   const [smsResult, setSmsResult] = useState(null);
   const [smsLogPage, setSmsLogPage] = useState(0);
   const SMS_PAGE_SIZE = 3;
@@ -5210,27 +5248,54 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     if (!smsSendMsg.trim()) return;
     setSendingSms(true);
     setSmsResult(null);
-    const res = await API.post('sms/send', { ref: tx.ref, message: smsSendMsg.trim() });
+    const msg = smsSendMsg.trim();
+    const phone1 = tx.phoneNumbers?.[0] || '';
+    const targets = smsPhoneTarget === 'both'
+      ? [phone1, phone2].filter(Boolean)
+      : smsPhoneTarget === 'phone2' ? [phone2].filter(Boolean) : [phone1].filter(Boolean);
+    const results = [];
+    for (const p of targets) {
+      results.push(await API.post('sms/send', { ref: tx.ref, message: msg, phone: p }));
+    }
     setSendingSms(false);
-    setSmsResult(res);
-    if (res?.ok) {
+    // Expose a combined result: ok only if ALL sends succeeded
+    const allOk = results.every(r => r?.ok);
+    const anyOk = results.some(r => r?.ok);
+    const combined = { ...results[results.length - 1], ok: allOk, _partialOk: anyOk && !allOk, _count: results.length };
+    setSmsResult(combined);
+    if (anyOk) {
       setSmsSendMsg('');
-      // Reload SMS logs
       refreshSmsLogs();
     }
   };
   const SMS_TRIGGER_LABELS = {
-    manual: '📝 Manual',
-    due_today: '🔴 Due Today',
-    ownership_today: '🚨 Last Ownership Day',
+    manual:                  '📝 Manual',
+    due_today:               '🔴 Due Today',
+    ownership_today:         '🚨 Last Ownership Day',
+    ownership_transferred:   '🏳️ Ownership Transferred',
+    outright_confirmation:   '✅ Outright Confirmed',
+    advance_confirmation:    '✅ Advance Confirmed',
+    redemption_confirmation: '✅ Loan Repaid',
+    mid_loan:                '📊 Mid-Loan Update',
+    listed_for_sale:         '🏷️ Listed for Sale',
+    sale_confirmation:       '💰 Item Sold',
   };
   const getSmsLabel = (trigger) => {
+    if (!trigger) return '—';
     if (SMS_TRIGGER_LABELS[trigger]) return SMS_TRIGGER_LABELS[trigger];
-    // Trigger format: 'due_Nd' or 'ownership_Nd' — extract N using regex
-    const dueMatch = trigger?.match(/^due_(\d+)d$/);
+    // Trigger format: 'due_Nd', 'ownership_Nd', 'overdue_Nd'
+    const dueMatch = trigger.match(/^due_(\d+)d$/);
     if (dueMatch) return `⏰ ${dueMatch[1]}d Before Due`;
-    const ownMatch = trigger?.match(/^ownership_(\d+)d$/);
+    const ownMatch = trigger.match(/^ownership_(\d+)d$/);
     if (ownMatch) return `⚠️ ${ownMatch[1]}d Before Ownership End`;
+    const overdueMatch = trigger.match(/^overdue_(\d+)d(?:_retry)?$/);
+    if (overdueMatch) return `⚠️ ${overdueMatch[1]}d Overdue${trigger.endsWith('_retry') ? ' (Retry)' : ''}`;
+    // _retry suffix on any trigger
+    const retryMatch = trigger.match(/^(.+)_retry$/);
+    if (retryMatch) return `🔄 Retry: ${getSmsLabel(retryMatch[1])}`;
+    // _phone2 suffix
+    const phone2Match = trigger.match(/^(.+)_phone2$/);
+    if (phone2Match) return `📲 Phone 2: ${getSmsLabel(phone2Match[1])}`;
     return trigger;
   };
   const row = (label, value, color) => (value !== null && value !== undefined && value !== '') ? (
@@ -5518,10 +5583,32 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         ) : (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No SMS messages sent for this transaction yet.</div>
         )}
-        {/* Manual SMS send (staff only, active loans) */}
+        {/* Manual SMS send (staff only) */}
         {isStaff && settings.smsEnabled && tx.phoneNumbers?.[0] && (
           <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
-            <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>Send Manual SMS</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700 }}>Send Manual SMS</div>
+              <button style={{ ...S.btnSm('secondary'), fontSize: '11px' }} onClick={() => setSmsSendMsg(pickSmsTemplate())}>↩ Reset to template</button>
+            </div>
+            {/* Phone target selector */}
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '10px', fontSize: '13px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                <input type="radio" name="smsPhoneTarget" value="phone1" checked={smsPhoneTarget === 'phone1'} onChange={() => setSmsPhoneTarget('phone1')} />
+                Phone 1 <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>({tx.phoneNumbers[0]})</span>
+              </label>
+              {phone2 && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                  <input type="radio" name="smsPhoneTarget" value="phone2" checked={smsPhoneTarget === 'phone2'} onChange={() => setSmsPhoneTarget('phone2')} />
+                  Phone 2 <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>({phone2})</span>
+                </label>
+              )}
+              {phone2 && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer' }}>
+                  <input type="radio" name="smsPhoneTarget" value="both" checked={smsPhoneTarget === 'both'} onChange={() => setSmsPhoneTarget('both')} />
+                  Both phones
+                </label>
+              )}
+            </div>
             <textarea
               style={{ ...S.textarea, fontSize: '13px', marginBottom: '8px' }}
               rows={3}
@@ -5530,11 +5617,13 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
               placeholder="Type your SMS message here…"
             />
             {smsResult && (
-              <div style={{ ...S.alert(smsResult.ok ? 'success' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
-                {smsResult.ok
+              <div style={{ ...S.alert(smsResult.ok ? 'success' : smsResult._partialOk ? 'warning' : 'danger'), marginBottom: '8px', fontSize: '12px' }}>
+                {smsResult._partialOk
+                  ? '⚠️ Sent to one phone, but the other failed. Check logs for details.'
+                  : smsResult.ok
                   ? (smsResult.usedFallback
                     ? '✅ SMS sent via N-Alert (fallback). Your custom sender ID was rejected by Termii — contact Termii support to link it to your account.'
-                    : '✅ SMS sent successfully.')
+                    : `✅ SMS sent successfully${smsPhoneTarget === 'both' && smsResult._count > 1 ? ' to both phones' : ''}.`)
                   : (() => {
                     const termiiMsg = smsResult.response?.message || '';
                     if (termiiMsg.includes('ApplicationSenderId not found')) {
@@ -5553,7 +5642,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
               </div>
             )}
             <button style={S.btnSm('primary')} onClick={sendManualSms} disabled={sendingSms || !smsSendMsg.trim()}>
-              {sendingSms ? 'Sending…' : '📤 Send SMS'}
+              {sendingSms ? 'Sending…' : `📤 Send SMS${smsPhoneTarget === 'both' ? ' (×2)' : ''}`}
             </button>
           </div>
         )}
@@ -8362,7 +8451,7 @@ export default function App() {
           <div style={S.card}>
             <div style={S.cardTitle}>📱 SMS Automation (Termii)</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
-              Automatically send SMS reminders to customers via Termii. The system fires SMS once per day for each eligible active loan based on the schedule below. Requires a Termii account and API key.
+              Automatically send SMS messages to customers at every key stage of the loan lifecycle via Termii. The scheduler runs <strong>once per browser session</strong> when a staff member opens the app — it checks for eligible scheduled messages (due-date, overdue, ownership, mid-loan) and fires them. Instant triggers (confirmations, redemption, sale) fire immediately when the action is recorded, regardless of the time. Requires a Termii account and API key.
             </div>
 
             {/* Master toggle */}
@@ -8415,31 +8504,64 @@ export default function App() {
               </div>
             </div>
 
-            {/* Trigger schedule */}
-            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
-              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>⏰ Automated SMS Schedule</div>
-              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Enter comma-separated days before each event (0 = on the day, 1 = 1 day before, 2 = 2 days before, etc.).</div>
-              <div style={S.grid2}>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Reminders (days before)<InfoIcon tip="Days before the customer's agreed due date to send reminders. E.g. '2, 1, 0' sends SMS 2 days before, 1 day before, and on the due date itself." /></span>}>
-                  <ReminderDaysInput style={S.input} value={es.smsDueDateReminderDays} fallback={DEFAULT_SETTINGS.smsDueDateReminderDays} onChange={v => updateSettings({ ...es, smsDueDateReminderDays: v })} placeholder="e.g. 2, 1, 0" />
-                </Field>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminders (days before last day)<InfoIcon tip="Days before the internal ownership deadline to send reminders. E.g. '3, 0' sends SMS 3 days before the ownership date and on the last ownership day." /></span>}>
-                  <ReminderDaysInput style={S.input} value={es.smsOwnershipReminderDays} fallback={DEFAULT_SETTINGS.smsOwnershipReminderDays} onChange={v => updateSettings({ ...es, smsOwnershipReminderDays: v })} placeholder="e.g. 3, 0" />
-                </Field>
-              </div>
-            </div>
-
-            {/* SMS message templates */}
+            {/* ── SMS Templates — structured by loan lifecycle phase ── */}
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💬 SMS Message Templates</div>
               <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
-                Customize each auto-SMS. Available placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{businessName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopPhone}'}</code>
+                Templates are organized in the order they fire during the loan lifecycle. Available placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopRef}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{dueDate}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{balanceToday}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{buyerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{itemDesc}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{businessName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopPhone}'}</code>
+              <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>💡 <strong>{'{shopRef}'}</strong> = the shop item ref (SHP-XXXX) — assigned automatically when an item is surrendered or listed for sale. Use this in the Sale Confirmation template instead of <strong>{'{ref}'}</strong>.</div>
               </div>
+
+              {/* ── Phase 1: Loan Intake ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primary, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.primaryLight}` }}>📥 Phase 1 — Loan Intake (fires immediately on creation)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Cash Advance Confirmation<InfoIcon tip="Sent immediately when a new cash advance loan is created — gives the customer their reference number, amount, and return date to keep on their phone. Placeholders: {customerName}, {ref}, {amount}, {dueDate}, {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled} onChange={e => updateSettings({ ...es, smsAdvanceConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled) ? 1 : 0.45 }} value={es.smsAdvanceConfirmation ?? DEFAULT_SETTINGS.smsAdvanceConfirmation} onChange={e => updateSettings({ ...es, smsAdvanceConfirmation: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Confirmation<InfoIcon tip="Sent on the day of an outright purchase — a receipt confirming we received the item and paid the seller. Placeholders: {customerName}, {ref}, {amount} (price paid), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled} onChange={e => updateSettings({ ...es, smsOutrightConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled) ? 1 : 0.45 }} value={es.smsOutrightConfirmation ?? DEFAULT_SETTINGS.smsOutrightConfirmation} onChange={e => updateSettings({ ...es, smsOutrightConfirmation: e.target.value })} />
+              </Field>
+
+              {/* ── Phase 2: Active Loan ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primary, textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.primaryLight}` }}>📊 Phase 2 — Active Loan (scheduled, before due date)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Mid-Loan Balance Reminder<InfoIcon tip="Sent at the midpoint of the loan duration (e.g. day 15 on a 30-day loan) to show the customer what they would owe if they repaid today. Drives early repayment. Placeholders: {customerName}, {ref}, {amount} (original advance), {balanceToday} (advance + accrued interest), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled} onChange={e => updateSettings({ ...es, smsMidLoanReminderEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled) ? 1 : 0.45 }} value={es.smsMidLoanReminder ?? DEFAULT_SETTINGS.smsMidLoanReminder} onChange={e => updateSettings({ ...es, smsMidLoanReminder: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Reminder Schedule (days before)<InfoIcon tip="Comma-separated days before the customer's agreed due date to send reminders. E.g. '2, 1, 0' sends SMS 2 days before, 1 day before, and on the due date itself. Leave empty to disable." /></span>}>
+                <ReminderDaysInput style={S.input} value={es.smsDueDateReminderDays} fallback={DEFAULT_SETTINGS.smsDueDateReminderDays} onChange={v => updateSettings({ ...es, smsDueDateReminderDays: v })} placeholder="e.g. 2, 1, 0" />
+              </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Date Reminder (X days before)<InfoIcon tip="Sent X days before the customer's agreed due date. The {daysLeft} placeholder shows how many days remain." /></span>}>
                 <textarea style={S.textarea} value={es.smsDueDateReminder ?? DEFAULT_SETTINGS.smsDueDateReminder} onChange={e => updateSettings({ ...es, smsDueDateReminder: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Today Reminder<InfoIcon tip="Sent on the exact day the customer's loan is due." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Today Reminder<InfoIcon tip="Sent on the exact day the customer's loan is due (when 0 is included in the schedule above)." /></span>}>
                 <textarea style={S.textarea} value={es.smsDueTodayReminder ?? DEFAULT_SETTINGS.smsDueTodayReminder} onChange={e => updateSettings({ ...es, smsDueTodayReminder: e.target.value })} />
+              </Field>
+
+              {/* ── Phase 3: Overdue ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.warning, textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.warningLight}` }}>⚠️ Phase 3 — Overdue (scheduled, after due date)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Reminder Schedule (days after due date)<InfoIcon tip="Comma-separated days AFTER the customer's agreed due date to send overdue reminders. E.g. '1, 3, 5' sends reminders 1 day, 3 days, and 5 days after they go overdue. Only fires while still within the internal deadline window. Leave empty to disable overdue reminders entirely." /></span>}>
+                <ReminderDaysInput style={S.input} value={es.smsOverdueReminderDays} fallback={[]} onChange={v => updateSettings({ ...es, smsOverdueReminderDays: v })} placeholder="e.g. 1, 3, 5 — leave empty to disable" />
+                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>💡 Leave empty to disable overdue reminders entirely. Minimum value is 1 (day after due date).</div>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Reminder<InfoIcon tip="Sent on days after the customer's agreed due date (set the schedule above). Shows the current outstanding balance. Placeholders: {customerName}, {ref}, {amount} (original advance), {daysOverdue}, {balanceToday} (advance + accrued interest), {businessName}, {shopPhone}." /></span>}>
+                <textarea style={S.textarea} value={es.smsOverdueReminder ?? DEFAULT_SETTINGS.smsOverdueReminder} onChange={e => updateSettings({ ...es, smsOverdueReminder: e.target.value })} />
+              </Field>
+
+              {/* ── Phase 4: Ownership ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.danger, textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.dangerLight}` }}>🏛️ Phase 4 — Ownership (scheduled, approaching internal deadline)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminder Schedule (days before last day)<InfoIcon tip="Comma-separated days before the internal ownership deadline to send reminders. E.g. '3, 0' sends SMS 3 days before the ownership date and on the last ownership day. Leave empty to disable." /></span>}>
+                <ReminderDaysInput style={S.input} value={es.smsOwnershipReminderDays} fallback={DEFAULT_SETTINGS.smsOwnershipReminderDays} onChange={v => updateSettings({ ...es, smsOwnershipReminderDays: v })} placeholder="e.g. 3, 0" />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminder (X days before last day)<InfoIcon tip="Sent X days before the internal deadline (the day the business takes ownership). Urgent recovery message." /></span>}>
                 <textarea style={S.textarea} value={es.smsOwnershipReminder ?? DEFAULT_SETTINGS.smsOwnershipReminder} onChange={e => updateSettings({ ...es, smsOwnershipReminder: e.target.value })} />
@@ -8454,13 +8576,47 @@ export default function App() {
                 </label>
                 <textarea style={{ ...S.textarea, opacity: (es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled) ? 1 : 0.45 }} value={es.smsOwnershipTransferred ?? DEFAULT_SETTINGS.smsOwnershipTransferred} onChange={e => updateSettings({ ...es, smsOwnershipTransferred: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Confirmation<InfoIcon tip="Sent on the day of an outright purchase — a receipt confirming we received the item and paid the seller. Placeholders: {customerName}, {ref}, {amount} (price paid), {businessName}, {shopPhone}." /></span>}>
+
+              {/* ── Phase 5: Resolution ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: '2px solid #d1fae5' }}>✅ Phase 5 — Resolution (fires immediately on action)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Redemption / Repayment Confirmation<InfoIcon tip="Sent immediately when a customer fully repays their loan and collects their item. Provides a settlement receipt on their phone. Placeholders: {customerName}, {ref}, {amount} (total repaid), {businessName}, {shopPhone}." /></span>}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
-                  <input type="checkbox" checked={es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled} onChange={e => updateSettings({ ...es, smsOutrightConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
-                  {es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                  <input type="checkbox" checked={es.smsRedemptionConfirmationEnabled ?? DEFAULT_SETTINGS.smsRedemptionConfirmationEnabled} onChange={e => updateSettings({ ...es, smsRedemptionConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsRedemptionConfirmationEnabled ?? DEFAULT_SETTINGS.smsRedemptionConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
                 </label>
-                <textarea style={{ ...S.textarea, opacity: (es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled) ? 1 : 0.45 }} value={es.smsOutrightConfirmation ?? DEFAULT_SETTINGS.smsOutrightConfirmation} onChange={e => updateSettings({ ...es, smsOutrightConfirmation: e.target.value })} />
+                <textarea style={{ ...S.textarea, opacity: (es.smsRedemptionConfirmationEnabled ?? DEFAULT_SETTINGS.smsRedemptionConfirmationEnabled) ? 1 : 0.45 }} value={es.smsRedemptionConfirmation ?? DEFAULT_SETTINGS.smsRedemptionConfirmation} onChange={e => updateSettings({ ...es, smsRedemptionConfirmation: e.target.value })} />
               </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Item Listed for Sale<InfoIcon tip="Sent when an advance loan item is listed for public sale for the first time — notifies the customer their item is now on the market per the signed agreement. Placeholders: {customerName}, {ref}, {amount} (original advance), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsListedForSaleEnabled ?? DEFAULT_SETTINGS.smsListedForSaleEnabled} onChange={e => updateSettings({ ...es, smsListedForSaleEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsListedForSaleEnabled ?? DEFAULT_SETTINGS.smsListedForSaleEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsListedForSaleEnabled ?? DEFAULT_SETTINGS.smsListedForSaleEnabled) ? 1 : 0.45 }} value={es.smsListedForSale ?? DEFAULT_SETTINGS.smsListedForSale} onChange={e => updateSettings({ ...es, smsListedForSale: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sale Confirmation<InfoIcon tip="Sent immediately to the new buyer's phone when a sale is confirmed — serves as a purchase receipt. Uses the Buyer Phone entered on the sale form. Placeholders: {buyerName}, {shopRef} (shop item ref e.g. SHP-A1234), {amount} (sale price), {itemDesc} (brand + model), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled} onChange={e => updateSettings({ ...es, smsSaleConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled) ? 1 : 0.45 }} value={es.smsSaleConfirmation ?? DEFAULT_SETTINGS.smsSaleConfirmation} onChange={e => updateSettings({ ...es, smsSaleConfirmation: e.target.value })} />
+              </Field>
+            </div>
+
+            {/* Retry settings */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>🔄 Failed SMS Retry</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>When an automated SMS fails to send (network error, Termii outage), the scheduler will automatically retry it on the next run within this window.</div>
+              <div style={S.grid2}>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Auto-Retry Failed SMS<InfoIcon tip="When enabled, any failed automated SMS from the past N days will be retried automatically on the next scheduler run, provided it hasn't already succeeded." /></span>}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                    <input type="checkbox" checked={es.smsRetryEnabled ?? DEFAULT_SETTINGS.smsRetryEnabled} onChange={e => updateSettings({ ...es, smsRetryEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                    {es.smsRetryEnabled ?? DEFAULT_SETTINGS.smsRetryEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled</span>}
+                  </label>
+                </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Retry Window (days)<InfoIcon tip="How many days back to look for failed SMS messages to retry. Default is 3 days. Max is 7 days." /></span>}>
+                  <input style={S.input} type="number" min="1" max="7" value={es.smsRetryDays ?? DEFAULT_SETTINGS.smsRetryDays} onChange={e => updateSettings({ ...es, smsRetryDays: Math.max(1, Math.min(7, Number(e.target.value))) })} disabled={!(es.smsRetryEnabled ?? DEFAULT_SETTINGS.smsRetryEnabled)} />
+                </Field>
+              </div>
             </div>
 
             {/* Recharge payment details */}
