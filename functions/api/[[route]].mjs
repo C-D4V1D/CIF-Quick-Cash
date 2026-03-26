@@ -894,6 +894,42 @@ export async function onRequest(context) {
         }
       }
 
+      // ── Sale confirmation SMS ──
+      // Sent immediately when an item is marked as sold — notifies the original
+      // customer (previous owner) that their item has been sold, closing the loop.
+      if (tx.status === 'sold') {
+        try {
+          const smsCfg = await loadSmsConfig();
+          if (smsCfg.enabled && smsCfg.saleConfirmationEnabled) {
+            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const phone = toIntlPhone(rawPhone);
+            if (phone) {
+              const triggerType = 'sale_confirmation';
+              const todaySold = todayNigeria();
+              const alreadySent = await db.prepare(
+                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+              ).bind(ref, triggerType, todaySold).first();
+              if (!alreadySent) {
+                const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+                const message = fillSmsTemplate(smsCfg.tmplSaleConfirmation, {
+                  customerName: tx.fullName,
+                  ref,
+                  amount: fmtSms(tx.salePrice),
+                  businessName: smsCfg.businessName,
+                  shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await db.prepare(
+                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+              }
+            }
+          }
+        } catch (_smsErr) {
+          // SMS failure must never block the transaction save
+        }
+      }
+
       return json({ success: true });
     }
     if (path.startsWith('transactions/') && method === 'DELETE') {
@@ -1427,6 +1463,9 @@ export async function onRequest(context) {
         listedForSaleEnabled: cfg.smsListedForSaleEnabled !== false,
         tmplListedForSale: cfg.smsListedForSale || 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
         // ── New: Retry failed SMS ──
+        // ── New: Sale confirmation (when an item is marked sold) ──
+        saleConfirmationEnabled: cfg.smsSaleConfirmationEnabled !== false,
+        tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {customerName}, your item (Ref: {ref}) has been sold by {businessName}. All obligations under your signed agreement have been fulfilled. Thank you.',
         smsRetryEnabled: cfg.smsRetryEnabled !== false,
         smsRetryDays:    Math.max(1, Math.min(7, Number(cfg.smsRetryDays) || 3)),
         businessName:     cfg.businessName || 'CIF Quick Cash',

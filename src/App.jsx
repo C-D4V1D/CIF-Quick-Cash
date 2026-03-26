@@ -406,6 +406,8 @@ const DEFAULT_SETTINGS = {
   smsMidLoanReminder: 'Hello {customerName}, your loan (Ref: {ref}) is at its midpoint. Your balance if repaid today is {balanceToday}. Early repayment is always welcome at {businessName}. Call: {shopPhone}',
   smsListedForSaleEnabled: true,
   smsListedForSale: 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
+  smsSaleConfirmationEnabled: true,
+  smsSaleConfirmation: 'Dear {customerName}, your item (Ref: {ref}) has been sold by {businessName}. All obligations under your signed agreement have been fulfilled. Thank you.',
   smsRetryEnabled: true,
   smsRetryDays: 3,
   smsRechargeBank: '',
@@ -5241,6 +5243,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     redemption_confirmation: '✅ Loan Repaid',
     mid_loan:                '📊 Mid-Loan Update',
     listed_for_sale:         '🏷️ Listed for Sale',
+    sale_confirmation:       '💰 Item Sold',
   };
   const getSmsLabel = (trigger) => {
     if (!trigger) return '—';
@@ -8389,7 +8392,7 @@ export default function App() {
           <div style={S.card}>
             <div style={S.cardTitle}>📱 SMS Automation (Termii)</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
-              Automatically send SMS reminders to customers via Termii. The system fires SMS once per day for each eligible active loan based on the schedule below. Requires a Termii account and API key.
+              Automatically send SMS messages to customers at every key stage of the loan lifecycle via Termii. The scheduler runs <strong>once per browser session</strong> when a staff member opens the app — it checks for eligible scheduled messages (due-date, overdue, ownership, mid-loan) and fires them. Instant triggers (confirmations, redemption, sale) fire immediately when the action is recorded, regardless of the time. Requires a Termii account and API key.
             </div>
 
             {/* Master toggle */}
@@ -8442,34 +8445,63 @@ export default function App() {
               </div>
             </div>
 
-            {/* Trigger schedule */}
-            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
-              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>⏰ Automated SMS Schedule</div>
-              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Enter comma-separated days before each event (0 = on the day, 1 = 1 day before, 2 = 2 days before, etc.).</div>
-              <div style={S.grid2}>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Reminders (days before)<InfoIcon tip="Days before the customer's agreed due date to send reminders. E.g. '2, 1, 0' sends SMS 2 days before, 1 day before, and on the due date itself." /></span>}>
-                  <ReminderDaysInput style={S.input} value={es.smsDueDateReminderDays} fallback={DEFAULT_SETTINGS.smsDueDateReminderDays} onChange={v => updateSettings({ ...es, smsDueDateReminderDays: v })} placeholder="e.g. 2, 1, 0" />
-                </Field>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminders (days before last day)<InfoIcon tip="Days before the internal ownership deadline to send reminders. E.g. '3, 0' sends SMS 3 days before the ownership date and on the last ownership day." /></span>}>
-                  <ReminderDaysInput style={S.input} value={es.smsOwnershipReminderDays} fallback={DEFAULT_SETTINGS.smsOwnershipReminderDays} onChange={v => updateSettings({ ...es, smsOwnershipReminderDays: v })} placeholder="e.g. 3, 0" />
-                </Field>
-                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Reminders (days after due date)<InfoIcon tip="Days AFTER the customer's agreed due date to send overdue reminders. E.g. '1, 3, 5' sends reminders 1 day, 3 days, and 5 days after they go overdue. Only fires while still within the internal deadline window." /></span>}>
-                  <ReminderDaysInput style={S.input} value={es.smsOverdueReminderDays} fallback={DEFAULT_SETTINGS.smsOverdueReminderDays} onChange={v => updateSettings({ ...es, smsOverdueReminderDays: v })} placeholder="e.g. 1, 3, 5" />
-                </Field>
-              </div>
-            </div>
-
-            {/* SMS message templates */}
+            {/* ── SMS Templates — structured by loan lifecycle phase ── */}
             <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>💬 SMS Message Templates</div>
               <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>
-                Customize each auto-SMS. Available placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{dueDate}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{balanceToday}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{businessName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopPhone}'}</code>
+                Templates are organized in the order they fire during the loan lifecycle. Available placeholders: <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{customerName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{ref}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{amount}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysLeft}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{daysOverdue}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{dueDate}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{balanceToday}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{businessName}'}</code> <code style={{ background: COLORS.primaryLight, color: COLORS.primaryDark, padding: '1px 5px', borderRadius: '4px', fontWeight: 600 }}>{'{shopPhone}'}</code>
               </div>
+
+              {/* ── Phase 1: Loan Intake ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primary, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.primaryLight}` }}>📥 Phase 1 — Loan Intake (fires immediately on creation)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Cash Advance Confirmation<InfoIcon tip="Sent immediately when a new cash advance loan is created — gives the customer their reference number, amount, and return date to keep on their phone. Placeholders: {customerName}, {ref}, {amount}, {dueDate}, {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled} onChange={e => updateSettings({ ...es, smsAdvanceConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled) ? 1 : 0.45 }} value={es.smsAdvanceConfirmation ?? DEFAULT_SETTINGS.smsAdvanceConfirmation} onChange={e => updateSettings({ ...es, smsAdvanceConfirmation: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Confirmation<InfoIcon tip="Sent on the day of an outright purchase — a receipt confirming we received the item and paid the seller. Placeholders: {customerName}, {ref}, {amount} (price paid), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled} onChange={e => updateSettings({ ...es, smsOutrightConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled) ? 1 : 0.45 }} value={es.smsOutrightConfirmation ?? DEFAULT_SETTINGS.smsOutrightConfirmation} onChange={e => updateSettings({ ...es, smsOutrightConfirmation: e.target.value })} />
+              </Field>
+
+              {/* ── Phase 2: Active Loan ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primary, textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.primaryLight}` }}>📊 Phase 2 — Active Loan (scheduled, before due date)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Mid-Loan Balance Reminder<InfoIcon tip="Sent at the midpoint of the loan duration (e.g. day 15 on a 30-day loan) to show the customer what they would owe if they repaid today. Drives early repayment. Placeholders: {customerName}, {ref}, {amount} (original advance), {balanceToday} (advance + accrued interest), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled} onChange={e => updateSettings({ ...es, smsMidLoanReminderEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled) ? 1 : 0.45 }} value={es.smsMidLoanReminder ?? DEFAULT_SETTINGS.smsMidLoanReminder} onChange={e => updateSettings({ ...es, smsMidLoanReminder: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Reminder Schedule (days before)<InfoIcon tip="Comma-separated days before the customer's agreed due date to send reminders. E.g. '2, 1, 0' sends SMS 2 days before, 1 day before, and on the due date itself. Leave empty to disable." /></span>}>
+                <ReminderDaysInput style={S.input} value={es.smsDueDateReminderDays} fallback={DEFAULT_SETTINGS.smsDueDateReminderDays} onChange={v => updateSettings({ ...es, smsDueDateReminderDays: v })} placeholder="e.g. 2, 1, 0" />
+              </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Date Reminder (X days before)<InfoIcon tip="Sent X days before the customer's agreed due date. The {daysLeft} placeholder shows how many days remain." /></span>}>
                 <textarea style={S.textarea} value={es.smsDueDateReminder ?? DEFAULT_SETTINGS.smsDueDateReminder} onChange={e => updateSettings({ ...es, smsDueDateReminder: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Today Reminder<InfoIcon tip="Sent on the exact day the customer's loan is due." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due Today Reminder<InfoIcon tip="Sent on the exact day the customer's loan is due (when 0 is included in the schedule above)." /></span>}>
                 <textarea style={S.textarea} value={es.smsDueTodayReminder ?? DEFAULT_SETTINGS.smsDueTodayReminder} onChange={e => updateSettings({ ...es, smsDueTodayReminder: e.target.value })} />
+              </Field>
+
+              {/* ── Phase 3: Overdue ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.warning, textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.warningLight}` }}>⚠️ Phase 3 — Overdue (scheduled, after due date)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Reminder Schedule (days after due date)<InfoIcon tip="Comma-separated days AFTER the customer's agreed due date to send overdue reminders. E.g. '1, 3, 5' sends reminders 1 day, 3 days, and 5 days after they go overdue. Only fires while still within the internal deadline window. Leave empty to disable overdue reminders entirely." /></span>}>
+                <ReminderDaysInput style={S.input} value={es.smsOverdueReminderDays} fallback={[]} onChange={v => updateSettings({ ...es, smsOverdueReminderDays: v })} placeholder="e.g. 1, 3, 5 — leave empty to disable" />
+                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>💡 Leave empty to disable overdue reminders entirely. Minimum value is 1 (day after due date).</div>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Reminder<InfoIcon tip="Sent on days after the customer's agreed due date (set the schedule above). Shows the current outstanding balance. Placeholders: {customerName}, {ref}, {amount} (original advance), {daysOverdue}, {balanceToday} (advance + accrued interest), {businessName}, {shopPhone}." /></span>}>
+                <textarea style={S.textarea} value={es.smsOverdueReminder ?? DEFAULT_SETTINGS.smsOverdueReminder} onChange={e => updateSettings({ ...es, smsOverdueReminder: e.target.value })} />
+              </Field>
+
+              {/* ── Phase 4: Ownership ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.danger, textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: `2px solid ${COLORS.dangerLight}` }}>🏛️ Phase 4 — Ownership (scheduled, approaching internal deadline)</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminder Schedule (days before last day)<InfoIcon tip="Comma-separated days before the internal ownership deadline to send reminders. E.g. '3, 0' sends SMS 3 days before the ownership date and on the last ownership day. Leave empty to disable." /></span>}>
+                <ReminderDaysInput style={S.input} value={es.smsOwnershipReminderDays} fallback={DEFAULT_SETTINGS.smsOwnershipReminderDays} onChange={v => updateSettings({ ...es, smsOwnershipReminderDays: v })} placeholder="e.g. 3, 0" />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Ownership Reminder (X days before last day)<InfoIcon tip="Sent X days before the internal deadline (the day the business takes ownership). Urgent recovery message." /></span>}>
                 <textarea style={S.textarea} value={es.smsOwnershipReminder ?? DEFAULT_SETTINGS.smsOwnershipReminder} onChange={e => updateSettings({ ...es, smsOwnershipReminder: e.target.value })} />
@@ -8484,23 +8516,9 @@ export default function App() {
                 </label>
                 <textarea style={{ ...S.textarea, opacity: (es.smsOwnershipTransferredEnabled ?? DEFAULT_SETTINGS.smsOwnershipTransferredEnabled) ? 1 : 0.45 }} value={es.smsOwnershipTransferred ?? DEFAULT_SETTINGS.smsOwnershipTransferred} onChange={e => updateSettings({ ...es, smsOwnershipTransferred: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Confirmation<InfoIcon tip="Sent on the day of an outright purchase — a receipt confirming we received the item and paid the seller. Placeholders: {customerName}, {ref}, {amount} (price paid), {businessName}, {shopPhone}." /></span>}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
-                  <input type="checkbox" checked={es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled} onChange={e => updateSettings({ ...es, smsOutrightConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
-                  {es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
-                </label>
-                <textarea style={{ ...S.textarea, opacity: (es.smsOutrightConfirmationEnabled ?? DEFAULT_SETTINGS.smsOutrightConfirmationEnabled) ? 1 : 0.45 }} value={es.smsOutrightConfirmation ?? DEFAULT_SETTINGS.smsOutrightConfirmation} onChange={e => updateSettings({ ...es, smsOutrightConfirmation: e.target.value })} />
-              </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Cash Advance Confirmation<InfoIcon tip="Sent immediately when a new cash advance loan is created — gives the customer their reference number, amount, and return date to keep on their phone. Placeholders: {customerName}, {ref}, {amount}, {dueDate}, {businessName}, {shopPhone}." /></span>}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
-                  <input type="checkbox" checked={es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled} onChange={e => updateSettings({ ...es, smsAdvanceConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
-                  {es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
-                </label>
-                <textarea style={{ ...S.textarea, opacity: (es.smsAdvanceConfirmationEnabled ?? DEFAULT_SETTINGS.smsAdvanceConfirmationEnabled) ? 1 : 0.45 }} value={es.smsAdvanceConfirmation ?? DEFAULT_SETTINGS.smsAdvanceConfirmation} onChange={e => updateSettings({ ...es, smsAdvanceConfirmation: e.target.value })} />
-              </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Overdue Reminder<InfoIcon tip="Sent on days after the customer's agreed due date (set the schedule above). Shows the current outstanding balance. Placeholders: {customerName}, {ref}, {amount} (original advance), {daysOverdue}, {balanceToday} (advance + accrued interest), {businessName}, {shopPhone}." /></span>}>
-                <textarea style={S.textarea} value={es.smsOverdueReminder ?? DEFAULT_SETTINGS.smsOverdueReminder} onChange={e => updateSettings({ ...es, smsOverdueReminder: e.target.value })} />
-              </Field>
+
+              {/* ── Phase 5: Resolution ── */}
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#10b981', textTransform: 'uppercase', letterSpacing: '0.5px', marginTop: '20px', marginBottom: '10px', paddingBottom: '4px', borderBottom: '2px solid #d1fae5' }}>✅ Phase 5 — Resolution (fires immediately on action)</div>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Redemption / Repayment Confirmation<InfoIcon tip="Sent immediately when a customer fully repays their loan and collects their item. Provides a settlement receipt on their phone. Placeholders: {customerName}, {ref}, {amount} (total repaid), {businessName}, {shopPhone}." /></span>}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
                   <input type="checkbox" checked={es.smsRedemptionConfirmationEnabled ?? DEFAULT_SETTINGS.smsRedemptionConfirmationEnabled} onChange={e => updateSettings({ ...es, smsRedemptionConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
@@ -8508,19 +8526,19 @@ export default function App() {
                 </label>
                 <textarea style={{ ...S.textarea, opacity: (es.smsRedemptionConfirmationEnabled ?? DEFAULT_SETTINGS.smsRedemptionConfirmationEnabled) ? 1 : 0.45 }} value={es.smsRedemptionConfirmation ?? DEFAULT_SETTINGS.smsRedemptionConfirmation} onChange={e => updateSettings({ ...es, smsRedemptionConfirmation: e.target.value })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Mid-Loan Balance Reminder<InfoIcon tip="Sent at the midpoint of the loan duration (e.g. day 15 on a 30-day loan) to show the customer what they would owe if they repaid today. Drives early repayment. Placeholders: {customerName}, {ref}, {amount} (original advance), {balanceToday} (advance + accrued interest), {businessName}, {shopPhone}." /></span>}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
-                  <input type="checkbox" checked={es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled} onChange={e => updateSettings({ ...es, smsMidLoanReminderEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
-                  {es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
-                </label>
-                <textarea style={{ ...S.textarea, opacity: (es.smsMidLoanReminderEnabled ?? DEFAULT_SETTINGS.smsMidLoanReminderEnabled) ? 1 : 0.45 }} value={es.smsMidLoanReminder ?? DEFAULT_SETTINGS.smsMidLoanReminder} onChange={e => updateSettings({ ...es, smsMidLoanReminder: e.target.value })} />
-              </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Item Listed for Sale<InfoIcon tip="Sent when an advance loan item is listed for public sale for the first time — notifies the customer their item is now on the market per the signed agreement. Placeholders: {customerName}, {ref}, {amount} (original advance), {businessName}, {shopPhone}." /></span>}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
                   <input type="checkbox" checked={es.smsListedForSaleEnabled ?? DEFAULT_SETTINGS.smsListedForSaleEnabled} onChange={e => updateSettings({ ...es, smsListedForSaleEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
                   {es.smsListedForSaleEnabled ?? DEFAULT_SETTINGS.smsListedForSaleEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
                 </label>
                 <textarea style={{ ...S.textarea, opacity: (es.smsListedForSaleEnabled ?? DEFAULT_SETTINGS.smsListedForSaleEnabled) ? 1 : 0.45 }} value={es.smsListedForSale ?? DEFAULT_SETTINGS.smsListedForSale} onChange={e => updateSettings({ ...es, smsListedForSale: e.target.value })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Sale Confirmation<InfoIcon tip="Sent immediately when an item is marked as sold — notifies the original customer that their item has been sold, closing the loop. For advance loans the customer is the previous owner; for outright purchases this confirms the transaction is complete. Placeholders: {customerName}, {ref}, {amount} (sale price), {businessName}, {shopPhone}." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled} onChange={e => updateSettings({ ...es, smsSaleConfirmationEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled ? <span style={{ color: '#10b981' }}>✅ Enabled — will send automatically</span> : <span style={{ color: COLORS.textMuted }}>⛔ Disabled — will not send</span>}
+                </label>
+                <textarea style={{ ...S.textarea, opacity: (es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled) ? 1 : 0.45 }} value={es.smsSaleConfirmation ?? DEFAULT_SETTINGS.smsSaleConfirmation} onChange={e => updateSettings({ ...es, smsSaleConfirmation: e.target.value })} />
               </Field>
             </div>
 
