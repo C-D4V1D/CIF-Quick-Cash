@@ -15,8 +15,8 @@ const chk = (checked) => checked ? '☑' : '☐';
 // ---------------------------------------------------------------------------
 // Build HTML for one copy (Business or Customer) — folded A4 booklet layout
 // Each copy = 2 sheet-face divs (landscape A4), printed front and back, folded in half.
-//   face1: left panel = back cover | right panel = page 1 (Parts A + B)
-//   face2: left panel = page 2 (Parts C + D) | right panel = page 3 (clauses + signatures)
+//   face1: left panel = back cover (signatures + official use) | right panel = page 1 (Parts A + B)
+//   face2: left panel = page 2 (photos + Part C + Part D Clauses 1–2) | right panel = page 3 (Clauses 3–6)
 // ---------------------------------------------------------------------------
 const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const idTypeDisplay = tx.idType === 'bvn' ? 'BVN' : 'NIN';
