@@ -212,14 +212,15 @@ const elapsedDaysSince = (dateStr) => {
   return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
-// Load loan-duration settings from D1.
-// Returns { maxLoanDays, graceDays } with safe defaults.
+// Load loan-duration + fee settings from D1.
+// Returns { maxLoanDays, graceDays, interestRate } with safe defaults.
 const loadLoanConfig = async (db) => {
   const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
   const cfg = row ? JSON.parse(row.value) : {};
   return {
-    maxLoanDays: Math.max(1, Number(cfg.maxLoanDays) || 30),
-    graceDays:   Math.max(0, Number(cfg.graceDays)   || 3),
+    maxLoanDays:  Math.max(1, Number(cfg.maxLoanDays)  || 30),
+    graceDays:    Math.max(0, Number(cfg.graceDays)    || 3),
+    interestRate: Math.max(0, Number(cfg.interestRate) || 1),
   };
 };
 
@@ -542,15 +543,17 @@ export async function onRequest(context) {
         const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '100', 10) || 100));
         const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
 
+        // Draft visibility: admins see all; staff see only their own plus legacy rows with no created_by.
+        // In both cases, exclude drafts already saved as completed transactions (stale-draft guard).
+        const draftUserFilter = auth.user.role === 'admin'
+          ? { sql: 'NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref)', params: [] }
+          : { sql: 'NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref) AND (d.created_by = ? OR d.created_by IS NULL)', params: [auth.user.id] };
+
         const [transactionsRes, draftsRes, txCountRow, draftCountRow, settingsRow] = await Promise.all([
           db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
-          // Exclude drafts whose ref already exists as a completed transaction.
-          // This silently cleans up the case where the transaction saved but the
-          // subsequent draft-delete failed (network error), preventing stale drafts
-          // from appearing as resumable in the UI.
-          db.prepare('SELECT d.ref, d.data, d.updated_at FROM drafts d WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref) ORDER BY d.updated_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
+          db.prepare(`SELECT d.ref, d.data, d.updated_at FROM drafts d WHERE ${draftUserFilter.sql} ORDER BY d.updated_at DESC LIMIT ? OFFSET ?`).bind(...draftUserFilter.params, limit, offset).all(),
           db.prepare('SELECT COUNT(*) AS total FROM transactions').first(),
-          db.prepare('SELECT COUNT(*) AS total FROM drafts d WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref)').first(),
+          db.prepare(`SELECT COUNT(*) AS total FROM drafts d WHERE ${draftUserFilter.sql}`).bind(...draftUserFilter.params).first(),
           db.prepare("SELECT value FROM settings WHERE key = 'config'").first()
         ]);
 
@@ -724,10 +727,10 @@ export async function onRequest(context) {
       // sale_allowed_date = dateGiven + maxLoanDays + graceDays + 1
       // This single check covers both the "no sale before day maxLoanDays+graceDays+1"
       // and "no inventory before day maxLoanDays" constraints.
-      // Exception: voluntarily surrendered items (surrenderDate set or previously ready_to_sell)
+      // Exception: voluntarily surrendered items (surrenderDate recorded in the data)
       // can be listed at any time since the customer explicitly gave up the item.
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
-        const isVoluntarySurrender = !!(tx.surrenderDate || existingData?.surrenderDate || existing?.status === 'ready_to_sell');
+        const isVoluntarySurrender = !!(tx.surrenderDate || existingData?.surrenderDate);
         if (!isVoluntarySurrender) {
           const timeline = computeLoanTimeline(tx, loanCfg);
           if (timeline && timeline.sale_allowed_date) {
@@ -863,8 +866,11 @@ export async function onRequest(context) {
 
       // Prevent marking an advance loan for sale before sale_allowed_date.
       // Exception: voluntarily surrendered items can be listed at any time.
+      // Surrender is confirmed only when surrenderDate is recorded in the stored data
+      // or in the incoming payload — not merely by current status, which could be set
+      // directly via the API without going through the surrender flow.
       if (tx.status === 'for_sale' && tx.type !== 'outright') {
-        const isVoluntarySurrender = !!(tx.surrenderDate || existingData?.surrenderDate || existing?.status === 'ready_to_sell');
+        const isVoluntarySurrender = !!(tx.surrenderDate || existingData?.surrenderDate);
         if (!isVoluntarySurrender) {
           const timeline = computeLoanTimeline(tx, loanCfg);
           if (timeline && timeline.sale_allowed_date) {
@@ -873,6 +879,22 @@ export async function onRequest(context) {
               return error(`Cannot list for sale before ${timeline.sale_allowed_date} (sale allowed from day ${loanCfg.maxLoanDays + loanCfg.graceDays + 1} onwards; business ownership begins at day ${loanCfg.maxLoanDays})`, 422);
             }
           }
+        }
+      }
+
+      // Validate repayment fees — recompute server-side to prevent tampered submissions.
+      // cashAdvance is read from the stored record, not the incoming payload, so it
+      // cannot be downward-manipulated to reduce the expected fee.
+      if (tx.status === 'closed' && tx.type === 'advance') {
+        const cashAdvance = Number(existingData?.cashAdvance || 0);
+        const expectedDailyFee = Math.floor(cashAdvance * loanCfg.interestRate / 100);
+        const expectedTotalFees = (Number(tx.daysCharged) || 0) * expectedDailyFee;
+        if (Number(tx.totalFees) !== expectedTotalFees) {
+          return error(
+            `Fee mismatch: submitted ₦${tx.totalFees} but expected ₦${expectedTotalFees}` +
+            ` (${tx.daysCharged} day(s) × ₦${expectedDailyFee}/day on ₦${cashAdvance} advance at ${loanCfg.interestRate}%/day)`,
+            422
+          );
         }
       }
 
@@ -1038,7 +1060,10 @@ export async function onRequest(context) {
     if (path === 'drafts' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT ref, data FROM drafts ORDER BY updated_at DESC').all();
+      // Admins see all drafts; staff see only their own (plus legacy rows with no created_by).
+      const { results } = auth.user.role === 'admin'
+        ? await db.prepare('SELECT ref, data FROM drafts ORDER BY updated_at DESC').all()
+        : await db.prepare('SELECT ref, data FROM drafts WHERE created_by = ? OR created_by IS NULL ORDER BY updated_at DESC').bind(auth.user.id).all();
       return json(results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })));
     }
     if (path === 'drafts' && method === 'POST') {
@@ -1051,8 +1076,10 @@ export async function onRequest(context) {
         return json({ success: false, skipped: true, reason: 'Drafts before identity verification are not persisted.' });
       }
       await db
-        .prepare("INSERT INTO drafts (ref, data, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, updated_at = datetime('now')")
-        .bind(draft.ref, JSON.stringify(draft))
+        // created_by is set on first insert and intentionally not changed on updates
+        // so the original creator retains ownership even if another user resumes the draft.
+        .prepare("INSERT INTO drafts (ref, data, updated_at, created_by) VALUES (?, ?, datetime('now'), ?) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, updated_at = datetime('now')")
+        .bind(draft.ref, JSON.stringify(draft), auth.user.id)
         .run();
       return json({ success: true });
     }

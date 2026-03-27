@@ -34,8 +34,12 @@ CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions (created_
 CREATE TABLE IF NOT EXISTS drafts (
   ref         TEXT    PRIMARY KEY,
   data        TEXT    NOT NULL,  -- JSON blob
-  updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  created_by  TEXT               -- user ID of the staff member who started the wizard
 );
+
+-- Migration for existing databases (run once against live D1):
+-- ALTER TABLE drafts ADD COLUMN created_by TEXT;
 
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT    PRIMARY KEY,
