@@ -2,6 +2,11 @@ import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { useNavigate, useLocation, useParams, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
+import {
+  ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area,
+  PieChart, Pie, Cell,
+} from 'recharts';
 
 // --- MOBILE DETECTION HOOK ---
 const useMobile = () => {
@@ -421,6 +426,311 @@ const DEFAULT_SETTINGS = {
   targetSaleDeadlineDays: 14,
   // Data Management
   activityLogRetentionDays: 90,
+  // Capital Analysis
+  capitalHistoryMonths: 6,
+  capitalTrendWeight: 0.7,
+  capitalForecastHorizon: 3,
+  capitalLeadTimeDays: 21,
+  capitalSurplusStreakMonths: 3,
+  capitalPeakGraceFactor: 0.10,
+  capitalMinAbsolute: 0,
+  capitalDefaultRate: 15,
+  stakeholderOwnership: {},
+};
+
+// ============================================================
+// CAPITAL ANALYSIS — PREDICTION ENGINE (pure functions)
+// ============================================================
+
+const capMonthKey = (d) => {
+  if (!d) return null;
+  const s = typeof d === 'string' ? d : new Date(d).toISOString();
+  return s.slice(0, 7);
+};
+
+const capNextMonthKey = (offsetMonths = 1) => {
+  const now = new Date(localISODate());
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offsetMonths, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
+const capRecentMonthKeys = (numMonths) => {
+  const keys = [];
+  const now = new Date(localISODate());
+  for (let i = numMonths; i >= 1; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    keys.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
+};
+
+// Linear regression over an array of values. Returns slope and intercept.
+const capLinearRegression = (values) => {
+  const n = values.length;
+  if (n < 2) return { slope: 0, intercept: values[0] || 0 };
+  const xMean = (n - 1) / 2;
+  const yMean = values.reduce((a, b) => a + b, 0) / n;
+  const num = values.reduce((sum, y, i) => sum + (i - xMean) * (y - yMean), 0);
+  const den = values.reduce((sum, _, i) => sum + (i - xMean) ** 2, 0);
+  return { slope: den !== 0 ? num / den : 0, intercept: yMean };
+};
+
+// Exponential weighted average — most recent value gets weight ~1, oldest gets (1-w)^(n-1).
+const capExpWeightedAvg = (values, w) => {
+  if (!values.length) return 0;
+  let weightSum = 0, total = 0;
+  const n = values.length;
+  for (let i = 0; i < n; i++) {
+    const weight = Math.pow(1 - w, n - 1 - i);
+    total += values[i] * weight;
+    weightSum += weight;
+  }
+  return weightSum > 0 ? total / weightSum : 0;
+};
+
+// Sample standard deviation
+const capStdDev = (values) => {
+  const n = values.length;
+  if (n < 2) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  return Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (n - 1));
+};
+
+// Build monthly capital-flow snapshots for the lookback window.
+const capBuildSnapshots = (transactions, expenses, distributions, capitalEntries, numMonths) => {
+  const monthKeys = capRecentMonthKeys(numMonths);
+  return monthKeys.map(mk => {
+    const loanOriginations = transactions
+      .filter(t => capMonthKey(t.dateGiven) === mk && t.type !== 'outright')
+      .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+    const outrightSpend = transactions
+      .filter(t => capMonthKey(t.dateGiven) === mk && t.type === 'outright')
+      .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+    const loanRecoveries = transactions
+      .filter(t => t.status === 'closed' && capMonthKey(t.paymentDate || t.updated_at) === mk)
+      .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+    const saleRecoveries = transactions
+      .filter(t => t.status === 'sold' && capMonthKey(t.saleDate || t.updated_at) === mk)
+      .reduce((s, t) => s + Math.min(t.cashAdvance || 0, t.salePrice || 0), 0);
+    const expenseTotal = expenses
+      .filter(e => capMonthKey(e.date) === mk)
+      .reduce((s, e) => s + (e.amount || 0), 0);
+    const distributionTotal = distributions
+      .filter(d => capMonthKey(d.date) === mk)
+      .reduce((s, d) => s + (d.amount || 0), 0);
+    const capitalInjected = capitalEntries
+      .filter(c => capMonthKey(c.date) === mk)
+      .reduce((s, c) => s + (c.amount || 0), 0);
+    const netConsumed = loanOriginations + outrightSpend - loanRecoveries - saleRecoveries + expenseTotal + distributionTotal;
+    return { month: mk, loanOriginations, outrightSpend, loanRecoveries, saleRecoveries, expenseTotal, distributionTotal, capitalInjected, netConsumed };
+  });
+};
+
+// Full prediction engine — returns all data needed by the Capital Analysis UI.
+const computeCapitalPrediction = (transactions, expenses, distributions, capitalEntries, settings) => {
+  const numMonths = Math.max(2, Math.min(24, Number(settings.capitalHistoryMonths) || 6));
+  const trendWeight = Math.max(0.1, Math.min(0.95, Number(settings.capitalTrendWeight) ?? 0.7));
+  const forecastHorizon = Math.max(1, Math.min(6, Number(settings.capitalForecastHorizon) || 3));
+  const leadTimeDays = Number(settings.capitalLeadTimeDays) || 21;
+  const surplusStreakMonths = Number(settings.capitalSurplusStreakMonths) || 3;
+  const peakGraceFactor = Number(settings.capitalPeakGraceFactor) ?? 0.10;
+  const minAbsolute = Number(settings.capitalMinAbsolute) || 0;
+  const defaultRate = Math.max(0, Math.min(1, (Number(settings.capitalDefaultRate) ?? 15) / 100));
+  const ownershipTargets = settings.stakeholderOwnership || {};
+
+  const snapshots = capBuildSnapshots(transactions, expenses, distributions, capitalEntries, numMonths);
+  if (snapshots.length === 0) return null;
+
+  // Mirror the existing capital page formulas exactly
+  const totalCapital = capitalEntries.reduce((s, c) => s + (c.amount || 0), 0);
+  const activeTxs = transactions.filter(t => t.status === 'active');
+  const forSaleTxs = transactions.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
+  const closedTxs = transactions.filter(t => t.status === 'closed');
+  const soldTxs = transactions.filter(t => t.status === 'sold');
+  const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const totalCapitalInForSale = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
+  const totalSalesRevenue = soldTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
+  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+  const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
+  const totalExpensesAll = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const netProfit = totalRevenue - totalExpensesAll;
+  const totalDistributionsAll = distributions.reduce((s, d) => s + (d.amount || 0), 0);
+  const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSale - totalDistributionsAll;
+  const totalBusinessMoney = totalCapital + Math.max(0, netProfit);
+
+  // Peak deployment buffer (user's method)
+  const peakDeployment = Math.max(...snapshots.map(s => s.loanOriginations + s.outrightSpend), 0);
+  const minimumCapitalRequired = Math.max(minAbsolute, peakDeployment * (1 + peakGraceFactor));
+  const peakCushion = totalBusinessMoney - peakDeployment;
+
+  // Trend via linear regression on combined originations
+  const origValues = snapshots.map(s => s.loanOriginations + s.outrightSpend);
+  const { slope: origSlope } = capLinearRegression(origValues);
+
+  // Seasonal indices (only when ≥ 13 months of history available)
+  const useSeasonalIndex = snapshots.length >= 13;
+  let seasonalIndices = null;
+  if (useSeasonalIndex) {
+    const byMonth = {};
+    for (let m = 1; m <= 12; m++) byMonth[m] = [];
+    for (const snap of snapshots) byMonth[parseInt(snap.month.slice(5), 10)].push(snap.netConsumed);
+    const globalMean = snapshots.reduce((s, x) => s + x.netConsumed, 0) / snapshots.length || 1;
+    seasonalIndices = {};
+    for (let m = 1; m <= 12; m++) {
+      const vals = byMonth[m];
+      seasonalIndices[m] = vals.length > 0 ? (vals.reduce((a, b) => a + b, 0) / vals.length) / (globalMean || 1) : 1.0;
+    }
+  }
+
+  // Residuals → confidence band width
+  const netConsumedValues = snapshots.map(s => s.netConsumed);
+  const residualStd = capStdDev(netConsumedValues);
+
+  // Exponentially weighted projections for each component
+  const origWeighted = capExpWeightedAvg(origValues, trendWeight);
+  const expWeighted = capExpWeightedAvg(snapshots.map(s => s.expenseTotal), trendWeight);
+  const distWeighted = capExpWeightedAvg(snapshots.map(s => s.distributionTotal), trendWeight);
+  const recoveryWeighted = capExpWeightedAvg(snapshots.map(s => s.loanRecoveries + s.saleRecoveries), trendWeight);
+
+  // Build forecasts for each horizon month
+  const now = new Date(localISODate());
+  const forecasts = [];
+  for (let h = 1; h <= forecastHorizon; h++) {
+    const targetMk = capNextMonthKey(h);
+    const targetMonthNum = parseInt(targetMk.slice(5), 10);
+    const seasonIdx = (seasonalIndices && seasonalIndices[targetMonthNum]) || 1.0;
+
+    const trendAdjustedOrig = origWeighted + origSlope * h;
+    const projOrig = Math.max(0, trendAdjustedOrig * seasonIdx);
+
+    // Portfolio-maturity recoveries for h=1 (most accurate); blend toward historical for h>1
+    const matureRepayments = activeTxs
+      .filter(t => t.deadlineDate && capMonthKey(t.deadlineDate) === targetMk)
+      .reduce((s, t) => s + (t.cashAdvance || 0) * (1 - defaultRate), 0);
+    const blendFactor = 1 / h;
+    const projRecoveries = Math.max(0, matureRepayments * blendFactor + recoveryWeighted * (1 - blendFactor) * seasonIdx);
+
+    const projNetConsumed = projOrig - projRecoveries + expWeighted * seasonIdx + distWeighted;
+
+    const predictedRequired = Math.max(0,
+      totalCapitalOut + totalCapitalInForSale
+      + projNetConsumed * h
+      + minimumCapitalRequired
+    );
+
+    const confidenceMultiplier = Math.pow(1.4, h - 1);
+    const margin = residualStd * 0.75 * confidenceMultiplier;
+    const rangeMin = Math.max(0, predictedRequired - margin);
+    const rangeMax = predictedRequired + margin;
+    const confidencePct = Math.max(20, Math.min(99, Math.round(100 - (margin / (predictedRequired || 1)) * 100)));
+
+    forecasts.push({
+      month: targetMk,
+      horizon: h,
+      projectedOriginations: Math.round(projOrig),
+      projectedRecoveries: Math.round(projRecoveries),
+      projectedExpenses: Math.round(expWeighted * seasonIdx),
+      projectedDistributions: Math.round(distWeighted),
+      projectedNetConsumed: Math.round(projNetConsumed),
+      predictedRequired: Math.round(predictedRequired),
+      rangeMin: Math.round(rangeMin),
+      rangeMax: Math.round(rangeMax),
+      confidencePct,
+      isDeficit: totalCapital < predictedRequired,
+      gap: Math.round(Math.abs(totalCapital - predictedRequired)),
+    });
+  }
+
+  const primaryForecast = forecasts[0];
+
+  // Depletion timeline
+  const avgNetMonthly = capExpWeightedAvg(netConsumedValues, trendWeight);
+  let monthsUntilDepletion = null;
+  let capitalNeededByDate = null;
+  if (avgNetMonthly > 0 && availableLendingCapital > 0) {
+    monthsUntilDepletion = availableLendingCapital / avgNetMonthly;
+    const dMs = monthsUntilDepletion;
+    const depletionDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + Math.floor(dMs), now.getUTCDate()));
+    const neededBy = new Date(depletionDate);
+    neededBy.setUTCDate(neededBy.getUTCDate() - leadTimeDays);
+    capitalNeededByDate = neededBy.toISOString().split('T')[0];
+    monthsUntilDepletion = Math.round(monthsUntilDepletion * 10) / 10;
+  }
+
+  // Safe withdrawal — only recommend when surplus has been sustained
+  let actualStreak = 0;
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    // Surplus = net consumed was below half of peak deployment for that month
+    if (snapshots[i].netConsumed < peakDeployment * 0.5) actualStreak++;
+    else break;
+  }
+  const streakMet = actualStreak >= surplusStreakMonths;
+  const safeWithdrawalBase = Math.max(0,
+    totalCapital
+    - minimumCapitalRequired
+    - (primaryForecast?.projectedNetConsumed || 0)
+    - totalCapitalOut
+    - totalCapitalInForSale
+  );
+  const safeWithdrawal = streakMet ? Math.round(safeWithdrawalBase) : 0;
+
+  // Capital efficiency score (% of total capital currently deployed)
+  const capitalEfficiency = totalCapital > 0
+    ? Math.round((totalCapitalOut + totalCapitalInForSale) / totalCapital * 100)
+    : 0;
+
+  // Build per-stakeholder data
+  const capByName = Object.values(capitalEntries.reduce((acc, c) => {
+    const key = c.name.toLowerCase();
+    if (!acc[key]) acc[key] = { name: c.name, total: 0 };
+    acc[key].total += (c.amount || 0);
+    return acc;
+  }, {}));
+
+  // Contribution plan (shown when deficit)
+  const contributionPlan = capByName.map(s => {
+    const tgt = ownershipTargets[s.name] || {};
+    const currentPct = totalCapital > 0 ? s.total / totalCapital * 100 : 0;
+    const targetPct = tgt.targetPercent != null ? tgt.targetPercent : currentPct;
+    const expectedTotal = primaryForecast ? primaryForecast.predictedRequired * (targetPct / 100) : 0;
+    const gap = Math.max(0, expectedTotal - s.total);
+    return {
+      name: s.name, total: s.total, currentPct: Math.round(currentPct * 10) / 10,
+      targetPct: Math.round(targetPct * 10) / 10, minPct: tgt.minPercent ?? null,
+      maxPct: tgt.maxPercent ?? null, expectedTotal: Math.round(expectedTotal), gap: Math.round(gap),
+    };
+  }).sort((a, b) => b.gap - a.gap);
+
+  // Withdrawal plan (shown when surplus)
+  const withdrawalPlan = (() => {
+    const rawPlan = capByName.map(s => {
+      const ownership = totalCapital > 0 ? s.total / totalCapital : 0;
+      const tgt = ownershipTargets[s.name] || {};
+      const currentPct = ownership * 100;
+      const maxPct = tgt.maxPercent ?? 100;
+      const excessFactor = currentPct > maxPct ? 1.5 : 1.0;
+      return { name: s.name, total: s.total, currentPct: Math.round(currentPct * 10) / 10, withdrawAmount: safeWithdrawal * ownership * excessFactor };
+    });
+    const rawTotal = rawPlan.reduce((s, x) => s + x.withdrawAmount, 0);
+    return rawPlan.map(x => ({
+      ...x,
+      withdrawAmount: rawTotal > 0 ? Math.round(x.withdrawAmount / rawTotal * safeWithdrawal) : 0,
+    }));
+  })();
+
+  return {
+    snapshots, forecasts, primaryForecast,
+    totalCapital, totalCapitalOut, totalCapitalInForSale,
+    availableLendingCapital, totalBusinessMoney,
+    peakDeployment, minimumCapitalRequired, peakCushion,
+    safeWithdrawal, streakMet, actualStreak, surplusStreakMonths,
+    monthsUntilDepletion, capitalNeededByDate, leadTimeDays,
+    capitalEfficiency, useSeasonalIndex,
+    dataPoints: snapshots.length, residualStd: Math.round(residualStd),
+    avgNetMonthly: Math.round(avgNetMonthly),
+    contributionPlan, withdrawalPlan,
+  };
 };
 
 const PAGE_PATHS = {
@@ -6057,6 +6367,7 @@ export default function App() {
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
   const [showAddDistribution, setShowAddDistribution] = useState(false);
   const [expandedCapital, setExpandedCapital] = useState(new Set());
+  const [capitalAnalysisExpanded, setCapitalAnalysisExpanded] = useState(false);
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
@@ -6288,6 +6599,36 @@ export default function App() {
   const totalCapital = capital.reduce((s, c) => s + (c.amount || 0), 0);
   const totalDistributions = distributions.reduce((s, d) => s + (d.amount || 0), 0);
   const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory - totalDistributions;
+
+  // Capital prediction (memoised — only recomputes when source data or settings change)
+  const capitalPrediction = useMemo(
+    () => computeCapitalPrediction(transactions, expenses, distributions, capital, settings),
+    [transactions, expenses, distributions, capital, settings]
+  );
+
+  // Archive this month's prediction and fill in actuals for past months
+  useEffect(() => {
+    if (!capitalPrediction?.primaryForecast) return;
+    try {
+      const stored = JSON.parse(localStorage.getItem('cfc_cap_predictions') || '[]');
+      const nextMk = capNextMonthKey(1);
+      let changed = false;
+      // Add prediction for next month if not already recorded
+      if (!stored.find(p => p.targetMonth === nextMk)) {
+        const pfc = capitalPrediction.primaryForecast;
+        stored.push({ madeOn: localISODate(), targetMonth: nextMk, rangeMin: pfc.rangeMin, rangeMax: pfc.rangeMax, estimate: pfc.predictedRequired, actual: null });
+        changed = true;
+      }
+      // Fill in actuals for past closed months
+      for (const rec of stored) {
+        if (!rec.actual && rec.targetMonth < localISODate().slice(0, 7)) {
+          const snap = capitalPrediction.snapshots.find(s => s.month === rec.targetMonth);
+          if (snap) { rec.actual = snap.netConsumed; changed = true; }
+        }
+      }
+      if (changed) localStorage.setItem('cfc_cap_predictions', JSON.stringify(stored.slice(-18)));
+    } catch { /* ignore storage errors */ }
+  }, [capitalPrediction]);
 
   const filteredTxs = useMemo(() => {
     let result = [...transactions];
@@ -7868,6 +8209,316 @@ export default function App() {
               </table>
               <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total distributed: {fmtMoney(totalDistributions)}</div>
             </div>
+
+            {/* ── Capital Analysis ── */}
+            {(() => {
+              const cp = capitalPrediction;
+              const fmtMo = (mk) => {
+                if (!mk) return '';
+                const [y, m] = mk.split('-');
+                const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                return `${names[parseInt(m,10)-1]} ${y.slice(2)}`;
+              };
+
+              // Load prediction history from localStorage for accuracy tracking
+              const predHistory = (() => { try { return JSON.parse(localStorage.getItem('cfc_cap_predictions') || '[]'); } catch { return []; } })();
+              const accuracyRows = predHistory.filter(p => p.actual !== null && p.estimate > 0);
+              const avgAccuracy = accuracyRows.length > 0
+                ? Math.round(accuracyRows.reduce((s, p) => s + Math.max(0, 100 - Math.abs(p.actual - p.estimate) / Math.max(1, p.estimate) * 100), 0) / accuracyRows.length)
+                : null;
+              const accuracyChartData = accuracyRows.map(p => ({ month: fmtMo(p.targetMonth), Predicted: p.estimate, Actual: p.actual }));
+
+              const CCOLS = ['#1a5f2a','#c8a84e','#0ea5e9','#e67e22','#8b5cf6','#ef4444','#10b981','#f59e0b'];
+
+              const headerRow = (
+                <div
+                  style={{ ...S.cardTitle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: capitalAnalysisExpanded ? '16px' : 0 }}
+                  onClick={() => setCapitalAnalysisExpanded(e => !e)}
+                >
+                  <span>📊 Capital Analysis</span>
+                  <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 500 }}>{capitalAnalysisExpanded ? '▲ Collapse' : '▼ Expand'}</span>
+                </div>
+              );
+
+              if (!capitalAnalysisExpanded) return <div style={S.card}>{headerRow}</div>;
+
+              if (!cp || cp.dataPoints < 1) {
+                return (
+                  <div style={S.card}>
+                    {headerRow}
+                    <div style={S.alert('warning')}>Not enough historical data for capital prediction. Transactions, expenses, and capital entries spanning at least 2 months are needed.</div>
+                  </div>
+                );
+              }
+
+              const pfc = cp.primaryForecast;
+              const isDeficit = pfc?.isDeficit;
+              const todayStr = localISODate();
+              const daysUntilNeeded = cp.capitalNeededByDate
+                ? Math.round((new Date(cp.capitalNeededByDate) - new Date(todayStr)) / 86400000)
+                : null;
+              const urgencyColor = daysUntilNeeded !== null && daysUntilNeeded <= 21 ? COLORS.danger : daysUntilNeeded !== null && daysUntilNeeded <= 60 ? COLORS.warning : COLORS.primary;
+
+              const histData = cp.snapshots.map(s => ({
+                month: fmtMo(s.month),
+                'Loans Out': s.loanOriginations + s.outrightSpend,
+                'Recovered': s.loanRecoveries + s.saleRecoveries,
+                'Exp + Dist': s.expenseTotal + s.distributionTotal,
+                'Net Consumed': s.netConsumed,
+              }));
+
+              const fcastData = [
+                { label: 'Now', value: cp.totalCapital, low: cp.totalCapital, high: cp.totalCapital },
+                ...(cp.forecasts || []).map(f => ({
+                  label: fmtMo(f.month),
+                  value: f.predictedRequired,
+                  low: f.rangeMin,
+                  high: f.rangeMax,
+                })),
+              ];
+
+              const pieParts = cp.contributionPlan.map((s, i) => ({ name: s.name, value: s.total, pct: s.currentPct, fill: CCOLS[i % CCOLS.length] }));
+
+              return (
+                <div style={S.card}>
+                  {headerRow}
+
+                  {cp.dataPoints < 3 && (
+                    <div style={{ ...S.alert('warning'), marginBottom: '16px' }}>
+                      ⚠ Only {cp.dataPoints} month{cp.dataPoints !== 1 ? 's' : ''} of history. Accuracy improves with 3+ months; seasonal adjustment requires 13+.
+                    </div>
+                  )}
+
+                  {/* History Chart */}
+                  <div style={{ marginBottom: '24px' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>
+                      📈 {cp.dataPoints}-Month Capital Flow History
+                      {cp.useSeasonalIndex && <span style={{ fontSize: '12px', color: COLORS.primary, marginLeft: '8px', fontWeight: 500 }}>· Seasonal adjustment active</span>}
+                    </div>
+                    <ResponsiveContainer width="100%" height={240}>
+                      <ComposedChart data={histData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                        <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
+                        <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
+                        <Legend wrapperStyle={{ fontSize: '12px' }} />
+                        <Bar dataKey="Loans Out" fill={COLORS.danger} opacity={0.75} />
+                        <Bar dataKey="Recovered" fill={COLORS.primary} opacity={0.75} />
+                        <Bar dataKey="Exp + Dist" fill={COLORS.warning} opacity={0.65} />
+                        <Line type="monotone" dataKey="Net Consumed" stroke="#6d28d9" strokeWidth={2} dot={{ r: 3 }} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Forecast Chart */}
+                  {pfc && (
+                    <div style={{ marginBottom: '24px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>🔮 Capital Requirement Forecast</div>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <AreaChart data={fcastData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                          <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
+                          <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
+                          <Legend wrapperStyle={{ fontSize: '12px' }} />
+                          <ReferenceLine y={cp.minimumCapitalRequired} stroke={COLORS.warning} strokeDasharray="5 5" label={{ value: 'Min Safe', position: 'insideTopLeft', fontSize: 10, fill: COLORS.warning }} />
+                          <ReferenceLine y={cp.totalCapital} stroke={COLORS.primary} strokeDasharray="5 5" label={{ value: 'Current Capital', position: 'insideBottomLeft', fontSize: 10, fill: COLORS.primary }} />
+                          <Area type="monotone" dataKey="high" stroke="transparent" fill={COLORS.dangerLight} fillOpacity={0.6} name="Upper Range" />
+                          <Area type="monotone" dataKey="low" stroke="transparent" fill={COLORS.card} fillOpacity={1} name="Lower Range" />
+                          <Line type="monotone" dataKey="value" stroke={COLORS.danger} strokeWidth={2.5} dot={{ r: 4, fill: COLORS.danger }} name="Predicted Required" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {/* Forecast Cards */}
+                  {cp.forecasts && cp.forecasts.length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(cp.forecasts.length, 3)}, 1fr)`, gap: '12px', marginBottom: '20px' }}>
+                      {cp.forecasts.map((f, i) => (
+                        <div key={i} style={{ background: f.isDeficit ? COLORS.dangerLight : COLORS.primaryLight, borderRadius: '10px', padding: '14px', border: `1px solid ${f.isDeficit ? '#f5c6cb' : '#b7e4c7'}` }}>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>+{f.horizon} Mo · {fmtMo(f.month)}</div>
+                          <div style={{ fontSize: '18px', fontWeight: 800, color: f.isDeficit ? COLORS.danger : COLORS.primaryDark, marginBottom: '2px' }}>{fmtMoney(f.predictedRequired)}</div>
+                          <div style={{ fontSize: '11px', color: COLORS.textMuted }}>Range: {fmtMoney(f.rangeMin)} – {fmtMoney(f.rangeMax)}</div>
+                          <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '4px', color: f.isDeficit ? COLORS.danger : COLORS.primary }}>
+                            {f.isDeficit ? `⚠ Short by ${fmtMoney(f.gap)}` : `✓ Surplus ${fmtMoney(f.gap)}`}
+                          </div>
+                          <div style={{ fontSize: '10px', color: COLORS.textMuted, marginTop: '2px' }}>Confidence: ~{f.confidencePct}%</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Status Banner */}
+                  {pfc && (
+                    <div style={{ padding: '14px 16px', borderRadius: '10px', marginBottom: '20px', background: isDeficit ? COLORS.dangerLight : COLORS.primaryLight, border: `1px solid ${isDeficit ? '#f5c6cb' : '#b7e4c7'}` }}>
+                      <div style={{ fontSize: '15px', fontWeight: 800, color: isDeficit ? COLORS.danger : COLORS.primary, marginBottom: '4px' }}>
+                        {isDeficit
+                          ? `🔴 Deficit — ${fmtMoney(pfc.gap)} below next-month estimate`
+                          : `🟢 Sufficient — ${fmtMoney(pfc.gap)} above next-month estimate`}
+                      </div>
+                      {isDeficit && cp.capitalNeededByDate && (
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: urgencyColor }}>
+                          Capital needed by: {fmtDate(cp.capitalNeededByDate)}
+                          {daysUntilNeeded !== null && daysUntilNeeded > 0 && ` (in ${daysUntilNeeded} day${daysUntilNeeded !== 1 ? 's' : ''})`}
+                          {daysUntilNeeded !== null && daysUntilNeeded <= 0 && ' — action overdue'}
+                        </div>
+                      )}
+                      {!isDeficit && cp.monthsUntilDepletion !== null && (
+                        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
+                          At current consumption rate, available capital lasts ~{cp.monthsUntilDepletion} more month{cp.monthsUntilDepletion !== 1 ? 's' : ''}.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Contribution Plan — shown when deficit */}
+                  {pfc && isDeficit && cp.contributionPlan.length > 0 && (
+                    <div style={{ marginBottom: '24px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>👥 Who Should Add Capital</div>
+                      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                        <div style={{ flex: '1 1 300px', overflowX: 'auto' }}>
+                          <table style={S.table}>
+                            <thead>
+                              <tr>
+                                <th style={S.th}>Stakeholder</th>
+                                <th style={S.th}>Current %</th>
+                                <th style={S.th}>Target %</th>
+                                <th style={S.th}>Invested</th>
+                                <th style={S.th}>Expected Total</th>
+                                <th style={S.th}>Gap</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {cp.contributionPlan.map((row, i) => (
+                                <tr key={i}>
+                                  <td style={S.td}><strong>{row.name}</strong></td>
+                                  <td style={S.td}>{row.currentPct}%</td>
+                                  <td style={S.td}>
+                                    {row.targetPct}%
+                                    {row.minPct != null && <div style={{ fontSize: '10px', color: COLORS.textMuted }}>({row.minPct}–{row.maxPct}%)</div>}
+                                  </td>
+                                  <td style={S.td}>{fmtMoney(row.total)}</td>
+                                  <td style={S.td}>{fmtMoney(row.expectedTotal)}</td>
+                                  <td style={S.td}><strong style={{ color: row.gap > 0 ? COLORS.danger : COLORS.primary }}>{row.gap > 0 ? `+ ${fmtMoney(row.gap)}` : '✓ Covered'}</strong></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {cp.capitalNeededByDate && (
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: urgencyColor, marginTop: '8px' }}>
+                              ⏰ Capital expected by: {fmtDate(cp.capitalNeededByDate)}
+                            </div>
+                          )}
+                        </div>
+                        {pieParts.length > 0 && (
+                          <div style={{ flexShrink: 0 }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px', textAlign: 'center' }}>Current Ownership</div>
+                            <PieChart width={180} height={180}>
+                              <Pie data={pieParts} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} innerRadius={36} label={({ pct }) => `${pct}%`} labelLine={false}>
+                                {pieParts.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
+                              </Pie>
+                              <Tooltip formatter={(v) => fmtMoney(v)} contentStyle={{ fontSize: '11px' }} />
+                            </PieChart>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Withdrawal Analysis — shown when sufficient */}
+                  {pfc && !isDeficit && (
+                    <div style={{ marginBottom: '24px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>💸 Withdrawal Analysis</div>
+                      {cp.streakMet ? (
+                        <>
+                          <div style={{ padding: '12px 14px', borderRadius: '8px', background: COLORS.primaryLight, border: `1px solid #b7e4c7`, marginBottom: '12px', fontSize: '13px' }}>
+                            ✅ Surplus confirmed for {cp.actualStreak} consecutive month{cp.actualStreak !== 1 ? 's' : ''} ({cp.surplusStreakMonths} required).{' '}
+                            <strong>Safe to withdraw: {fmtMoney(cp.safeWithdrawal)}</strong>
+                            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>
+                              {fmtMoney(cp.totalCapital)} total capital
+                              {' − '}{fmtMoney(cp.minimumCapitalRequired)} peak buffer
+                              {' − '}{fmtMoney(pfc.projectedNetConsumed)} next-month reserve
+                              {' − '}{fmtMoney(cp.totalCapitalOut + cp.totalCapitalInForSale)} locked
+                              {' = '}<strong>{fmtMoney(cp.safeWithdrawal)}</strong>
+                            </div>
+                          </div>
+                          {cp.withdrawalPlan.length > 0 && (
+                            <table style={S.table}>
+                              <thead>
+                                <tr>
+                                  <th style={S.th}>Stakeholder</th>
+                                  <th style={S.th}>Ownership %</th>
+                                  <th style={S.th}>Withdraw Amount</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {cp.withdrawalPlan.map((row, i) => (
+                                  <tr key={i}>
+                                    <td style={S.td}><strong>{row.name}</strong></td>
+                                    <td style={S.td}>{row.currentPct}%</td>
+                                    <td style={S.td}><strong style={{ color: COLORS.primary }}>{fmtMoney(row.withdrawAmount)}</strong></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </>
+                      ) : (
+                        <div style={S.alert('warning')}>
+                          ⏳ Withdrawal not yet recommended — surplus observed for only {cp.actualStreak} of {cp.surplusStreakMonths} required consecutive months. Keep monitoring to confirm the trend is sustained before withdrawing.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Capital Efficiency Stats */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+                    {[
+                      { label: 'Capital Deployed', value: `${cp.capitalEfficiency}%`, sub: 'of total in active use', color: cp.capitalEfficiency > 85 ? COLORS.primary : cp.capitalEfficiency > 50 ? COLORS.warning : COLORS.danger },
+                      { label: 'Peak Month Deployment', value: fmtMoney(cp.peakDeployment), sub: 'highest single-month origination', color: COLORS.primaryDark },
+                      { label: 'Peak Cushion', value: fmtMoney(cp.peakCushion), sub: 'above worst-ever deployment', color: cp.peakCushion >= 0 ? COLORS.primary : COLORS.danger },
+                      { label: 'Min Safe Capital', value: fmtMoney(cp.minimumCapitalRequired), sub: `peak × ${(1 + (settings.capitalPeakGraceFactor ?? 0.10)).toFixed(2)}×`, color: COLORS.primaryDark },
+                    ].map((stat, i) => (
+                      <div key={i} style={{ background: COLORS.bg, borderRadius: '10px', padding: '14px', border: `1px solid ${COLORS.border}` }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>{stat.label}</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: stat.color, marginBottom: '2px' }}>{stat.value}</div>
+                        <div style={{ fontSize: '11px', color: COLORS.textMuted }}>{stat.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Prediction Accuracy chart */}
+                  {accuracyChartData.length > 0 && (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '6px' }}>
+                        🎯 Prediction Accuracy
+                        {avgAccuracy !== null && <span style={{ fontSize: '12px', fontWeight: 500, color: COLORS.textMuted, marginLeft: '8px' }}>avg {avgAccuracy}% over {accuracyChartData.length} closed month{accuracyChartData.length !== 1 ? 's' : ''}</span>}
+                      </div>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <BarChart data={accuracyChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                          <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                          <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
+                          <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
+                          <Legend wrapperStyle={{ fontSize: '12px' }} />
+                          <Bar dataKey="Predicted" fill={COLORS.warning} opacity={0.85} />
+                          <Bar dataKey="Actual" fill={COLORS.primary} opacity={0.85} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {/* Engine meta */}
+                  <div style={{ fontSize: '11px', color: COLORS.textMuted, borderTop: `1px solid ${COLORS.border}`, paddingTop: '10px' }}>
+                    {cp.dataPoints} month{cp.dataPoints !== 1 ? 's' : ''} of data · Recency weight {Math.round((settings.capitalTrendWeight ?? 0.7) * 100)}%
+                    {cp.useSeasonalIndex ? ' · Seasonal adjustment on' : ' · Seasonal needs 13+ months'}
+                    {' · '}Std dev ±{fmtMoney(cp.residualStd)}/mo
+                    {' · '}Loan default rate {settings.capitalDefaultRate ?? 15}%
+                  </div>
+                </div>
+              );
+            })()}
+
           </div>
         );
       }
@@ -8317,6 +8968,109 @@ export default function App() {
                 <input style={S.input} type="number" min="0" max="90" value={es.autoForfeitDays ?? DEFAULT_SETTINGS.autoForfeitDays} onChange={e => updateSettings({ ...es, autoForfeitDays: Number(e.target.value) })} />
               </Field>
             </div>
+          </div>
+
+          {/* ── 6. CAPITAL ANALYSIS SETTINGS ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>📊 Capital Analysis — Prediction Engine</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+              Controls how the Capital Analysis section forecasts next-month capital requirements. Adjust these after accumulating more historical data.
+            </div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>History Window (months)<InfoIcon tip="How many past months the engine analyses for trends and patterns. More history = smoother predictions. Seasonal adjustment activates automatically at 13+ months." /></span>}>
+                <input style={S.input} type="number" min="2" max="24" value={es.capitalHistoryMonths ?? DEFAULT_SETTINGS.capitalHistoryMonths} onChange={e => updateSettings({ ...es, capitalHistoryMonths: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Forecast Horizon (months)<InfoIcon tip="How many months ahead to predict. The prediction shows +1, +2, and +3 month cards with widening confidence ranges." /></span>}>
+                <input style={S.input} type="number" min="1" max="6" value={es.capitalForecastHorizon ?? DEFAULT_SETTINGS.capitalForecastHorizon} onChange={e => updateSettings({ ...es, capitalForecastHorizon: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Recency Weight (0–1)<InfoIcon tip="How much to favour recent months over older ones when computing the weighted average. 0 = flat average of all months, 1 = only the most recent month counts. Default 0.7 gives strong but not exclusive weight to recent data." /></span>}>
+                <input style={S.input} type="number" step="0.05" min="0.1" max="0.95" value={es.capitalTrendWeight ?? DEFAULT_SETTINGS.capitalTrendWeight} onChange={e => updateSettings({ ...es, capitalTrendWeight: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Loan Default Rate (%)<InfoIcon tip="Percentage of active loans expected NOT to repay on their due date (rollover or forfeit). Used to discount projected repayments so predictions aren't overly optimistic. Default: 15%" /></span>}>
+                <input style={S.input} type="number" min="0" max="100" value={es.capitalDefaultRate ?? DEFAULT_SETTINGS.capitalDefaultRate} onChange={e => updateSettings({ ...es, capitalDefaultRate: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Peak Grace Factor (%)<InfoIcon tip="Extra headroom added on top of the busiest single month's deployment when computing the minimum safe capital. E.g. 10% means the minimum is peak × 1.10. Higher = more conservative buffer." /></span>}>
+                <input style={S.input} type="number" step="0.01" min="0" max="1" value={es.capitalPeakGraceFactor ?? DEFAULT_SETTINGS.capitalPeakGraceFactor} onChange={e => updateSettings({ ...es, capitalPeakGraceFactor: Number(e.target.value) })} />
+                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>Current: +{Math.round((es.capitalPeakGraceFactor ?? DEFAULT_SETTINGS.capitalPeakGraceFactor) * 100)}% above peak deployment</div>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Hard Capital Floor (₦)<InfoIcon tip="The absolute minimum the business must always hold, regardless of what the formula says. Acts as a last-resort safety net (e.g. ₦500,000 for emergencies). Set to 0 to rely entirely on the formula." /></span>}>
+                <input style={S.input} type="number" min="0" value={es.capitalMinAbsolute ?? DEFAULT_SETTINGS.capitalMinAbsolute} onChange={e => updateSettings({ ...es, capitalMinAbsolute: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Capital Needed Lead Time (days)<InfoIcon tip="How many days before projected depletion to start flagging 'capital needed by [date]'. E.g. 21 means flag the deadline 3 weeks in advance." /></span>}>
+                <input style={S.input} type="number" min="1" max="90" value={es.capitalLeadTimeDays ?? DEFAULT_SETTINGS.capitalLeadTimeDays} onChange={e => updateSettings({ ...es, capitalLeadTimeDays: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Surplus Streak Required (months)<InfoIcon tip="How many consecutive months of confirmed surplus are required before a withdrawal is recommended. Prevents recommending a withdrawal based on a single unusually good month." /></span>}>
+                <input style={S.input} type="number" min="1" max="12" value={es.capitalSurplusStreakMonths ?? DEFAULT_SETTINGS.capitalSurplusStreakMonths} onChange={e => updateSettings({ ...es, capitalSurplusStreakMonths: Number(e.target.value) })} />
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 7. STAKEHOLDER OWNERSHIP TARGETS ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🎯 Stakeholder Ownership Targets</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+              Set the minimum, maximum, and target ownership percentage for each stakeholder. The Capital Analysis section uses these to calculate who should contribute capital in a deficit and how much, and how to split withdrawals when there is a surplus.
+              <br /><br />
+              <strong>Note:</strong> Targets do not need to sum to 100%. Any unallocated remainder is treated as unassigned.
+            </div>
+            {(() => {
+              const stakeNames = [...new Set(capital.map(c => c.name))].sort();
+              const ownership = es.stakeholderOwnership || {};
+              if (stakeNames.length === 0) {
+                return <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No stakeholders found. Add capital entries first to configure ownership targets.</div>;
+              }
+              const thStyle = { ...S.th, whiteSpace: 'nowrap' };
+              return (
+                <table style={{ ...S.table, minWidth: '520px' }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Stakeholder</th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Min %<InfoIcon tip="The minimum ownership percentage this stakeholder should hold. Used as a soft floor when computing contribution expectations." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Target %<InfoIcon tip="The ideal ownership percentage for this stakeholder. Contribution expectations are calculated so that their share reaches this target." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Max %<InfoIcon tip="The maximum ownership percentage this stakeholder should hold. Stakeholders above their max get a higher share of any recommended withdrawal." /></span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stakeNames.map(name => {
+                      const tgt = ownership[name] || {};
+                      const setTgt = (patch) => updateSettings({ ...es, stakeholderOwnership: { ...ownership, [name]: { ...tgt, ...patch } } });
+                      return (
+                        <tr key={name}>
+                          <td style={S.td}><strong>{name}</strong></td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '80px' }}
+                              type="number" min="0" max="100" step="0.5"
+                              placeholder="—"
+                              value={tgt.minPercent ?? ''}
+                              onChange={e => setTgt({ minPercent: e.target.value === '' ? null : Number(e.target.value) })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '80px' }}
+                              type="number" min="0" max="100" step="0.5"
+                              placeholder="—"
+                              value={tgt.targetPercent ?? ''}
+                              onChange={e => setTgt({ targetPercent: e.target.value === '' ? null : Number(e.target.value) })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '80px' }}
+                              type="number" min="0" max="100" step="0.5"
+                              placeholder="—"
+                              value={tgt.maxPercent ?? ''}
+                              onChange={e => setTgt({ maxPercent: e.target.value === '' ? null : Number(e.target.value) })}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              );
+            })()}
           </div>
 
           </>}{/* ── end: finance tab (part 1) ── */}
