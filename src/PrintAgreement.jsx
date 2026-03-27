@@ -188,7 +188,10 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
       ${chk(hasReceipt)} Provided and filed &nbsp;&nbsp;&nbsp;
       ${chk(!hasReceipt)} NOT provided — advance reduced accordingly
     </div>
+  `;
 
+  // ── FACE 2 LEFT PANEL — PAGE 2 content (PART C + PART D terms) ──
+  const page2Content = `
     <table class="photos-tbl">
       <tr><td class="photos-hdr" colspan="3">Photos Taken — tick each when done:</td></tr>
       <tr>
@@ -202,10 +205,6 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
       </tr>
     </table>
 
-  `;
-
-  // ── FACE 2 LEFT PANEL — PAGE 2 content (PART C + PART D terms) ──
-  const page2Content = `
     <div class="section-hdr">PART C — ADVANCE DETAILS</div>
     <table class="field-tbl">
       <tr>
