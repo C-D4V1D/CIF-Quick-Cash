@@ -1883,6 +1883,35 @@ export async function onRequest(context) {
     }
 
 
+    // ── POST /api/sms/notify-stakeholder — send a capital alert SMS to a stakeholder (no txRef required) ──
+    if (path === 'sms/notify-stakeholder' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { phone: rawPhone, message, stakeholderName } = await request.json();
+      if (!rawPhone) return error('phone is required', 400);
+      if (!message) return error('message is required', 400);
+
+      const smsCfg = await loadSmsConfig();
+      if (!smsCfg.apiKey) return error('Termii API key not configured in Settings.', 400);
+      if (!smsCfg.enabled) return error('SMS is disabled. Enable it in Settings → SMS.', 400);
+
+      const phone = toIntlPhone(rawPhone);
+      if (!phone) return error('Invalid phone number format.', 400);
+
+      const { ok, messageId, response, usedFallback, primaryResponse } = await termiiSend(smsCfg, phone, message);
+
+      await db.prepare(
+        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'capital_alert', ?, ?, ?, ?, ?)"
+      ).bind('CAPITAL-ALERT', message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+
+      await logActivity({
+        user: auth.user, action: 'sms', entityType: 'capital', entityId: 'CAPITAL-ALERT',
+        description: `📱 Capital alert SMS ${ok ? 'sent' : 'failed'} to ${stakeholderName || phone} (${phone})`,
+      });
+
+      return json({ ok, messageId, response, usedFallback, primaryResponse });
+    }
+
     if (path === 'sms/auto-send' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;

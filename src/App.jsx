@@ -1,7 +1,13 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useLocation, useParams, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
+import {
+  ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area,
+  PieChart, Pie, Cell,
+} from 'recharts';
 
 // --- MOBILE DETECTION HOOK ---
 const useMobile = () => {
@@ -413,6 +419,15 @@ const DEFAULT_SETTINGS = {
   smsRechargeBank: '',
   smsRechargeAccountNumber: '',
   smsRechargeAccountName: '',
+  // Capital Alert SMS — stakeholder notifications
+  smsCapitalDeficitEnabled: false,
+  smsCapitalDeficit: 'Dear {stakeholderName}, {businessName} has a capital deficit of {deficitAmount}. Your expected contribution: {expectedAmount}. Please bring in funds urgently. Call: {adminPhone}',
+  smsCapitalLowEnabled: false,
+  smsCapitalLow: 'Dear {stakeholderName}, capital at {businessName} is running low ({availableAmount} available, threshold {thresholdAmount}). Your expected contribution: {expectedAmount}. Please arrange a top-up soon. Call: {adminPhone}',
+  smsCapitalTransactionShortfallEnabled: false,
+  smsCapitalTransactionShortfall: 'Dear {stakeholderName}, a {transactionAmount} transaction is pending at {businessName} but capital is insufficient. Your expected contribution: {expectedAmount}. Please bring in funds now. Call: {adminPhone}',
+  smsCapitalWithdrawalEnabled: false,
+  smsCapitalWithdrawal: 'Dear {stakeholderName}, {businessName} has a capital surplus. Your recommended withdrawal: {withdrawAmount}. Please contact the admin to arrange. Call: {adminPhone}',
   // Receipt & Agreement
   agreementTermsExtra: '',
   receiptFooter: 'Thank you for your patronage!',
@@ -421,6 +436,521 @@ const DEFAULT_SETTINGS = {
   targetSaleDeadlineDays: 14,
   // Data Management
   activityLogRetentionDays: 90,
+  // Capital Analysis
+  capitalHistoryMonths: 6,
+  capitalTrendWeight: 0.7,
+  capitalForecastHorizon: 3,
+  capitalLeadTimeDays: 21,
+  capitalSurplusStreakMonths: 3,
+  capitalPeakGraceFactor: 0.10,
+  capitalMinAbsolute: 0,
+  capitalDefaultRate: null, // null = auto-compute from history
+  capitalLowThreshold: 50000, // alert when available lending capital drops below this amount
+  stakeholderOwnership: {},
+};
+
+// ============================================================
+// CAPITAL ANALYSIS — PREDICTION ENGINE (pure functions)
+// ============================================================
+
+const capMonthKey = (d) => {
+  if (!d) return null;
+  const s = typeof d === 'string' ? d : new Date(d).toISOString();
+  return s.slice(0, 7);
+};
+
+const capNextMonthKey = (offsetMonths = 1) => {
+  const now = new Date(localISODate());
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offsetMonths, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
+const capRecentMonthKeys = (numMonths) => {
+  const keys = [];
+  const now = new Date(localISODate());
+  for (let i = numMonths; i >= 1; i--) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    keys.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
+};
+
+// Linear regression over an array of values. Returns slope and intercept.
+const capLinearRegression = (values) => {
+  const n = values.length;
+  if (n < 2) return { slope: 0, intercept: values[0] || 0 };
+  const xMean = (n - 1) / 2;
+  const yMean = values.reduce((a, b) => a + b, 0) / n;
+  const num = values.reduce((sum, y, i) => sum + (i - xMean) * (y - yMean), 0);
+  const den = values.reduce((sum, _, i) => sum + (i - xMean) ** 2, 0);
+  return { slope: den !== 0 ? num / den : 0, intercept: yMean };
+};
+
+// Exponential weighted average — most recent value gets weight ~1, oldest gets (1-w)^(n-1).
+const capExpWeightedAvg = (values, w) => {
+  if (!values.length) return 0;
+  let weightSum = 0, total = 0;
+  const n = values.length;
+  for (let i = 0; i < n; i++) {
+    const weight = Math.pow(1 - w, n - 1 - i);
+    total += values[i] * weight;
+    weightSum += weight;
+  }
+  return weightSum > 0 ? total / weightSum : 0;
+};
+
+// Sample standard deviation
+const capStdDev = (values) => {
+  const n = values.length;
+  if (n < 2) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  return Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (n - 1));
+};
+
+// Build monthly capital-flow snapshots for the lookback window.
+const capBuildSnapshots = (transactions, expenses, distributions, capitalEntries, numMonths) => {
+  const monthKeys = capRecentMonthKeys(numMonths);
+  return monthKeys.map(mk => {
+    const loanOriginations = transactions
+      .filter(t => capMonthKey(t.dateGiven) === mk && t.type !== 'outright')
+      .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+    const outrightSpend = transactions
+      .filter(t => capMonthKey(t.dateGiven) === mk && t.type === 'outright')
+      .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+    const loanRecoveries = transactions
+      .filter(t => t.status === 'closed' && capMonthKey(t.paymentDate || t.updated_at) === mk)
+      .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+    const saleRecoveries = transactions
+      .filter(t => t.status === 'sold' && capMonthKey(t.saleDate || t.updated_at) === mk)
+      .reduce((s, t) => s + Math.min(t.cashAdvance || 0, t.salePrice || 0), 0);
+    const expenseTotal = expenses
+      .filter(e => capMonthKey(e.date) === mk)
+      .reduce((s, e) => s + (e.amount || 0), 0);
+    const distributionTotal = distributions
+      .filter(d => capMonthKey(d.date) === mk)
+      .reduce((s, d) => s + (d.amount || 0), 0);
+    const capitalInjected = capitalEntries
+      .filter(c => capMonthKey(c.date) === mk)
+      .reduce((s, c) => s + (c.amount || 0), 0);
+    const netConsumed = loanOriginations + outrightSpend - loanRecoveries - saleRecoveries + expenseTotal + distributionTotal;
+    return { month: mk, loanOriginations, outrightSpend, loanRecoveries, saleRecoveries, expenseTotal, distributionTotal, capitalInjected, netConsumed };
+  });
+};
+
+// Full prediction engine — returns all data needed by the Capital Analysis UI.
+// Auto-computes the historical loan default rate from closed/forfeited/overdue transactions.
+// Returns { rate: 0–1, loanCount: N, isFallback: bool }
+const computeHistoricalDefaultRate = (transactions, numMonths, trendWeight) => {
+  const monthKeys = capRecentMonthKeys(numMonths);
+  const todayStr = localISODate();
+  const monthRates = [];
+
+  for (const mk of monthKeys) {
+    // Only advance loans (outrights have no deadline and never "default")
+    const dueInMonth = transactions.filter(t =>
+      t.type !== 'outright' && capMonthKey(t.deadlineDate) === mk
+    );
+    if (dueInMonth.length === 0) continue;
+
+    const defaultedCount = dueInMonth.filter(t => {
+      // Forfeited / sold without repaying
+      if (t.status === 'for_sale' || t.status === 'sold' || t.status === 'ready_to_sell') return true;
+      // Repaid, but late (after agreed deadline)
+      if (t.status === 'closed' && t.dateRepaid && t.deadlineDate) {
+        return t.dateRepaid > t.deadlineDate;
+      }
+      // Still active but deadline has already passed → unresolved overdue
+      if (t.status === 'active' && t.deadlineDate && t.deadlineDate < todayStr) return true;
+      return false;
+    }).length;
+
+    monthRates.push({ rate: defaultedCount / dueInMonth.length, count: dueInMonth.length });
+  }
+
+  if (monthRates.length === 0) return { rate: 0.15, loanCount: 0, isFallback: true };
+
+  // Exponentially weighted average of per-month rates (same recency weight as rest of engine)
+  const w = Math.max(0.1, Math.min(0.95, Number(trendWeight) ?? 0.7));
+  const n = monthRates.length;
+  let weightSum = 0, total = 0;
+  for (let i = 0; i < n; i++) {
+    const weight = Math.pow(1 - w, n - 1 - i) * monthRates[i].count; // weight by loan count too
+    total += monthRates[i].rate * weight;
+    weightSum += weight;
+  }
+  const totalLoans = monthRates.reduce((s, m) => s + m.count, 0);
+  return {
+    rate: Math.max(0, Math.min(1, weightSum > 0 ? total / weightSum : 0.15)),
+    loanCount: totalLoans,
+    isFallback: false,
+  };
+};
+
+const computeCapitalPrediction = (transactions, expenses, distributions, capitalEntries, settings) => {
+  const numMonths = Math.max(2, Math.min(24, Number(settings.capitalHistoryMonths) || 6));
+  const trendWeight = Math.max(0.1, Math.min(0.95, Number(settings.capitalTrendWeight) ?? 0.7));
+  const forecastHorizon = Math.max(1, Math.min(6, Number(settings.capitalForecastHorizon) || 3));
+  const leadTimeDays = Number(settings.capitalLeadTimeDays) || 21;
+  const surplusStreakMonths = Number(settings.capitalSurplusStreakMonths) || 3;
+  const peakGraceFactor = Number(settings.capitalPeakGraceFactor) ?? 0.10;
+  const minAbsolute = Number(settings.capitalMinAbsolute) || 0;
+  // Use admin override if set, otherwise auto-compute from history
+  const overrideRaw = settings.capitalDefaultRate;
+  const hasOverride = overrideRaw !== null && overrideRaw !== undefined && overrideRaw !== '';
+  const autoDefault = computeHistoricalDefaultRate(transactions, numMonths, trendWeight);
+  const defaultRate = hasOverride
+    ? Math.max(0, Math.min(1, Number(overrideRaw) / 100))
+    : autoDefault.rate;
+  const ownershipTargets = settings.stakeholderOwnership || {};
+
+  const snapshots = capBuildSnapshots(transactions, expenses, distributions, capitalEntries, numMonths);
+  if (snapshots.length === 0) return null;
+
+  // Mirror the existing capital page formulas exactly
+  const totalCapital = capitalEntries.reduce((s, c) => s + (c.amount || 0), 0);
+  const activeTxs = transactions.filter(t => t.status === 'active');
+  const forSaleTxs = transactions.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
+  const closedTxs = transactions.filter(t => t.status === 'closed');
+  const soldTxs = transactions.filter(t => t.status === 'sold');
+  const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const totalCapitalInForSale = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
+  const totalSalesRevenue = soldTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
+  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+  const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
+  const totalExpensesAll = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const netProfit = totalRevenue - totalExpensesAll;
+  const totalDistributionsAll = distributions.reduce((s, d) => s + (d.amount || 0), 0);
+  const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSale - totalDistributionsAll;
+  const totalBusinessMoney = totalCapital + Math.max(0, netProfit);
+
+  // Peak deployment buffer (user's method)
+  const peakDeployment = Math.max(...snapshots.map(s => s.loanOriginations + s.outrightSpend), 0);
+  const minimumCapitalRequired = Math.max(minAbsolute, peakDeployment * (1 + peakGraceFactor));
+  const peakCushion = totalBusinessMoney - peakDeployment;
+
+  // Trend via linear regression on combined originations
+  const origValues = snapshots.map(s => s.loanOriginations + s.outrightSpend);
+  const { slope: origSlope } = capLinearRegression(origValues);
+
+  // Seasonal indices (only when ≥ 13 months of history available)
+  const useSeasonalIndex = snapshots.length >= 13;
+  let seasonalIndices = null;
+  if (useSeasonalIndex) {
+    const byMonth = {};
+    for (let m = 1; m <= 12; m++) byMonth[m] = [];
+    for (const snap of snapshots) byMonth[parseInt(snap.month.slice(5), 10)].push(snap.netConsumed);
+    const globalMean = snapshots.reduce((s, x) => s + x.netConsumed, 0) / snapshots.length || 1;
+    seasonalIndices = {};
+    for (let m = 1; m <= 12; m++) {
+      const vals = byMonth[m];
+      seasonalIndices[m] = vals.length > 0 ? (vals.reduce((a, b) => a + b, 0) / vals.length) / (globalMean || 1) : 1.0;
+    }
+  }
+
+  // Residuals → confidence band width
+  const netConsumedValues = snapshots.map(s => s.netConsumed);
+  const residualStd = capStdDev(netConsumedValues);
+
+  // Exponentially weighted projections for each component
+  const origWeighted = capExpWeightedAvg(origValues, trendWeight);
+  const expWeighted = capExpWeightedAvg(snapshots.map(s => s.expenseTotal), trendWeight);
+  const distWeighted = capExpWeightedAvg(snapshots.map(s => s.distributionTotal), trendWeight);
+  const recoveryWeighted = capExpWeightedAvg(snapshots.map(s => s.loanRecoveries + s.saleRecoveries), trendWeight);
+
+  // Build forecasts for each horizon month
+  const now = new Date(localISODate());
+  const forecasts = [];
+  for (let h = 1; h <= forecastHorizon; h++) {
+    const targetMk = capNextMonthKey(h);
+    const targetMonthNum = parseInt(targetMk.slice(5), 10);
+    const seasonIdx = (seasonalIndices && seasonalIndices[targetMonthNum]) || 1.0;
+
+    const trendAdjustedOrig = origWeighted + origSlope * h;
+    const projOrig = Math.max(0, trendAdjustedOrig * seasonIdx);
+
+    // Portfolio-maturity recoveries for h=1 (most accurate); blend toward historical for h>1
+    const matureRepayments = activeTxs
+      .filter(t => t.deadlineDate && capMonthKey(t.deadlineDate) === targetMk)
+      .reduce((s, t) => s + (t.cashAdvance || 0) * (1 - defaultRate), 0);
+    const blendFactor = 1 / h;
+    const projRecoveries = Math.max(0, matureRepayments * blendFactor + recoveryWeighted * (1 - blendFactor) * seasonIdx);
+
+    const projNetConsumed = projOrig - projRecoveries + expWeighted * seasonIdx + distWeighted;
+
+    const predictedRequired = Math.max(0,
+      totalCapitalOut + totalCapitalInForSale
+      + projNetConsumed * h
+      + minimumCapitalRequired
+    );
+
+    const confidenceMultiplier = Math.pow(1.4, h - 1);
+    const margin = residualStd * 0.75 * confidenceMultiplier;
+    const rangeMin = Math.max(0, predictedRequired - margin);
+    const rangeMax = predictedRequired + margin;
+    const confidencePct = Math.max(20, Math.min(99, Math.round(100 - (margin / (predictedRequired || 1)) * 100)));
+
+    forecasts.push({
+      month: targetMk,
+      horizon: h,
+      projectedOriginations: Math.round(projOrig),
+      projectedRecoveries: Math.round(projRecoveries),
+      projectedExpenses: Math.round(expWeighted * seasonIdx),
+      projectedDistributions: Math.round(distWeighted),
+      projectedNetConsumed: Math.round(projNetConsumed),
+      predictedRequired: Math.round(predictedRequired),
+      rangeMin: Math.round(rangeMin),
+      rangeMax: Math.round(rangeMax),
+      confidencePct,
+      isDeficit: totalCapital < predictedRequired,
+      gap: Math.round(Math.abs(totalCapital - predictedRequired)),
+    });
+  }
+
+  const primaryForecast = forecasts[0];
+
+  // Depletion timeline
+  const avgNetMonthly = capExpWeightedAvg(netConsumedValues, trendWeight);
+  let monthsUntilDepletion = null;
+  let capitalNeededByDate = null;
+  if (avgNetMonthly > 0 && availableLendingCapital > 0) {
+    monthsUntilDepletion = availableLendingCapital / avgNetMonthly;
+    const dMs = monthsUntilDepletion;
+    const depletionDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + Math.floor(dMs), now.getUTCDate()));
+    const neededBy = new Date(depletionDate);
+    neededBy.setUTCDate(neededBy.getUTCDate() - leadTimeDays);
+    capitalNeededByDate = neededBy.toISOString().split('T')[0];
+    monthsUntilDepletion = Math.round(monthsUntilDepletion * 10) / 10;
+  }
+
+  // Safe withdrawal — only recommend when surplus has been sustained
+  let actualStreak = 0;
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    // Surplus = net consumed was below half of peak deployment for that month
+    if (snapshots[i].netConsumed < peakDeployment * 0.5) actualStreak++;
+    else break;
+  }
+  const streakMet = actualStreak >= surplusStreakMonths;
+  const safeWithdrawalBase = Math.max(0,
+    totalCapital
+    - minimumCapitalRequired
+    - (primaryForecast?.projectedNetConsumed || 0)
+    - totalCapitalOut
+    - totalCapitalInForSale
+  );
+  const safeWithdrawal = streakMet ? Math.round(safeWithdrawalBase) : 0;
+
+  // Capital efficiency score (% of total capital currently deployed)
+  const capitalEfficiency = totalCapital > 0
+    ? Math.round((totalCapitalOut + totalCapitalInForSale) / totalCapital * 100)
+    : 0;
+
+  // Build per-stakeholder data
+  const capByName = Object.values(capitalEntries.reduce((acc, c) => {
+    const key = c.name.toLowerCase();
+    if (!acc[key]) acc[key] = { name: c.name, total: 0 };
+    acc[key].total += (c.amount || 0);
+    return acc;
+  }, {}));
+
+  // Contribution plan (shown when deficit)
+  const contributionPlan = capByName.map(s => {
+    const tgt = ownershipTargets[s.name] || {};
+    const currentPct = totalCapital > 0 ? s.total / totalCapital * 100 : 0;
+    const targetPct = tgt.targetPercent != null ? tgt.targetPercent : currentPct;
+    const expectedTotal = primaryForecast ? primaryForecast.predictedRequired * (targetPct / 100) : 0;
+    const gap = Math.max(0, expectedTotal - s.total);
+    return {
+      name: s.name, total: s.total, currentPct: Math.round(currentPct * 10) / 10,
+      targetPct: Math.round(targetPct * 10) / 10, minPct: tgt.minPercent ?? null,
+      maxPct: tgt.maxPercent ?? null, expectedTotal: Math.round(expectedTotal), gap: Math.round(gap),
+    };
+  }).sort((a, b) => b.gap - a.gap);
+
+  // Withdrawal plan (shown when surplus)
+  const withdrawalPlan = (() => {
+    const rawPlan = capByName.map(s => {
+      const ownership = totalCapital > 0 ? s.total / totalCapital : 0;
+      const tgt = ownershipTargets[s.name] || {};
+      const currentPct = ownership * 100;
+      const maxPct = tgt.maxPercent ?? 100;
+      const excessFactor = currentPct > maxPct ? 1.5 : 1.0;
+      return { name: s.name, total: s.total, currentPct: Math.round(currentPct * 10) / 10, withdrawAmount: safeWithdrawal * ownership * excessFactor };
+    });
+    const rawTotal = rawPlan.reduce((s, x) => s + x.withdrawAmount, 0);
+    return rawPlan.map(x => ({
+      ...x,
+      withdrawAmount: rawTotal > 0 ? Math.round(x.withdrawAmount / rawTotal * safeWithdrawal) : 0,
+    }));
+  })();
+
+  return {
+    snapshots, forecasts, primaryForecast,
+    totalCapital, totalCapitalOut, totalCapitalInForSale,
+    availableLendingCapital, totalBusinessMoney,
+    peakDeployment, minimumCapitalRequired, peakCushion,
+    safeWithdrawal, streakMet, actualStreak, surplusStreakMonths,
+    monthsUntilDepletion, capitalNeededByDate, leadTimeDays,
+    capitalEfficiency, useSeasonalIndex,
+    dataPoints: snapshots.length, residualStd: Math.round(residualStd),
+    avgNetMonthly: Math.round(avgNetMonthly),
+    contributionPlan, withdrawalPlan, capByName,
+    defaultRateInfo: {
+      rate: defaultRate,
+      computedRate: autoDefault.rate,
+      loanCount: autoDefault.loanCount,
+      isFallback: autoDefault.isFallback,
+      isOverridden: hasOverride,
+    },
+  };
+};
+
+// ============================================================
+// REAL-TIME CAPITAL SHORTFALL ENGINE
+// ============================================================
+
+/**
+ * Computes how much each stakeholder should contribute to cover an immediate
+ * capital shortfall, respecting min/max ownership % constraints.
+ *
+ * @param {number} shortfallAmount - The amount of capital needed right now
+ * @param {Array}  capByName       - [{ name, total }] current per-stakeholder capital
+ * @param {number} totalCapital    - Sum of all current capital investments
+ * @param {object} ownershipTargets - { [name]: { minPercent, maxPercent, targetPercent } }
+ * @returns {{ allocations: Array, unallocated: number }}
+ */
+const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, ownershipTargets = {}) => {
+  if (!shortfallAmount || shortfallAmount <= 0 || !capByName?.length) {
+    return { allocations: [], unallocated: 0 };
+  }
+
+  const totalAfter = totalCapital + shortfallAmount;
+  const targets = ownershipTargets || {};
+
+  // For each stakeholder, compute how much they need to contribute so that
+  // their ownership percentage reaches (or stays at) their target AFTER the
+  // full shortfall has been injected.
+  //
+  // Key insight: stakeholders already above their target in the post-injection
+  // state contribute NOTHING — unless the dilution from others contributing
+  // would push them below their target, in which case they contribute just
+  // enough to stay at their target.
+  const pool = capByName.map(s => {
+    const tgt = targets[s.name] || {};
+    const currentPct = totalCapital > 0 ? s.total / totalCapital * 100 : 0;
+    const targetPct  = tgt.targetPercent != null ? tgt.targetPercent : currentPct;
+    const minPct     = tgt.minPercent ?? 0;
+    const maxPct     = tgt.maxPercent ?? 100;
+
+    // Their ideal total amount in the post-injection world
+    const targetAmountAfter = totalAfter * targetPct / 100;
+    // How much they need to contribute to reach that target (0 if already there/above)
+    const neededToReachTarget = Math.max(0, targetAmountAfter - s.total);
+    // Hard cap: can't push them above maxPct
+    const maxCapacity = Math.max(0, totalAfter * maxPct / 100 - s.total);
+    // Effective need respects maxCapacity
+    const allowedNeed = Math.min(neededToReachTarget, maxCapacity);
+    // "Above target" = they stay at/above their target even after full dilution
+    const isAboveTarget = s.total >= targetAmountAfter;
+
+    return {
+      name: s.name,
+      currentAmount: s.total,
+      currentPct: Math.round(currentPct * 10) / 10,
+      targetPct: Math.round(targetPct * 10) / 10,
+      minPct,
+      maxPct,
+      targetAmountAfter: Math.round(targetAmountAfter),
+      neededToReachTarget,
+      maxCapacity,
+      allowedNeed,
+      isAboveTarget,
+      isBelowMin: currentPct < minPct,
+    };
+  });
+
+  const totalNeed = pool.reduce((s, x) => s + x.allowedNeed, 0);
+
+  let withSuggested;
+
+  if (totalNeed >= shortfallAmount) {
+    // Phase 1 only: eligible stakeholders cover the full shortfall.
+    withSuggested = pool.map(x => ({
+      ...x,
+      suggested: totalNeed > 0 ? shortfallAmount * x.allowedNeed / totalNeed : 0,
+      isLastResort: false,
+    }));
+  } else {
+    const remainder = shortfallAmount - totalNeed;
+
+    // Phase 2: eligible (non-exempt) stakeholders absorb the remainder up to their maxPct.
+    const phase2Caps = pool.map(x => {
+      if (x.isAboveTarget && x.neededToReachTarget === 0) return 0; // exempt for now
+      return Math.max(0, x.maxCapacity - x.allowedNeed);
+    });
+    const totalPhase2 = phase2Caps.reduce((s, x) => s + x, 0);
+    const phase2Amount = Math.min(remainder, totalPhase2);
+    const phase3Amount = remainder - phase2Amount; // > 0 only if eligible stakeholders are all maxed
+
+    // Phase 3 (last resort): above-target stakeholders contribute only the uncovered remainder.
+    // They are flagged isLastResort so the UI can display them differently.
+    const phase3Caps = pool.map(x => {
+      if (!x.isAboveTarget || x.neededToReachTarget > 0) return 0; // already handled above
+      return Math.max(0, x.maxCapacity); // their allowedNeed is 0
+    });
+    const totalPhase3 = phase3Caps.reduce((s, x) => s + x, 0);
+
+    withSuggested = pool.map((x, i) => {
+      const p2 = totalPhase2 > 0 ? phase2Amount * (phase2Caps[i] / totalPhase2) : 0;
+      const p3 = phase3Amount > 0 && totalPhase3 > 0 ? phase3Amount * (phase3Caps[i] / totalPhase3) : 0;
+      return { ...x, suggested: x.allowedNeed + p2 + p3, isLastResort: p3 > 0 };
+    });
+  }
+
+  // Final rounding + cap at maxCapacity
+  const totalAllocated = withSuggested.reduce((s, x) => s + Math.min(x.suggested, x.maxCapacity), 0);
+  const unallocated = Math.max(0, Math.round(shortfallAmount - totalAllocated));
+
+  const allocations = withSuggested.map(x => ({
+    name: x.name,
+    currentAmount: x.currentAmount,
+    currentPct: x.currentPct,
+    targetPct: x.targetPct,
+    minPct: x.minPct,
+    maxPct: x.maxPct,
+    suggested: Math.round(Math.min(x.suggested, x.maxCapacity) / 10) * 10,
+    isAboveTarget: x.isAboveTarget,
+    isDilutionProtection: x.isAboveTarget && x.neededToReachTarget > 0,
+    isLastResort: x.isLastResort || false,
+    isBelowMin: x.isBelowMin,
+    capacityFull: x.maxCapacity <= 0,
+  })).sort((a, b) => {
+    // Priority: isBelowMin → below target → dilution protection → last resort → fully exempt
+    const rank = x => x.isBelowMin ? 0 : !x.isAboveTarget ? 1 : x.isDilutionProtection ? 2 : x.isLastResort ? 3 : 4;
+    return rank(a) - rank(b) || b.suggested - a.suggested;
+  });
+
+  return { allocations, unallocated };
+};
+
+/**
+ * Fills a capital SMS template with stakeholder-specific variables.
+ * Supports: {stakeholderName} {businessName} {adminPhone} {deficitAmount}
+ *           {availableAmount} {thresholdAmount} {expectedAmount}
+ *           {transactionAmount} {withdrawAmount}
+ */
+const fillCapitalSmsTemplate = (template, vars = {}) => {
+  const fmt = (n) => n != null ? '₦' + Number(n).toLocaleString('en-NG') : '';
+  return (template || '')
+    .replace(/\{stakeholderName\}/g, vars.stakeholderName || '')
+    .replace(/\{businessName\}/g,    vars.businessName    || '')
+    .replace(/\{adminPhone\}/g,      vars.adminPhone      || '')
+    .replace(/\{deficitAmount\}/g,   fmt(vars.deficitAmount))
+    .replace(/\{availableAmount\}/g, fmt(vars.availableAmount))
+    .replace(/\{thresholdAmount\}/g, fmt(vars.thresholdAmount))
+    .replace(/\{expectedAmount\}/g,  fmt(vars.expectedAmount))
+    .replace(/\{transactionAmount\}/g, fmt(vars.transactionAmount))
+    .replace(/\{withdrawAmount\}/g,  fmt(vars.withdrawAmount));
 };
 
 const PAGE_PATHS = {
@@ -940,33 +1470,36 @@ function Field({ label, required, children, style: st }) {
 function InfoIcon({ tip }) {
   const [coords, setCoords] = useState(null);
   const ref = useRef();
-  const TIP_W = 240;
+  const TIP_W = 260;
   const GAP = 8;
   const EDGE_PAD = 10;
-  const MIN_SPACE_ABOVE = 80; // px — flip tooltip below the icon if less space than this above it
 
-  const show = (e) => {
+  const show = () => {
     if (!ref.current) return;
     const r = ref.current.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    // Prefer above the icon; flip below if too close to top
     const spaceAbove = r.top;
-    const placeBelow = spaceAbove < MIN_SPACE_ABOVE;
-    const top = placeBelow ? r.bottom + GAP : r.top - GAP;
-    // Centre on the icon, then clamp to viewport edges
+    const spaceBelow = vh - r.bottom;
+    // Place below the icon if more space below, or if not much room above
+    const placeBelow = spaceBelow >= spaceAbove || spaceAbove < 120;
+    let top;
+    if (placeBelow) {
+      top = Math.min(r.bottom + GAP, vh - GAP);
+    } else {
+      // Anchor to the top of the icon; tooltip will expand upward via transform
+      top = r.top - GAP;
+    }
     let left = r.left + r.width / 2 - TIP_W / 2;
     left = Math.max(EDGE_PAD, Math.min(left, vw - TIP_W - EDGE_PAD));
-    setCoords({ top, left, below: placeBelow });
+    setCoords({ top, left, placeBelow });
   };
 
   const hide = () => setCoords(null);
 
   useEffect(() => {
     if (!coords) return;
-    const close = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) hide();
-    };
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) hide(); };
     document.addEventListener('mousedown', close);
     document.addEventListener('touchstart', close);
     return () => {
@@ -977,7 +1510,7 @@ function InfoIcon({ tip }) {
 
   const tooltipStyle = {
     position: 'fixed',
-    zIndex: 99999,
+    zIndex: 2147483647,  // max z-index
     background: '#1a1a2e',
     color: '#fff',
     fontSize: '13px',
@@ -988,20 +1521,22 @@ function InfoIcon({ tip }) {
     padding: '10px 13px',
     borderRadius: '10px',
     width: TIP_W + 'px',
+    maxWidth: `calc(100vw - ${EDGE_PAD * 2}px)`,
     boxShadow: '0 6px 24px rgba(0,0,0,0.32)',
     pointerEvents: 'none',
-    top: coords ? (coords.below ? coords.top : undefined) : undefined,
-    bottom: coords && !coords.below ? (window.innerHeight - coords.top) + 'px' : undefined,
+    top: coords ? coords.top + 'px' : undefined,
     left: coords ? coords.left + 'px' : undefined,
+    // When placing above the icon, anchor bottom to top coord by shifting up
+    transform: coords && !coords.placeBelow ? 'translateY(-100%)' : 'none',
   };
 
   return (
     <span
       ref={ref}
-      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: '4px', flexShrink: 0 }}
+      style={{ display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: '4px', flexShrink: 0 }}
       onMouseEnter={show}
       onMouseLeave={hide}
-      onClick={e => { e.stopPropagation(); coords ? hide() : show(e); }}
+      onClick={e => { e.stopPropagation(); coords ? hide() : show(); }}
     >
       <span style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -1011,7 +1546,7 @@ function InfoIcon({ tip }) {
         border: `1px solid ${COLORS.primary}`, lineHeight: 1, userSelect: 'none',
         flexShrink: 0, textTransform: 'none', letterSpacing: 'normal',
       }}>ℹ</span>
-      {coords && <span style={tooltipStyle}>{tip}</span>}
+      {coords && createPortal(<span style={tooltipStyle}>{tip}</span>, document.body)}
     </span>
   );
 }
@@ -3625,7 +4160,7 @@ const EMPTY_TX = {
   contactLog: [], notes: '',
 };
 
-function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount }) {
+function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, availableLendingCapital, totalCapital, capByName }) {
   const [step, setStep] = useState(draft?.wizardStep || 0);
   const [tx, setTx] = useState(() => {
     const base = draft || { ...EMPTY_TX, ref: genRef(), createdBy: currentUser?.name || '', createdAt: new Date().toISOString() };
@@ -3680,6 +4215,35 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   useEffect(() => {
     return () => { if (pendingDraftRef.current) API.post('drafts', pendingDraftRef.current); };
   }, []);
+  const [wizardNotifyStatus, setWizardNotifyStatus] = useState(null); // null | 'sending' | { sent, failed, total }
+  const wizardAutoSentRef = useRef(false);
+  const [wizardTopUpExtra, setWizardTopUpExtra] = useState(0);        // optional extra top-up above transaction shortfall
+
+  // Auto-send capital shortfall SMS when Offer step first shows a shortfall (once per wizard session)
+  useEffect(() => {
+    if (WIZARD_STEPS[step]?.id !== 'offer') return;
+    if (!settings.smsCapitalTransactionShortfallEnabled) return;
+    if (!settings.smsEnabled || !settings.termiiApiKey) return;
+    if (wizardAutoSentRef.current) return;
+    const offerAmount = tx.cashAdvance || 0;
+    const avail = availableLendingCapital != null ? availableLendingCapital : Infinity;
+    if (offerAmount <= 0 || avail >= offerAmount) return;
+    const shortfall = offerAmount - avail;
+    const ownershipCfg = settings.stakeholderOwnership || {};
+    const { allocations } = computeRealTimeShortfall(shortfall, capByName || [], totalCapital || 0, ownershipCfg);
+    const targets = allocations.filter(a => (ownershipCfg[a.name] || {}).phone);
+    if (!targets.length) return;
+    wizardAutoSentRef.current = true;
+    setWizardNotifyStatus('sending');
+    Promise.all(targets.map(a => {
+      const phone = (ownershipCfg[a.name] || {}).phone;
+      const msg = fillCapitalSmsTemplate(settings.smsCapitalTransactionShortfall || DEFAULT_SETTINGS.smsCapitalTransactionShortfall, { stakeholderName: a.name, businessName: settings.businessName || 'CIF Cash', adminPhone: settings.shopPhone1 || '', expectedAmount: a.suggested, transactionAmount: offerAmount });
+      return API.post('sms/notify-stakeholder', { phone, message: msg, stakeholderName: a.name }).then(r => r?.ok ? 1 : 0);
+    })).then(results => {
+      const sent = results.filter(Boolean).length;
+      setWizardNotifyStatus({ sent, failed: results.length - sent, total: results.length });
+    });
+  }, [step, tx.cashAdvance, availableLendingCapital]);
 
   // Fetch verification credits when the NIN step becomes active.
   // Only fetches if the NIN API key is configured.
@@ -4566,7 +5130,147 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
 
       case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
 
-      case 'offer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect. <InfoIcon tip="Collect this flat fee from the customer today, on top of the cash you're giving them. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
+      case 'offer': return (<div>
+        {(() => {
+          const offerAmount = tx.cashAdvance || 0;
+          const avail = availableLendingCapital != null ? availableLendingCapital : Infinity;
+          if (offerAmount <= 0 || avail >= offerAmount) return null;
+          const baseShortfall = Math.ceil(offerAmount - avail);
+          const totalTopUp = baseShortfall + (wizardTopUpExtra > 0 ? wizardTopUpExtra : 0);
+          const ownershipTargets = settings.stakeholderOwnership || {};
+          const { allocations, unallocated } = computeRealTimeShortfall(totalTopUp, capByName || [], totalCapital || 0, ownershipTargets);
+          return (
+            <div style={{ background: '#fef2f2', border: '2px solid #dc2626', borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
+              <div style={{ fontWeight: 700, fontSize: '15px', color: '#dc2626', marginBottom: '8px' }}>🚨 Capital Shortfall — Immediate Top-Up Required</div>
+              <div style={{ fontSize: '13px', color: '#7f1d1d', marginBottom: '12px' }}>
+                Available lending capital is <strong>{fmtMoney(avail < 0 ? 0 : avail)}</strong> but this transaction needs <strong>{fmtMoney(offerAmount)}</strong>.
+                A minimum top-up of <strong>{fmtMoney(baseShortfall)}</strong> is needed before this can proceed.
+              </div>
+              {/* Optional extra top-up */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#991b1b', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                  Top up extra above minimum (₦)
+                  <InfoIcon tip="Optionally plan a larger top-up beyond what this transaction strictly needs. Useful if you want to replenish reserves while stakeholders are already contributing." />
+                  :
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={wizardTopUpExtra || ''}
+                  placeholder="0"
+                  onChange={e => setWizardTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
+                  style={{ width: '130px', padding: '5px 8px', fontSize: '13px', border: '1px solid #fca5a5', borderRadius: '6px', background: '#fff', color: '#1f2937' }}
+                />
+                {wizardTopUpExtra > 0 && (
+                  <span style={{ fontSize: '12px', color: '#991b1b' }}>
+                    Total: <strong>{fmtMoney(totalTopUp)}</strong>
+                  </span>
+                )}
+              </div>
+              {allocations.length > 0 && (
+                <div>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Expected contributions{wizardTopUpExtra > 0 ? ` (including ₦${wizardTopUpExtra.toLocaleString('en-NG')} extra)` : ''}</div>
+                  <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Stakeholder</th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Invested<InfoIcon tip="Total capital this stakeholder has put in." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Now %<InfoIcon tip="Their current ownership share." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Target %<InfoIcon tip="Their agreed ownership target (min–max). Contributions are based on reaching this target." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Bring In<InfoIcon tip="Expected contribution, rounded to the nearest ₦10. Those below their target % are asked first; those above are exempt." /></span></th>
+                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Status<InfoIcon tip="Below min = urgent; Below target = contributing; Dilution protection = above target now but would fall below after the injection; Last resort = above target but every eligible stakeholder is maxed out so they must cover the remaining gap; Above target = fully exempt." /></span></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allocations.map(a => (
+                        <tr key={a.name} style={{ borderTop: '1px solid #fca5a5' }}>
+                          <td style={{ padding: '5px 8px', fontWeight: 600, color: a.isBelowMin ? '#dc2626' : '#1f2937' }}>
+                            {a.name}{a.isBelowMin ? ' ⚠' : ''}
+                          </td>
+                          <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{fmtMoney(a.currentAmount)}</td>
+                          <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{a.currentPct}%</td>
+                          <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151', fontSize: '12px' }}>
+                            {a.targetPct != null ? `${a.targetPct}%` : '—'}
+                            {(a.minPct > 0 || a.maxPct < 100) && (
+                              <div style={{ fontSize: '10px', color: '#9ca3af' }}>{a.minPct}–{a.maxPct}%</div>
+                            )}
+                          </td>
+                          <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? '#dc2626' : '#6b7280' }}>
+                            {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max)' : '—'}
+                          </td>
+                          <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isLastResort ? '#7c3aed' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
+                            {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isLastResort ? 'Last resort' : a.isAboveTarget ? 'Above target' : 'Below target'}
+                          </td>
+                        </tr>
+                      ))}
+                      {unallocated > 0 && (
+                        <tr style={{ borderTop: '1px solid #fca5a5' }}>
+                          <td colSpan={5} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated (all stakeholders at max %)</td>
+                          <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: '#dc2626' }}>{fmtMoney(unallocated)}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                  </div>
+                  {allocations.some(a => a.isBelowMin) && (
+                    <div style={{ fontSize: '11px', color: '#991b1b', marginTop: '6px' }}>⚠ Stakeholders marked with ⚠ are currently below their minimum ownership target and are prioritised for contribution.</div>
+                  )}
+                  {allocations.some(a => a.isAboveTarget && !a.isDilutionProtection) && (
+                    <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>Stakeholders shown as "Above target" are not required to contribute — others have been prioritised instead.</div>
+                  )}
+                  {/* Notify stakeholders from wizard — single button */}
+                  {(() => {
+                    const ownershipCfg = settings.stakeholderOwnership || {};
+                    const withSms = allocations.filter(a => (ownershipCfg[a.name] || {}).phone);
+                    const withEmail = allocations.filter(a => (ownershipCfg[a.name] || {}).email);
+                    if (!withSms.length && !withEmail.length) return null;
+                    const smsAllWizard = async () => {
+                      setWizardNotifyStatus('sending');
+                      let sent = 0, failed = 0;
+                      for (const a of withSms) {
+                        const phone = (ownershipCfg[a.name] || {}).phone;
+                        const msg = fillCapitalSmsTemplate(settings.smsCapitalTransactionShortfall || DEFAULT_SETTINGS.smsCapitalTransactionShortfall, { stakeholderName: a.name, businessName: settings.businessName || 'CIF Cash', adminPhone: settings.shopPhone1 || '', expectedAmount: a.suggested, transactionAmount: tx.cashAdvance || 0 });
+                        const res = await API.post('sms/notify-stakeholder', { phone, message: msg, stakeholderName: a.name });
+                        res?.ok ? sent++ : failed++;
+                      }
+                      setWizardNotifyStatus({ sent, failed, total: withSms.length });
+                    };
+                    return (
+                      <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #fca5a5', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Notify now</span>
+                        {withSms.length > 0 && (
+                          <button
+                            style={{ ...S.btn(wizardNotifyStatus === 'sending' ? 'muted' : wizardNotifyStatus?.sent != null ? 'primary' : 'danger'), fontSize: '13px', padding: '8px 14px' }}
+                            disabled={wizardNotifyStatus === 'sending'}
+                            onClick={smsAllWizard}
+                          >
+                            {wizardNotifyStatus === 'sending'
+                              ? '⏳ Sending…'
+                              : wizardNotifyStatus?.sent != null
+                                ? `✅ SMS sent to ${wizardNotifyStatus.sent}${wizardNotifyStatus.failed > 0 ? ` (${wizardNotifyStatus.failed} failed)` : ''} — Send Again`
+                                : '📱 SMS All Stakeholders'}
+                          </button>
+                        )}
+                        {withEmail.map(a => {
+                          const subject = encodeURIComponent(`Urgent: Capital Top-Up Required — ${settings.businessName || 'CIF Cash'}`);
+                          const body = encodeURIComponent(`Dear ${a.name},\n\nA transaction of ${fmtMoney(tx.cashAdvance || 0)} is pending but available capital is insufficient.\n\nYour expected contribution: ${a.suggested > 0 ? fmtMoney(a.suggested) : '—'}\nCurrent ownership: ${a.currentPct}% (target: ${a.targetPct}%)\n\nPlease arrange to bring in your expected amount immediately.\n\nThank you.`);
+                          return (
+                            <a key={a.name} href={`mailto:${(ownershipCfg[a.name] || {}).email}?subject=${subject}&body=${body}`} style={{ ...S.btnSm('outline'), fontSize: '12px', textDecoration: 'none' }}>
+                              📧 {a.name}{a.isBelowMin ? ' ⚠' : ''}
+                            </a>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect. <InfoIcon tip="Collect this flat fee from the customer today, on top of the cash you're giving them. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>{tx.type === 'outright' ? 'Print Receipt' : 'Print Agreement'}</strong> — a filled-in form will open in a new window ready to print. Load plain paper in your printer, click the Print button in that window, and it prints both the Business Copy and {tx.type === 'outright' ? 'Seller Copy' : 'Customer Copy'} with all the transaction data already filled in. Read every clause aloud to the {tx.type === 'outright' ? 'seller' : 'customer'}. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
       <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
@@ -6057,6 +6761,11 @@ export default function App() {
   const [capitalTopUpFor, setCapitalTopUpFor] = useState(null);
   const [showAddDistribution, setShowAddDistribution] = useState(false);
   const [expandedCapital, setExpandedCapital] = useState(new Set());
+  const [capitalAnalysisExpanded, setCapitalAnalysisExpanded] = useState(false);
+  const [capitalSmsSendState, setCapitalSmsSendState] = useState(null);     // null | 'sending' | { sent, failed, total }
+  const [withdrawalSmsSendState, setWithdrawalSmsSendState] = useState(null);
+  const capitalAutoSentRef = useRef({});  // tracks which auto-sends have fired today
+  const [capitalTopUpExtra, setCapitalTopUpExtra] = useState(0);            // optional extra top-up above the minimum
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
@@ -6290,6 +6999,102 @@ export default function App() {
   const totalDistributions = distributions.reduce((s, d) => s + (d.amount || 0), 0);
   const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory - totalDistributions;
 
+  // Capital prediction (memoised — only recomputes when source data or settings change)
+  const capitalPrediction = useMemo(
+    () => computeCapitalPrediction(transactions, expenses, distributions, capital, settings),
+    [transactions, expenses, distributions, capital, settings]
+  );
+
+  // Archive this month's prediction and fill in actuals for past months
+  useEffect(() => {
+    if (!capitalPrediction?.primaryForecast) return;
+    try {
+      const stored = JSON.parse(localStorage.getItem('cfc_cap_predictions') || '[]');
+      const nextMk = capNextMonthKey(1);
+      let changed = false;
+      // Add prediction for next month if not already recorded
+      if (!stored.find(p => p.targetMonth === nextMk)) {
+        const pfc = capitalPrediction.primaryForecast;
+        stored.push({ madeOn: localISODate(), targetMonth: nextMk, rangeMin: pfc.rangeMin, rangeMax: pfc.rangeMax, estimate: pfc.predictedRequired, actual: null });
+        changed = true;
+      }
+      // Fill in actuals for past closed months
+      for (const rec of stored) {
+        if (!rec.actual && rec.targetMonth < localISODate().slice(0, 7)) {
+          const snap = capitalPrediction.snapshots.find(s => s.month === rec.targetMonth);
+          if (snap) { rec.actual = snap.netConsumed; changed = true; }
+        }
+      }
+      if (changed) localStorage.setItem('cfc_cap_predictions', JSON.stringify(stored.slice(-18)));
+    } catch { /* ignore storage errors */ }
+  }, [capitalPrediction]);
+
+  // ── Auto-send capital alert SMS (fires once per day per condition) ──
+  useEffect(() => {
+    if (!settings.smsEnabled || !settings.termiiApiKey) return;
+    if (!currentUser) return;
+    const ownershipCfg = settings.stakeholderOwnership || {};
+    const today = localISODate();
+    const biz = settings.businessName || 'CIF Cash';
+    const adminPhone = settings.shopPhone1 || '';
+    const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
+
+    const dispatchToAll = (template, allocations, extraVars) => {
+      allocations.forEach(a => {
+        const phone = (ownershipCfg[a.name] || {}).phone;
+        if (!phone) return;
+        const msg = fillCapitalSmsTemplate(template, { stakeholderName: a.name, businessName: biz, adminPhone, expectedAmount: a.suggested, ...extraVars });
+        API.post('sms/notify-stakeholder', { phone, message: msg, stakeholderName: a.name });
+      });
+    };
+
+    const capBN = capitalPrediction?.capByName || [];
+
+    // Deficit alert (available < 0)
+    if (settings.smsCapitalDeficitEnabled && availableLendingCapital < 0) {
+      const key = 'cfc_cap_deficit_' + today;
+      if (!capitalAutoSentRef.current[key]) {
+        capitalAutoSentRef.current[key] = true;
+        if (localStorage.getItem(key) !== '1') {
+          localStorage.setItem(key, '1');
+          const { allocations } = computeRealTimeShortfall(Math.abs(availableLendingCapital), capBN, totalCapital, ownershipCfg);
+          dispatchToAll(settings.smsCapitalDeficit || DEFAULT_SETTINGS.smsCapitalDeficit, allocations, { deficitAmount: Math.abs(availableLendingCapital), availableAmount: availableLendingCapital });
+        }
+      }
+    }
+
+    // Low capital alert (available >= 0 but below threshold)
+    if (settings.smsCapitalLowEnabled && availableLendingCapital >= 0 && availableLendingCapital < threshold) {
+      const key = 'cfc_cap_low_' + today;
+      if (!capitalAutoSentRef.current[key]) {
+        capitalAutoSentRef.current[key] = true;
+        if (localStorage.getItem(key) !== '1') {
+          localStorage.setItem(key, '1');
+          const shortfall = threshold - availableLendingCapital;
+          const { allocations } = computeRealTimeShortfall(shortfall, capBN, totalCapital, ownershipCfg);
+          dispatchToAll(settings.smsCapitalLow || DEFAULT_SETTINGS.smsCapitalLow, allocations, { availableAmount: availableLendingCapital, thresholdAmount: threshold });
+        }
+      }
+    }
+
+    // Withdrawal opportunity (surplus streak met)
+    if (settings.smsCapitalWithdrawalEnabled && capitalPrediction?.streakMet && capitalPrediction?.safeWithdrawal > 0) {
+      const key = 'cfc_cap_withdrawal_' + capNextMonthKey(0);
+      if (!capitalAutoSentRef.current[key]) {
+        capitalAutoSentRef.current[key] = true;
+        if (localStorage.getItem(key) !== '1') {
+          localStorage.setItem(key, '1');
+          (capitalPrediction.withdrawalPlan || []).forEach(a => {
+            const phone = (ownershipCfg[a.name] || {}).phone;
+            if (!phone || !a.withdrawAmount) return;
+            const msg = fillCapitalSmsTemplate(settings.smsCapitalWithdrawal || DEFAULT_SETTINGS.smsCapitalWithdrawal, { stakeholderName: a.name, businessName: biz, adminPhone, withdrawAmount: a.withdrawAmount });
+            API.post('sms/notify-stakeholder', { phone, message: msg, stakeholderName: a.name });
+          });
+        }
+      }
+    }
+  }, [availableLendingCapital, totalCapital, capitalPrediction, settings.smsEnabled, settings.termiiApiKey, settings.smsCapitalDeficitEnabled, settings.smsCapitalLowEnabled, settings.smsCapitalWithdrawalEnabled, settings.capitalLowThreshold, currentUser]);
+
   const filteredTxs = useMemo(() => {
     let result = [...transactions];
     // Text search
@@ -6406,7 +7211,7 @@ export default function App() {
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
-        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
+        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} availableLendingCapital={availableLendingCapital} totalCapital={totalCapital} capByName={capitalPrediction?.capByName || []} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
       </div>
     </div>
   );
@@ -6545,6 +7350,28 @@ export default function App() {
     switch (page) {
       case 'dashboard': return (<div>{listLoadingNotice}
         <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📊 Dashboard</h2>
+        {(() => {
+          const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
+          if (availableLendingCapital >= threshold) return null;
+          const isNegative = availableLendingCapital < 0;
+          return (
+            <div style={{ background: isNegative ? '#fef2f2' : '#fffbeb', border: `2px solid ${isNegative ? '#dc2626' : '#f59e0b'}`, borderRadius: '10px', padding: '14px 16px', marginBottom: '16px', display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+              <span style={{ fontSize: '20px', flexShrink: 0 }}>{isNegative ? '🚨' : '⚠'}</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: '14px', color: isNegative ? '#dc2626' : '#b45309', marginBottom: '4px' }}>
+                  {isNegative ? 'Capital Deficit' : 'Capital Running Low'}
+                </div>
+                <div style={{ fontSize: '13px', color: isNegative ? '#7f1d1d' : '#78350f' }}>
+                  Available lending capital is <strong>{fmtMoney(availableLendingCapital)}</strong>
+                  {isNegative
+                    ? '. The business is operating at a capital deficit — stakeholders need to top up immediately.'
+                    : ` — below the alert threshold of ${fmtMoney(threshold)}. Visit the Capital page for a full breakdown of who should contribute and how much.`}
+                  {isNegative && ' Visit the Capital page for the full contribution plan.'}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         <div style={S.grid4}>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Available Lending Capital<InfoIcon tip="The money we have available to give out as new loans right now. It's what's left after taking away everything that's already out or paid out." /></div><div style={S.statValue}>{fmtMoney(availableLendingCapital)}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital Out<InfoIcon tip="The total cash that's currently with customers who haven't paid back yet." /></div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
@@ -7780,6 +8607,177 @@ export default function App() {
               <div style={{ ...capRowStyle, borderBottom: 'none' }}><span>Profit already distributed to stakeholders<InfoIcon tip="Profit that was already shared out to investors and has left the business." /></span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalDistributions)}</strong></div>
             </div>
 
+            {/* Live Capital Status Banner */}
+            {(() => {
+              const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
+              if (availableLendingCapital >= threshold) return null;
+              const isNegative = availableLendingCapital < 0;
+              const baseShortfallNeeded = isNegative ? Math.abs(availableLendingCapital) : (threshold - availableLendingCapital);
+              const shortfallNeeded = baseShortfallNeeded + (capitalTopUpExtra > 0 ? capitalTopUpExtra : 0);
+              const ownershipCfg = settings.stakeholderOwnership || {};
+              const { allocations, unallocated } = computeRealTimeShortfall(shortfallNeeded, capByName, totalCapital, ownershipCfg);
+              const accentClr = isNegative ? '#991b1b' : '#92400e';
+              const dividerClr = isNegative ? '#fca5a5' : '#fde68a';
+              const smsSendAll = async () => {
+                const targets = allocations.filter(a => (ownershipCfg[a.name] || {}).phone);
+                if (!targets.length) return;
+                setCapitalSmsSendState('sending');
+                let sent = 0, failed = 0;
+                for (const a of targets) {
+                  const phone = (ownershipCfg[a.name] || {}).phone;
+                  const template = isNegative ? (settings.smsCapitalDeficit || DEFAULT_SETTINGS.smsCapitalDeficit) : (settings.smsCapitalLow || DEFAULT_SETTINGS.smsCapitalLow);
+                  const msg = fillCapitalSmsTemplate(template, { stakeholderName: a.name, businessName: settings.businessName || 'CIF Cash', adminPhone: settings.shopPhone1 || '', expectedAmount: a.suggested, deficitAmount: isNegative ? shortfallNeeded : undefined, availableAmount: availableLendingCapital, thresholdAmount: threshold });
+                  const res = await API.post('sms/notify-stakeholder', { phone, message: msg, stakeholderName: a.name });
+                  res?.ok ? sent++ : failed++;
+                }
+                setCapitalSmsSendState({ sent, failed, total: targets.length });
+              };
+              const buildEmailHref = (a) => {
+                const cfg = ownershipCfg[a.name] || {};
+                if (!cfg.email) return null;
+                const subject = encodeURIComponent(`Capital ${isNegative ? 'Deficit Alert' : 'Low Capital Alert'} — Action Required`);
+                const body = encodeURIComponent(`Dear ${a.name},\n\nThis is a capital ${isNegative ? 'deficit' : 'low capital'} alert from ${settings.businessName || 'CIF Cash'}.\n\nAvailable capital is ${isNegative ? 'negative' : 'below the alert threshold'} and requires an immediate top-up.\n\nYour expected contribution: ${a.suggested > 0 ? fmtMoney(a.suggested) : 'your proportional share'}\nYour current ownership: ${a.currentPct}% (target: ${a.targetPct}%${a.minPct != null ? ', min: ' + a.minPct + '%' : ''}${a.maxPct != null ? ', max: ' + a.maxPct + '%' : ''})\n\nPlease arrange to bring in your expected amount as soon as possible.\n\nThank you.`);
+                return `mailto:${cfg.email}?subject=${subject}&body=${body}`;
+              };
+              return (
+                <div style={{ background: isNegative ? '#fef2f2' : '#fffbeb', border: `2px solid ${isNegative ? '#dc2626' : '#f59e0b'}`, borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
+                  <div style={{ fontWeight: 700, fontSize: '15px', color: isNegative ? '#dc2626' : '#b45309', marginBottom: '8px' }}>
+                    {isNegative ? '🚨 Capital Deficit — Urgent Top-Up Required' : '⚠ Capital Running Low'}
+                  </div>
+                  <div style={{ fontSize: '13px', color: isNegative ? '#7f1d1d' : '#78350f', marginBottom: '12px' }}>
+                    {isNegative
+                      ? <>Available lending capital is <strong style={{ color: '#dc2626' }}>{fmtMoney(availableLendingCapital)}</strong> (negative). The business needs a minimum injection of <strong>{fmtMoney(baseShortfallNeeded)}</strong> to restore capacity.</>
+                      : <>Available lending capital (<strong>{fmtMoney(availableLendingCapital)}</strong>) is below the alert threshold of <strong>{fmtMoney(threshold)}</strong>. A minimum of <strong>{fmtMoney(baseShortfallNeeded)}</strong> is needed to reach the threshold.</>
+                    }
+                  </div>
+                  {/* Optional extra top-up field */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600, color: accentClr, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      Top up extra above minimum (₦)
+                      <InfoIcon tip="Optionally plan a larger top-up beyond the minimum. The contribution table below updates instantly to show each stakeholder's share of the larger total." />
+                      :
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={5000}
+                      value={capitalTopUpExtra || ''}
+                      placeholder="0"
+                      onChange={e => setCapitalTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
+                      style={{ width: '140px', padding: '5px 8px', fontSize: '13px', border: `1px solid ${dividerClr}`, borderRadius: '6px', background: '#fff', color: '#1f2937' }}
+                    />
+                    {capitalTopUpExtra > 0 && (
+                      <span style={{ fontSize: '12px', color: accentClr }}>
+                        Total: <strong>{fmtMoney(shortfallNeeded)}</strong>
+                      </span>
+                    )}
+                  </div>
+                  {allocations.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: '12px', fontWeight: 700, color: accentClr, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+                        Expected contributions{capitalTopUpExtra > 0 ? ` — total ₦${shortfallNeeded.toLocaleString('en-NG')} (₦${capitalTopUpExtra.toLocaleString('en-NG')} extra)` : ' to restore capital'}
+                      </div>
+                      <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginBottom: '14px' }}>
+                        <thead>
+                          <tr>
+                            <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Stakeholder</th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                Invested<InfoIcon tip="Total capital this stakeholder has put into the business." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                Now %<InfoIcon tip="This stakeholder's current share of total invested capital." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                Target %<InfoIcon tip="Their agreed ownership target (min–max range). Set in Settings → Stakeholder Ownership Targets. Contribution expectations are based on bringing their share up to this target." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                Bring In<InfoIcon tip="How much this stakeholder should contribute, rounded to the nearest ₦10. Those below their target are asked first; stakeholders already above their target are exempt." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                                Status<InfoIcon tip="Below min = urgent (below floor %). Below target = needs to contribute. Dilution protection = above target now but would fall below after the injection without contributing. Last resort = above target and would stay above, but every eligible stakeholder is already at their max % so they must cover the remaining gap. Above target = fully exempt, no contribution needed." />
+                              </span>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {allocations.map(a => (
+                            <tr key={a.name} style={{ borderTop: `1px solid ${dividerClr}` }}>
+                              <td style={{ padding: '5px 8px', fontWeight: 600, color: a.isBelowMin ? '#dc2626' : '#1f2937' }}>
+                                {a.name}{a.isBelowMin ? ' ⚠' : ''}
+                              </td>
+                              <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{fmtMoney(a.currentAmount)}</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{a.currentPct}%</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151', fontSize: '12px' }}>
+                                {a.targetPct != null ? `${a.targetPct}%` : '—'}
+                                {(a.minPct > 0 || a.maxPct < 100) && (
+                                  <div style={{ fontSize: '10px', color: '#9ca3af' }}>{a.minPct}–{a.maxPct}%</div>
+                                )}
+                              </td>
+                              <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? (isNegative ? '#dc2626' : '#b45309') : '#6b7280' }}>
+                                {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max %)' : '—'}
+                              </td>
+                              <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isLastResort ? '#7c3aed' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
+                                {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isLastResort ? 'Last resort' : a.isAboveTarget ? 'Above target' : 'Below target'}
+                              </td>
+                            </tr>
+                          ))}
+                          {unallocated > 0 && (
+                            <tr style={{ borderTop: `1px solid ${dividerClr}` }}>
+                              <td colSpan={5} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated (all stakeholders at max %)</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: isNegative ? '#dc2626' : '#b45309' }}>{fmtMoney(unallocated)}</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                      </div>
+                      {/* Priority notes */}
+                      {allocations.some(a => a.isBelowMin) && (
+                        <div style={{ fontSize: '11px', color: accentClr, marginBottom: '6px' }}>⚠ Stakeholders marked ⚠ are below their minimum ownership target and are highest priority.</div>
+                      )}
+                      {allocations.some(a => a.isAboveTarget && !a.isDilutionProtection) && (
+                        <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '6px' }}>Stakeholders shown as "Above target" are not required to contribute.</div>
+                      )}
+                      {/* Single notify section */}
+                      <div style={{ paddingTop: '12px', borderTop: `1px solid ${dividerClr}`, display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: accentClr, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Notify stakeholders</span>
+                        {allocations.some(a => (ownershipCfg[a.name] || {}).phone) && (
+                          <button
+                            style={{ ...S.btn(capitalSmsSendState === 'sending' ? 'muted' : capitalSmsSendState?.sent > 0 ? 'primary' : 'accent'), fontSize: '13px', padding: '8px 16px' }}
+                            disabled={capitalSmsSendState === 'sending'}
+                            onClick={smsSendAll}
+                          >
+                            {capitalSmsSendState === 'sending'
+                              ? '⏳ Sending SMS…'
+                              : capitalSmsSendState?.sent != null
+                                ? `✅ SMS sent to ${capitalSmsSendState.sent}${capitalSmsSendState.failed > 0 ? ` (${capitalSmsSendState.failed} failed)` : ''} — Send Again`
+                                : '📱 SMS All Stakeholders'}
+                          </button>
+                        )}
+                        {allocations.filter(a => buildEmailHref(a)).map(a => (
+                          <a key={a.name} href={buildEmailHref(a)} style={{ ...S.btnSm('outline'), textDecoration: 'none', fontSize: '12px' }}>
+                            📧 Email {a.name}{a.isBelowMin ? ' ⚠' : ''}
+                          </a>
+                        ))}
+                        {!allocations.some(a => (ownershipCfg[a.name] || {}).phone) && !allocations.some(a => (ownershipCfg[a.name] || {}).email) && (
+                          <span style={{ fontSize: '12px', color: '#9ca3af', fontStyle: 'italic' }}>Add phone/email in Settings → Stakeholder Ownership Targets to enable notifications.</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Capital table */}
             <div style={S.card}>
               <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📥 Stakeholder Capital<InfoIcon tip="How much each investor has put in. The more they put in, the bigger their share of the profit." /></div>
@@ -7869,6 +8867,375 @@ export default function App() {
               </table>
               <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total distributed: {fmtMoney(totalDistributions)}</div>
             </div>
+
+            {/* ── Capital Analysis ── */}
+            {(() => {
+              const cp = capitalPrediction;
+              const fmtMo = (mk) => {
+                if (!mk) return '';
+                const [y, m] = mk.split('-');
+                const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                return `${names[parseInt(m,10)-1]} ${y.slice(2)}`;
+              };
+
+              // Load prediction history from localStorage for accuracy tracking
+              const predHistory = (() => { try { return JSON.parse(localStorage.getItem('cfc_cap_predictions') || '[]'); } catch { return []; } })();
+              const accuracyRows = predHistory.filter(p => p.actual !== null && p.estimate > 0);
+              const avgAccuracy = accuracyRows.length > 0
+                ? Math.round(accuracyRows.reduce((s, p) => s + Math.max(0, 100 - Math.abs(p.actual - p.estimate) / Math.max(1, p.estimate) * 100), 0) / accuracyRows.length)
+                : null;
+              const accuracyChartData = accuracyRows.map(p => ({ month: fmtMo(p.targetMonth), Predicted: p.estimate, Actual: p.actual }));
+
+              const CCOLS = ['#1a5f2a','#c8a84e','#0ea5e9','#e67e22','#8b5cf6','#ef4444','#10b981','#f59e0b'];
+
+              const headerRow = (
+                <div
+                  style={{ ...S.cardTitle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: capitalAnalysisExpanded ? '16px' : 0 }}
+                  onClick={() => setCapitalAnalysisExpanded(e => !e)}
+                >
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>📊 Capital Analysis<InfoIcon tip="Uses your transaction history to predict how much capital you'll need in the coming months, whether you have a surplus to safely withdraw, and who should top up first if a deficit is forecast." /></span>
+                  <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 500 }}>{capitalAnalysisExpanded ? '▲ Collapse' : '▼ Expand'}</span>
+                </div>
+              );
+
+              if (!capitalAnalysisExpanded) return <div style={S.card}>{headerRow}</div>;
+
+              if (!cp || cp.dataPoints < 1) {
+                return (
+                  <div style={S.card}>
+                    {headerRow}
+                    <div style={S.alert('warning')}>Not enough historical data for capital prediction. Transactions, expenses, and capital entries spanning at least 2 months are needed.</div>
+                  </div>
+                );
+              }
+
+              const pfc = cp.primaryForecast;
+              const isDeficit = pfc?.isDeficit;
+              const todayStr = localISODate();
+              const daysUntilNeeded = cp.capitalNeededByDate
+                ? Math.round((new Date(cp.capitalNeededByDate) - new Date(todayStr)) / 86400000)
+                : null;
+              const urgencyColor = daysUntilNeeded !== null && daysUntilNeeded <= 21 ? COLORS.danger : daysUntilNeeded !== null && daysUntilNeeded <= 60 ? COLORS.warning : COLORS.primary;
+
+              const histData = cp.snapshots.map(s => ({
+                month: fmtMo(s.month),
+                'Loans Out': s.loanOriginations + s.outrightSpend,
+                'Recovered': s.loanRecoveries + s.saleRecoveries,
+                'Exp + Dist': s.expenseTotal + s.distributionTotal,
+                'Net Consumed': s.netConsumed,
+              }));
+
+              const fcastData = [
+                { label: 'Now', value: cp.totalCapital, low: cp.totalCapital, high: cp.totalCapital },
+                ...(cp.forecasts || []).map(f => ({
+                  label: fmtMo(f.month),
+                  value: f.predictedRequired,
+                  low: f.rangeMin,
+                  high: f.rangeMax,
+                })),
+              ];
+
+              const pieParts = cp.contributionPlan.map((s, i) => ({ name: s.name, value: s.total, pct: s.currentPct, fill: CCOLS[i % CCOLS.length] }));
+
+              return (
+                <div style={S.card}>
+                  {headerRow}
+
+                  {cp.dataPoints < 3 && (
+                    <div style={{ ...S.alert('warning'), marginBottom: '16px' }}>
+                      ⚠ Only {cp.dataPoints} month{cp.dataPoints !== 1 ? 's' : ''} of history. Accuracy improves with 3+ months; seasonal adjustment requires 13+.
+                    </div>
+                  )}
+
+                  {/* History Chart */}
+                  <div style={{ marginBottom: '24px' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>📈 {cp.dataPoints}-Month Capital Flow History<InfoIcon tip="Bars show how much capital went out as loans or purchases (red), how much was recovered (green), and expenses + distributions (amber). The purple line is net capital consumed each month — a rising trend means you are burning through capital faster." /></span>
+                      {cp.useSeasonalIndex && <span style={{ fontSize: '12px', color: COLORS.primary, fontWeight: 500 }}>· Seasonal adjustment active</span>}
+                    </div>
+                    <ResponsiveContainer width="100%" height={240}>
+                      <ComposedChart data={histData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                        <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
+                        <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
+                        <Legend wrapperStyle={{ fontSize: '12px' }} />
+                        <Bar dataKey="Loans Out" fill={COLORS.danger} opacity={0.75} />
+                        <Bar dataKey="Recovered" fill={COLORS.primary} opacity={0.75} />
+                        <Bar dataKey="Exp + Dist" fill={COLORS.warning} opacity={0.65} />
+                        <Line type="monotone" dataKey="Net Consumed" stroke="#6d28d9" strokeWidth={2} dot={{ r: 3 }} />
+                      </ComposedChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  {/* Forecast Chart */}
+                  {pfc && (
+                    <div style={{ marginBottom: '24px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🔮 Capital Requirement Forecast<InfoIcon tip="Projects how much total capital the business will need in 1, 2, and 3 months based on historical consumption patterns. The shaded band shows the uncertainty range. If the forecast line is above 'Current Capital' you are heading for a deficit." /></div>
+                      <ResponsiveContainer width="100%" height={220}>
+                        <AreaChart data={fcastData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                          <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
+                          <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
+                          <Legend wrapperStyle={{ fontSize: '12px' }} />
+                          <ReferenceLine y={cp.minimumCapitalRequired} stroke={COLORS.warning} strokeDasharray="5 5" label={{ value: 'Min Safe', position: 'insideTopLeft', fontSize: 10, fill: COLORS.warning }} />
+                          <ReferenceLine y={cp.totalCapital} stroke={COLORS.primary} strokeDasharray="5 5" label={{ value: 'Current Capital', position: 'insideBottomLeft', fontSize: 10, fill: COLORS.primary }} />
+                          <Area type="monotone" dataKey="high" stroke="transparent" fill={COLORS.dangerLight} fillOpacity={0.6} name="Upper Range" />
+                          <Area type="monotone" dataKey="low" stroke="transparent" fill={COLORS.card} fillOpacity={1} name="Lower Range" />
+                          <Line type="monotone" dataKey="value" stroke={COLORS.danger} strokeWidth={2.5} dot={{ r: 4, fill: COLORS.danger }} name="Predicted Required" />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {/* Forecast Cards */}
+                  {cp.forecasts && cp.forecasts.length > 0 && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+                      {cp.forecasts.map((f, i) => (
+                        <div key={i} style={{ background: f.isDeficit ? COLORS.dangerLight : COLORS.primaryLight, borderRadius: '10px', padding: '14px', border: `1px solid ${f.isDeficit ? '#f5c6cb' : '#b7e4c7'}` }}>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>+{f.horizon} Mo · {fmtMo(f.month)}</div>
+                          <div style={{ fontSize: '18px', fontWeight: 800, color: f.isDeficit ? COLORS.danger : COLORS.primaryDark, marginBottom: '2px' }}>{fmtMoney(f.predictedRequired)}</div>
+                          <div style={{ fontSize: '11px', color: COLORS.textMuted }}>Range: {fmtMoney(f.rangeMin)} – {fmtMoney(f.rangeMax)}</div>
+                          <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '4px', color: f.isDeficit ? COLORS.danger : COLORS.primary }}>
+                            {f.isDeficit ? `⚠ Short by ${fmtMoney(f.gap)}` : `✓ Surplus ${fmtMoney(f.gap)}`}
+                          </div>
+                          <div style={{ fontSize: '10px', color: COLORS.textMuted, marginTop: '2px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Confidence: ~{f.confidencePct}%<InfoIcon tip="How reliable this forecast is based on the amount of historical data available. More transaction history means higher confidence." /></div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Status Banner */}
+                  {pfc && (
+                    <div style={{ padding: '14px 16px', borderRadius: '10px', marginBottom: '20px', background: isDeficit ? COLORS.dangerLight : COLORS.primaryLight, border: `1px solid ${isDeficit ? '#f5c6cb' : '#b7e4c7'}` }}>
+                      <div style={{ fontSize: '15px', fontWeight: 800, color: isDeficit ? COLORS.danger : COLORS.primary, marginBottom: '4px' }}>
+                        {isDeficit
+                          ? `🔴 Deficit — ${fmtMoney(pfc.gap)} below next-month estimate`
+                          : `🟢 Sufficient — ${fmtMoney(pfc.gap)} above next-month estimate`}
+                      </div>
+                      {isDeficit && cp.capitalNeededByDate && (
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: urgencyColor }}>
+                          Capital needed by: {fmtDate(cp.capitalNeededByDate)}
+                          {daysUntilNeeded !== null && daysUntilNeeded > 0 && ` (in ${daysUntilNeeded} day${daysUntilNeeded !== 1 ? 's' : ''})`}
+                          {daysUntilNeeded !== null && daysUntilNeeded <= 0 && ' — action overdue'}
+                        </div>
+                      )}
+                      {!isDeficit && cp.monthsUntilDepletion !== null && (
+                        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
+                          At current consumption rate, available capital lasts ~{cp.monthsUntilDepletion} more month{cp.monthsUntilDepletion !== 1 ? 's' : ''}.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Contribution Plan — shown when deficit */}
+                  {pfc && isDeficit && cp.contributionPlan.length > 0 && (
+                    <div style={{ marginBottom: '24px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>👥 Who Should Add Capital<InfoIcon tip="Shows how much each stakeholder needs to invest to reach their ownership target once the forecast deficit is filled. Stakeholders already at or above their target are not required to contribute." /></div>
+                      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                        <div style={{ flex: '1 1 300px', overflowX: 'auto' }}>
+                          <table style={S.table}>
+                            <thead>
+                              <tr>
+                                <th style={S.th}>Stakeholder</th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Current %<InfoIcon tip="Their share of total capital right now." /></span></th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Target %<InfoIcon tip="Their agreed ownership target. Range shown in brackets. Set these in Settings → Stakeholder Ownership Targets." /></span></th>
+                                <th style={S.th}>Invested</th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Expected Total<InfoIcon tip="How much they should have invested in total to hold their target % of the forecast required capital." /></span></th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Gap<InfoIcon tip="The difference between what they currently have invested and their expected total. A positive gap means they need to bring this amount in." /></span></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {cp.contributionPlan.map((row, i) => (
+                                <tr key={i}>
+                                  <td style={S.td}><strong>{row.name}</strong></td>
+                                  <td style={S.td}>{row.currentPct}%</td>
+                                  <td style={S.td}>
+                                    {row.targetPct}%
+                                    {row.minPct != null && <div style={{ fontSize: '10px', color: COLORS.textMuted }}>({row.minPct}–{row.maxPct}%)</div>}
+                                  </td>
+                                  <td style={S.td}>{fmtMoney(row.total)}</td>
+                                  <td style={S.td}>{fmtMoney(row.expectedTotal)}</td>
+                                  <td style={S.td}><strong style={{ color: row.gap > 0 ? COLORS.danger : COLORS.primary }}>{row.gap > 0 ? `+ ${fmtMoney(row.gap)}` : '✓ Covered'}</strong></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {cp.capitalNeededByDate && (
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: urgencyColor, marginTop: '8px' }}>
+                              ⏰ Capital expected by: {fmtDate(cp.capitalNeededByDate)}
+                            </div>
+                          )}
+                        </div>
+                        {pieParts.length > 0 && (
+                          <div style={{ flexShrink: 0 }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '4px', textAlign: 'center' }}>Current Ownership</div>
+                            <PieChart width={180} height={180}>
+                              <Pie data={pieParts} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} innerRadius={36} label={({ pct }) => `${pct}%`} labelLine={false}>
+                                {pieParts.map((entry, i) => <Cell key={i} fill={entry.fill} />)}
+                              </Pie>
+                              <Tooltip formatter={(v) => fmtMoney(v)} contentStyle={{ fontSize: '11px' }} />
+                            </PieChart>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Withdrawal Analysis — shown when sufficient */}
+                  {pfc && !isDeficit && (
+                    <div style={{ marginBottom: '24px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>💸 Withdrawal Analysis<InfoIcon tip="Once a capital surplus has been confirmed for several consecutive months, this section shows how much can be safely withdrawn while keeping the business fully funded for its forecast needs." /></div>
+                      {cp.streakMet ? (
+                        <>
+                          <div style={{ padding: '12px 14px', borderRadius: '8px', background: COLORS.primaryLight, border: `1px solid #b7e4c7`, marginBottom: '12px', fontSize: '13px' }}>
+                            ✅ Surplus confirmed for {cp.actualStreak} consecutive month{cp.actualStreak !== 1 ? 's' : ''} ({cp.surplusStreakMonths} required).{' '}
+                            <strong>Safe to withdraw: {fmtMoney(cp.safeWithdrawal)}</strong>
+                            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>
+                              {fmtMoney(cp.totalCapital)} total capital
+                              {' − '}{fmtMoney(cp.minimumCapitalRequired)} peak buffer
+                              {' − '}{fmtMoney(pfc.projectedNetConsumed)} next-month reserve
+                              {' − '}{fmtMoney(cp.totalCapitalOut + cp.totalCapitalInForSale)} locked
+                              {' = '}<strong>{fmtMoney(cp.safeWithdrawal)}</strong>
+                            </div>
+                          </div>
+                          {cp.withdrawalPlan.length > 0 && (
+                            <>
+                            <div style={{ overflowX: 'auto' }}>
+                            <table style={{ ...S.table, marginBottom: '12px' }}>
+                              <thead>
+                                <tr>
+                                  <th style={S.th}>Stakeholder</th>
+                                  <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Ownership %<InfoIcon tip="Their current share of total invested capital." /></span></th>
+                                  <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Withdraw Amount<InfoIcon tip="Recommended amount this stakeholder can take out, proportional to their ownership share of the total safe withdrawal." /></span></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {cp.withdrawalPlan.map((row, i) => (
+                                  <tr key={i}>
+                                    <td style={S.td}><strong>{row.name}</strong></td>
+                                    <td style={S.td}>{row.currentPct}%</td>
+                                    <td style={S.td}><strong style={{ color: COLORS.primary }}>{fmtMoney(row.withdrawAmount)}</strong></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            </div>
+                            {/* Notify stakeholders of withdrawal opportunity */}
+                            {(() => {
+                              const ownershipCfg = settings.stakeholderOwnership || {};
+                              const withSms = cp.withdrawalPlan.filter(r => (ownershipCfg[r.name] || {}).phone);
+                              const withEmail = cp.withdrawalPlan.filter(r => (ownershipCfg[r.name] || {}).email);
+                              if (!withSms.length && !withEmail.length) return null;
+                              const withdrawSmsAll = async () => {
+                                setWithdrawalSmsSendState('sending');
+                                let sent = 0, failed = 0;
+                                for (const row of withSms) {
+                                  const phone = (ownershipCfg[row.name] || {}).phone;
+                                  const msg = fillCapitalSmsTemplate(settings.smsCapitalWithdrawal || DEFAULT_SETTINGS.smsCapitalWithdrawal, { stakeholderName: row.name, businessName: settings.businessName || 'CIF Cash', adminPhone: settings.shopPhone1 || '', withdrawAmount: row.withdrawAmount });
+                                  const res = await API.post('sms/notify-stakeholder', { phone, message: msg, stakeholderName: row.name });
+                                  res?.ok ? sent++ : failed++;
+                                }
+                                setWithdrawalSmsSendState({ sent, failed, total: withSms.length });
+                              };
+                              return (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center', paddingTop: '10px', borderTop: `1px solid ${COLORS.border}` }}>
+                                  <span style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Notify stakeholders</span>
+                                  {withSms.length > 0 && (
+                                    <button
+                                      style={{ ...S.btn(withdrawalSmsSendState === 'sending' ? 'muted' : withdrawalSmsSendState?.sent > 0 ? 'primary' : 'accent'), fontSize: '13px', padding: '8px 16px' }}
+                                      disabled={withdrawalSmsSendState === 'sending'}
+                                      onClick={withdrawSmsAll}
+                                    >
+                                      {withdrawalSmsSendState === 'sending'
+                                        ? '⏳ Sending SMS…'
+                                        : withdrawalSmsSendState?.sent != null
+                                          ? `✅ SMS sent to ${withdrawalSmsSendState.sent}${withdrawalSmsSendState.failed > 0 ? ` (${withdrawalSmsSendState.failed} failed)` : ''} — Send Again`
+                                          : '📱 SMS All Stakeholders'}
+                                    </button>
+                                  )}
+                                  {withEmail.map(row => {
+                                    const subject = encodeURIComponent(`Withdrawal Opportunity — ${settings.businessName || 'CIF Cash'}`);
+                                    const body = encodeURIComponent(`Dear ${row.name},\n\n${settings.businessName || 'CIF Cash'} has a confirmed capital surplus and a withdrawal is available.\n\nYour recommended withdrawal: ${fmtMoney(row.withdrawAmount)}\nYour current ownership: ${row.currentPct}%\n\nPlease contact the admin to arrange. Thank you.`);
+                                    return (
+                                      <a key={row.name} href={`mailto:${(ownershipCfg[row.name] || {}).email}?subject=${subject}&body=${body}`} style={{ ...S.btnSm('outline'), textDecoration: 'none', fontSize: '12px' }}>
+                                        📧 Email {row.name}
+                                      </a>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <div style={S.alert('warning')}>
+                          ⏳ Withdrawal not yet recommended — surplus observed for only {cp.actualStreak} of {cp.surplusStreakMonths} required consecutive months. Keep monitoring to confirm the trend is sustained before withdrawing.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Capital Efficiency Stats */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+                    {[
+                      { label: 'Capital Deployed', value: `${cp.capitalEfficiency}%`, sub: 'of total in active use', color: cp.capitalEfficiency > 85 ? COLORS.primary : cp.capitalEfficiency > 50 ? COLORS.warning : COLORS.danger, tip: 'What percentage of the total invested capital is currently deployed in active loans or for-sale inventory. High is good — it means capital is working. Very high (near 100%) means little buffer for new loans.' },
+                      { label: 'Peak Month Deployment', value: fmtMoney(cp.peakDeployment), sub: 'highest single-month origination', color: COLORS.primaryDark, tip: 'The largest amount of capital lent out or spent in any single month on record. Used to set the minimum safe capital floor.' },
+                      { label: 'Peak Cushion', value: fmtMoney(cp.peakCushion), sub: 'above worst-ever deployment', color: cp.peakCushion >= 0 ? COLORS.primary : COLORS.danger, tip: 'How much extra capital you have above the historical worst-case deployment month. Negative means you currently have less capital than the worst month on record.' },
+                      { label: 'Min Safe Capital', value: fmtMoney(cp.minimumCapitalRequired), sub: `peak × ${(1 + (settings.capitalPeakGraceFactor ?? 0.10)).toFixed(2)}×`, color: COLORS.primaryDark, tip: 'The minimum capital level considered safe — peak deployment multiplied by the grace factor (set in Admin Settings). Forecasts use this as the floor.' },
+                      {
+                        label: 'Loan Default Rate', tip: 'Estimated rate at which loans are not recovered. Used in the forecast to account for capital that may never come back. Automatically computed from history or set manually in Admin Settings.',
+                        value: `${Math.round(cp.defaultRateInfo.rate * 100)}%`,
+                        sub: cp.defaultRateInfo.isOverridden
+                          ? 'admin override (computed: ' + Math.round(cp.defaultRateInfo.computedRate * 100) + '%)'
+                          : cp.defaultRateInfo.isFallback
+                            ? 'fallback — no history yet'
+                            : `auto · ${cp.defaultRateInfo.loanCount} loan${cp.defaultRateInfo.loanCount !== 1 ? 's' : ''}`,
+                        color: cp.defaultRateInfo.rate > 0.3 ? COLORS.danger : cp.defaultRateInfo.rate > 0.15 ? COLORS.warning : COLORS.primary,
+                      },
+                    ].map((stat, i) => (
+                      <div key={i} style={{ background: COLORS.bg, borderRadius: '10px', padding: '14px', border: `1px solid ${COLORS.border}` }}>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '3px' }}>{stat.label}{stat.tip && <InfoIcon tip={stat.tip} />}</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: stat.color, marginBottom: '2px' }}>{stat.value}</div>
+                        <div style={{ fontSize: '11px', color: COLORS.textMuted }}>{stat.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Prediction Accuracy chart */}
+                  {accuracyChartData.length > 0 && (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '6px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🎯 Prediction Accuracy<InfoIcon tip="Compares what the model predicted for past months against what actually happened. Closer bars mean a more accurate model. Accuracy improves automatically as more data is collected." /></span>
+                        {avgAccuracy !== null && <span style={{ fontSize: '12px', fontWeight: 500, color: COLORS.textMuted }}>avg {avgAccuracy}% over {accuracyChartData.length} closed month{accuracyChartData.length !== 1 ? 's' : ''}</span>}
+                      </div>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <BarChart data={accuracyChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                          <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                          <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
+                          <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
+                          <Legend wrapperStyle={{ fontSize: '12px' }} />
+                          <Bar dataKey="Predicted" fill={COLORS.warning} opacity={0.85} />
+                          <Bar dataKey="Actual" fill={COLORS.primary} opacity={0.85} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {/* Engine meta */}
+                  <div style={{ fontSize: '11px', color: COLORS.textMuted, borderTop: `1px solid ${COLORS.border}`, paddingTop: '10px' }}>
+                    {cp.dataPoints} month{cp.dataPoints !== 1 ? 's' : ''} of data · Recency weight {Math.round((settings.capitalTrendWeight ?? 0.7) * 100)}%
+                    {cp.useSeasonalIndex ? ' · Seasonal adjustment on' : ' · Seasonal needs 13+ months'}
+                    {' · '}Std dev ±{fmtMoney(cp.residualStd)}/mo
+                    {' · '}Default rate {Math.round(cp.defaultRateInfo.rate * 100)}%{cp.defaultRateInfo.isOverridden ? ' (override)' : cp.defaultRateInfo.isFallback ? ' (fallback)' : ' (auto)'}
+                  </div>
+                </div>
+              );
+            })()}
+
           </div>
         );
       }
@@ -8332,6 +9699,161 @@ export default function App() {
             </div>
           </div>
 
+          {/* ── 6. CAPITAL ANALYSIS SETTINGS ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>📊 Capital Analysis — Prediction Engine</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+              Controls how the Capital Analysis section forecasts next-month capital requirements. Adjust these after accumulating more historical data.
+            </div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>History Window (months)<InfoIcon tip="How many past months the engine analyses for trends and patterns. More history = smoother predictions. Seasonal adjustment activates automatically at 13+ months." /></span>}>
+                <input style={S.input} type="number" min="2" max="24" value={es.capitalHistoryMonths ?? DEFAULT_SETTINGS.capitalHistoryMonths} onChange={e => updateSettings({ ...es, capitalHistoryMonths: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Forecast Horizon (months)<InfoIcon tip="How many months ahead to predict. The prediction shows +1, +2, and +3 month cards with widening confidence ranges." /></span>}>
+                <input style={S.input} type="number" min="1" max="6" value={es.capitalForecastHorizon ?? DEFAULT_SETTINGS.capitalForecastHorizon} onChange={e => updateSettings({ ...es, capitalForecastHorizon: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Recency Weight (0–1)<InfoIcon tip="How much to favour recent months over older ones when computing the weighted average. 0 = flat average of all months, 1 = only the most recent month counts. Default 0.7 gives strong but not exclusive weight to recent data." /></span>}>
+                <input style={S.input} type="number" step="0.05" min="0.1" max="0.95" value={es.capitalTrendWeight ?? DEFAULT_SETTINGS.capitalTrendWeight} onChange={e => updateSettings({ ...es, capitalTrendWeight: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Default Rate Override (%)<InfoIcon tip="Leave blank to let the app auto-compute the default rate from your transaction history (recommended). Only fill this in if you want to override the computed value — e.g. you know your customer mix is changing before the data reflects it." /></span>}>
+                <input
+                  style={S.input}
+                  type="number" min="0" max="100"
+                  placeholder={`Auto-computed — leave blank`}
+                  value={es.capitalDefaultRate ?? ''}
+                  onChange={e => updateSettings({ ...es, capitalDefaultRate: e.target.value === '' ? null : Number(e.target.value) })}
+                />
+                {(() => {
+                  const dri = capitalPrediction?.defaultRateInfo;
+                  if (!dri) return null;
+                  if (dri.isFallback) return <div style={{ fontSize: '11px', color: COLORS.warning, marginTop: '3px' }}>⚠ No loan history yet — using 15% fallback. Rate will auto-compute once loans reach their deadlines.</div>;
+                  return (
+                    <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>
+                      {dri.isOverridden
+                        ? <span style={{ color: COLORS.warning }}>Override active. Computed from history: <strong>{Math.round(dri.computedRate * 100)}%</strong> ({dri.loanCount} loan{dri.loanCount !== 1 ? 's' : ''}). Clear field to use auto-computed value.</span>
+                        : <span>Auto-computed: <strong>{Math.round(dri.computedRate * 100)}%</strong> from {dri.loanCount} loan{dri.loanCount !== 1 ? 's' : ''}</span>
+                      }
+                    </div>
+                  );
+                })()}
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Peak Grace Factor (%)<InfoIcon tip="Extra headroom added on top of the busiest single month's deployment when computing the minimum safe capital. E.g. 10% means the minimum is peak × 1.10. Higher = more conservative buffer." /></span>}>
+                <input style={S.input} type="number" step="0.01" min="0" max="1" value={es.capitalPeakGraceFactor ?? DEFAULT_SETTINGS.capitalPeakGraceFactor} onChange={e => updateSettings({ ...es, capitalPeakGraceFactor: Number(e.target.value) })} />
+                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>Current: +{Math.round((es.capitalPeakGraceFactor ?? DEFAULT_SETTINGS.capitalPeakGraceFactor) * 100)}% above peak deployment</div>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Hard Capital Floor (₦)<InfoIcon tip="The absolute minimum the business must always hold, regardless of what the formula says. Acts as a last-resort safety net (e.g. ₦500,000 for emergencies). Set to 0 to rely entirely on the formula." /></span>}>
+                <input style={S.input} type="number" min="0" value={es.capitalMinAbsolute ?? DEFAULT_SETTINGS.capitalMinAbsolute} onChange={e => updateSettings({ ...es, capitalMinAbsolute: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Capital Needed Lead Time (days)<InfoIcon tip="How many days before projected depletion to start flagging 'capital needed by [date]'. E.g. 21 means flag the deadline 3 weeks in advance." /></span>}>
+                <input style={S.input} type="number" min="1" max="90" value={es.capitalLeadTimeDays ?? DEFAULT_SETTINGS.capitalLeadTimeDays} onChange={e => updateSettings({ ...es, capitalLeadTimeDays: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Surplus Streak Required (months)<InfoIcon tip="How many consecutive months of confirmed surplus are required before a withdrawal is recommended. Prevents recommending a withdrawal based on a single unusually good month." /></span>}>
+                <input style={S.input} type="number" min="1" max="12" value={es.capitalSurplusStreakMonths ?? DEFAULT_SETTINGS.capitalSurplusStreakMonths} onChange={e => updateSettings({ ...es, capitalSurplusStreakMonths: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Low Capital Alert Threshold (₦)<InfoIcon tip="Show a warning banner on the Dashboard, Capital page, and transaction wizard whenever available lending capital falls below this amount. Set to 0 to disable." /></span>}>
+                <input style={S.input} type="number" min="0" value={es.capitalLowThreshold ?? DEFAULT_SETTINGS.capitalLowThreshold} onChange={e => updateSettings({ ...es, capitalLowThreshold: Number(e.target.value) })} />
+                <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>
+                  Currently: {fmtMoney(availableLendingCapital)} available
+                  {availableLendingCapital < (es.capitalLowThreshold ?? DEFAULT_SETTINGS.capitalLowThreshold)
+                    ? <span style={{ color: COLORS.danger, fontWeight: 600 }}> — alert is ACTIVE</span>
+                    : <span style={{ color: COLORS.primary }}> — above threshold, no alert</span>}
+                </div>
+              </Field>
+            </div>
+          </div>
+
+          {/* ── 7. STAKEHOLDER OWNERSHIP TARGETS ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>🎯 Stakeholder Ownership Targets</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+              Set the minimum, maximum, and target ownership percentage for each stakeholder. Also add their phone and email so the system can notify them directly when a capital top-up or withdrawal opportunity arises.
+              <br /><br />
+              <strong>Note:</strong> Targets do not need to sum to 100%. Any unallocated remainder is treated as unassigned.
+            </div>
+            {(() => {
+              const stakeNames = [...new Set(capital.map(c => c.name))].sort();
+              const ownership = es.stakeholderOwnership || {};
+              if (stakeNames.length === 0) {
+                return <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No stakeholders found. Add capital entries first to configure ownership targets.</div>;
+              }
+              const thStyle = { ...S.th, whiteSpace: 'nowrap' };
+              return (
+                <div style={{ overflowX: 'auto' }}>
+                <table style={{ ...S.table, minWidth: '720px' }}>
+                  <thead>
+                    <tr>
+                      <th style={thStyle}>Stakeholder</th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Min %<InfoIcon tip="The minimum ownership percentage this stakeholder should hold. Used as a soft floor when computing contribution expectations." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Target %<InfoIcon tip="The ideal ownership percentage for this stakeholder. Contribution expectations are calculated so that their share reaches this target." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Max %<InfoIcon tip="The maximum ownership percentage this stakeholder should hold. Stakeholders above their max get a higher share of any recommended withdrawal." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Phone (SMS)<InfoIcon tip="Nigerian mobile number for this stakeholder. Used to send SMS alerts when capital is low or a withdrawal is available. Format: 080XXXXXXXX" /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Email<InfoIcon tip="Email address for this stakeholder. Used to generate pre-filled email alerts when capital is low or a withdrawal is available." /></span></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stakeNames.map(name => {
+                      const tgt = ownership[name] || {};
+                      const setTgt = (patch) => updateSettings({ ...es, stakeholderOwnership: { ...ownership, [name]: { ...tgt, ...patch } } });
+                      return (
+                        <tr key={name}>
+                          <td style={S.td}><strong>{name}</strong></td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '80px' }}
+                              type="number" min="0" max="100" step="0.5"
+                              placeholder="—"
+                              value={tgt.minPercent ?? ''}
+                              onChange={e => setTgt({ minPercent: e.target.value === '' ? null : Number(e.target.value) })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '80px' }}
+                              type="number" min="0" max="100" step="0.5"
+                              placeholder="—"
+                              value={tgt.targetPercent ?? ''}
+                              onChange={e => setTgt({ targetPercent: e.target.value === '' ? null : Number(e.target.value) })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '80px' }}
+                              type="number" min="0" max="100" step="0.5"
+                              placeholder="—"
+                              value={tgt.maxPercent ?? ''}
+                              onChange={e => setTgt({ maxPercent: e.target.value === '' ? null : Number(e.target.value) })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '140px' }}
+                              type="tel"
+                              placeholder="080XXXXXXXX"
+                              value={tgt.phone ?? ''}
+                              onChange={e => setTgt({ phone: e.target.value })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '180px' }}
+                              type="text"
+                              inputMode="email"
+                              autoComplete="email"
+                              placeholder="name@example.com"
+                              value={tgt.email ?? ''}
+                              onChange={e => setTgt({ email: e.target.value })}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                </div>
+              );
+            })()}
+          </div>
+
           </>}{/* ── end: finance tab (part 1) ── */}
 
           {/* ══════════════════ TAB: CATEGORIES ══════════════════ */}
@@ -8632,6 +10154,48 @@ export default function App() {
                 </label>
                 <textarea style={{ ...S.textarea, opacity: (es.smsSaleConfirmationEnabled ?? DEFAULT_SETTINGS.smsSaleConfirmationEnabled) ? 1 : 0.45 }} value={es.smsSaleConfirmation ?? DEFAULT_SETTINGS.smsSaleConfirmation} onChange={e => updateSettings({ ...es, smsSaleConfirmation: e.target.value })} />
               </Field>
+            </div>
+
+            {/* Capital Alert SMS */}
+            <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>📊 Capital Alert SMS — Stakeholder Notifications</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '14px' }}>
+                These messages are sent to stakeholders (not customers) when capital action is needed. Configure phone numbers per stakeholder in <strong>Finance → Stakeholder Ownership Targets</strong>. When auto-send is on, each alert fires once per day/month at most — it will not spam on every page load.
+                <br /><br />
+                <strong>Available placeholders:</strong> <code>{'{'+'stakeholderName{'}</code> <code>{'{'+'businessName}'}</code> <code>{'{'+'adminPhone}'}</code> <code>{'{'+'expectedAmount}'}</code> <code>{'{'+'deficitAmount}'}</code> <code>{'{'+'availableAmount}'}</code> <code>{'{'+'thresholdAmount}'}</code> <code>{'{'+'transactionAmount}'}</code> <code>{'{'+'withdrawAmount}'}</code>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {[
+                  { key: 'smsCapitalDeficit', enabledKey: 'smsCapitalDeficitEnabled', label: '🚨 Capital Deficit', desc: 'Sent when available lending capital goes negative. Auto-send fires once per day while the condition persists.' },
+                  { key: 'smsCapitalLow', enabledKey: 'smsCapitalLowEnabled', label: '⚠ Capital Running Low', desc: 'Sent when available capital is below the alert threshold but not yet negative. Auto-send fires once per day.' },
+                  { key: 'smsCapitalTransactionShortfall', enabledKey: 'smsCapitalTransactionShortfallEnabled', label: '🧾 Transaction Shortfall', desc: 'Sent the first time a transaction\'s amount exceeds available capital in the wizard (once per wizard session).' },
+                  { key: 'smsCapitalWithdrawal', enabledKey: 'smsCapitalWithdrawalEnabled', label: '💸 Withdrawal Opportunity', desc: 'Sent when the required surplus streak is confirmed and a withdrawal is recommended. Auto-send fires once per month.' },
+                ].map(({ key, enabledKey, label, desc }) => (
+                  <div key={key} style={{ padding: '12px 14px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: (es[enabledKey] ?? DEFAULT_SETTINGS[enabledKey]) ? COLORS.primaryLight : '#fafafa' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px', gap: '12px', flexWrap: 'wrap' }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: '13px', color: COLORS.primaryDark }}>{label}</div>
+                        <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>{desc}</div>
+                      </div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', flexShrink: 0 }}>
+                        <input type="checkbox" checked={es[enabledKey] ?? DEFAULT_SETTINGS[enabledKey]} onChange={e => updateSettings({ ...es, [enabledKey]: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                        {(es[enabledKey] ?? DEFAULT_SETTINGS[enabledKey])
+                          ? <span style={{ color: '#10b981' }}>✅ Auto-send on</span>
+                          : <span style={{ color: COLORS.textMuted }}>⛔ Manual only</span>}
+                      </label>
+                    </div>
+                    <textarea
+                      style={{ ...S.textarea, opacity: (es[enabledKey] ?? DEFAULT_SETTINGS[enabledKey]) ? 1 : 0.6, fontSize: '12px', minHeight: '64px' }}
+                      value={es[key] ?? DEFAULT_SETTINGS[key]}
+                      onChange={e => updateSettings({ ...es, [key]: e.target.value })}
+                    />
+                    <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>
+                      Preview (Emeka, ₦90,000):{' '}
+                      <em>{fillCapitalSmsTemplate(es[key] ?? DEFAULT_SETTINGS[key], { stakeholderName: 'Emeka', businessName: es.businessName || 'CIF Cash', adminPhone: es.shopPhone1 || '0801234567', expectedAmount: 90000, deficitAmount: 150000, availableAmount: -150000, thresholdAmount: es.capitalLowThreshold ?? DEFAULT_SETTINGS.capitalLowThreshold, transactionAmount: 250000, withdrawAmount: 60000 })}</em>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Retry settings */}
