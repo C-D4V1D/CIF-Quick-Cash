@@ -553,8 +553,11 @@ const computeHistoricalDefaultRate = (transactions, numMonths, trendWeight) => {
     if (dueInMonth.length === 0) continue;
 
     const defaultedCount = dueInMonth.filter(t => {
-      // Forfeited / sold without repaying
-      if (t.status === 'for_sale' || t.status === 'sold' || t.status === 'ready_to_sell') return true;
+      // Unresolved — item is listed or surrendered but not yet sold
+      if (t.status === 'for_sale' || t.status === 'ready_to_sell') return true;
+      // Sold — only a default if the sale didn't recover the principal
+      // (a profitable sale is a successful recovery, not a loss)
+      if (t.status === 'sold') return (t.salePrice || 0) < (t.cashAdvance || 0);
       // Repaid, but late (after agreed deadline)
       if (t.status === 'closed' && t.dateRepaid && t.deadlineDate) {
         return t.dateRepaid > t.deadlineDate;
