@@ -45,6 +45,39 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const p1Called = (tx.phonesVerified || [])[0];
   const p2Called = (tx.phonesVerified || [])[1];
 
+  // ── PART E — SIGNATURES (lives on back cover for both copies) ──
+  const partEContent = `
+    <div class="hr-gold"></div>
+    <div class="section-hdr">PART E — SIGNATURES &amp; AUTHORIZATION</div>
+    <p class="consent"><i>I have read and understood all the terms above (or they have been read and explained to me fully). I accept the cash advance given to me. I agree to everything stated in this agreement.</i></p>
+    <table class="sig-tbl">
+      <tr>
+        <td class="sig-left">
+          <div><b>Customer Signature:</b></div>
+          <div class="sig-space"></div>
+          <div class="sig-line"></div>
+          <div class="sig-sub"><i>Name &amp; Date</i></div>
+        </td>
+        <td class="sig-right">
+          <div><b>Right Thumbprint — Press firmly:</b></div>
+          <div class="thumb-box">
+            <span class="thumb-text">RIGHT THUMBPRINT</span>
+          </div>
+        </td>
+      </tr>
+    </table>
+    <table class="field-tbl" style="margin-top:4px">
+      <tr>
+        <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
+        <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
+        <td class="fl" style="width:18%"><b>Shop Rep Signature:</b></td>
+        <td class="fv" style="width:32%"></td>
+      </tr>
+    </table>
+    <div class="photo-note">
+      <i>Photos stored: customer holding item, signing agreement, ID card (if provided), item front &amp; back/sides.</i>
+    </div>`;
+
   // ── OFFICIAL USE ONLY (business copy only — lives on back cover) ──
   const officialUseHTML = `
     <div class="hr-gold"></div>
@@ -72,25 +105,34 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
         <td class="fl"><b>Item Sold (if not redeemed): &nbsp;☐</b></td>
         <td class="fv" colspan="3"><span class="muted-italic">Date Sold: _______________ &nbsp;&nbsp; Amount Sold: ₦ _______________</span></td>
       </tr>
-    </table>`;
+    </table>
+    <div class="value-row">
+      <b>Estimated Market Value (resale):</b>&nbsp;&nbsp;
+      <span class="underline-val">₦ ${(tx.estimatedValue || 0).toLocaleString()}</span>
+      &nbsp;<span class="muted-italic">(internal — not on customer copy)</span>
+    </div>`;
 
   // ── BACK COVER (left panel of face 1) ──
+  // Business: title + official use + market value + Part E signatures
+  // Customer: title + tagline + Part E signatures
   const backCoverHTML = isBusinessCopy ? `
     <div>
       <div class="biz-name" style="font-size:11pt">CHRIST-IN-FABIAN QUICK CASH</div>
       <div class="biz-sub">Cash Advance &amp; Buy-Back Agreement</div>
-      <div style="margin-top:3mm;font-size:7.5pt"><b>${copyLabel}</b> &nbsp;·&nbsp; Ref: <b>${tx.ref || ''}</b></div>
+      <div style="margin-top:2mm;font-size:7.5pt"><b>${copyLabel}</b> &nbsp;·&nbsp; Ref: <b>${tx.ref || ''}</b></div>
     </div>
     ${officialUseHTML}
+    ${partEContent}
   ` : `
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;">
-      <div class="biz-name" style="font-size:14pt;line-height:1.2">CHRIST-IN-FABIAN<br/>QUICK CASH</div>
-      <div class="biz-sub" style="margin-top:3mm">Cash Advance &amp; Buy-Back Agreement</div>
-      <div style="margin-top:8mm;font-size:7.5pt;color:#555;font-style:italic;line-height:1.7">
-        Keep this agreement safely.<br/>It is proof of your transaction<br/>and protects your rights.
+    <div style="text-align:center;padding-top:5mm;">
+      <div class="biz-name" style="font-size:13pt;line-height:1.2">CHRIST-IN-FABIAN QUICK CASH</div>
+      <div class="biz-sub" style="margin-top:2mm">Cash Advance &amp; Buy-Back Agreement</div>
+      <div style="margin-top:4mm;font-size:7.5pt;color:#555;font-style:italic;line-height:1.5">
+        Keep this agreement safely. It is proof of your<br/>transaction and protects your rights.
       </div>
-      <div style="margin-top:6mm;font-size:7.5pt;color:#888">Ref: <b>${tx.ref || ''}</b></div>
+      <div style="margin-top:2mm;font-size:7.5pt;color:#888">Ref: <b>${tx.ref || ''}</b></div>
     </div>
+    ${partEContent}
   `;
 
   // ── FACE 1 RIGHT PANEL — PAGE 1 content (PART A + PART B) ──
@@ -160,13 +202,6 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
       </tr>
     </table>
 
-    ${isBusinessCopy ? `
-    <div class="value-row">
-      <b>Estimated Market Value (resale):</b>&nbsp;&nbsp;
-      <span class="underline-val">₦ ${(tx.estimatedValue || 0).toLocaleString()}</span>
-      &nbsp;<span class="muted-italic">(internal — not on customer copy)</span>
-    </div>
-    ` : ''}
   `;
 
   // ── FACE 2 LEFT PANEL — PAGE 2 content (PART C + PART D terms) ──
@@ -212,7 +247,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
   `;
 
-  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 3–6 + PART E) ──
+  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 3–6) ──
   const page3Content = `
     <div class="clause-hdr c3">3. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
     <div class="clause-body cb3">
@@ -231,42 +266,6 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <div class="clause-hdr c6">6. &nbsp;DATA CONSENT</div>
     <div class="clause-body cb6">The customer consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction.</div>
-
-    <div class="hr-gold"></div>
-
-    <div class="section-hdr">PART E — SIGNATURES &amp; AUTHORIZATION</div>
-
-    <p class="consent"><i>I have read and understood all the terms above (or they have been read and explained to me fully). I accept the cash advance given to me. I agree to everything stated in this agreement.</i></p>
-
-    <table class="sig-tbl">
-      <tr>
-        <td class="sig-left">
-          <div><b>Customer Signature:</b></div>
-          <div class="sig-space"></div>
-          <div class="sig-line"></div>
-          <div class="sig-sub"><i>Name &amp; Date</i></div>
-        </td>
-        <td class="sig-right">
-          <div><b>Right Thumbprint — Press firmly:</b></div>
-          <div class="thumb-box">
-            <span class="thumb-text">RIGHT THUMBPRINT</span>
-          </div>
-        </td>
-      </tr>
-    </table>
-
-    <table class="field-tbl" style="margin-top:4px">
-      <tr>
-        <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
-        <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
-        <td class="fl" style="width:18%"><b>Shop Rep Signature:</b></td>
-        <td class="fv" style="width:32%"></td>
-      </tr>
-    </table>
-
-    <div class="photo-note">
-      <i>Photos stored: customer holding item, signing agreement, ID card (if provided), item front &amp; back/sides.</i>
-    </div>
   `;
 
   // ── Assemble: 2 sheet faces ──
@@ -611,10 +610,10 @@ body{ font-size:8pt; line-height:1.25; }
 .clause-body{ font-size:7.5pt; padding:3px 7px; margin-bottom:2px; line-height:1.35; }
 .consent{ font-size:7.5pt; margin:3px 0; }
 .sig-tbl{ margin-top:4px; }
-.sig-space{ height:20px; }
+.sig-space{ height:30px; }
 .sig-line{ width:80%; margin-top:2px; }
 .sig-sub{ font-size:7pt; }
-.thumb-box{ height:42px; width:80%; padding:3px; margin-top:2px; }
+.thumb-box{ height:55px; width:80%; padding:3px; margin-top:2px; }
 .thumb-text{ font-size:6.5pt; }
 .photo-note{ font-size:7pt; padding:2px 7px; margin-top:4px; }
 .official-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
