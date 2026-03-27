@@ -553,8 +553,11 @@ const computeHistoricalDefaultRate = (transactions, numMonths, trendWeight) => {
     if (dueInMonth.length === 0) continue;
 
     const defaultedCount = dueInMonth.filter(t => {
-      // Forfeited / sold without repaying
-      if (t.status === 'for_sale' || t.status === 'sold' || t.status === 'ready_to_sell') return true;
+      // Unresolved — item is listed or surrendered but not yet sold
+      if (t.status === 'for_sale' || t.status === 'ready_to_sell') return true;
+      // Sold — only a default if the sale didn't recover the principal
+      // (a profitable sale is a successful recovery, not a loss)
+      if (t.status === 'sold') return (t.salePrice || 0) < (t.cashAdvance || 0);
       // Repaid, but late (after agreed deadline)
       if (t.status === 'closed' && t.dateRepaid && t.deadlineDate) {
         return t.dateRepaid > t.deadlineDate;
@@ -2764,7 +2767,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
       <div style={{ ...S_SECTION, background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: priceDropEnabled ? '12px' : '0' }}>
           <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
-          <span style={{ fontWeight: 700, fontSize: '14px', color: '#92400e' }}>Enable automatic price drop for this item</span>
+          <span style={{ fontWeight: 700, fontSize: '14px', color: '#92400e' }}>Enable suggested price drop schedule for this item</span>
         </label>
         {priceDropEnabled && (
           <div>

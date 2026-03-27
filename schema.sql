@@ -34,8 +34,12 @@ CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions (created_
 CREATE TABLE IF NOT EXISTS drafts (
   ref         TEXT    PRIMARY KEY,
   data        TEXT    NOT NULL,  -- JSON blob
-  updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  created_by  TEXT               -- user ID of the staff member who started the wizard
 );
+
+-- Migration for existing databases (run once against live D1):
+-- ALTER TABLE drafts ADD COLUMN created_by TEXT;
 
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT    PRIMARY KEY,
@@ -142,3 +146,17 @@ CREATE TABLE IF NOT EXISTS sms_logs (
 
 CREATE INDEX IF NOT EXISTS idx_sms_logs_transaction_ref ON sms_logs (transaction_ref);
 CREATE INDEX IF NOT EXISTS idx_sms_logs_sent_at         ON sms_logs (sent_at DESC);
+
+-- Login attempt tracking for brute-force protection
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  username     TEXT    NOT NULL,
+  attempted_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  success      INTEGER NOT NULL DEFAULT 0  -- 0 = failed, 1 = succeeded
+);
+
+CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts (username, attempted_at DESC);
+
+-- Migration for existing databases (run once against live D1):
+-- CREATE TABLE IF NOT EXISTS login_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, attempted_at TEXT NOT NULL DEFAULT (datetime('now')), success INTEGER NOT NULL DEFAULT 0);
+-- CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts (username, attempted_at DESC);
