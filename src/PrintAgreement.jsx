@@ -222,7 +222,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <div class="clause-hdr c4">4. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
     <div class="clause-body cb4">
-      <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/><br/>
+      <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/>
       As a courtesy, we may try to send an SMS or call your phone numbers before Day ${maxLoanDays}. However, whether we reach you or not, the ${maxLoanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(internalDeadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
     </div>
 
@@ -255,7 +255,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
       </tr>
     </table>
 
-    <table class="field-tbl" style="margin-top:8px">
+    <table class="field-tbl" style="margin-top:4px">
       <tr>
         <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
         <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
@@ -265,7 +265,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     </table>
 
     <div class="photo-note">
-      <i>Note: Photographs of the customer holding the item, the customer signing this agreement, ID card if provided, and the item (front and back/sides) have been taken and stored securely with this transaction record.</i>
+      <i>Photos stored: customer holding item, signing agreement, ID card (if provided), item front &amp; back/sides.</i>
     </div>
   `;
 
@@ -585,39 +585,39 @@ body{
 ${!isOutright ? `
 /* Advance booklet: compact sizing for A5 panels */
 body{ font-size:8pt; line-height:1.25; }
-.hdr-tbl{ margin-bottom:8px; }
-.hdr-right{ padding:6px 9px; }
-.biz-name{ font-size:13pt; }
-.biz-sub{ font-size:8pt; margin-top:2px; }
-.copy-label{ font-size:8pt; margin-bottom:5px; }
-.ref-line{ font-size:8pt; padding-top:5px; margin-top:3px; }
+.hdr-tbl{ margin-bottom:4px; }
+.hdr-right{ padding:5px 8px; }
+.biz-name{ font-size:11pt; }
+.biz-sub{ font-size:7.5pt; margin-top:1px; }
+.copy-label{ font-size:8pt; margin-bottom:4px; }
+.ref-line{ font-size:8pt; padding-top:4px; margin-top:2px; }
 .ref-val{ font-size:9pt; min-width:80px; }
-.section-hdr{ font-size:8pt; padding:3px 8px; margin:7px 0 4px 0; }
-.sub-hdr{ font-size:8pt; padding:3px 8px; margin:5px 0 3px 0; }
-.staff-note{ font-size:7.5pt; padding:3px 7px; margin-bottom:4px; }
-.field-tbl{ margin-bottom:2px; }
-.fl{ font-size:8pt; padding:2px 4px 2px 0; }
-.fv{ font-size:8pt; padding:2px 3px; }
+.section-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
+.sub-hdr{ font-size:8pt; padding:2px 8px; margin:3px 0 2px 0; }
+.staff-note{ font-size:7.5pt; padding:2px 7px; margin-bottom:3px; }
+.field-tbl{ margin-bottom:1px; }
+.fl{ font-size:8pt; padding:1px 4px 1px 0; }
+.fv{ font-size:8pt; padding:1px 3px; }
 .big-val{ font-size:9pt; }
-.check-row{ font-size:7.5pt; padding:2px 7px; margin:4px 0; }
-.value-row{ font-size:7.5pt; padding:3px 7px; margin:4px 0; }
+.check-row{ font-size:7.5pt; padding:1px 7px; margin:2px 0; }
+.value-row{ font-size:7.5pt; padding:2px 7px; margin:3px 0; }
 .underline-val{ min-width:90px; }
 .muted-italic{ font-size:7pt; }
 .photos-tbl td{ font-size:7.5pt; padding:2px 6px; }
-.hr-gold{ margin:6px 0; border-top-width:2px; }
-.fee-box{ font-size:7.5pt; padding:5px 9px; margin:5px 0; line-height:1.3; }
-.daily-fee-row{ font-size:7.5pt; padding:3px 7px; margin-bottom:6px; }
-.clause-hdr{ font-size:7.5pt; padding:3px 7px; margin:5px 0 0 0; }
-.clause-body{ font-size:7.5pt; padding:4px 7px; margin-bottom:3px; line-height:1.35; }
-.consent{ font-size:7.5pt; margin:6px 0; }
-.sig-tbl{ margin-top:5px; }
-.sig-space{ height:28px; }
-.sig-line{ width:80%; margin-top:3px; }
+.hr-gold{ margin:3px 0; border-top-width:2px; }
+.fee-box{ font-size:7.5pt; padding:4px 9px; margin:4px 0; line-height:1.3; }
+.daily-fee-row{ font-size:7.5pt; padding:2px 7px; margin-bottom:5px; }
+.clause-hdr{ font-size:7.5pt; padding:2px 7px; margin:4px 0 0 0; }
+.clause-body{ font-size:7.5pt; padding:3px 7px; margin-bottom:2px; line-height:1.35; }
+.consent{ font-size:7.5pt; margin:3px 0; }
+.sig-tbl{ margin-top:4px; }
+.sig-space{ height:20px; }
+.sig-line{ width:80%; margin-top:2px; }
 .sig-sub{ font-size:7pt; }
-.thumb-box{ height:52px; width:80%; padding:3px; margin-top:3px; }
+.thumb-box{ height:42px; width:80%; padding:3px; margin-top:2px; }
 .thumb-text{ font-size:6.5pt; }
-.photo-note{ font-size:7pt; padding:3px 7px; margin-top:6px; }
-.official-hdr{ font-size:8pt; padding:3px 8px; margin:7px 0 4px 0; }
+.photo-note{ font-size:7pt; padding:2px 7px; margin-top:4px; }
+.official-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
 ` : ''}
 
 @media print{
