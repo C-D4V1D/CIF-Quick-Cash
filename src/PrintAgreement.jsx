@@ -13,9 +13,12 @@ const fmtDateLong = (d) => {
 const chk = (checked) => checked ? '☑' : '☐';
 
 // ---------------------------------------------------------------------------
-// Build HTML for one copy (Business or Customer)
+// Build HTML for one copy (Business or Customer) — folded A4 booklet layout
+// Each copy = 2 sheet-face divs (landscape A4), printed front and back, folded in half.
+//   face1: left panel = back cover (signatures + official use) | right panel = page 1 (Parts A + B)
+//   face2: left panel = page 2 (photos + Part C + Part D Clauses 1–2) | right panel = page 3 (Clauses 3–6)
 // ---------------------------------------------------------------------------
-const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
+const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const idTypeDisplay = tx.idType === 'bvn' ? 'BVN' : 'NIN';
   const phones = (tx.phoneNumbers || []).filter(Boolean).join('     /     ');
   const familyLine = [tx.familyName, tx.familyRelation ? `(${tx.familyRelation})` : '', tx.familyPhone]
@@ -29,223 +32,24 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
   const interestRate = settings.interestRate ?? 1;
   const dailyFee = tx.dailyFee ?? Math.floor((tx.cashAdvance || 0) * Number(interestRate) / 100);
   const loanDays = tx.loanDays || 30;
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const internalDeadlineDate = (() => {
+    if (!tx.dateGiven) return tx.deadlineDate || '';
+    const d = new Date(tx.dateGiven);
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + maxLoanDays);
+    return d.toISOString().split('T')[0];
+  })();
 
   const hasReceipt = tx.hasReceipt ? true : false;
   const p1Called = (tx.phonesVerified || [])[0];
   const p2Called = (tx.phonesVerified || [])[1];
 
-  // ── PAGE 1 (fields + photos) ──
-  const page1 = `
-  <div class="page">
-    <!-- HEADER -->
-    <table class="hdr-tbl">
-      <tr>
-        <td class="hdr-left">
-          <div class="biz-name">CHRIST-IN-FABIAN QUICK CASH</div>
-          <div class="biz-sub">Cash Advance &amp; Buy-Back Agreement</div>
-        </td>
-        <td class="hdr-right">
-          <div class="copy-label">${copyLabel}</div>
-          <div class="ref-line">Ref: <span class="ref-val">${tx.ref || ''}</span></div>
-        </td>
-      </tr>
-    </table>
-
-    <!-- PART A -->
-    <div class="section-hdr">PART A — CUSTOMER DETAILS</div>
-
-    <div class="staff-note">
-      <i>STAFF: Fill name, address, ID type and ID number from the customer's ID photo.</i>
-    </div>
-
-    <table class="field-tbl">
-      <tr>
-        <td class="fl" style="width:24%"><b>Full Name:</b></td>
-        <td class="fv">${tx.fullName || ''}</td>
-      </tr>
-      <tr>
-        <td class="fl"><b>Address:</b></td>
-        <td class="fv">${tx.address || ''}</td>
-      </tr>
-    </table>
-    <table class="field-tbl">
-      <tr>
-        <td class="fl" style="width:12%"><b>ID Type:</b></td>
-        <td class="fv" style="width:28%">${idTypeDisplay}</td>
-        <td class="fl" style="width:16%"><b>${idTypeDisplay} Number:</b></td>
-        <td class="fv" style="width:44%">${tx.idNumber || ''}</td>
-      </tr>
-    </table>
-
-    <!-- Phone Numbers Sub-Header -->
-    <div class="sub-hdr">PHONE NUMBERS — CUSTOMER FILLS THIS PART</div>
-
-    <div class="staff-note">
-      <i>STAFF: Ask customer to say their numbers. Call at least one number immediately to confirm it is real.</i>
-    </div>
-
-    <table class="field-tbl">
-      <tr>
-        <td class="fl" style="width:24%"><b>Phone Numbers:</b></td>
-        <td class="fv">${phones || ''}</td>
-      </tr>
-      <tr>
-        <td class="fl"><b>Family / Neighbour Phone:</b></td>
-        <td class="fv">${familyLine || ''}</td>
-      </tr>
-    </table>
-
-    <div class="check-row">
-      <b>Numbers confirmed by calling:</b>&nbsp;&nbsp;
-      ${chk(p1Called)} Number 1 called ✓ &nbsp;&nbsp;&nbsp;&nbsp;
-      ${chk(p2Called)} Number 2 called ✓
-    </div>
-
-    <!-- Horizontal rule -->
+  // ── PART E — SIGNATURES (lives on back cover for both copies) ──
+  const partEContent = `
     <div class="hr-gold"></div>
-
-    <!-- PART B -->
-    <div class="section-hdr">PART B — ITEM DETAILS</div>
-
-    <div class="staff-note green-note">
-      <i>STAFF: Inspect, test, and photograph the item. Note every scratch or fault honestly.</i>
-    </div>
-
-    <table class="field-tbl">
-      <tr>
-        <td class="fl" style="width:28%"><b>Item Type / Brand / Model:</b></td>
-        <td class="fv">${itemLine || ''}</td>
-      </tr>
-      <tr>
-        <td class="fl"><b>Colour &amp; Condition:</b></td>
-        <td class="fv" style="font-size:9.5pt">${colourCondition || ''}</td>
-      </tr>
-      <tr>
-        <td class="fl"><b>Serial No / IMEI:</b></td>
-        <td class="fv">${serialImei || '—'}</td>
-      </tr>
-    </table>
-
-    <div class="check-row">
-      <b>Original receipt:</b>&nbsp;&nbsp;
-      ${chk(hasReceipt)} Provided and filed &nbsp;&nbsp;&nbsp;&nbsp;
-      ${chk(!hasReceipt)} NOT provided — advance amount reduced accordingly
-    </div>
-
-    <!-- Photos Table -->
-    <table class="photos-tbl">
-      <tr>
-        <td class="photos-hdr" colspan="3">Photos Taken — tick each when done:</td>
-      </tr>
-      <tr>
-        <td>${chk(!!tx.photoCustomerHolding)} &nbsp;<b>Customer holding the Item</b></td>
-        <td colspan="2">${chk(!!tx.photoSigning)} &nbsp;<b>Customer signing the agreement</b></td>
-      </tr>
-      <tr>
-        <td>${chk(!!tx.photoCustomerID)} &nbsp;<b>ID Card</b></td>
-        <td>${chk(!!(tx.itemPhotos && tx.itemPhotos.front))} &nbsp;<b>Item — Front</b></td>
-        <td>${chk(!!(tx.itemPhotos && (tx.itemPhotos.back || tx.itemPhotos.left || tx.itemPhotos.right)))} &nbsp;<b>Item — Back / Sides</b></td>
-      </tr>
-    </table>
-
-    ${isBusinessCopy ? `
-    <div class="value-row">
-      <b>Estimated Market Value (resale):</b>&nbsp;&nbsp;
-      <span class="underline-val">₦ ${(tx.estimatedValue || 0).toLocaleString()}</span>
-      &nbsp;&nbsp;<span class="muted-italic">(internal — not on customer copy)</span>
-    </div>
-    ` : ''}
-
-    <div class="page-footer">Page <b>${pageOffset}</b> of <b>6</b></div>
-  </div>`;
-
-  // ── PAGE 2 (advance details + terms clauses 1–4 header) ──
-  const page2 = `
-  <div class="page">
-    <!-- PART C -->
-    <div class="section-hdr">PART C — ADVANCE DETAILS</div>
-
-    <table class="field-tbl">
-      <tr>
-        <td class="fl" style="width:22%"><b>Cash Advance Given:</b></td>
-        <td class="fv big-val" style="width:28%">₦ ${(tx.cashAdvance || 0).toLocaleString()}</td>
-        <td class="fl" style="width:16%"><b>Date Given:</b></td>
-        <td class="fv big-val" style="width:34%">${fmtDateLong(tx.dateGiven)}</td>
-      </tr>
-      <tr>
-        <td class="fl"><b>Agreed Return Date:</b></td>
-        <td class="fv big-val">${fmtDateLong(tx.deadlineDate)}</td>
-        <td class="fl"><b>Number of Days:</b></td>
-        <td class="fv big-val">${loanDays}</td>
-      </tr>
-    </table>
-
-    <!-- Fee info box -->
-    <div class="fee-box">
-      <div style="margin-bottom:4px"><b>Daily Holding &amp; Service Fee Rate: &nbsp;${interestRate}% of the advance amount, per day</b></div>
-      <div>Every new day that begins counts as a full day's fee.</div>
-      <div class="muted-italic">Example: Advance of ₦10,000 = ₦${Math.floor(10000 * interestRate / 100).toLocaleString()} fee for every day.</div>
-      <div class="muted-italic">Your exact total will be calculated on the day you come to collect your item.</div>
-    </div>
-
-    <div class="daily-fee-row">
-      <b>Your Daily Fee Amount: &nbsp;₦</b>&nbsp;
-      <span class="underline-val"><b>${dailyFee.toLocaleString()}</b></span>
-      &nbsp;&nbsp;&nbsp;
-      <span class="muted-italic">(${interestRate}% of ₦${(tx.cashAdvance || 0).toLocaleString()} = ₦${dailyFee.toLocaleString()} per day)</span>
-    </div>
-
-    <!-- Horizontal rule -->
-    <div class="hr-gold"></div>
-
-    <!-- PART D -->
-    <div class="section-hdr">PART D — TERMS &nbsp;&nbsp;<span style="font-weight:400;font-size:10pt">(Read every clause aloud to the customer before signing)</span></div>
-
-    <!-- Clause 1 -->
-    <div class="clause-hdr c1">1. &nbsp;YOUR ITEM IS SAFE WITH US</div>
-    <div class="clause-body cb1">Your item stays in our shop and remains your property while this agreement is active. We will keep it safely. We are not responsible for any pre-existing hidden faults or internal damage not visible during testing today. We are also not responsible for loss of data on any phone or laptop. When you come to collect, you can only raise a complaint about a specific feature or function if you clearly demonstrated it was working at the time you brought the item — we are not responsible for anything you did not show us.</div>
-
-    <!-- Clause 2 -->
-    <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
-    <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
-
-    <!-- Clause 3 -->
-    <div class="clause-hdr c3">3. &nbsp;THE ${loanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
-    <div class="clause-body cb3">
-      You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your exact deadline is <b>${fmtDateLong(tx.deadlineDate)}</b>.<br/><br/>
-      <b>If the ${loanDays}th day (${fmtDateLong(tx.deadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.
-    </div>
-
-    <!-- Clause 4 -->
-    <div class="clause-hdr c4">4. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
-
-    <div class="page-footer">Page <b>${pageOffset + 1}</b> of <b>6</b></div>
-  </div>`;
-
-  // ── PAGE 3 (clause 4 body + clauses 5-6 + signatures + official use) ──
-  const page3 = `
-  <div class="page">
-    <div class="clause-body cb4">
-      <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/><br/>
-      As a courtesy, we may try to send an SMS or call your phone numbers before Day ${loanDays}. However, whether we reach you or not, the ${loanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(tx.deadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
-    </div>
-
-    <!-- Clause 5 -->
-    <div class="clause-hdr c5">5. &nbsp;DECLARATION OF OWNERSHIP</div>
-    <div class="clause-body cb5">I swear that I am the true and legal owner of this item. It is NOT stolen property. If the Nigerian Police or any authority claims this item is stolen or linked to any crime, I take full legal and financial responsibility. I will protect Christ-in-Fabian Quick Cash from any arrest, seizure, or liability that arises from my false claim of ownership.</div>
-
-    <!-- Clause 6 -->
-    <div class="clause-hdr c6">6. &nbsp;DATA CONSENT</div>
-    <div class="clause-body cb6">The customer consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction.</div>
-
-    <!-- Horizontal rule -->
-    <div class="hr-gold"></div>
-
-    <!-- PART E -->
     <div class="section-hdr">PART E — SIGNATURES &amp; AUTHORIZATION</div>
-
     <p class="consent"><i>I have read and understood all the terms above (or they have been read and explained to me fully). I accept the cash advance given to me. I agree to everything stated in this agreement.</i></p>
-
     <table class="sig-tbl">
       <tr>
         <td class="sig-left">
@@ -262,8 +66,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
         </td>
       </tr>
     </table>
-
-    <table class="field-tbl" style="margin-top:16px">
+    <table class="field-tbl" style="margin-top:4px">
       <tr>
         <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
         <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
@@ -271,18 +74,14 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
         <td class="fv" style="width:32%"></td>
       </tr>
     </table>
-
     <div class="photo-note">
-      <i>Note: Photographs of the customer holding the item, the customer signing this agreement, ID card if provided, and the item (front and back/sides) have been taken and stored securely with this transaction record.</i>
-    </div>
+      <i>Photos stored: customer holding item, signing agreement, ID card (if provided), item front &amp; back/sides.</i>
+    </div>`;
 
-    ${isBusinessCopy ? `
-    <!-- Horizontal rule -->
+  // ── OFFICIAL USE ONLY (business copy only — lives on back cover) ──
+  const officialUseHTML = `
     <div class="hr-gold"></div>
-
-    <!-- OFFICIAL USE ONLY -->
     <div class="official-hdr">OFFICIAL USE ONLY</div>
-
     <table class="field-tbl">
       <tr>
         <td class="fl" style="width:18%"><b>Amount Repaid:</b></td>
@@ -307,12 +106,181 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
         <td class="fv" colspan="3"><span class="muted-italic">Date Sold: _______________ &nbsp;&nbsp; Amount Sold: ₦ _______________</span></td>
       </tr>
     </table>
-    ` : ''}
+    <div class="value-row">
+      <b>Estimated Market Value (resale):</b>&nbsp;&nbsp;
+      <span class="underline-val">₦ ${(tx.estimatedValue || 0).toLocaleString()}</span>
+      &nbsp;<span class="muted-italic">(internal — not on customer copy)</span>
+    </div>`;
 
-    <div class="page-footer">Page <b>${pageOffset + 2}</b> of <b>6</b></div>
+  // ── BACK COVER (left panel of face 1) ──
+  // Business: title + official use + market value + Part E signatures
+  // Customer: title + tagline + Part E signatures
+  const backCoverHTML = isBusinessCopy ? `
+    <div>
+      <div class="biz-name" style="font-size:11pt">CHRIST-IN-FABIAN QUICK CASH</div>
+      <div class="biz-sub">Cash Advance &amp; Buy-Back Agreement</div>
+      <div style="margin-top:2mm;font-size:7.5pt"><b>${copyLabel}</b> &nbsp;·&nbsp; Ref: <b>${tx.ref || ''}</b></div>
+    </div>
+    ${officialUseHTML}
+    ${partEContent}
+  ` : `
+    <div style="text-align:center;padding-top:5mm;">
+      <div class="biz-name" style="font-size:13pt;line-height:1.2">CHRIST-IN-FABIAN QUICK CASH</div>
+      <div class="biz-sub" style="margin-top:2mm">Cash Advance &amp; Buy-Back Agreement</div>
+      <div style="margin-top:4mm;font-size:7.5pt;color:#555;font-style:italic;line-height:1.5">
+        Keep this agreement safely. It is proof of your<br/>transaction and protects your rights.
+      </div>
+      <div style="margin-top:2mm;font-size:7.5pt;color:#888">Ref: <b>${tx.ref || ''}</b></div>
+    </div>
+    ${partEContent}
+  `;
+
+  // ── FACE 1 RIGHT PANEL — PAGE 1 content (PART A + PART B) ──
+  const page1Content = `
+    <table class="hdr-tbl">
+      <tr>
+        <td class="hdr-left">
+          <div class="biz-name">CHRIST-IN-FABIAN QUICK CASH</div>
+          <div class="biz-sub">Cash Advance &amp; Buy-Back Agreement</div>
+        </td>
+        <td class="hdr-right">
+          <div class="copy-label">${copyLabel}</div>
+          <div class="ref-line">Ref: <span class="ref-val">${tx.ref || ''}</span></div>
+        </td>
+      </tr>
+    </table>
+
+    <div class="section-hdr">PART A — CUSTOMER DETAILS</div>
+    <table class="field-tbl">
+      <tr><td class="fl" style="width:24%"><b>Full Name:</b></td><td class="fv">${tx.fullName || ''}</td></tr>
+      <tr><td class="fl"><b>Address:</b></td><td class="fv">${tx.address || ''}</td></tr>
+    </table>
+    <table class="field-tbl">
+      <tr>
+        <td class="fl" style="width:12%"><b>ID Type:</b></td>
+        <td class="fv" style="width:28%">${idTypeDisplay}</td>
+        <td class="fl" style="width:16%"><b>${idTypeDisplay} Number:</b></td>
+        <td class="fv" style="width:44%">${tx.idNumber || ''}</td>
+      </tr>
+    </table>
+
+    <div class="sub-hdr">PHONE NUMBERS — CUSTOMER FILLS THIS PART</div>
+    <table class="field-tbl">
+      <tr><td class="fl" style="width:24%"><b>Phone Numbers:</b></td><td class="fv">${phones || ''}</td></tr>
+      <tr><td class="fl"><b>Family / Neighbour Phone:</b></td><td class="fv">${familyLine || ''}</td></tr>
+    </table>
+    <div class="check-row">
+      <b>Numbers confirmed by calling:</b>&nbsp;&nbsp;
+      ${chk(p1Called)} Number 1 called ✓ &nbsp;&nbsp;&nbsp;
+      ${chk(p2Called)} Number 2 called ✓
+    </div>
+
+    <div class="hr-gold"></div>
+
+    <div class="section-hdr">PART B — ITEM DETAILS</div>
+    <table class="field-tbl">
+      <tr><td class="fl" style="width:28%"><b>Item Type / Brand / Model:</b></td><td class="fv">${itemLine || ''}</td></tr>
+      <tr><td class="fl"><b>Colour &amp; Condition:</b></td><td class="fv">${colourCondition || ''}</td></tr>
+      <tr><td class="fl"><b>Serial No / IMEI:</b></td><td class="fv">${serialImei || '—'}</td></tr>
+    </table>
+    <div class="check-row">
+      <b>Original receipt:</b>&nbsp;&nbsp;
+      ${chk(hasReceipt)} Provided and filed &nbsp;&nbsp;&nbsp;
+      ${chk(!hasReceipt)} NOT provided — advance reduced accordingly
+    </div>
+  `;
+
+  // ── FACE 2 LEFT PANEL — PAGE 2 content (PART C + PART D terms) ──
+  const page2Content = `
+    <table class="photos-tbl">
+      <tr><td class="photos-hdr" colspan="3">Photos Taken — tick each when done:</td></tr>
+      <tr>
+        <td>${chk(!!tx.photoCustomerHolding)} &nbsp;<b>Customer holding Item</b></td>
+        <td colspan="2">${chk(!!tx.photoSigning)} &nbsp;<b>Customer signing agreement</b></td>
+      </tr>
+      <tr>
+        <td>${chk(!!tx.photoCustomerID)} &nbsp;<b>ID Card</b></td>
+        <td>${chk(!!(tx.itemPhotos && tx.itemPhotos.length > 0))} &nbsp;<b>Item — Front</b></td>
+        <td>${chk(!!(tx.itemPhotos && tx.itemPhotos.length > 1))} &nbsp;<b>Item — Back/Sides</b></td>
+      </tr>
+    </table>
+
+    <div class="section-hdr">PART C — ADVANCE DETAILS</div>
+    <table class="field-tbl">
+      <tr>
+        <td class="fl" style="width:22%"><b>Cash Advance Given:</b></td>
+        <td class="fv big-val" style="width:28%">₦ ${(tx.cashAdvance || 0).toLocaleString()}</td>
+        <td class="fl" style="width:16%"><b>Date Given:</b></td>
+        <td class="fv big-val" style="width:34%">${fmtDateLong(tx.dateGiven)}</td>
+      </tr>
+      <tr>
+        <td class="fl"><b>Agreed Return Date:</b></td>
+        <td class="fv big-val">${fmtDateLong(tx.deadlineDate)}</td>
+        <td class="fl"><b>Number of Days:</b></td>
+        <td class="fv big-val">${loanDays}</td>
+      </tr>
+    </table>
+
+    <div class="fee-box">
+      <div style="margin-bottom:3px"><b>Daily Holding &amp; Service Fee Rate: &nbsp;${interestRate}% of the advance amount, per day</b></div>
+      <div>Every new day that begins counts as a full day's fee.</div>
+      <div class="muted-italic">Example: Advance of ₦10,000 = ₦${Math.floor(10000 * interestRate / 100).toLocaleString()} fee per day.</div>
+      <div class="muted-italic">Your exact total will be calculated on the day you come to collect.</div>
+    </div>
+
+    <div class="daily-fee-row">
+      <b>Your Daily Fee Amount: &nbsp;₦</b>&nbsp;
+      <span class="underline-val"><b>${dailyFee.toLocaleString()}</b></span>
+      &nbsp;&nbsp;
+      <span class="muted-italic">(${interestRate}% of ₦${(tx.cashAdvance || 0).toLocaleString()} = ₦${dailyFee.toLocaleString()} per day)</span>
+    </div>
+
+    <div class="hr-gold"></div>
+
+    <div class="section-hdr">PART D — TERMS &nbsp;<span style="font-weight:400">(Read every clause aloud to the customer before signing)</span></div>
+
+    <div class="clause-hdr c1">1. &nbsp;YOUR ITEM IS SAFE WITH US</div>
+    <div class="clause-body cb1">Your item stays in our shop and remains your property while this agreement is active. We will keep it safely. We are not responsible for any pre-existing hidden faults or internal damage not visible during testing today. We are also not responsible for loss of data on any phone or laptop. When you come to collect, you can only raise a complaint about a specific feature or function if you clearly demonstrated it was working at the time you brought the item — we are not responsible for anything you did not show us.</div>
+
+    <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
+    <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
+  `;
+
+  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 3–6) ──
+  const page3Content = `
+    <div class="clause-hdr c3">3. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
+    <div class="clause-body cb3">
+      You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/>
+      <div style="margin-top:3px"><b>If the ${maxLoanDays}th day (${fmtDateLong(internalDeadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.</div>
+    </div>
+
+    <div class="clause-hdr c4">4. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
+    <div class="clause-body cb4">
+      <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/>
+      As a courtesy, we may try to send an SMS or call your phone numbers before Day ${maxLoanDays}. However, whether we reach you or not, the ${maxLoanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(internalDeadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
+    </div>
+
+    <div class="clause-hdr c5">5. &nbsp;DECLARATION OF OWNERSHIP</div>
+    <div class="clause-body cb5">I swear that I am the true and legal owner of this item. It is NOT stolen property. If the Nigerian Police or any authority claims this item is stolen or linked to any crime, I take full legal and financial responsibility. I will protect Christ-in-Fabian Quick Cash from any arrest, seizure, or liability that arises from my false claim of ownership.</div>
+
+    <div class="clause-hdr c6">6. &nbsp;DATA CONSENT</div>
+    <div class="clause-body cb6">The customer consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction.</div>
+  `;
+
+  // ── Assemble: 2 sheet faces ──
+  const face1 = `
+  <div class="sheet-face">
+    <div class="panel panel-left">${backCoverHTML}</div>
+    <div class="panel panel-right">${page1Content}</div>
   </div>`;
 
-  return page1 + page2 + page3;
+  const face2 = `
+  <div class="sheet-face">
+    <div class="panel panel-left">${page2Content}</div>
+    <div class="panel panel-right">${page3Content}</div>
+  </div>`;
+
+  return face1 + face2;
 };
 
 // ---------------------------------------------------------------------------
@@ -557,8 +525,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
 export const printAgreement = (tx, settings = {}) => {
   const isOutright = tx.type === 'outright';
   const buildFn = isOutright ? buildOutrightCopyHTML : buildCopyHTML;
-  // Advance: 3 pages/copy → customer copy starts at page 4
-  // Outright: 2 pages/copy → customer copy starts at page 3
+  // Outright: 2 pages/copy → customer copy starts at page 3 (pageOffset used by outright only)
   const customerPageOffset = isOutright ? 3 : 4;
   const businessHTML = buildFn(tx, settings, 'BUSINESS COPY', true, 1);
   const customerHTML = buildFn(tx, settings, isOutright ? 'SELLER COPY' : 'CUSTOMER COPY', false, customerPageOffset);
@@ -580,7 +547,7 @@ body{
   line-height: 1.35;
 }
 
-/* === PAGE === */
+/* === PAGE (outright portrait layout) === */
 .page{
   width: 8.5in;
   min-height: 11in;
@@ -591,10 +558,73 @@ body{
 }
 .page:last-child{ page-break-after: auto; }
 
+/* === FOLDED A4 BOOKLET (advance agreement) === */
+.sheet-face{
+  display: flex;
+  width: 297mm;
+  height: 210mm;
+  margin: 0 auto 24px auto;
+  page-break-after: always;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+}
+.sheet-face:last-child{ page-break-after: auto; }
+.panel{
+  width: 50%;
+  height: 100%;
+  padding: 5mm 5mm 4mm 5mm;
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
+}
+.panel-left{ border-right: 1px dashed #bbb; }
+
+${!isOutright ? `
+/* Advance booklet: compact sizing for A5 panels */
+body{ font-size:8pt; line-height:1.25; }
+.hdr-tbl{ margin-bottom:4px; }
+.hdr-right{ padding:5px 8px; }
+.biz-name{ font-size:11pt; }
+.biz-sub{ font-size:7.5pt; margin-top:1px; }
+.copy-label{ font-size:8pt; margin-bottom:4px; }
+.ref-line{ font-size:8pt; padding-top:4px; margin-top:2px; }
+.ref-val{ font-size:9pt; min-width:80px; }
+.section-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
+.sub-hdr{ font-size:8pt; padding:2px 8px; margin:3px 0 2px 0; }
+.staff-note{ font-size:7.5pt; padding:2px 7px; margin-bottom:3px; }
+.field-tbl{ margin-bottom:1px; }
+.fl{ font-size:8pt; padding:1px 4px 1px 0; }
+.fv{ font-size:8pt; padding:1px 3px; }
+.big-val{ font-size:9pt; }
+.check-row{ font-size:7.5pt; padding:1px 7px; margin:2px 0; }
+.value-row{ font-size:7.5pt; padding:2px 7px; margin:3px 0; }
+.underline-val{ min-width:90px; }
+.muted-italic{ font-size:7pt; }
+.photos-tbl td{ font-size:7.5pt; padding:2px 6px; }
+.hr-gold{ margin:3px 0; border-top-width:2px; }
+.fee-box{ font-size:7.5pt; padding:4px 9px; margin:4px 0; line-height:1.3; }
+.daily-fee-row{ font-size:7.5pt; padding:2px 7px; margin-bottom:5px; }
+.clause-hdr{ font-size:7.5pt; padding:2px 7px; margin:4px 0 0 0; }
+.clause-body{ font-size:7.5pt; padding:3px 7px; margin-bottom:2px; line-height:1.35; }
+.consent{ font-size:7.5pt; margin:3px 0; }
+.sig-tbl{ margin-top:4px; }
+.sig-space{ height:30px; }
+.sig-line{ width:80%; margin-top:2px; }
+.sig-sub{ font-size:7pt; }
+.thumb-box{ height:55px; width:80%; padding:3px; margin-top:2px; }
+.thumb-text{ font-size:6.5pt; }
+.photo-note{ font-size:7pt; padding:2px 7px; margin-top:4px; }
+.official-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
+` : ''}
+
 @media print{
-  @page{ size: letter; margin: 0; }
+  ${isOutright ? `@page{ size: letter; margin: 0; }` : `@page{ size: A4 landscape; margin: 0; }`}
   .no-print{ display:none!important; }
-  .page{ width:100%; min-height:100vh; padding: 0.6in 0.7in 0.55in 0.7in; }
+  ${isOutright
+    ? `.page{ width:100%; min-height:100vh; padding: 0.6in 0.7in 0.55in 0.7in; }`
+    : `.sheet-face{ width:100%; height:100vh; margin:0; box-shadow:none; }`
+  }
 }
 
 /* === HEADER === */
@@ -762,8 +792,10 @@ body{
 
 /* === PRINT CONTROLS (screen only) === */
 .print-controls{
-  position: fixed; top: 16px; right: 16px;
-  display: flex; flex-direction: column; gap: 8px; z-index: 9999;
+  position: sticky; top: 0; z-index: 9999;
+  background: #f8f9fa; border-bottom: 2px solid #ddd;
+  padding: 10px 20px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
 }
 .print-btn{
   background: #1a5f2a; color: #fff; border: none;
@@ -794,15 +826,22 @@ body{
 <!-- Screen-only controls -->
 <div class="print-controls no-print">
   <button class="print-btn" onclick="window.print()">🖨 Print ${isOutright ? 'Receipt' : 'Agreement'}</button>
+  ${!isOutright ? `
+  <span style="font-size:11px;color:#555;line-height:1.5">
+    <b>How to print &amp; fold:</b>
+    &nbsp;1. Set <b>Landscape</b> + <b>two-sided / duplex</b> (<i>flip on short edge</i>) — or print page 1, re-insert, print page 2.
+    &nbsp;2. <b>Fold each sheet</b> right over left.
+    &nbsp;3. Two booklets: <b>Business Copy</b> + <b>Customer Copy</b>.
+  </span>` : ''}
   <button class="close-btn" onclick="window.close()">✕ Close</button>
 </div>
 
 <!-- BUSINESS COPY (pages 1–3) -->
 ${businessHTML}
 
-<div class="form-divider no-print">✂ — — — BUSINESS COPY ends above / ${isOutright ? 'SELLER' : 'CUSTOMER'} COPY begins below — — — ✂</div>
+<div class="form-divider no-print">✂ — — — BUSINESS COPY booklet above / ${isOutright ? 'SELLER' : 'CUSTOMER'} COPY booklet below — — — ✂</div>
 
-<!-- CUSTOMER COPY (pages 4–6) -->
+<!-- CUSTOMER COPY -->
 ${customerHTML}
 
 </body>
