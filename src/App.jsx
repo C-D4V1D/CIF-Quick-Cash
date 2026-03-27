@@ -902,7 +902,7 @@ const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, owne
     targetPct: x.targetPct,
     minPct: x.minPct,
     maxPct: x.maxPct,
-    suggested: Math.round(Math.min(x.suggested, x.maxCapacity)),
+    suggested: Math.round(Math.min(x.suggested, x.maxCapacity) / 10) * 10,
     isAboveTarget: x.isAboveTarget,
     isDilutionProtection: x.isAboveTarget && x.neededToReachTarget > 0,
     isBelowMin: x.isBelowMin,
@@ -5126,7 +5126,11 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               </div>
               {/* Optional extra top-up */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                <label style={{ fontSize: '12px', fontWeight: 600, color: '#991b1b' }}>Top up extra above minimum (₦):</label>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#991b1b', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                  Top up extra above minimum (₦)
+                  <InfoIcon tip="Optionally plan a larger top-up beyond what this transaction strictly needs. Useful if you want to replenish reserves while stakeholders are already contributing." />
+                  :
+                </label>
                 <input
                   type="number"
                   min={0}
@@ -5134,7 +5138,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                   value={wizardTopUpExtra || ''}
                   placeholder="0"
                   onChange={e => setWizardTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
-                  style={{ width: '130px', padding: '5px 8px', fontSize: '13px', border: '1px solid #fca5a5', borderRadius: '6px' }}
+                  style={{ width: '130px', padding: '5px 8px', fontSize: '13px', border: '1px solid #fca5a5', borderRadius: '6px', background: '#fff', color: '#1f2937' }}
                 />
                 {wizardTopUpExtra > 0 && (
                   <span style={{ fontSize: '12px', color: '#991b1b' }}>
@@ -5145,14 +5149,15 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               {allocations.length > 0 && (
                 <div>
                   <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Expected contributions{wizardTopUpExtra > 0 ? ` (including ₦${wizardTopUpExtra.toLocaleString('en-NG')} extra)` : ''}</div>
+                  <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead>
                       <tr>
                         <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Stakeholder</th>
-                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Current</th>
-                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>% Now</th>
-                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Bring In</th>
-                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Status</th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Invested<InfoIcon tip="Total capital this stakeholder has put in." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>%<InfoIcon tip="Their current ownership share." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Bring In<InfoIcon tip="Expected contribution, rounded to the nearest ₦10. Those below their target % are asked first." /></span></th>
+                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Status<InfoIcon tip="Below min = urgent; Below target = contributing; Dilution protection = above target now but needs to contribute to avoid being diluted below target; Above target = no contribution needed." /></span></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5179,6 +5184,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                       )}
                     </tbody>
                   </table>
+                  </div>
                   {allocations.some(a => a.isBelowMin) && (
                     <div style={{ fontSize: '11px', color: '#991b1b', marginTop: '6px' }}>⚠ Stakeholders marked with ⚠ are currently below their minimum ownership target and are prioritised for contribution.</div>
                   )}
@@ -8616,7 +8622,11 @@ export default function App() {
                   </div>
                   {/* Optional extra top-up field */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                    <label style={{ fontSize: '12px', fontWeight: 600, color: accentClr }}>Top up extra above minimum (₦):</label>
+                    <label style={{ fontSize: '12px', fontWeight: 600, color: accentClr, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      Top up extra above minimum (₦)
+                      <InfoIcon tip="Optionally plan a larger top-up beyond the minimum. The contribution table below updates instantly to show each stakeholder's share of the larger total." />
+                      :
+                    </label>
                     <input
                       type="number"
                       min={0}
@@ -8624,7 +8634,7 @@ export default function App() {
                       value={capitalTopUpExtra || ''}
                       placeholder="0"
                       onChange={e => setCapitalTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
-                      style={{ width: '140px', padding: '5px 8px', fontSize: '13px', border: `1px solid ${dividerClr}`, borderRadius: '6px' }}
+                      style={{ width: '140px', padding: '5px 8px', fontSize: '13px', border: `1px solid ${dividerClr}`, borderRadius: '6px', background: '#fff', color: '#1f2937' }}
                     />
                     {capitalTopUpExtra > 0 && (
                       <span style={{ fontSize: '12px', color: accentClr }}>
@@ -8642,10 +8652,26 @@ export default function App() {
                         <thead>
                           <tr>
                             <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Stakeholder</th>
-                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Currently Invested</th>
-                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Ownership %</th>
-                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Bring In</th>
-                            <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Status</th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                Invested<InfoIcon tip="Total capital this stakeholder has put into the business." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                %<InfoIcon tip="This stakeholder's current share of total invested capital." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                Bring In<InfoIcon tip="How much this stakeholder should contribute, rounded to the nearest ₦10. Prioritised by ownership gap — those furthest below their target contribute first." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                                Status<InfoIcon tip="Below min = urgent (below floor); Below target = needs to contribute; Dilution protection = above target now but would fall below after the injection; Above target = no contribution needed." />
+                              </span>
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -8826,7 +8852,7 @@ export default function App() {
                   style={{ ...S.cardTitle, cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: capitalAnalysisExpanded ? '16px' : 0 }}
                   onClick={() => setCapitalAnalysisExpanded(e => !e)}
                 >
-                  <span>📊 Capital Analysis</span>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>📊 Capital Analysis<InfoIcon tip="Uses your transaction history to predict how much capital you'll need in the coming months, whether you have a surplus to safely withdraw, and who should top up first if a deficit is forecast." /></span>
                   <span style={{ fontSize: '13px', color: COLORS.textMuted, fontWeight: 500 }}>{capitalAnalysisExpanded ? '▲ Collapse' : '▼ Expand'}</span>
                 </div>
               );
@@ -8882,9 +8908,9 @@ export default function App() {
 
                   {/* History Chart */}
                   <div style={{ marginBottom: '24px' }}>
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>
-                      📈 {cp.dataPoints}-Month Capital Flow History
-                      {cp.useSeasonalIndex && <span style={{ fontSize: '12px', color: COLORS.primary, marginLeft: '8px', fontWeight: 500 }}>· Seasonal adjustment active</span>}
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>📈 {cp.dataPoints}-Month Capital Flow History<InfoIcon tip="Bars show how much capital went out as loans or purchases (red), how much was recovered (green), and expenses + distributions (amber). The purple line is net capital consumed each month — a rising trend means you are burning through capital faster." /></span>
+                      {cp.useSeasonalIndex && <span style={{ fontSize: '12px', color: COLORS.primary, fontWeight: 500 }}>· Seasonal adjustment active</span>}
                     </div>
                     <ResponsiveContainer width="100%" height={240}>
                       <ComposedChart data={histData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
@@ -8904,7 +8930,7 @@ export default function App() {
                   {/* Forecast Chart */}
                   {pfc && (
                     <div style={{ marginBottom: '24px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>🔮 Capital Requirement Forecast</div>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🔮 Capital Requirement Forecast<InfoIcon tip="Projects how much total capital the business will need in 1, 2, and 3 months based on historical consumption patterns. The shaded band shows the uncertainty range. If the forecast line is above 'Current Capital' you are heading for a deficit." /></div>
                       <ResponsiveContainer width="100%" height={220}>
                         <AreaChart data={fcastData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
@@ -8924,7 +8950,7 @@ export default function App() {
 
                   {/* Forecast Cards */}
                   {cp.forecasts && cp.forecasts.length > 0 && (
-                    <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(cp.forecasts.length, 3)}, 1fr)`, gap: '12px', marginBottom: '20px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '20px' }}>
                       {cp.forecasts.map((f, i) => (
                         <div key={i} style={{ background: f.isDeficit ? COLORS.dangerLight : COLORS.primaryLight, borderRadius: '10px', padding: '14px', border: `1px solid ${f.isDeficit ? '#f5c6cb' : '#b7e4c7'}` }}>
                           <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>+{f.horizon} Mo · {fmtMo(f.month)}</div>
@@ -8933,7 +8959,7 @@ export default function App() {
                           <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '4px', color: f.isDeficit ? COLORS.danger : COLORS.primary }}>
                             {f.isDeficit ? `⚠ Short by ${fmtMoney(f.gap)}` : `✓ Surplus ${fmtMoney(f.gap)}`}
                           </div>
-                          <div style={{ fontSize: '10px', color: COLORS.textMuted, marginTop: '2px' }}>Confidence: ~{f.confidencePct}%</div>
+                          <div style={{ fontSize: '10px', color: COLORS.textMuted, marginTop: '2px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Confidence: ~{f.confidencePct}%<InfoIcon tip="How reliable this forecast is based on the amount of historical data available. More transaction history means higher confidence." /></div>
                         </div>
                       ))}
                     </div>
@@ -8965,18 +8991,18 @@ export default function App() {
                   {/* Contribution Plan — shown when deficit */}
                   {pfc && isDeficit && cp.contributionPlan.length > 0 && (
                     <div style={{ marginBottom: '24px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>👥 Who Should Add Capital</div>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>👥 Who Should Add Capital<InfoIcon tip="Shows how much each stakeholder needs to invest to reach their ownership target once the forecast deficit is filled. Stakeholders already at or above their target are not required to contribute." /></div>
                       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
                         <div style={{ flex: '1 1 300px', overflowX: 'auto' }}>
                           <table style={S.table}>
                             <thead>
                               <tr>
                                 <th style={S.th}>Stakeholder</th>
-                                <th style={S.th}>Current %</th>
-                                <th style={S.th}>Target %</th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Current %<InfoIcon tip="Their share of total capital right now." /></span></th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Target %<InfoIcon tip="Their agreed ownership target. Range shown in brackets. Set these in Settings → Stakeholder Ownership Targets." /></span></th>
                                 <th style={S.th}>Invested</th>
-                                <th style={S.th}>Expected Total</th>
-                                <th style={S.th}>Gap</th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Expected Total<InfoIcon tip="How much they should have invested in total to hold their target % of the forecast required capital." /></span></th>
+                                <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Gap<InfoIcon tip="The difference between what they currently have invested and their expected total. A positive gap means they need to bring this amount in." /></span></th>
                               </tr>
                             </thead>
                             <tbody>
@@ -9019,7 +9045,7 @@ export default function App() {
                   {/* Withdrawal Analysis — shown when sufficient */}
                   {pfc && !isDeficit && (
                     <div style={{ marginBottom: '24px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px' }}>💸 Withdrawal Analysis</div>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>💸 Withdrawal Analysis<InfoIcon tip="Once a capital surplus has been confirmed for several consecutive months, this section shows how much can be safely withdrawn while keeping the business fully funded for its forecast needs." /></div>
                       {cp.streakMet ? (
                         <>
                           <div style={{ padding: '12px 14px', borderRadius: '8px', background: COLORS.primaryLight, border: `1px solid #b7e4c7`, marginBottom: '12px', fontSize: '13px' }}>
@@ -9035,12 +9061,13 @@ export default function App() {
                           </div>
                           {cp.withdrawalPlan.length > 0 && (
                             <>
+                            <div style={{ overflowX: 'auto' }}>
                             <table style={{ ...S.table, marginBottom: '12px' }}>
                               <thead>
                                 <tr>
                                   <th style={S.th}>Stakeholder</th>
-                                  <th style={S.th}>Ownership %</th>
-                                  <th style={S.th}>Withdraw Amount</th>
+                                  <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Ownership %<InfoIcon tip="Their current share of total invested capital." /></span></th>
+                                  <th style={S.th}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Withdraw Amount<InfoIcon tip="Recommended amount this stakeholder can take out, proportional to their ownership share of the total safe withdrawal." /></span></th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -9053,6 +9080,7 @@ export default function App() {
                                 ))}
                               </tbody>
                             </table>
+                            </div>
                             {/* Notify stakeholders of withdrawal opportunity */}
                             {(() => {
                               const ownershipCfg = settings.stakeholderOwnership || {};
@@ -9112,12 +9140,12 @@ export default function App() {
                   {/* Capital Efficiency Stats */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginBottom: '20px' }}>
                     {[
-                      { label: 'Capital Deployed', value: `${cp.capitalEfficiency}%`, sub: 'of total in active use', color: cp.capitalEfficiency > 85 ? COLORS.primary : cp.capitalEfficiency > 50 ? COLORS.warning : COLORS.danger },
-                      { label: 'Peak Month Deployment', value: fmtMoney(cp.peakDeployment), sub: 'highest single-month origination', color: COLORS.primaryDark },
-                      { label: 'Peak Cushion', value: fmtMoney(cp.peakCushion), sub: 'above worst-ever deployment', color: cp.peakCushion >= 0 ? COLORS.primary : COLORS.danger },
-                      { label: 'Min Safe Capital', value: fmtMoney(cp.minimumCapitalRequired), sub: `peak × ${(1 + (settings.capitalPeakGraceFactor ?? 0.10)).toFixed(2)}×`, color: COLORS.primaryDark },
+                      { label: 'Capital Deployed', value: `${cp.capitalEfficiency}%`, sub: 'of total in active use', color: cp.capitalEfficiency > 85 ? COLORS.primary : cp.capitalEfficiency > 50 ? COLORS.warning : COLORS.danger, tip: 'What percentage of the total invested capital is currently deployed in active loans or for-sale inventory. High is good — it means capital is working. Very high (near 100%) means little buffer for new loans.' },
+                      { label: 'Peak Month Deployment', value: fmtMoney(cp.peakDeployment), sub: 'highest single-month origination', color: COLORS.primaryDark, tip: 'The largest amount of capital lent out or spent in any single month on record. Used to set the minimum safe capital floor.' },
+                      { label: 'Peak Cushion', value: fmtMoney(cp.peakCushion), sub: 'above worst-ever deployment', color: cp.peakCushion >= 0 ? COLORS.primary : COLORS.danger, tip: 'How much extra capital you have above the historical worst-case deployment month. Negative means you currently have less capital than the worst month on record.' },
+                      { label: 'Min Safe Capital', value: fmtMoney(cp.minimumCapitalRequired), sub: `peak × ${(1 + (settings.capitalPeakGraceFactor ?? 0.10)).toFixed(2)}×`, color: COLORS.primaryDark, tip: 'The minimum capital level considered safe — peak deployment multiplied by the grace factor (set in Admin Settings). Forecasts use this as the floor.' },
                       {
-                        label: 'Loan Default Rate',
+                        label: 'Loan Default Rate', tip: 'Estimated rate at which loans are not recovered. Used in the forecast to account for capital that may never come back. Automatically computed from history or set manually in Admin Settings.',
                         value: `${Math.round(cp.defaultRateInfo.rate * 100)}%`,
                         sub: cp.defaultRateInfo.isOverridden
                           ? 'admin override (computed: ' + Math.round(cp.defaultRateInfo.computedRate * 100) + '%)'
@@ -9128,7 +9156,7 @@ export default function App() {
                       },
                     ].map((stat, i) => (
                       <div key={i} style={{ background: COLORS.bg, borderRadius: '10px', padding: '14px', border: `1px solid ${COLORS.border}` }}>
-                        <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>{stat.label}</div>
+                        <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '3px' }}>{stat.label}{stat.tip && <InfoIcon tip={stat.tip} />}</div>
                         <div style={{ fontSize: '20px', fontWeight: 800, color: stat.color, marginBottom: '2px' }}>{stat.value}</div>
                         <div style={{ fontSize: '11px', color: COLORS.textMuted }}>{stat.sub}</div>
                       </div>
@@ -9138,9 +9166,9 @@ export default function App() {
                   {/* Prediction Accuracy chart */}
                   {accuracyChartData.length > 0 && (
                     <div style={{ marginBottom: '12px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '6px' }}>
-                        🎯 Prediction Accuracy
-                        {avgAccuracy !== null && <span style={{ fontSize: '12px', fontWeight: 500, color: COLORS.textMuted, marginLeft: '8px' }}>avg {avgAccuracy}% over {accuracyChartData.length} closed month{accuracyChartData.length !== 1 ? 's' : ''}</span>}
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '6px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🎯 Prediction Accuracy<InfoIcon tip="Compares what the model predicted for past months against what actually happened. Closer bars mean a more accurate model. Accuracy improves automatically as more data is collected." /></span>
+                        {avgAccuracy !== null && <span style={{ fontSize: '12px', fontWeight: 500, color: COLORS.textMuted }}>avg {avgAccuracy}% over {accuracyChartData.length} closed month{accuracyChartData.length !== 1 ? 's' : ''}</span>}
                       </div>
                       <ResponsiveContainer width="100%" height={160}>
                         <BarChart data={accuracyChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
