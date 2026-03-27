@@ -4148,6 +4148,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   useEffect(() => {
     return () => { if (pendingDraftRef.current) API.post('drafts', pendingDraftRef.current); };
   }, []);
+  const [wizardNotifyStatus, setWizardNotifyStatus] = useState({});
 
   // Fetch verification credits when the NIN step becomes active.
   // Only fetches if the NIN API key is configured.
@@ -5051,7 +5052,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               </div>
               {allocations.length > 0 && (
                 <div>
-                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Suggested contributions</div>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Expected contributions</div>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead>
                       <tr>
@@ -5085,6 +5086,52 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                   {allocations.some(a => a.isBelowMin) && (
                     <div style={{ fontSize: '11px', color: '#991b1b', marginTop: '6px' }}>⚠ Stakeholders marked with ⚠ are currently below their minimum ownership target and are prioritised for contribution.</div>
                   )}
+                  {/* Notify stakeholders from wizard */}
+                  {(() => {
+                    const ownershipCfg = settings.stakeholderOwnership || {};
+                    const notifiable = allocations.filter(a => (ownershipCfg[a.name] || {}).phone || (ownershipCfg[a.name] || {}).email);
+                    if (!notifiable.length) return null;
+                    const sendSmsWizard = async (a) => {
+                      const cfg = ownershipCfg[a.name] || {};
+                      if (!cfg.phone) return;
+                      setWizardNotifyStatus(prev => ({ ...prev, [a.name + '_sms']: 'sending' }));
+                      const amtText = a.suggested > 0 ? `₦${Number(a.suggested).toLocaleString('en-NG')}` : 'your share';
+                      const msg = `${settings.businessName || 'CIF Cash'}: Capital top-up needed — please bring in ${amtText} urgently. A transaction of ₦${Number(tx.cashAdvance || 0).toLocaleString('en-NG')} is pending. Contact admin now.`;
+                      const res = await API.post('sms/notify-stakeholder', { phone: cfg.phone, message: msg, stakeholderName: a.name });
+                      setWizardNotifyStatus(prev => ({ ...prev, [a.name + '_sms']: res?.ok ? 'sent' : 'failed' }));
+                    };
+                    return (
+                      <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid #fca5a5' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Notify stakeholders now</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {allocations.map(a => {
+                            const cfg = ownershipCfg[a.name] || {};
+                            const smsStatus = wizardNotifyStatus[a.name + '_sms'];
+                            if (!cfg.phone && !cfg.email) return null;
+                            const subject = encodeURIComponent(`Urgent: Capital Top-Up Required — ${settings.businessName || 'CIF Cash'}`);
+                            const body = encodeURIComponent(`Dear ${a.name},\n\nA transaction of ₦${Number(tx.cashAdvance || 0).toLocaleString('en-NG')} is pending but available capital is insufficient.\n\nYour expected contribution: ${a.suggested > 0 ? `₦${Number(a.suggested).toLocaleString('en-NG')}` : '—'}\nCurrent ownership: ${a.currentPct}% (target: ${a.targetPct}%)\n\nPlease arrange to bring in your expected amount immediately.\n\nThank you.`);
+                            return (
+                              <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '5px 8px', background: '#fee2e2', borderRadius: '6px' }}>
+                                <strong style={{ minWidth: '90px', fontSize: '12px', color: a.isBelowMin ? '#dc2626' : '#374151' }}>{a.name}{a.isBelowMin ? ' ⚠' : ''}</strong>
+                                {a.suggested > 0 && <span style={{ fontSize: '11px', color: '#991b1b' }}>{fmtMoney(a.suggested)}</span>}
+                                {cfg.phone && (
+                                  <button style={{ ...S.btnSm(smsStatus === 'sent' ? 'primary' : smsStatus === 'failed' ? 'danger' : 'accent'), fontSize: '11px' }} disabled={smsStatus === 'sending' || smsStatus === 'sent'} onClick={() => sendSmsWizard(a)}>
+                                    {smsStatus === 'sending' ? '⏳…' : smsStatus === 'sent' ? '✅ Sent' : smsStatus === 'failed' ? '❌ Retry' : '📱 SMS'}
+                                  </button>
+                                )}
+                                {cfg.email && <a href={`mailto:${cfg.email}?subject=${subject}&body=${body}`} style={{ ...S.btnSm('outline'), fontSize: '11px', textDecoration: 'none' }}>📧 Email</a>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {notifiable.filter(a => (ownershipCfg[a.name] || {}).phone).length > 1 && (
+                          <button style={{ ...S.btnSm('accent'), marginTop: '8px', fontSize: '12px' }} disabled={notifiable.every(a => ['sending', 'sent'].includes(wizardNotifyStatus[a.name + '_sms']))} onClick={() => notifiable.filter(a => (ownershipCfg[a.name] || {}).phone).forEach(a => sendSmsWizard(a))}>
+                            📱 SMS All
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -6582,6 +6629,7 @@ export default function App() {
   const [showAddDistribution, setShowAddDistribution] = useState(false);
   const [expandedCapital, setExpandedCapital] = useState(new Set());
   const [capitalAnalysisExpanded, setCapitalAnalysisExpanded] = useState(false);
+  const [capitalNotifyStatus, setCapitalNotifyStatus] = useState({}); // { [name]: 'sending'|'sent'|'failed' }
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
@@ -8378,7 +8426,7 @@ export default function App() {
                   {allocations.length > 0 && (
                     <div>
                       <div style={{ fontSize: '12px', fontWeight: 700, color: isNegative ? '#991b1b' : '#92400e', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
-                        Suggested contributions to restore capital
+                        Expected contributions to restore capital
                       </div>
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                         <thead>
@@ -8412,6 +8460,87 @@ export default function App() {
                       </table>
                     </div>
                   )}
+                  {/* Notify stakeholders */}
+                  {allocations.length > 0 && (() => {
+                    const ownershipCfg = settings.stakeholderOwnership || {};
+                    const notifiable = allocations.filter(a => {
+                      const cfg = ownershipCfg[a.name] || {};
+                      return cfg.phone || cfg.email;
+                    });
+                    if (notifiable.length === 0 && !settings.smsEnabled) return null;
+                    const sendSmsAlert = async (a) => {
+                      const cfg = ownershipCfg[a.name] || {};
+                      if (!cfg.phone) return;
+                      setCapitalNotifyStatus(prev => ({ ...prev, [a.name + '_sms']: 'sending' }));
+                      const amtText = a.suggested > 0 ? `₦${Number(a.suggested).toLocaleString('en-NG')}` : 'your share';
+                      const msg = `${settings.businessName || 'CIF Cash'}: Capital ${isNegative ? 'deficit' : 'alert'} — please top up ${amtText} as soon as possible. Your current ownership: ${a.currentPct}% (target: ${a.targetPct}%). Contact the admin for details.`;
+                      const res = await API.post('sms/notify-stakeholder', { phone: cfg.phone, message: msg, stakeholderName: a.name });
+                      setCapitalNotifyStatus(prev => ({ ...prev, [a.name + '_sms']: res?.ok ? 'sent' : 'failed' }));
+                    };
+                    const buildEmailLink = (a) => {
+                      const cfg = ownershipCfg[a.name] || {};
+                      if (!cfg.email) return null;
+                      const amtText = a.suggested > 0 ? `₦${Number(a.suggested).toLocaleString('en-NG')}` : 'your proportional share';
+                      const subject = encodeURIComponent(`Capital ${isNegative ? 'Deficit Alert' : 'Low Capital Alert'} — Action Required`);
+                      const body = encodeURIComponent(
+                        `Dear ${a.name},\n\nThis is a capital ${isNegative ? 'deficit' : 'low capital'} alert from ${settings.businessName || 'CIF Cash'}.\n\nAvailable lending capital is currently ${isNegative ? 'negative' : 'below the alert threshold'} and requires an immediate top-up.\n\nYour expected contribution: ${amtText}\nYour current ownership: ${a.currentPct}% (target: ${a.targetPct}%, min: ${a.minPct ?? '—'}%, max: ${a.maxPct ?? '—'}%)\n\nPlease arrange to bring in your expected amount as soon as possible.\n\nThank you.`
+                      );
+                      return `mailto:${cfg.email}?subject=${subject}&body=${body}`;
+                    };
+                    const accentClr = isNegative ? '#991b1b' : '#92400e';
+                    const bgClr = isNegative ? '#fee2e2' : '#fef3c7';
+                    return (
+                      <div style={{ marginTop: '14px', paddingTop: '12px', borderTop: `1px solid ${isNegative ? '#fca5a5' : '#fde68a'}` }}>
+                        <div style={{ fontSize: '12px', fontWeight: 700, color: accentClr, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
+                          Notify stakeholders
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {allocations.map(a => {
+                            const cfg = ownershipCfg[a.name] || {};
+                            const smsStatus = capitalNotifyStatus[a.name + '_sms'];
+                            const emailHref = buildEmailLink(a);
+                            if (!cfg.phone && !emailHref) {
+                              return (
+                                <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                                  <strong style={{ minWidth: '100px', color: a.isBelowMin ? '#dc2626' : '#374151' }}>{a.name}{a.isBelowMin ? ' ⚠' : ''}</strong>
+                                  <span style={{ color: '#9ca3af', fontSize: '12px', fontStyle: 'italic' }}>No contact info — add phone/email in Settings → Stakeholder Ownership Targets</span>
+                                </div>
+                              );
+                            }
+                            return (
+                              <div key={a.name} style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 10px', background: bgClr, borderRadius: '6px' }}>
+                                <strong style={{ minWidth: '100px', fontSize: '13px', color: a.isBelowMin ? '#dc2626' : '#374151' }}>{a.name}{a.isBelowMin ? ' ⚠ priority' : ''}</strong>
+                                {a.suggested > 0 && <span style={{ fontSize: '12px', color: accentClr }}>expects {fmtMoney(a.suggested)}</span>}
+                                {cfg.phone && (
+                                  <button
+                                    style={{ ...S.btnSm(smsStatus === 'sent' ? 'primary' : smsStatus === 'failed' ? 'danger' : 'accent'), fontSize: '12px' }}
+                                    disabled={smsStatus === 'sending' || smsStatus === 'sent'}
+                                    onClick={() => sendSmsAlert(a)}
+                                  >
+                                    {smsStatus === 'sending' ? '⏳ Sending…' : smsStatus === 'sent' ? '✅ SMS Sent' : smsStatus === 'failed' ? '❌ Retry SMS' : '📱 Send SMS'}
+                                  </button>
+                                )}
+                                {emailHref && (
+                                  <a href={emailHref} style={{ ...S.btnSm('outline'), fontSize: '12px', textDecoration: 'none' }}>
+                                    📧 Email
+                                  </a>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {notifiable.length > 1 && notifiable.some(a => (ownershipCfg[a.name] || {}).phone) && (
+                          <button
+                            style={{ ...S.btn('accent'), marginTop: '10px', fontSize: '13px' }}
+                            disabled={notifiable.every(a => ['sending', 'sent'].includes(capitalNotifyStatus[a.name + '_sms']))}
+                            onClick={() => notifiable.filter(a => (ownershipCfg[a.name] || {}).phone).forEach(a => sendSmsAlert(a))}
+                          >
+                            📱 Send SMS to All
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })()}
@@ -9343,7 +9472,7 @@ export default function App() {
           <div style={S.card}>
             <div style={S.cardTitle}>🎯 Stakeholder Ownership Targets</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
-              Set the minimum, maximum, and target ownership percentage for each stakeholder. The Capital Analysis section uses these to calculate who should contribute capital in a deficit and how much, and how to split withdrawals when there is a surplus.
+              Set the minimum, maximum, and target ownership percentage for each stakeholder. Also add their phone and email so the system can notify them directly when a capital top-up or withdrawal opportunity arises.
               <br /><br />
               <strong>Note:</strong> Targets do not need to sum to 100%. Any unallocated remainder is treated as unassigned.
             </div>
@@ -9355,13 +9484,16 @@ export default function App() {
               }
               const thStyle = { ...S.th, whiteSpace: 'nowrap' };
               return (
-                <table style={{ ...S.table, minWidth: '520px' }}>
+                <div style={{ overflowX: 'auto' }}>
+                <table style={{ ...S.table, minWidth: '720px' }}>
                   <thead>
                     <tr>
                       <th style={thStyle}>Stakeholder</th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Min %<InfoIcon tip="The minimum ownership percentage this stakeholder should hold. Used as a soft floor when computing contribution expectations." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Target %<InfoIcon tip="The ideal ownership percentage for this stakeholder. Contribution expectations are calculated so that their share reaches this target." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Max %<InfoIcon tip="The maximum ownership percentage this stakeholder should hold. Stakeholders above their max get a higher share of any recommended withdrawal." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Phone (SMS)<InfoIcon tip="Nigerian mobile number for this stakeholder. Used to send SMS alerts when capital is low or a withdrawal is available. Format: 080XXXXXXXX" /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Email<InfoIcon tip="Email address for this stakeholder. Used to generate pre-filled email alerts when capital is low or a withdrawal is available." /></span></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -9398,11 +9530,30 @@ export default function App() {
                               onChange={e => setTgt({ maxPercent: e.target.value === '' ? null : Number(e.target.value) })}
                             />
                           </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '140px' }}
+                              type="tel"
+                              placeholder="080XXXXXXXX"
+                              value={tgt.phone ?? ''}
+                              onChange={e => setTgt({ phone: e.target.value })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '180px' }}
+                              type="email"
+                              placeholder="name@example.com"
+                              value={tgt.email ?? ''}
+                              onChange={e => setTgt({ email: e.target.value })}
+                            />
+                          </td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
+                </div>
               );
             })()}
           </div>
