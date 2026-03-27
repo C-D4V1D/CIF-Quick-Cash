@@ -434,7 +434,7 @@ const DEFAULT_SETTINGS = {
   capitalSurplusStreakMonths: 3,
   capitalPeakGraceFactor: 0.10,
   capitalMinAbsolute: 0,
-  capitalDefaultRate: 15,
+  capitalDefaultRate: null, // null = auto-compute from history
   stakeholderOwnership: {},
 };
 
@@ -527,6 +527,54 @@ const capBuildSnapshots = (transactions, expenses, distributions, capitalEntries
 };
 
 // Full prediction engine — returns all data needed by the Capital Analysis UI.
+// Auto-computes the historical loan default rate from closed/forfeited/overdue transactions.
+// Returns { rate: 0–1, loanCount: N, isFallback: bool }
+const computeHistoricalDefaultRate = (transactions, numMonths, trendWeight) => {
+  const monthKeys = capRecentMonthKeys(numMonths);
+  const todayStr = localISODate();
+  const monthRates = [];
+
+  for (const mk of monthKeys) {
+    // Only advance loans (outrights have no deadline and never "default")
+    const dueInMonth = transactions.filter(t =>
+      t.type !== 'outright' && capMonthKey(t.deadlineDate) === mk
+    );
+    if (dueInMonth.length === 0) continue;
+
+    const defaultedCount = dueInMonth.filter(t => {
+      // Forfeited / sold without repaying
+      if (t.status === 'for_sale' || t.status === 'sold' || t.status === 'ready_to_sell') return true;
+      // Repaid, but late (after agreed deadline)
+      if (t.status === 'closed' && t.dateRepaid && t.deadlineDate) {
+        return t.dateRepaid > t.deadlineDate;
+      }
+      // Still active but deadline has already passed → unresolved overdue
+      if (t.status === 'active' && t.deadlineDate && t.deadlineDate < todayStr) return true;
+      return false;
+    }).length;
+
+    monthRates.push({ rate: defaultedCount / dueInMonth.length, count: dueInMonth.length });
+  }
+
+  if (monthRates.length === 0) return { rate: 0.15, loanCount: 0, isFallback: true };
+
+  // Exponentially weighted average of per-month rates (same recency weight as rest of engine)
+  const w = Math.max(0.1, Math.min(0.95, Number(trendWeight) ?? 0.7));
+  const n = monthRates.length;
+  let weightSum = 0, total = 0;
+  for (let i = 0; i < n; i++) {
+    const weight = Math.pow(1 - w, n - 1 - i) * monthRates[i].count; // weight by loan count too
+    total += monthRates[i].rate * weight;
+    weightSum += weight;
+  }
+  const totalLoans = monthRates.reduce((s, m) => s + m.count, 0);
+  return {
+    rate: Math.max(0, Math.min(1, weightSum > 0 ? total / weightSum : 0.15)),
+    loanCount: totalLoans,
+    isFallback: false,
+  };
+};
+
 const computeCapitalPrediction = (transactions, expenses, distributions, capitalEntries, settings) => {
   const numMonths = Math.max(2, Math.min(24, Number(settings.capitalHistoryMonths) || 6));
   const trendWeight = Math.max(0.1, Math.min(0.95, Number(settings.capitalTrendWeight) ?? 0.7));
@@ -535,7 +583,13 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   const surplusStreakMonths = Number(settings.capitalSurplusStreakMonths) || 3;
   const peakGraceFactor = Number(settings.capitalPeakGraceFactor) ?? 0.10;
   const minAbsolute = Number(settings.capitalMinAbsolute) || 0;
-  const defaultRate = Math.max(0, Math.min(1, (Number(settings.capitalDefaultRate) ?? 15) / 100));
+  // Use admin override if set, otherwise auto-compute from history
+  const overrideRaw = settings.capitalDefaultRate;
+  const hasOverride = overrideRaw !== null && overrideRaw !== undefined && overrideRaw !== '';
+  const autoDefault = computeHistoricalDefaultRate(transactions, numMonths, trendWeight);
+  const defaultRate = hasOverride
+    ? Math.max(0, Math.min(1, Number(overrideRaw) / 100))
+    : autoDefault.rate;
   const ownershipTargets = settings.stakeholderOwnership || {};
 
   const snapshots = capBuildSnapshots(transactions, expenses, distributions, capitalEntries, numMonths);
@@ -730,6 +784,13 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
     dataPoints: snapshots.length, residualStd: Math.round(residualStd),
     avgNetMonthly: Math.round(avgNetMonthly),
     contributionPlan, withdrawalPlan,
+    defaultRateInfo: {
+      rate: defaultRate,
+      computedRate: autoDefault.rate,
+      loanCount: autoDefault.loanCount,
+      isFallback: autoDefault.isFallback,
+      isOverridden: hasOverride,
+    },
   };
 };
 
@@ -8478,6 +8539,16 @@ export default function App() {
                       { label: 'Peak Month Deployment', value: fmtMoney(cp.peakDeployment), sub: 'highest single-month origination', color: COLORS.primaryDark },
                       { label: 'Peak Cushion', value: fmtMoney(cp.peakCushion), sub: 'above worst-ever deployment', color: cp.peakCushion >= 0 ? COLORS.primary : COLORS.danger },
                       { label: 'Min Safe Capital', value: fmtMoney(cp.minimumCapitalRequired), sub: `peak × ${(1 + (settings.capitalPeakGraceFactor ?? 0.10)).toFixed(2)}×`, color: COLORS.primaryDark },
+                      {
+                        label: 'Loan Default Rate',
+                        value: `${Math.round(cp.defaultRateInfo.rate * 100)}%`,
+                        sub: cp.defaultRateInfo.isOverridden
+                          ? 'admin override (computed: ' + Math.round(cp.defaultRateInfo.computedRate * 100) + '%)'
+                          : cp.defaultRateInfo.isFallback
+                            ? 'fallback — no history yet'
+                            : `auto · ${cp.defaultRateInfo.loanCount} loan${cp.defaultRateInfo.loanCount !== 1 ? 's' : ''}`,
+                        color: cp.defaultRateInfo.rate > 0.3 ? COLORS.danger : cp.defaultRateInfo.rate > 0.15 ? COLORS.warning : COLORS.primary,
+                      },
                     ].map((stat, i) => (
                       <div key={i} style={{ background: COLORS.bg, borderRadius: '10px', padding: '14px', border: `1px solid ${COLORS.border}` }}>
                         <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '4px' }}>{stat.label}</div>
@@ -8513,7 +8584,7 @@ export default function App() {
                     {cp.dataPoints} month{cp.dataPoints !== 1 ? 's' : ''} of data · Recency weight {Math.round((settings.capitalTrendWeight ?? 0.7) * 100)}%
                     {cp.useSeasonalIndex ? ' · Seasonal adjustment on' : ' · Seasonal needs 13+ months'}
                     {' · '}Std dev ±{fmtMoney(cp.residualStd)}/mo
-                    {' · '}Loan default rate {settings.capitalDefaultRate ?? 15}%
+                    {' · '}Default rate {Math.round(cp.defaultRateInfo.rate * 100)}%{cp.defaultRateInfo.isOverridden ? ' (override)' : cp.defaultRateInfo.isFallback ? ' (fallback)' : ' (auto)'}
                   </div>
                 </div>
               );
@@ -8986,8 +9057,27 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Recency Weight (0–1)<InfoIcon tip="How much to favour recent months over older ones when computing the weighted average. 0 = flat average of all months, 1 = only the most recent month counts. Default 0.7 gives strong but not exclusive weight to recent data." /></span>}>
                 <input style={S.input} type="number" step="0.05" min="0.1" max="0.95" value={es.capitalTrendWeight ?? DEFAULT_SETTINGS.capitalTrendWeight} onChange={e => updateSettings({ ...es, capitalTrendWeight: Number(e.target.value) })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Loan Default Rate (%)<InfoIcon tip="Percentage of active loans expected NOT to repay on their due date (rollover or forfeit). Used to discount projected repayments so predictions aren't overly optimistic. Default: 15%" /></span>}>
-                <input style={S.input} type="number" min="0" max="100" value={es.capitalDefaultRate ?? DEFAULT_SETTINGS.capitalDefaultRate} onChange={e => updateSettings({ ...es, capitalDefaultRate: Number(e.target.value) })} />
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Default Rate Override (%)<InfoIcon tip="Leave blank to let the app auto-compute the default rate from your transaction history (recommended). Only fill this in if you want to override the computed value — e.g. you know your customer mix is changing before the data reflects it." /></span>}>
+                <input
+                  style={S.input}
+                  type="number" min="0" max="100"
+                  placeholder={`Auto-computed — leave blank`}
+                  value={es.capitalDefaultRate ?? ''}
+                  onChange={e => updateSettings({ ...es, capitalDefaultRate: e.target.value === '' ? null : Number(e.target.value) })}
+                />
+                {(() => {
+                  const dri = capitalPrediction?.defaultRateInfo;
+                  if (!dri) return null;
+                  if (dri.isFallback) return <div style={{ fontSize: '11px', color: COLORS.warning, marginTop: '3px' }}>⚠ No loan history yet — using 15% fallback. Rate will auto-compute once loans reach their deadlines.</div>;
+                  return (
+                    <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '3px' }}>
+                      {dri.isOverridden
+                        ? <span style={{ color: COLORS.warning }}>Override active. Computed from history: <strong>{Math.round(dri.computedRate * 100)}%</strong> ({dri.loanCount} loan{dri.loanCount !== 1 ? 's' : ''}). Clear field to use auto-computed value.</span>
+                        : <span>Auto-computed: <strong>{Math.round(dri.computedRate * 100)}%</strong> from {dri.loanCount} loan{dri.loanCount !== 1 ? 's' : ''}</span>
+                      }
+                    </div>
+                  );
+                })()}
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Peak Grace Factor (%)<InfoIcon tip="Extra headroom added on top of the busiest single month's deployment when computing the minimum safe capital. E.g. 10% means the minimum is peak × 1.10. Higher = more conservative buffer." /></span>}>
                 <input style={S.input} type="number" step="0.01" min="0" max="1" value={es.capitalPeakGraceFactor ?? DEFAULT_SETTINGS.capitalPeakGraceFactor} onChange={e => updateSettings({ ...es, capitalPeakGraceFactor: Number(e.target.value) })} />
