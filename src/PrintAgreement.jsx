@@ -109,7 +109,6 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     </table>
 
     <div class="section-hdr">PART A — CUSTOMER DETAILS</div>
-    <div class="staff-note"><i>STAFF: Fill name, address, ID type and ID number from the customer's ID photo.</i></div>
     <table class="field-tbl">
       <tr><td class="fl" style="width:24%"><b>Full Name:</b></td><td class="fv">${tx.fullName || ''}</td></tr>
       <tr><td class="fl"><b>Address:</b></td><td class="fv">${tx.address || ''}</td></tr>
@@ -124,7 +123,6 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     </table>
 
     <div class="sub-hdr">PHONE NUMBERS — CUSTOMER FILLS THIS PART</div>
-    <div class="staff-note"><i>STAFF: Ask customer to say their numbers. Call at least one immediately to confirm it is real.</i></div>
     <table class="field-tbl">
       <tr><td class="fl" style="width:24%"><b>Phone Numbers:</b></td><td class="fv">${phones || ''}</td></tr>
       <tr><td class="fl"><b>Family / Neighbour Phone:</b></td><td class="fv">${familyLine || ''}</td></tr>
@@ -138,7 +136,6 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div class="hr-gold"></div>
 
     <div class="section-hdr">PART B — ITEM DETAILS</div>
-    <div class="staff-note green-note"><i>STAFF: Inspect, test, and photograph the item. Note every scratch or fault honestly.</i></div>
     <table class="field-tbl">
       <tr><td class="fl" style="width:28%"><b>Item Type / Brand / Model:</b></td><td class="fv">${itemLine || ''}</td></tr>
       <tr><td class="fl"><b>Colour &amp; Condition:</b></td><td class="fv">${colourCondition || ''}</td></tr>
@@ -213,18 +210,17 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
     <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
+  `;
 
+  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 3–6 + PART E) ──
+  const page3Content = `
     <div class="clause-hdr c3">3. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
     <div class="clause-body cb3">
-      You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/><br/>
-      <b>If the ${maxLoanDays}th day (${fmtDateLong(internalDeadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.
+      You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/>
+      <div style="margin-top:3px"><b>If the ${maxLoanDays}th day (${fmtDateLong(internalDeadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.</div>
     </div>
 
     <div class="clause-hdr c4">4. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
-  `;
-
-  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clause 4 body + Clauses 5–6 + PART E) ──
-  const page3Content = `
     <div class="clause-body cb4">
       <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/><br/>
       As a courtesy, we may try to send an SMS or call your phone numbers before Day ${maxLoanDays}. However, whether we reach you or not, the ${maxLoanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(internalDeadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
@@ -579,7 +575,7 @@ body{
 .panel{
   width: 50%;
   height: 100%;
-  padding: 6mm 7mm 5mm 7mm;
+  padding: 5mm 5mm 4mm 5mm;
   box-sizing: border-box;
   overflow: hidden;
   position: relative;
@@ -798,8 +794,10 @@ body{ font-size:8pt; line-height:1.25; }
 
 /* === PRINT CONTROLS (screen only) === */
 .print-controls{
-  position: fixed; top: 16px; right: 16px;
-  display: flex; flex-direction: column; gap: 8px; z-index: 9999;
+  position: sticky; top: 0; z-index: 9999;
+  background: #f8f9fa; border-bottom: 2px solid #ddd;
+  padding: 10px 20px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
 }
 .print-btn{
   background: #1a5f2a; color: #fff; border: none;
@@ -831,14 +829,12 @@ body{ font-size:8pt; line-height:1.25; }
 <div class="print-controls no-print">
   <button class="print-btn" onclick="window.print()">🖨 Print ${isOutright ? 'Receipt' : 'Agreement'}</button>
   ${!isOutright ? `
-  <div style="background:#fff;border:1px solid #ccc;border-radius:6px;padding:10px 14px;font-size:11px;color:#444;max-width:220px;line-height:1.6">
-    <b>How to print &amp; fold:</b><br/>
-    1. Click Print → set <b>Landscape</b><br/>
-    2. Enable <b>two-sided / duplex</b> printing — <i>flip on short edge</i><br/>
-    &nbsp;&nbsp;&nbsp;<i>Or: print page 1, re-insert paper, print page 2</i><br/>
-    3. <b>Fold each sheet</b> in half (right over left)<br/>
-    4. Two booklets print: <b>Business Copy</b> + <b>Customer Copy</b>
-  </div>` : ''}
+  <span style="font-size:11px;color:#555;line-height:1.5">
+    <b>How to print &amp; fold:</b>
+    &nbsp;1. Set <b>Landscape</b> + <b>two-sided / duplex</b> (<i>flip on short edge</i>) — or print page 1, re-insert, print page 2.
+    &nbsp;2. <b>Fold each sheet</b> right over left.
+    &nbsp;3. Two booklets: <b>Business Copy</b> + <b>Customer Copy</b>.
+  </span>` : ''}
   <button class="close-btn" onclick="window.close()">✕ Close</button>
 </div>
 
