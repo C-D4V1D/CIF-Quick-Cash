@@ -200,8 +200,8 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
       </tr>
       <tr>
         <td>${chk(!!tx.photoCustomerID)} &nbsp;<b>ID Card</b></td>
-        <td>${chk(!!(tx.itemPhotos && tx.itemPhotos.front))} &nbsp;<b>Item — Front</b></td>
-        <td>${chk(!!(tx.itemPhotos && (tx.itemPhotos.back || tx.itemPhotos.left || tx.itemPhotos.right)))} &nbsp;<b>Item — Back/Sides</b></td>
+        <td>${chk(!!(tx.itemPhotos && tx.itemPhotos.length > 0))} &nbsp;<b>Item — Front</b></td>
+        <td>${chk(!!(tx.itemPhotos && tx.itemPhotos.length > 1))} &nbsp;<b>Item — Back/Sides</b></td>
       </tr>
     </table>
 
