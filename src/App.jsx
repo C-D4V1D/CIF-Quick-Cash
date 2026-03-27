@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useLocation, useParams, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
@@ -882,8 +883,13 @@ const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, owne
   } else {
     // Below-target contributors can't cover the full shortfall alone.
     // Fill all target-gaps first, then distribute the remainder by remaining capacity.
+    // Truly exempt above-target stakeholders (not dilution-protection) never receive extra.
     const remainder = shortfallAmount - totalNeed;
-    const extraCaps = pool.map(x => Math.max(0, x.maxCapacity - x.allowedNeed));
+    const extraCaps = pool.map(x => {
+      // Above-target AND not dilution-protection → completely exempt, zero extra capacity
+      if (x.isAboveTarget && x.neededToReachTarget === 0) return 0;
+      return Math.max(0, x.maxCapacity - x.allowedNeed);
+    });
     const totalExtra = extraCaps.reduce((s, x) => s + x, 0);
     withSuggested = pool.map((x, i) => ({
       ...x,
@@ -1453,33 +1459,36 @@ function Field({ label, required, children, style: st }) {
 function InfoIcon({ tip }) {
   const [coords, setCoords] = useState(null);
   const ref = useRef();
-  const TIP_W = 240;
+  const TIP_W = 260;
   const GAP = 8;
   const EDGE_PAD = 10;
-  const MIN_SPACE_ABOVE = 80; // px — flip tooltip below the icon if less space than this above it
 
-  const show = (e) => {
+  const show = () => {
     if (!ref.current) return;
     const r = ref.current.getBoundingClientRect();
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    // Prefer above the icon; flip below if too close to top
     const spaceAbove = r.top;
-    const placeBelow = spaceAbove < MIN_SPACE_ABOVE;
-    const top = placeBelow ? r.bottom + GAP : r.top - GAP;
-    // Centre on the icon, then clamp to viewport edges
+    const spaceBelow = vh - r.bottom;
+    // Place below the icon if more space below, or if not much room above
+    const placeBelow = spaceBelow >= spaceAbove || spaceAbove < 120;
+    let top;
+    if (placeBelow) {
+      top = Math.min(r.bottom + GAP, vh - GAP);
+    } else {
+      // Anchor to the top of the icon; tooltip will expand upward via transform
+      top = r.top - GAP;
+    }
     let left = r.left + r.width / 2 - TIP_W / 2;
     left = Math.max(EDGE_PAD, Math.min(left, vw - TIP_W - EDGE_PAD));
-    setCoords({ top, left, below: placeBelow });
+    setCoords({ top, left, placeBelow });
   };
 
   const hide = () => setCoords(null);
 
   useEffect(() => {
     if (!coords) return;
-    const close = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) hide();
-    };
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) hide(); };
     document.addEventListener('mousedown', close);
     document.addEventListener('touchstart', close);
     return () => {
@@ -1490,7 +1499,7 @@ function InfoIcon({ tip }) {
 
   const tooltipStyle = {
     position: 'fixed',
-    zIndex: 99999,
+    zIndex: 2147483647,  // max z-index
     background: '#1a1a2e',
     color: '#fff',
     fontSize: '13px',
@@ -1501,20 +1510,22 @@ function InfoIcon({ tip }) {
     padding: '10px 13px',
     borderRadius: '10px',
     width: TIP_W + 'px',
+    maxWidth: `calc(100vw - ${EDGE_PAD * 2}px)`,
     boxShadow: '0 6px 24px rgba(0,0,0,0.32)',
     pointerEvents: 'none',
-    top: coords ? (coords.below ? coords.top : undefined) : undefined,
-    bottom: coords && !coords.below ? (window.innerHeight - coords.top) + 'px' : undefined,
+    top: coords ? coords.top + 'px' : undefined,
     left: coords ? coords.left + 'px' : undefined,
+    // When placing above the icon, anchor bottom to top coord by shifting up
+    transform: coords && !coords.placeBelow ? 'translateY(-100%)' : 'none',
   };
 
   return (
     <span
       ref={ref}
-      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: '4px', flexShrink: 0 }}
+      style={{ display: 'inline-flex', alignItems: 'center', verticalAlign: 'middle', marginLeft: '4px', flexShrink: 0 }}
       onMouseEnter={show}
       onMouseLeave={hide}
-      onClick={e => { e.stopPropagation(); coords ? hide() : show(e); }}
+      onClick={e => { e.stopPropagation(); coords ? hide() : show(); }}
     >
       <span style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -1524,7 +1535,7 @@ function InfoIcon({ tip }) {
         border: `1px solid ${COLORS.primary}`, lineHeight: 1, userSelect: 'none',
         flexShrink: 0, textTransform: 'none', letterSpacing: 'normal',
       }}>ℹ</span>
-      {coords && <span style={tooltipStyle}>{tip}</span>}
+      {coords && createPortal(<span style={tooltipStyle}>{tip}</span>, document.body)}
     </span>
   );
 }
@@ -5155,9 +5166,10 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                       <tr>
                         <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Stakeholder</th>
                         <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Invested<InfoIcon tip="Total capital this stakeholder has put in." /></span></th>
-                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>%<InfoIcon tip="Their current ownership share." /></span></th>
-                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Bring In<InfoIcon tip="Expected contribution, rounded to the nearest ₦10. Those below their target % are asked first." /></span></th>
-                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Status<InfoIcon tip="Below min = urgent; Below target = contributing; Dilution protection = above target now but needs to contribute to avoid being diluted below target; Above target = no contribution needed." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Now %<InfoIcon tip="Their current ownership share." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Target %<InfoIcon tip="Their agreed ownership target (min–max). Contributions are based on reaching this target." /></span></th>
+                        <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Bring In<InfoIcon tip="Expected contribution, rounded to the nearest ₦10. Those below their target % are asked first; those above are exempt." /></span></th>
+                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Status<InfoIcon tip="Below min = urgent; Below target = contributing; Dilution protection = above target now but would fall below after the injection; Above target = fully exempt." /></span></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5168,6 +5180,12 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                           </td>
                           <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{fmtMoney(a.currentAmount)}</td>
                           <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{a.currentPct}%</td>
+                          <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151', fontSize: '12px' }}>
+                            {a.targetPct != null ? `${a.targetPct}%` : '—'}
+                            {(a.minPct > 0 || a.maxPct < 100) && (
+                              <div style={{ fontSize: '10px', color: '#9ca3af' }}>{a.minPct}–{a.maxPct}%</div>
+                            )}
+                          </td>
                           <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? '#dc2626' : '#6b7280' }}>
                             {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max)' : '—'}
                           </td>
@@ -5178,7 +5196,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                       ))}
                       {unallocated > 0 && (
                         <tr style={{ borderTop: '1px solid #fca5a5' }}>
-                          <td colSpan={4} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated (all stakeholders at max %)</td>
+                          <td colSpan={5} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated (all stakeholders at max %)</td>
                           <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: '#dc2626' }}>{fmtMoney(unallocated)}</td>
                         </tr>
                       )}
@@ -8659,17 +8677,22 @@ export default function App() {
                             </th>
                             <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
                               <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
-                                %<InfoIcon tip="This stakeholder's current share of total invested capital." />
+                                Now %<InfoIcon tip="This stakeholder's current share of total invested capital." />
                               </span>
                             </th>
                             <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
                               <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
-                                Bring In<InfoIcon tip="How much this stakeholder should contribute, rounded to the nearest ₦10. Prioritised by ownership gap — those furthest below their target contribute first." />
+                                Target %<InfoIcon tip="Their agreed ownership target (min–max range). Set in Settings → Stakeholder Ownership Targets. Contribution expectations are based on bringing their share up to this target." />
+                              </span>
+                            </th>
+                            <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
+                              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                                Bring In<InfoIcon tip="How much this stakeholder should contribute, rounded to the nearest ₦10. Those below their target are asked first; stakeholders already above their target are exempt." />
                               </span>
                             </th>
                             <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
                               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
-                                Status<InfoIcon tip="Below min = urgent (below floor); Below target = needs to contribute; Dilution protection = above target now but would fall below after the injection; Above target = no contribution needed." />
+                                Status<InfoIcon tip="Below min = urgent (below floor %). Below target = needs to contribute. Dilution protection = above target now but would fall below after the injection without contributing. Above target = fully exempt, no contribution needed." />
                               </span>
                             </th>
                           </tr>
@@ -8682,6 +8705,12 @@ export default function App() {
                               </td>
                               <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{fmtMoney(a.currentAmount)}</td>
                               <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151' }}>{a.currentPct}%</td>
+                              <td style={{ padding: '5px 8px', textAlign: 'right', color: '#374151', fontSize: '12px' }}>
+                                {a.targetPct != null ? `${a.targetPct}%` : '—'}
+                                {(a.minPct > 0 || a.maxPct < 100) && (
+                                  <div style={{ fontSize: '10px', color: '#9ca3af' }}>{a.minPct}–{a.maxPct}%</div>
+                                )}
+                              </td>
                               <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? (isNegative ? '#dc2626' : '#b45309') : '#6b7280' }}>
                                 {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max %)' : '—'}
                               </td>
@@ -8692,7 +8721,7 @@ export default function App() {
                           ))}
                           {unallocated > 0 && (
                             <tr style={{ borderTop: `1px solid ${dividerClr}` }}>
-                              <td colSpan={4} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated</td>
+                              <td colSpan={5} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated (all stakeholders at max %)</td>
                               <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: isNegative ? '#dc2626' : '#b45309' }}>{fmtMoney(unallocated)}</td>
                             </tr>
                           )}
@@ -9783,7 +9812,9 @@ export default function App() {
                           <td style={S.td}>
                             <input
                               style={{ ...S.input, width: '180px' }}
-                              type="email"
+                              type="text"
+                              inputMode="email"
+                              autoComplete="email"
                               placeholder="name@example.com"
                               value={tgt.email ?? ''}
                               onChange={e => setTgt({ email: e.target.value })}
