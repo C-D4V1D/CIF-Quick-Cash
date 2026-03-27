@@ -826,76 +826,92 @@ const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, owne
   const totalAfter = totalCapital + shortfallAmount;
   const targets = ownershipTargets || {};
 
-  // Build working array with constraints
-  let pool = capByName.map(s => {
+  // For each stakeholder, compute how much they need to contribute so that
+  // their ownership percentage reaches (or stays at) their target AFTER the
+  // full shortfall has been injected.
+  //
+  // Key insight: stakeholders already above their target in the post-injection
+  // state contribute NOTHING — unless the dilution from others contributing
+  // would push them below their target, in which case they contribute just
+  // enough to stay at their target.
+  const pool = capByName.map(s => {
     const tgt = targets[s.name] || {};
     const currentPct = totalCapital > 0 ? s.total / totalCapital * 100 : 0;
-    const targetPct = tgt.targetPercent != null ? tgt.targetPercent : currentPct;
-    const minPct = tgt.minPercent ?? 0;
-    const maxPct = tgt.maxPercent ?? 100;
-    // Max they can contribute = (maxPct% of totalAfter) - what they already have
-    const maxCapacity = Math.max(0, (totalAfter * maxPct / 100) - s.total);
+    const targetPct  = tgt.targetPercent != null ? tgt.targetPercent : currentPct;
+    const minPct     = tgt.minPercent ?? 0;
+    const maxPct     = tgt.maxPercent ?? 100;
+
+    // Their ideal total amount in the post-injection world
+    const targetAmountAfter = totalAfter * targetPct / 100;
+    // How much they need to contribute to reach that target (0 if already there/above)
+    const neededToReachTarget = Math.max(0, targetAmountAfter - s.total);
+    // Hard cap: can't push them above maxPct
+    const maxCapacity = Math.max(0, totalAfter * maxPct / 100 - s.total);
+    // Effective need respects maxCapacity
+    const allowedNeed = Math.min(neededToReachTarget, maxCapacity);
+    // "Above target" = they stay at/above their target even after full dilution
+    const isAboveTarget = s.total >= targetAmountAfter;
+
     return {
       name: s.name,
       currentAmount: s.total,
       currentPct: Math.round(currentPct * 10) / 10,
-      targetPct,
+      targetPct: Math.round(targetPct * 10) / 10,
       minPct,
       maxPct,
+      targetAmountAfter: Math.round(targetAmountAfter),
+      neededToReachTarget,
       maxCapacity,
-      suggested: 0,
+      allowedNeed,
+      isAboveTarget,
       isBelowMin: currentPct < minPct,
     };
   });
 
-  // Compute sum of target percents to normalize ideal shares
-  const sumTargetPct = pool.reduce((s, x) => s + x.targetPct, 0) || 100;
+  const totalNeed = pool.reduce((s, x) => s + x.allowedNeed, 0);
 
-  // Step 1: Assign ideal (proportional to target %)
-  pool = pool.map(x => ({
-    ...x,
-    suggested: shortfallAmount * (x.targetPct / sumTargetPct),
-  }));
+  let withSuggested;
 
-  // Step 2: Iteratively cap at maxCapacity and redistribute overflow
-  let remaining = 0;
-  for (let iter = 0; iter < 10; iter++) {
-    remaining = 0;
-    let totalUncapped = 0;
-    pool = pool.map(x => {
-      if (x.suggested > x.maxCapacity) {
-        remaining += x.suggested - x.maxCapacity;
-        return { ...x, suggested: x.maxCapacity, capped: true };
-      }
-      totalUncapped += x.maxCapacity - x.suggested;
-      return { ...x, capped: false };
-    });
-    if (remaining < 1) break;
-    // Distribute remaining to uncapped stakeholders proportionally by remaining capacity
-    if (totalUncapped <= 0) break;
-    pool = pool.map(x => {
-      if (x.capped) return x;
-      const roomLeft = x.maxCapacity - x.suggested;
-      const add = remaining * (roomLeft / totalUncapped);
-      return { ...x, suggested: x.suggested + add };
-    });
+  if (totalNeed >= shortfallAmount) {
+    // Below-target contributors can cover the full shortfall on their own.
+    // Distribute proportionally to their need.
+    withSuggested = pool.map(x => ({
+      ...x,
+      suggested: totalNeed > 0 ? shortfallAmount * x.allowedNeed / totalNeed : 0,
+    }));
+  } else {
+    // Below-target contributors can't cover the full shortfall alone.
+    // Fill all target-gaps first, then distribute the remainder by remaining capacity.
+    const remainder = shortfallAmount - totalNeed;
+    const extraCaps = pool.map(x => Math.max(0, x.maxCapacity - x.allowedNeed));
+    const totalExtra = extraCaps.reduce((s, x) => s + x, 0);
+    withSuggested = pool.map((x, i) => ({
+      ...x,
+      suggested: x.allowedNeed + (totalExtra > 0 ? remainder * (extraCaps[i] / totalExtra) : 0),
+    }));
   }
 
-  // Round and compute total allocated
-  const totalAllocated = pool.reduce((s, x) => s + x.suggested, 0);
+  // Final rounding + cap at maxCapacity
+  const totalAllocated = withSuggested.reduce((s, x) => s + Math.min(x.suggested, x.maxCapacity), 0);
   const unallocated = Math.max(0, Math.round(shortfallAmount - totalAllocated));
 
-  const allocations = pool.map(x => ({
+  const allocations = withSuggested.map(x => ({
     name: x.name,
     currentAmount: x.currentAmount,
     currentPct: x.currentPct,
-    targetPct: Math.round(x.targetPct * 10) / 10,
+    targetPct: x.targetPct,
     minPct: x.minPct,
     maxPct: x.maxPct,
-    suggested: Math.round(x.suggested),
+    suggested: Math.round(Math.min(x.suggested, x.maxCapacity)),
+    isAboveTarget: x.isAboveTarget,
+    isDilutionProtection: x.isAboveTarget && x.neededToReachTarget > 0,
     isBelowMin: x.isBelowMin,
     capacityFull: x.maxCapacity <= 0,
-  })).sort((a, b) => b.suggested - a.suggested);
+  })).sort((a, b) => {
+    // Priority order: isBelowMin first, then below-target, then dilution-protection, then exempt
+    const rank = x => x.isBelowMin ? 0 : !x.isAboveTarget ? 1 : x.isDilutionProtection ? 2 : 3;
+    return rank(a) - rank(b) || b.suggested - a.suggested;
+  });
 
   return { allocations, unallocated };
 };
@@ -4179,6 +4195,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   }, []);
   const [wizardNotifyStatus, setWizardNotifyStatus] = useState(null); // null | 'sending' | { sent, failed, total }
   const wizardAutoSentRef = useRef(false);
+  const [wizardTopUpExtra, setWizardTopUpExtra] = useState(0);        // optional extra top-up above transaction shortfall
 
   // Auto-send capital shortfall SMS when Offer step first shows a shortfall (once per wizard session)
   useEffect(() => {
@@ -5096,19 +5113,38 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           const offerAmount = tx.cashAdvance || 0;
           const avail = availableLendingCapital != null ? availableLendingCapital : Infinity;
           if (offerAmount <= 0 || avail >= offerAmount) return null;
-          const shortfall = Math.ceil(offerAmount - avail);
+          const baseShortfall = Math.ceil(offerAmount - avail);
+          const totalTopUp = baseShortfall + (wizardTopUpExtra > 0 ? wizardTopUpExtra : 0);
           const ownershipTargets = settings.stakeholderOwnership || {};
-          const { allocations, unallocated } = computeRealTimeShortfall(shortfall, capByName || [], totalCapital || 0, ownershipTargets);
+          const { allocations, unallocated } = computeRealTimeShortfall(totalTopUp, capByName || [], totalCapital || 0, ownershipTargets);
           return (
             <div style={{ background: '#fef2f2', border: '2px solid #dc2626', borderRadius: '10px', padding: '16px', marginBottom: '16px' }}>
               <div style={{ fontWeight: 700, fontSize: '15px', color: '#dc2626', marginBottom: '8px' }}>🚨 Capital Shortfall — Immediate Top-Up Required</div>
               <div style={{ fontSize: '13px', color: '#7f1d1d', marginBottom: '12px' }}>
                 Available lending capital is <strong>{fmtMoney(avail < 0 ? 0 : avail)}</strong> but this transaction needs <strong>{fmtMoney(offerAmount)}</strong>.
-                A top-up of <strong>{fmtMoney(shortfall)}</strong> is needed before this can proceed.
+                A minimum top-up of <strong>{fmtMoney(baseShortfall)}</strong> is needed before this can proceed.
+              </div>
+              {/* Optional extra top-up */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                <label style={{ fontSize: '12px', fontWeight: 600, color: '#991b1b' }}>Top up extra above minimum (₦):</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={wizardTopUpExtra || ''}
+                  placeholder="0"
+                  onChange={e => setWizardTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
+                  style={{ width: '130px', padding: '5px 8px', fontSize: '13px', border: '1px solid #fca5a5', borderRadius: '6px' }}
+                />
+                {wizardTopUpExtra > 0 && (
+                  <span style={{ fontSize: '12px', color: '#991b1b' }}>
+                    Total: <strong>{fmtMoney(totalTopUp)}</strong>
+                  </span>
+                )}
               </div>
               {allocations.length > 0 && (
                 <div>
-                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Expected contributions</div>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Expected contributions{wizardTopUpExtra > 0 ? ` (including ₦${wizardTopUpExtra.toLocaleString('en-NG')} extra)` : ''}</div>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead>
                       <tr>
@@ -5116,6 +5152,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                         <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Current</th>
                         <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>% Now</th>
                         <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Bring In</th>
+                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}>Status</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5129,11 +5166,14 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                           <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? '#dc2626' : '#6b7280' }}>
                             {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max)' : '—'}
                           </td>
+                          <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
+                            {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isAboveTarget ? 'Above target' : 'Below target'}
+                          </td>
                         </tr>
                       ))}
                       {unallocated > 0 && (
                         <tr style={{ borderTop: '1px solid #fca5a5' }}>
-                          <td colSpan={3} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated (all stakeholders at max %)</td>
+                          <td colSpan={4} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated (all stakeholders at max %)</td>
                           <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: '#dc2626' }}>{fmtMoney(unallocated)}</td>
                         </tr>
                       )}
@@ -5141,6 +5181,9 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                   </table>
                   {allocations.some(a => a.isBelowMin) && (
                     <div style={{ fontSize: '11px', color: '#991b1b', marginTop: '6px' }}>⚠ Stakeholders marked with ⚠ are currently below their minimum ownership target and are prioritised for contribution.</div>
+                  )}
+                  {allocations.some(a => a.isAboveTarget && !a.isDilutionProtection) && (
+                    <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px' }}>Stakeholders shown as "Above target" are not required to contribute — others have been prioritised instead.</div>
                   )}
                   {/* Notify stakeholders from wizard — single button */}
                   {(() => {
@@ -6687,6 +6730,7 @@ export default function App() {
   const [capitalSmsSendState, setCapitalSmsSendState] = useState(null);     // null | 'sending' | { sent, failed, total }
   const [withdrawalSmsSendState, setWithdrawalSmsSendState] = useState(null);
   const capitalAutoSentRef = useRef({});  // tracks which auto-sends have fired today
+  const [capitalTopUpExtra, setCapitalTopUpExtra] = useState(0);            // optional extra top-up above the minimum
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
@@ -8532,7 +8576,8 @@ export default function App() {
               const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
               if (availableLendingCapital >= threshold) return null;
               const isNegative = availableLendingCapital < 0;
-              const shortfallNeeded = isNegative ? Math.abs(availableLendingCapital) : (threshold - availableLendingCapital);
+              const baseShortfallNeeded = isNegative ? Math.abs(availableLendingCapital) : (threshold - availableLendingCapital);
+              const shortfallNeeded = baseShortfallNeeded + (capitalTopUpExtra > 0 ? capitalTopUpExtra : 0);
               const ownershipCfg = settings.stakeholderOwnership || {};
               const { allocations, unallocated } = computeRealTimeShortfall(shortfallNeeded, capByName, totalCapital, ownershipCfg);
               const accentClr = isNegative ? '#991b1b' : '#92400e';
@@ -8565,15 +8610,34 @@ export default function App() {
                   </div>
                   <div style={{ fontSize: '13px', color: isNegative ? '#7f1d1d' : '#78350f', marginBottom: '12px' }}>
                     {isNegative
-                      ? <>Available lending capital is <strong style={{ color: '#dc2626' }}>{fmtMoney(availableLendingCapital)}</strong> (negative). The business needs an immediate injection of <strong>{fmtMoney(shortfallNeeded)}</strong> to restore capacity.</>
-                      : <>Available lending capital (<strong>{fmtMoney(availableLendingCapital)}</strong>) is below the alert threshold of <strong>{fmtMoney(threshold)}</strong>. Consider topping up <strong>{fmtMoney(shortfallNeeded)}</strong> to reach the threshold.</>
+                      ? <>Available lending capital is <strong style={{ color: '#dc2626' }}>{fmtMoney(availableLendingCapital)}</strong> (negative). The business needs a minimum injection of <strong>{fmtMoney(baseShortfallNeeded)}</strong> to restore capacity.</>
+                      : <>Available lending capital (<strong>{fmtMoney(availableLendingCapital)}</strong>) is below the alert threshold of <strong>{fmtMoney(threshold)}</strong>. A minimum of <strong>{fmtMoney(baseShortfallNeeded)}</strong> is needed to reach the threshold.</>
                     }
+                  </div>
+                  {/* Optional extra top-up field */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600, color: accentClr }}>Top up extra above minimum (₦):</label>
+                    <input
+                      type="number"
+                      min={0}
+                      step={5000}
+                      value={capitalTopUpExtra || ''}
+                      placeholder="0"
+                      onChange={e => setCapitalTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
+                      style={{ width: '140px', padding: '5px 8px', fontSize: '13px', border: `1px solid ${dividerClr}`, borderRadius: '6px' }}
+                    />
+                    {capitalTopUpExtra > 0 && (
+                      <span style={{ fontSize: '12px', color: accentClr }}>
+                        Total: <strong>{fmtMoney(shortfallNeeded)}</strong>
+                      </span>
+                    )}
                   </div>
                   {allocations.length > 0 && (
                     <div>
                       <div style={{ fontSize: '12px', fontWeight: 700, color: accentClr, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
-                        Expected contributions to restore capital
+                        Expected contributions{capitalTopUpExtra > 0 ? ` — total ₦${shortfallNeeded.toLocaleString('en-NG')} (₦${capitalTopUpExtra.toLocaleString('en-NG')} extra)` : ' to restore capital'}
                       </div>
+                      <div style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginBottom: '14px' }}>
                         <thead>
                           <tr>
@@ -8581,6 +8645,7 @@ export default function App() {
                             <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Currently Invested</th>
                             <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Ownership %</th>
                             <th style={{ textAlign: 'right', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Bring In</th>
+                            <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>Status</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -8594,19 +8659,26 @@ export default function App() {
                               <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? (isNegative ? '#dc2626' : '#b45309') : '#6b7280' }}>
                                 {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max %)' : '—'}
                               </td>
+                              <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
+                                {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isAboveTarget ? 'Above target' : 'Below target'}
+                              </td>
                             </tr>
                           ))}
                           {unallocated > 0 && (
                             <tr style={{ borderTop: `1px solid ${dividerClr}` }}>
-                              <td colSpan={3} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated</td>
+                              <td colSpan={4} style={{ padding: '5px 8px', color: '#6b7280', fontStyle: 'italic' }}>Unallocated</td>
                               <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: isNegative ? '#dc2626' : '#b45309' }}>{fmtMoney(unallocated)}</td>
                             </tr>
                           )}
                         </tbody>
                       </table>
-                      {/* Priority note */}
+                      </div>
+                      {/* Priority notes */}
                       {allocations.some(a => a.isBelowMin) && (
-                        <div style={{ fontSize: '11px', color: accentClr, marginBottom: '10px' }}>⚠ Stakeholders marked ⚠ are below their minimum ownership target and are highest priority.</div>
+                        <div style={{ fontSize: '11px', color: accentClr, marginBottom: '6px' }}>⚠ Stakeholders marked ⚠ are below their minimum ownership target and are highest priority.</div>
+                      )}
+                      {allocations.some(a => a.isAboveTarget && !a.isDilutionProtection) && (
+                        <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '6px' }}>Stakeholders shown as "Above target" are not required to contribute.</div>
                       )}
                       {/* Single notify section */}
                       <div style={{ paddingTop: '12px', borderTop: `1px solid ${dividerClr}`, display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
