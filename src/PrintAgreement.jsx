@@ -29,6 +29,14 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
   const interestRate = settings.interestRate ?? 1;
   const dailyFee = tx.dailyFee ?? Math.floor((tx.cashAdvance || 0) * Number(interestRate) / 100);
   const loanDays = tx.loanDays || 30;
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const internalDeadlineDate = (() => {
+    if (!tx.dateGiven) return tx.deadlineDate || '';
+    const d = new Date(tx.dateGiven);
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() + maxLoanDays);
+    return d.toISOString().split('T')[0];
+  })();
 
   const hasReceipt = tx.hasReceipt ? true : false;
   const p1Called = (tx.phonesVerified || [])[0];
@@ -210,10 +218,10 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
     <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
 
     <!-- Clause 3 -->
-    <div class="clause-hdr c3">3. &nbsp;THE ${loanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
+    <div class="clause-hdr c3">3. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
     <div class="clause-body cb3">
-      You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your exact deadline is <b>${fmtDateLong(tx.deadlineDate)}</b>.<br/><br/>
-      <b>If the ${loanDays}th day (${fmtDateLong(tx.deadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.
+      You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/><br/>
+      <b>If the ${maxLoanDays}th day (${fmtDateLong(internalDeadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.
     </div>
 
     <!-- Clause 4 -->
@@ -227,7 +235,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
   <div class="page">
     <div class="clause-body cb4">
       <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/><br/>
-      As a courtesy, we may try to send an SMS or call your phone numbers before Day ${loanDays}. However, whether we reach you or not, the ${loanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(tx.deadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
+      As a courtesy, we may try to send an SMS or call your phone numbers before Day ${maxLoanDays}. However, whether we reach you or not, the ${maxLoanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(internalDeadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
     </div>
 
     <!-- Clause 5 -->
