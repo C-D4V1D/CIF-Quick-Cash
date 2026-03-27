@@ -874,27 +874,37 @@ const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, owne
   let withSuggested;
 
   if (totalNeed >= shortfallAmount) {
-    // Below-target contributors can cover the full shortfall on their own.
-    // Distribute proportionally to their need.
+    // Phase 1 only: eligible stakeholders cover the full shortfall.
     withSuggested = pool.map(x => ({
       ...x,
       suggested: totalNeed > 0 ? shortfallAmount * x.allowedNeed / totalNeed : 0,
+      isLastResort: false,
     }));
   } else {
-    // Below-target contributors can't cover the full shortfall alone.
-    // Fill all target-gaps first, then distribute the remainder by remaining capacity.
-    // Truly exempt above-target stakeholders (not dilution-protection) never receive extra.
     const remainder = shortfallAmount - totalNeed;
-    const extraCaps = pool.map(x => {
-      // Above-target AND not dilution-protection → completely exempt, zero extra capacity
-      if (x.isAboveTarget && x.neededToReachTarget === 0) return 0;
+
+    // Phase 2: eligible (non-exempt) stakeholders absorb the remainder up to their maxPct.
+    const phase2Caps = pool.map(x => {
+      if (x.isAboveTarget && x.neededToReachTarget === 0) return 0; // exempt for now
       return Math.max(0, x.maxCapacity - x.allowedNeed);
     });
-    const totalExtra = extraCaps.reduce((s, x) => s + x, 0);
-    withSuggested = pool.map((x, i) => ({
-      ...x,
-      suggested: x.allowedNeed + (totalExtra > 0 ? remainder * (extraCaps[i] / totalExtra) : 0),
-    }));
+    const totalPhase2 = phase2Caps.reduce((s, x) => s + x, 0);
+    const phase2Amount = Math.min(remainder, totalPhase2);
+    const phase3Amount = remainder - phase2Amount; // > 0 only if eligible stakeholders are all maxed
+
+    // Phase 3 (last resort): above-target stakeholders contribute only the uncovered remainder.
+    // They are flagged isLastResort so the UI can display them differently.
+    const phase3Caps = pool.map(x => {
+      if (!x.isAboveTarget || x.neededToReachTarget > 0) return 0; // already handled above
+      return Math.max(0, x.maxCapacity); // their allowedNeed is 0
+    });
+    const totalPhase3 = phase3Caps.reduce((s, x) => s + x, 0);
+
+    withSuggested = pool.map((x, i) => {
+      const p2 = totalPhase2 > 0 ? phase2Amount * (phase2Caps[i] / totalPhase2) : 0;
+      const p3 = phase3Amount > 0 && totalPhase3 > 0 ? phase3Amount * (phase3Caps[i] / totalPhase3) : 0;
+      return { ...x, suggested: x.allowedNeed + p2 + p3, isLastResort: p3 > 0 };
+    });
   }
 
   // Final rounding + cap at maxCapacity
@@ -911,11 +921,12 @@ const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, owne
     suggested: Math.round(Math.min(x.suggested, x.maxCapacity) / 10) * 10,
     isAboveTarget: x.isAboveTarget,
     isDilutionProtection: x.isAboveTarget && x.neededToReachTarget > 0,
+    isLastResort: x.isLastResort || false,
     isBelowMin: x.isBelowMin,
     capacityFull: x.maxCapacity <= 0,
   })).sort((a, b) => {
-    // Priority order: isBelowMin first, then below-target, then dilution-protection, then exempt
-    const rank = x => x.isBelowMin ? 0 : !x.isAboveTarget ? 1 : x.isDilutionProtection ? 2 : 3;
+    // Priority: isBelowMin → below target → dilution protection → last resort → fully exempt
+    const rank = x => x.isBelowMin ? 0 : !x.isAboveTarget ? 1 : x.isDilutionProtection ? 2 : x.isLastResort ? 3 : 4;
     return rank(a) - rank(b) || b.suggested - a.suggested;
   });
 
@@ -5169,7 +5180,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                         <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Now %<InfoIcon tip="Their current ownership share." /></span></th>
                         <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Target %<InfoIcon tip="Their agreed ownership target (min–max). Contributions are based on reaching this target." /></span></th>
                         <th style={{ textAlign: 'right', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>Bring In<InfoIcon tip="Expected contribution, rounded to the nearest ₦10. Those below their target % are asked first; those above are exempt." /></span></th>
-                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Status<InfoIcon tip="Below min = urgent; Below target = contributing; Dilution protection = above target now but would fall below after the injection; Above target = fully exempt." /></span></th>
+                        <th style={{ textAlign: 'left', padding: '4px 8px', color: '#991b1b', fontWeight: 600 }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Status<InfoIcon tip="Below min = urgent; Below target = contributing; Dilution protection = above target now but would fall below after the injection; Last resort = above target but every eligible stakeholder is maxed out so they must cover the remaining gap; Above target = fully exempt." /></span></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -5189,8 +5200,8 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                           <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? '#dc2626' : '#6b7280' }}>
                             {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max)' : '—'}
                           </td>
-                          <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
-                            {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isAboveTarget ? 'Above target' : 'Below target'}
+                          <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isLastResort ? '#7c3aed' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
+                            {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isLastResort ? 'Last resort' : a.isAboveTarget ? 'Above target' : 'Below target'}
                           </td>
                         </tr>
                       ))}
@@ -8692,7 +8703,7 @@ export default function App() {
                             </th>
                             <th style={{ textAlign: 'left', padding: '4px 8px', color: accentClr, fontWeight: 600 }}>
                               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
-                                Status<InfoIcon tip="Below min = urgent (below floor %). Below target = needs to contribute. Dilution protection = above target now but would fall below after the injection without contributing. Above target = fully exempt, no contribution needed." />
+                                Status<InfoIcon tip="Below min = urgent (below floor %). Below target = needs to contribute. Dilution protection = above target now but would fall below after the injection without contributing. Last resort = above target and would stay above, but every eligible stakeholder is already at their max % so they must cover the remaining gap. Above target = fully exempt, no contribution needed." />
                               </span>
                             </th>
                           </tr>
@@ -8714,8 +8725,8 @@ export default function App() {
                               <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: a.suggested > 0 ? (isNegative ? '#dc2626' : '#b45309') : '#6b7280' }}>
                                 {a.suggested > 0 ? fmtMoney(a.suggested) : a.capacityFull ? '(at max %)' : '—'}
                               </td>
-                              <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
-                                {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isAboveTarget ? 'Above target' : 'Below target'}
+                              <td style={{ padding: '5px 8px', fontSize: '11px', color: a.isBelowMin ? '#dc2626' : a.isDilutionProtection ? '#92400e' : a.isLastResort ? '#7c3aed' : a.isAboveTarget ? '#6b7280' : '#059669' }}>
+                                {a.isBelowMin ? '⚠ Below min' : a.isDilutionProtection ? 'Dilution protection' : a.isLastResort ? 'Last resort' : a.isAboveTarget ? 'Above target' : 'Below target'}
                               </td>
                             </tr>
                           ))}
