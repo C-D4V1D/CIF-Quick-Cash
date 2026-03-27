@@ -154,6 +154,16 @@ const requireAdmin = (request) => {
   return auth;
 };
 
+// Like requireAuth but also verifies the user is still active in the DB.
+// Use this on any endpoint where a disabled account must lose access immediately.
+const requireAuthActive = async (request, db) => {
+  const auth = requireAuth(request);
+  if (auth.error) return auth;
+  const row = await db.prepare('SELECT active FROM users WHERE id = ?').bind(auth.user.id).first().catch(() => null);
+  if (row && row.active === 0) return { error: error('This account has been disabled. Contact the administrator.', 403) };
+  return auth;
+};
+
 // ============================================================
 // LOAN TIMELINE HELPERS
 // Rules (using admin-configured maxLoanDays and graceDays):
@@ -396,6 +406,24 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'login' && method === 'POST') {
       const { username, password, rememberMe } = await request.json();
+
+      // ── Brute-force protection ──
+      // Read configured limits (fall back to safe defaults if settings not yet populated).
+      const loginCfgRow = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first().catch(() => null);
+      const loginCfg = loginCfgRow ? JSON.parse(loginCfgRow.value || '{}') : {};
+      const maxAttempts = Math.max(1, Number(loginCfg.maxLoginAttempts) || 5);
+      const cooldownMinutes = Math.max(1, Number(loginCfg.loginCooldownMinutes) || 15);
+
+      const recentFailures = await db
+        .prepare("SELECT COUNT(*) AS n FROM login_attempts WHERE username = ? AND success = 0 AND attempted_at > datetime('now', ?)")
+        .bind(username, `-${cooldownMinutes} minutes`)
+        .first()
+        .catch(() => null); // graceful degradation if table not yet migrated
+
+      if ((recentFailures?.n || 0) >= maxAttempts) {
+        return error(`Too many failed login attempts. Please wait ${cooldownMinutes} minute(s) before trying again.`, 429);
+      }
+
       let user = await db
         .prepare('SELECT id, username, password, role, roles, name, active FROM users WHERE username = ?')
         .bind(username)
@@ -405,10 +433,18 @@ export async function onRequest(context) {
           db.prepare('SELECT id, username, password, role, name FROM users WHERE username = ?')
             .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]' } : null)
         );
-      if (!user) return error('Invalid username or password', 401);
+      if (!user) {
+        await db.prepare('INSERT INTO login_attempts (username, success) VALUES (?, 0)').bind(username).run().catch(() => {});
+        return error('Invalid username or password', 401);
+      }
       const passwordCheck = await verifyPassword(password, user.password);
-      if (!passwordCheck.ok) return error('Invalid username or password', 401);
+      if (!passwordCheck.ok) {
+        await db.prepare('INSERT INTO login_attempts (username, success) VALUES (?, 0)').bind(username).run().catch(() => {});
+        return error('Invalid username or password', 401);
+      }
       if (user.active === 0) return error('This account has been disabled. Contact the administrator.', 403);
+      // Clear failed attempts on successful login to reset the counter
+      await db.prepare('DELETE FROM login_attempts WHERE username = ?').bind(username).run().catch(() => {});
       if (passwordCheck.needsUpgrade) {
         const upgradedHash = await hashPassword(password);
         await db.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgradedHash, user.id).run();
@@ -470,7 +506,9 @@ export async function onRequest(context) {
     // ============================================================
     if (path === 'bootstrap' && method === 'GET') {
       const scope = url.searchParams.get('scope') || 'critical';
-      const auth = requireAuth(request);
+      // Use the active-checking variant so a disabled account is kicked out
+      // on the next page load rather than waiting for the cookie to expire.
+      const auth = await requireAuthActive(request, db);
       if (auth.error) return auth.error;
       const isAdmin = auth?.user?.role === 'admin';
 
@@ -506,9 +544,13 @@ export async function onRequest(context) {
 
         const [transactionsRes, draftsRes, txCountRow, draftCountRow, settingsRow] = await Promise.all([
           db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
-          db.prepare('SELECT ref, data, updated_at FROM drafts ORDER BY updated_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
+          // Exclude drafts whose ref already exists as a completed transaction.
+          // This silently cleans up the case where the transaction saved but the
+          // subsequent draft-delete failed (network error), preventing stale drafts
+          // from appearing as resumable in the UI.
+          db.prepare('SELECT d.ref, d.data, d.updated_at FROM drafts d WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref) ORDER BY d.updated_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
           db.prepare('SELECT COUNT(*) AS total FROM transactions').first(),
-          db.prepare('SELECT COUNT(*) AS total FROM drafts').first(),
+          db.prepare('SELECT COUNT(*) AS total FROM drafts d WHERE NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref)').first(),
           db.prepare("SELECT value FROM settings WHERE key = 'config'").first()
         ]);
 
@@ -639,8 +681,9 @@ export async function onRequest(context) {
       return json(row ? JSON.parse(row.value) : {});
     }
     if (path === 'settings' && method === 'PUT') {
-      const auth = requireAdmin(request);
+      const auth = await requireAuthActive(request, db);
       if (auth.error) return auth.error;
+      if (auth.user.role !== 'admin') return error('Admin access required', 403);
       const data = await request.json();
       await db
         .prepare("INSERT INTO settings (key, value, updated_at) VALUES ('config', ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
@@ -1110,6 +1153,9 @@ export async function onRequest(context) {
       } catch (_) { return json([]); }
     }
     if (path === 'distributions' && method === 'POST') {
+      // canRecordDistribution calls requireAuth internally; add active check separately
+      const activeCheck = await requireAuthActive(request, db);
+      if (activeCheck.error) return activeCheck.error;
       const auth = await canRecordDistribution(request, db);
       if (auth.error) return auth.error;
       const { date, amount, method: distMethod, note, receipt } = await request.json();

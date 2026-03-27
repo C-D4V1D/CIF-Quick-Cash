@@ -2767,7 +2767,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
       <div style={{ ...S_SECTION, background: '#fefce8', borderRadius: '10px', padding: '14px', border: '1px solid #fde68a' }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: priceDropEnabled ? '12px' : '0' }}>
           <input type="checkbox" checked={priceDropEnabled} onChange={e => setPriceDropEnabled(e.target.checked)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
-          <span style={{ fontWeight: 700, fontSize: '14px', color: '#92400e' }}>Enable automatic price drop for this item</span>
+          <span style={{ fontWeight: 700, fontSize: '14px', color: '#92400e' }}>Enable suggested price drop schedule for this item</span>
         </label>
         {priceDropEnabled && (
           <div>
