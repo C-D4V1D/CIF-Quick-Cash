@@ -1169,6 +1169,33 @@ export async function onRequest(context) {
       const type = url.searchParams.get('type') || '';
       const action = url.searchParams.get('action') || '';
       const sort = url.searchParams.get('sort') === 'asc' ? 'ASC' : 'DESC';
+
+      // SMS logs category — query sms_logs table and return compatible shape
+      if (type === 'sms') {
+        const smsConds = []; const smsParams = [];
+        if (q) { smsConds.push('(message LIKE ? OR recipient LIKE ? OR transaction_ref LIKE ?)'); smsParams.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+        if (from) { smsConds.push("date(sent_at) >= date(?)"); smsParams.push(from); }
+        if (to) { smsConds.push("date(sent_at) <= date(?)"); smsParams.push(to); }
+        const smsWhere = smsConds.length ? 'WHERE ' + smsConds.join(' AND ') : '';
+        const [smsCount, { results: smsRows }] = await Promise.all([
+          db.prepare(`SELECT COUNT(*) AS total FROM sms_logs ${smsWhere}`).bind(...smsParams).first(),
+          db.prepare(`SELECT id, sent_at, transaction_ref, trigger_type, message, recipient, status, delivery_status FROM sms_logs ${smsWhere} ORDER BY sent_at ${sort}, id ${sort} LIMIT ? OFFSET ?`).bind(...smsParams, limit, offset).all(),
+        ]);
+        const logs = smsRows.map(r => ({
+          id: `sms-${r.id}`,
+          created_at: r.sent_at,
+          user_id: 'system',
+          username: r.trigger_type === 'manual' ? 'staff' : 'system',
+          user_role: r.trigger_type === 'manual' ? 'staff' : 'system',
+          action: 'sms',
+          entity_type: 'sms',
+          entity_id: r.transaction_ref,
+          description: `📱 SMS (${r.trigger_type}) → ${r.recipient}${r.transaction_ref ? ` · ${r.transaction_ref}` : ''}`,
+          _sms: { trigger_type: r.trigger_type, recipient: r.recipient, status: r.status, delivery_status: r.delivery_status, message: r.message },
+        }));
+        return json({ logs, total: smsCount?.total ?? 0, limit, offset });
+      }
+
       const conds = []; const params = [];
       if (q) { conds.push('(description LIKE ? OR username LIKE ?)'); params.push(`%${q}%`, `%${q}%`); }
       if (from) { conds.push("date(created_at) >= date(?)"); params.push(from); }

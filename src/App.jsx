@@ -6139,6 +6139,7 @@ export default function App() {
     { value: 'user', label: '👤 User Changes', type: 'user', action: '' },
     { value: 'settings', label: '⚙️ Settings', type: 'settings', action: '' },
     { value: 'declined', label: '🚫 Declined', type: 'declined', action: '' },
+    { value: 'sms', label: '📱 SMS Messages', type: 'sms', action: '' },
   ];
   const loadActivityLogs = async (filter, offset = 0, append = false) => {
     const f = filter !== undefined ? filter : activityFilter;
@@ -8063,6 +8064,11 @@ export default function App() {
 
       case 'activity': {
         const actColor = (a) => {
+          if (a.entity_type === 'sms') {
+            if (a._sms?.delivery_status === 'DeliveredToTerminal') return '#10b981';
+            if (a._sms?.status === 'failed' || a._sms?.delivery_status === 'Failed') return COLORS.danger;
+            return '#0ea5e9';
+          }
           if (a.action === 'delete') return COLORS.danger;
           if (a.action === 'repaid' || a.action === 'sold') return COLORS.primary;
           if (a.action === 'deactivate') return COLORS.danger;
@@ -8138,9 +8144,16 @@ export default function App() {
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ fontSize: '14px', fontWeight: 500, wordBreak: 'break-word' }}>{a.description || `${a.action} ${a.entity_type}`}</div>
+                          {a._sms && (
+                            <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px', background: COLORS.bg, borderRadius: '6px', padding: '6px 8px', wordBreak: 'break-word' }}>
+                              <span style={{ fontStyle: 'italic' }}>{a._sms.message}</span>
+                              {a._sms.delivery_status && <span style={{ marginLeft: '8px', fontWeight: 600, color: a._sms.delivery_status === 'DeliveredToTerminal' ? '#10b981' : COLORS.danger }}>· {a._sms.delivery_status}</span>}
+                            </div>
+                          )}
                           <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                            <span style={S.badge(roleColor(a.user_role))}>{a.user_role}</span>
-                            <span>{a.username}</span>
+                            {a.entity_type === 'sms'
+                              ? <span style={S.badge('#0ea5e9')}>{a._sms?.trigger_type || 'sms'}</span>
+                              : <><span style={S.badge(roleColor(a.user_role))}>{a.user_role}</span><span>{a.username}</span></>}
                           </div>
                         </div>
                       </div>
