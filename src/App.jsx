@@ -7086,7 +7086,21 @@ export default function App() {
   });
   const userCapitalInvested = userCapitalEntries.reduce((s, c) => s + (c.amount || 0), 0);
   const ownershipCfg = settings.stakeholderOwnership || {};
-  const userOwnershipPct = Number(ownershipCfg[currentUser?.name]?.share || 0);
+  const ownershipEntry = (() => {
+    const entries = Object.entries(ownershipCfg || {});
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const userKeys = new Set([
+      normalize(currentUser?.name),
+      normalize(currentUser?.username),
+      normalize(`@${currentUser?.username}`),
+      ...userCapitalEntries.map(c => normalize(c.name)),
+    ].filter(Boolean));
+    for (const [name, cfg] of entries) {
+      if (userKeys.has(normalize(name))) return cfg || {};
+    }
+    return {};
+  })();
+  const userOwnershipPct = Number(ownershipEntry.share || 0);
   const userProfitShareAmount = userOwnershipPct > 0 ? (netProfit * userOwnershipPct) / 100 : null;
   const userDistributionReceived = distributions
     .filter(d => (d.created_by || '').toLowerCase() === (currentUser?.username || '').toLowerCase())
