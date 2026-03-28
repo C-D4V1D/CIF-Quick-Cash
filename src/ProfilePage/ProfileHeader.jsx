@@ -25,17 +25,29 @@ function getInitials(name = '') {
 
 function fmtDateLong(d) {
   if (!d) return '—';
-  return new Date(d).toLocaleDateString('en-GB', {
-    day: 'numeric', month: 'long', year: 'numeric',
+  // Parse as UTC (SQLite datetime('now') returns UTC without 'Z')
+  const s = String(d).trim().replace(' ', 'T');
+  const dt = new Date(s.endsWith('Z') ? s : s + 'Z');
+  return isNaN(dt) ? '—' : dt.toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Africa/Lagos',
   });
+}
+
+function parseUTC(d) {
+  if (!d) return null;
+  const s = String(d).trim().replace(' ', 'T');
+  return new Date(s.endsWith('Z') ? s : s + 'Z');
 }
 
 function timeAgo(d) {
   if (!d) return '—';
-  const diff = Date.now() - new Date(d).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 2) return 'Just now';
-  if (mins < 60) return `${mins} minutes ago`;
+  const dt = parseUTC(d);
+  if (!dt || isNaN(dt)) return '—';
+  const diff = Date.now() - dt.getTime();
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return 'Just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} minute${mins !== 1 ? 's' : ''} ago`;
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs} hour${hrs !== 1 ? 's' : ''} ago`;
   const days = Math.floor(hrs / 24);
@@ -129,29 +141,6 @@ export default function ProfileHeader({ currentUser, lastActive, onEditClick, is
           </div>
         </div>
 
-        {/* Edit button */}
-        <button
-          onClick={onEditClick}
-          style={{
-            padding: '10px 20px',
-            borderRadius: '10px',
-            border: '2px solid rgba(255,255,255,0.4)',
-            background: 'rgba(255,255,255,0.12)',
-            color: '#fff',
-            fontWeight: 700,
-            fontSize: '13.5px',
-            cursor: 'pointer',
-            backdropFilter: 'blur(4px)',
-            transition: 'all 0.2s',
-            whiteSpace: 'nowrap',
-            alignSelf: isMobile ? 'flex-end' : 'flex-start',
-            marginTop: isMobile ? 0 : '4px',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.22)'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.12)'; }}
-        >
-          ✏️ Edit Profile
-        </button>
       </div>
     </div>
   );

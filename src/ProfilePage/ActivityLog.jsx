@@ -36,19 +36,28 @@ function formatEntry(log) {
   return { icon: meta.icon, desc };
 }
 
+// SQLite stores UTC without 'Z' — force UTC parsing
+function parseUTC(d) {
+  if (!d) return null;
+  const s = String(d).trim().replace(' ', 'T');
+  return new Date(s.endsWith('Z') ? s : s + 'Z');
+}
+
 function timeStr(d) {
-  if (!d) return '';
-  const dt = new Date(d);
-  const date = dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  const time = dt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  return `${date} at ${time}`;
+  const dt = parseUTC(d);
+  if (!dt || isNaN(dt)) return '';
+  return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Africa/Lagos' })
+    + ' at '
+    + dt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Lagos' });
 }
 
 function timeAgo(d) {
-  if (!d) return '';
-  const diff = Date.now() - new Date(d).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 2) return 'Just now';
+  const dt = parseUTC(d);
+  if (!dt || isNaN(dt)) return '';
+  const diff = Date.now() - dt.getTime();
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return 'Just now';
+  const mins = Math.floor(secs / 60);
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
@@ -57,7 +66,7 @@ function timeAgo(d) {
   return timeStr(d);
 }
 
-const PAGE_SIZE = 15;
+const PAGE_SIZE = 7;
 
 export default function ActivityLog({ activityLogs, currentUser, isMobile }) {
   const [page, setPage] = useState(1);

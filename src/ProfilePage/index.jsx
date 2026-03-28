@@ -9,15 +9,15 @@ import ActivityLog from './ActivityLog';
 
 const hasRole = (u, r) => u?.role === r || (u?.roles || []).includes(r);
 
-const READ_KEY = (uid) => `cfc_notifs_read_${uid}`;
-function getUnreadCount(uid, logs) {
-  try {
-    const readIds = new Set(JSON.parse(localStorage.getItem(READ_KEY(uid)) || '[]'));
-    return logs.filter(l => l.user_id === uid && !readIds.has(l.id)).length;
-  } catch { return 0; }
+const COUNT_KEY = (uid) => `cfc_unread_notif_count_${uid}`;
+
+// Read the persisted unread count — called by App.jsx for the top-bar badge
+export function getUnreadCount(uid) {
+  try { return parseInt(localStorage.getItem(COUNT_KEY(uid)) || '0', 10); }
+  catch { return 0; }
 }
 
-// Skeleton loader for cards
+// Skeleton loader
 function Skeleton({ height = 120 }) {
   return (
     <div style={{
@@ -39,14 +39,14 @@ export default function ProfilePage({
   activityLogs = [],
   users = [],
   settings = {},
+  smsCredits = null,
+  smsBalance = null,
   loadData,
   isMobile,
   onUnreadChange,
 }) {
-  const [editMode, setEditMode] = useState(false);
   const [dataReady, setDataReady] = useState(false);
 
-  // Brief delay to simulate skeleton state if data hasn't loaded
   useEffect(() => {
     const t = setTimeout(() => setDataReady(true), 300);
     return () => clearTimeout(t);
@@ -55,17 +55,16 @@ export default function ProfilePage({
   const isStaff = hasRole(currentUser, 'staff') || hasRole(currentUser, 'admin');
   const isStakeholder = hasRole(currentUser, 'stakeholder') || hasRole(currentUser, 'admin');
 
-  // Derive last active timestamp from activity logs
+  // Derive last active from activity logs (parse as UTC)
   const lastActive = useMemo(() => {
     const myLogs = activityLogs.filter(l => l.user_id === currentUser.id);
     if (myLogs.length === 0) return null;
-    const sorted = [...myLogs].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    return sorted[0]?.created_at || null;
+    const parseUTC = (d) => {
+      const s = String(d || '').trim().replace(' ', 'T');
+      return new Date(s.endsWith('Z') ? s : s + 'Z');
+    };
+    return [...myLogs].sort((a, b) => parseUTC(b.created_at) - parseUTC(a.created_at))[0]?.created_at || null;
   }, [activityLogs, currentUser.id]);
-
-  const handleUnreadChange = (count) => {
-    if (onUnreadChange) onUnreadChange(count);
-  };
 
   if (!dataReady) {
     return (
@@ -73,43 +72,38 @@ export default function ProfilePage({
         <Skeleton height={180} />
         <Skeleton height={120} />
         <Skeleton height={300} />
+        <style>{`@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }`}</style>
       </div>
     );
   }
 
   return (
     <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", maxWidth: '900px', margin: '0 auto' }}>
-      {/* Inject shimmer animation */}
-      <style>{`
-        @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
-      `}</style>
+      <style>{`@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }`}</style>
 
-      {/* Profile Header */}
       <ProfileHeader
         currentUser={currentUser}
         lastActive={lastActive}
         isMobile={isMobile}
-        onEditClick={() => setEditMode(true)}
       />
 
-      {/* Contact & Security */}
       <ContactInfo
         currentUser={currentUser}
-        editMode={editMode}
-        onEditModeChange={setEditMode}
-        onSaved={() => setEditMode(false)}
         isMobile={isMobile}
       />
 
-      {/* Notifications */}
       <NotificationsPanel
         activityLogs={activityLogs}
+        capital={capital}
+        distributions={distributions}
+        smsCredits={smsCredits}
+        smsBalance={smsBalance}
         currentUser={currentUser}
-        onUnreadChange={handleUnreadChange}
+        settings={settings}
+        onUnreadChange={onUnreadChange}
         isMobile={isMobile}
       />
 
-      {/* Staff Performance (staff + admin only) */}
       {isStaff && (
         <StaffPerformance
           currentUser={currentUser}
@@ -120,7 +114,6 @@ export default function ProfilePage({
         />
       )}
 
-      {/* Financial Summary (stakeholder + admin only) */}
       {isStakeholder && (
         <FinancialSummary
           currentUser={currentUser}
@@ -130,7 +123,6 @@ export default function ProfilePage({
         />
       )}
 
-      {/* Activity Log (all users) */}
       <ActivityLog
         activityLogs={activityLogs}
         currentUser={currentUser}
@@ -139,6 +131,3 @@ export default function ProfilePage({
     </div>
   );
 }
-
-// Export the unread count helper for App.jsx to use in the top bar
-export { getUnreadCount };
