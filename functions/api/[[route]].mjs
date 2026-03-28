@@ -212,6 +212,20 @@ const elapsedDaysSince = (dateStr) => {
   return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
+// Returns the number of chargeable days for fee calculation.
+// Freezes at (maxLoanDays + graceDays) once the grace period has ended so that
+// the amount due stops growing after the business takes undisputed ownership.
+// For voluntary surrenders (ready_to_sell) it freezes at the surrender date.
+const effectiveElapsedDaysSince = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) => {
+  if (!txData?.dateGiven) return 0;
+  const graceCap = maxLoanDays + graceDays;
+  const raw = elapsedDaysSince(txData.dateGiven);
+  if (txData.status === 'ready_to_sell' && txData.surrenderDate) {
+    return Math.max(0, raw - elapsedDaysSince(txData.surrenderDate));
+  }
+  return Math.min(raw, graceCap);
+};
+
 // Load loan-duration + fee settings from D1.
 // Returns { maxLoanDays, graceDays, interestRate } with safe defaults.
 const loadLoanConfig = async (db) => {
@@ -783,6 +797,8 @@ export async function onRequest(context) {
           if (smsCfg.enabled && smsCfg.outrightConfirmationEnabled) {
             const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
             const phone = toIntlPhone(rawPhone);
+            const rawPhone2 = tx.phoneNumbers?.[1] || '';
+            const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
             if (phone) {
               const triggerType = 'outright_confirmation';
               const today = todayNigeria();
@@ -801,6 +817,12 @@ export async function onRequest(context) {
                 await db.prepare(
                   'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
                 ).bind(tx.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                if (phone2) {
+                  const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
+                  await db.prepare(
+                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                  ).bind(tx.ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                }
               }
             }
           }
@@ -818,6 +840,8 @@ export async function onRequest(context) {
           if (smsCfg.enabled && smsCfg.advanceConfirmationEnabled) {
             const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
             const phone = toIntlPhone(rawPhone);
+            const rawPhone2 = tx.phoneNumbers?.[1] || '';
+            const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
             if (phone) {
               const triggerType = 'advance_confirmation';
               const today = todayNigeria();
@@ -838,6 +862,12 @@ export async function onRequest(context) {
                 await db.prepare(
                   'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
                 ).bind(tx.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                if (phone2) {
+                  const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
+                  await db.prepare(
+                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                  ).bind(tx.ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                }
               }
             }
           }
@@ -931,6 +961,8 @@ export async function onRequest(context) {
           if (smsCfg.enabled && smsCfg.redemptionConfirmationEnabled) {
             const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
             const phone = toIntlPhone(rawPhone);
+            const rawPhone2 = tx.phoneNumbers?.[1] || '';
+            const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
             if (phone) {
               const triggerType = 'redemption_confirmation';
               const todayClosed = todayNigeria();
@@ -950,6 +982,12 @@ export async function onRequest(context) {
                 await db.prepare(
                   'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
                 ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                if (phone2) {
+                  const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
+                  await db.prepare(
+                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                  ).bind(ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                }
               }
             }
           }
@@ -967,6 +1005,8 @@ export async function onRequest(context) {
           if (smsCfg.enabled && smsCfg.listedForSaleEnabled) {
             const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
             const phone = toIntlPhone(rawPhone);
+            const rawPhone2 = tx.phoneNumbers?.[1] || '';
+            const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
             if (phone) {
               const triggerType = 'listed_for_sale';
               const todayListed = todayNigeria();
@@ -986,6 +1026,12 @@ export async function onRequest(context) {
                 await db.prepare(
                   'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
                 ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                if (phone2) {
+                  const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
+                  await db.prepare(
+                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+                  ).bind(ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                }
               }
             }
           }
@@ -2099,7 +2145,7 @@ export async function onRequest(context) {
         // Shared balance calculation for overdue and mid-loan triggers.
         // Computed once per transaction to avoid duplication.
         const dailyFeeAmt = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
-        const elapsedDays = elapsedDaysSince(txData.dateGiven);
+        const elapsedDays = effectiveElapsedDaysSince(txData, { maxLoanDays: smsCfg.maxLoanDays, graceDays: smsCfg.graceDays });
         const currentBalance = (txData.cashAdvance || 0) + elapsedDays * dailyFeeAmt;
 
         // Overdue reminders: fired N days AFTER the customer due date while still
