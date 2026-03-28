@@ -632,9 +632,44 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   const minimumCapitalRequired = Math.max(minAbsolute, peakDeployment * (1 + peakGraceFactor));
   const peakCushion = totalBusinessMoney - peakDeployment;
 
-  // Trend via linear regression on combined originations
-  const origValues = snapshots.map(s => s.loanOriginations + s.outrightSpend);
-  const { slope: origSlope } = capLinearRegression(origValues);
+  // Current month (pro-rated) — gives new businesses real signal even mid-month
+  // instead of the historical window being all-zeros for a brand-new operation.
+  const currentMk = localISODate().slice(0, 7);
+  const nowDate = new Date(localISODate());
+  const daysElapsed = Math.max(1, nowDate.getUTCDate());
+  const daysInMonth = new Date(Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth() + 1, 0)).getUTCDate();
+  const proRate = daysElapsed < daysInMonth ? daysInMonth / daysElapsed : 1;
+
+  const curLoanOrig = transactions
+    .filter(t => capMonthKey(t.dateGiven) === currentMk && t.type !== 'outright')
+    .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const curOutright = transactions
+    .filter(t => capMonthKey(t.dateGiven) === currentMk && t.type === 'outright')
+    .reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const curExp = expenses
+    .filter(e => capMonthKey(e.date) === currentMk)
+    .reduce((s, e) => s + (e.amount || 0), 0);
+  const curDist = distributions
+    .filter(d => capMonthKey(d.date) === currentMk)
+    .reduce((s, d) => s + (d.amount || 0), 0);
+  const curRecov = transactions
+    .filter(t => t.status === 'closed' && capMonthKey(t.paymentDate || t.updated_at) === currentMk)
+    .reduce((s, t) => s + (t.cashAdvance || 0), 0)
+    + transactions
+      .filter(t => t.status === 'sold' && capMonthKey(t.saleDate || t.updated_at) === currentMk)
+      .reduce((s, t) => s + Math.min(t.cashAdvance || 0, t.salePrice || 0), 0);
+
+  // Separate arrays per component, appending pro-rated current month as the most-recent data point
+  const loanOrigValues = [...snapshots.map(s => s.loanOriginations), curLoanOrig * proRate];
+  const outrightValues = [...snapshots.map(s => s.outrightSpend), curOutright * proRate];
+  const origValues     = loanOrigValues.map((v, i) => v + outrightValues[i]);
+  const expValues      = [...snapshots.map(s => s.expenseTotal), curExp * proRate];
+  const distValues     = [...snapshots.map(s => s.distributionTotal), curDist * proRate];
+  const recovValues    = [...snapshots.map(s => s.loanRecoveries + s.saleRecoveries), curRecov * proRate];
+
+  const { slope: origSlope }      = capLinearRegression(origValues);
+  const { slope: loanOrigSlope }  = capLinearRegression(loanOrigValues);
+  const { slope: outrightSlope }  = capLinearRegression(outrightValues);
 
   // Seasonal indices (only when ≥ 13 months of history available)
   const useSeasonalIndex = snapshots.length >= 13;
@@ -651,26 +686,32 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
     }
   }
 
-  // Residuals → confidence band width
+  // Residuals → confidence band width (historical only, not pro-rated)
   const netConsumedValues = snapshots.map(s => s.netConsumed);
   const residualStd = capStdDev(netConsumedValues);
 
-  // Exponentially weighted projections for each component
-  const origWeighted = capExpWeightedAvg(origValues, trendWeight);
-  const expWeighted = capExpWeightedAvg(snapshots.map(s => s.expenseTotal), trendWeight);
-  const distWeighted = capExpWeightedAvg(snapshots.map(s => s.distributionTotal), trendWeight);
-  const recoveryWeighted = capExpWeightedAvg(snapshots.map(s => s.loanRecoveries + s.saleRecoveries), trendWeight);
+  // Exponentially weighted projections for each component (current month carries highest weight)
+  const loanOrigWeighted = capExpWeightedAvg(loanOrigValues, trendWeight);
+  const outrightWeighted = capExpWeightedAvg(outrightValues, trendWeight);
+  const origWeighted     = capExpWeightedAvg(origValues, trendWeight);
+  const expWeighted      = capExpWeightedAvg(expValues, trendWeight);
+  const distWeighted     = capExpWeightedAvg(distValues, trendWeight);
+  const recoveryWeighted = capExpWeightedAvg(recovValues, trendWeight);
 
-  // Build forecasts for each horizon month
+  // Build forecasts for each horizon month.
+  // cumulativeNetConsumed accumulates across horizons so that h=2 includes h=1's net draw
+  // (avoids the old bug of multiplying a single-month average by h).
   const now = new Date(localISODate());
   const forecasts = [];
+  let cumulativeNetConsumed = 0;
   for (let h = 1; h <= forecastHorizon; h++) {
     const targetMk = capNextMonthKey(h);
     const targetMonthNum = parseInt(targetMk.slice(5), 10);
     const seasonIdx = (seasonalIndices && seasonalIndices[targetMonthNum]) || 1.0;
 
-    const trendAdjustedOrig = origWeighted + origSlope * h;
-    const projOrig = Math.max(0, trendAdjustedOrig * seasonIdx);
+    const projLoanOrig = Math.max(0, (loanOrigWeighted + loanOrigSlope * h) * seasonIdx);
+    const projOutright = Math.max(0, (outrightWeighted + outrightSlope * h) * seasonIdx);
+    const projOrig     = projLoanOrig + projOutright;
 
     // Portfolio-maturity recoveries for h=1 (most accurate); blend toward historical for h>1
     const matureRepayments = activeTxs
@@ -679,13 +720,18 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
     const blendFactor = 1 / h;
     const projRecoveries = Math.max(0, matureRepayments * blendFactor + recoveryWeighted * (1 - blendFactor) * seasonIdx);
 
-    const projNetConsumed = projOrig - projRecoveries + expWeighted * seasonIdx + distWeighted;
+    const projNetConsumedThisMonth = projOrig - projRecoveries + expWeighted * seasonIdx + distWeighted;
+    cumulativeNetConsumed += projNetConsumedThisMonth;
 
     const currentlyDeployed = totalCapitalOut + totalCapitalInForSale;
     const predictedRequired = Math.max(0,
       currentlyDeployed,
-      currentlyDeployed + projNetConsumed * h + minimumCapitalRequired
+      currentlyDeployed + cumulativeNetConsumed + minimumCapitalRequired
     );
+
+    // Net new capital that investors must actually bring in for this specific month
+    // (new deployments that won't be covered by loan repayments returning that same month)
+    const netNewCapitalNeeded = Math.max(0, projOrig - projRecoveries);
 
     const confidenceMultiplier = Math.pow(1.4, h - 1);
     const margin = residualStd * 0.75 * confidenceMultiplier;
@@ -696,11 +742,14 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
     forecasts.push({
       month: targetMk,
       horizon: h,
+      projectedLoanOriginations: Math.round(projLoanOrig),
+      projectedOutrightSpend: Math.round(projOutright),
       projectedOriginations: Math.round(projOrig),
       projectedRecoveries: Math.round(projRecoveries),
       projectedExpenses: Math.round(expWeighted * seasonIdx),
       projectedDistributions: Math.round(distWeighted),
-      projectedNetConsumed: Math.round(projNetConsumed),
+      projectedNetConsumed: Math.round(projNetConsumedThisMonth),
+      netNewCapitalNeeded: Math.round(netNewCapitalNeeded),
       predictedRequired: Math.round(predictedRequired),
       rangeMin: Math.round(rangeMin),
       rangeMax: Math.round(rangeMax),
@@ -8994,13 +9043,41 @@ export default function App() {
 
                   {/* Forecast Cards */}
                   {cp.forecasts && cp.forecasts.length > 0 && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '20px' }}>
                       {cp.forecasts.map((f, i) => (
                         <div key={i} style={{ background: f.isDeficit ? COLORS.dangerLight : COLORS.primaryLight, borderRadius: '10px', padding: '14px', border: `1px solid ${f.isDeficit ? '#f5c6cb' : '#b7e4c7'}` }}>
-                          <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>+{f.horizon} Mo · {fmtMo(f.month)}</div>
-                          <div style={{ fontSize: '18px', fontWeight: 800, color: f.isDeficit ? COLORS.danger : COLORS.primaryDark, marginBottom: '2px' }}>{fmtMoney(f.predictedRequired)}</div>
-                          <div style={{ fontSize: '11px', color: COLORS.textMuted }}>Range: {fmtMoney(f.rangeMin)} – {fmtMoney(f.rangeMax)}</div>
-                          <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '4px', color: f.isDeficit ? COLORS.danger : COLORS.primary }}>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>+{f.horizon} Mo · {fmtMo(f.month)}</div>
+
+                          {/* Deployment breakdown */}
+                          <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '2px' }}>
+                            📤 New loans: <strong style={{ color: COLORS.text }}>{fmtMoney(f.projectedLoanOriginations)}</strong>
+                          </div>
+                          {f.projectedOutrightSpend > 0 && (
+                            <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '2px' }}>
+                              📦 Purchases: <strong style={{ color: COLORS.text }}>{fmtMoney(f.projectedOutrightSpend)}</strong>
+                            </div>
+                          )}
+                          <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>
+                            📥 Returns: <strong style={{ color: COLORS.primary }}>{fmtMoney(f.projectedRecoveries)}</strong>
+                          </div>
+
+                          {/* Net new capital — the key decision number */}
+                          <div style={{ borderTop: `1px solid ${f.isDeficit ? '#f5c6cb' : '#b7e4c7'}`, paddingTop: '8px', marginBottom: '4px' }}>
+                            <div style={{ fontSize: '10px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.4px', marginBottom: '2px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                              Net new capital needed<InfoIcon tip="How much fresh cash must come in from investors or reserves this month. = New loans + outright purchases − loan repayments returning. Zero means recoveries fully fund the new deployments." />
+                            </div>
+                            <div style={{ fontSize: '20px', fontWeight: 800, color: f.netNewCapitalNeeded > 0 ? COLORS.danger : COLORS.primary }}>
+                              {fmtMoney(f.netNewCapitalNeeded)}
+                            </div>
+                          </div>
+
+                          <div style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '2px' }}>
+                            Total capital to hold: {fmtMoney(f.predictedRequired)}
+                          </div>
+                          <div style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '4px' }}>
+                            Range: {fmtMoney(f.rangeMin)} – {fmtMoney(f.rangeMax)}
+                          </div>
+                          <div style={{ fontSize: '12px', fontWeight: 700, color: f.isDeficit ? COLORS.danger : COLORS.primary }}>
                             {f.isDeficit ? `⚠ Short by ${fmtMoney(f.gap)}` : `✓ Surplus ${fmtMoney(f.gap)}`}
                           </div>
                           <div style={{ fontSize: '10px', color: COLORS.textMuted, marginTop: '2px', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>Confidence: ~{f.confidencePct}%<InfoIcon tip="How reliable this forecast is based on the amount of historical data available. More transaction history means higher confidence." /></div>
