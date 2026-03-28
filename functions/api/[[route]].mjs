@@ -47,6 +47,13 @@ const parseRoles = (rolesJson) => {
   try { return JSON.parse(rolesJson || '[]'); } catch { return []; }
 };
 
+const sanitizeOptionalText = (value, maxLen = 160) => {
+  if (value === undefined || value === null) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, maxLen);
+};
+
 const parseCookies = (cookieHeader = '') => Object.fromEntries(
   cookieHeader
     .split(';')
@@ -426,13 +433,13 @@ export async function onRequest(context) {
       }
 
       let user = await db
-        .prepare('SELECT id, username, password, role, roles, name, active FROM users WHERE username = ?')
+        .prepare('SELECT id, username, password, role, roles, name, email, phone1, phone2, active FROM users WHERE username = ?')
         .bind(username)
         .first()
         .catch(() =>
           // Fallback for databases where the `active`/`roles` migration hasn't run yet
           db.prepare('SELECT id, username, password, role, name FROM users WHERE username = ?')
-            .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]' } : null)
+            .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]', email: null, phone1: null, phone2: null } : null)
         );
       if (!user) {
         await db.prepare('INSERT INTO login_attempts (username, success) VALUES (?, 0)').bind(username).run().catch(() => {});
@@ -453,7 +460,17 @@ export async function onRequest(context) {
       }
 
       const parsedRoles = parseRoles(user.roles);
-      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, issuedAt: Date.now() });
+      const sessionPayload = JSON.stringify({
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        roles: parsedRoles,
+        name: user.name,
+        email: user.email || null,
+        phone1: user.phone1 || null,
+        phone2: user.phone2 || null,
+        issuedAt: Date.now()
+      });
       const activeCookie = rememberMe
         ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
         : buildSessionCookie(SESSION_COOKIE_SHORT, sessionPayload);
@@ -472,6 +489,79 @@ export async function onRequest(context) {
       const user = getSessionUser(request);
       if (!user) return error('Not authenticated', 401);
       return json(user);
+    }
+
+    // ============================================================
+    // PROFILE: GET, PUT /api/profile
+    // ============================================================
+    if (path === 'profile' && method === 'GET') {
+      const auth = await requireAuthActive(request, db);
+      if (auth.error) return auth.error;
+      const profile = await db
+        .prepare('SELECT id, username, role, roles, name, email, phone1, phone2, created_at FROM users WHERE id = ?')
+        .bind(auth.user.id)
+        .first();
+      if (!profile) return error('User not found', 404);
+      return json({ ...profile, roles: parseRoles(profile.roles) });
+    }
+    if (path === 'profile' && method === 'PUT') {
+      const auth = await requireAuthActive(request, db);
+      if (auth.error) return auth.error;
+      const { email, phone1, phone2, password } = await request.json();
+      const cur = await db
+        .prepare('SELECT username, name, email, phone1, phone2 FROM users WHERE id = ?')
+        .bind(auth.user.id)
+        .first();
+      if (!cur) return error('User not found', 404);
+
+      const safeEmail = sanitizeOptionalText(email, 120);
+      const safePhone1 = sanitizeOptionalText(phone1, 30);
+      const safePhone2 = sanitizeOptionalText(phone2, 30);
+      const safePassword = String(password || '').trim();
+
+      if (safeEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(safeEmail)) return error('Please enter a valid email address', 400);
+      if (safePassword && safePassword.length < 8) return error('Password must be at least 8 characters', 400);
+
+      const setClauses = ['email = ?', 'phone1 = ?', 'phone2 = ?'];
+      const setParams = [safeEmail, safePhone1, safePhone2];
+      if (safePassword) {
+        setClauses.push('password = ?');
+        setParams.push(await hashPassword(safePassword));
+      }
+      await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, auth.user.id).run();
+
+      if ((safeEmail || null) !== (cur.email || null) || (safePhone1 || null) !== (cur.phone1 || null) || (safePhone2 || null) !== (cur.phone2 || null)) {
+        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: auth.user.id, description: `🪪 Profile contact details updated for ${cur.name} (@${cur.username})` });
+      }
+      if (safePassword) {
+        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: auth.user.id, description: `🔑 Password changed from profile by ${cur.name} (@${cur.username})` });
+      }
+
+      const updated = await db
+        .prepare('SELECT id, username, role, roles, name, email, phone1, phone2 FROM users WHERE id = ?')
+        .bind(auth.user.id)
+        .first();
+      if (!updated) return error('User not found', 404);
+      const parsedRoles = parseRoles(updated.roles);
+      const sessionPayload = JSON.stringify({
+        id: updated.id,
+        username: updated.username,
+        role: updated.role,
+        roles: parsedRoles,
+        name: updated.name,
+        email: updated.email || null,
+        phone1: updated.phone1 || null,
+        phone2: updated.phone2 || null,
+        issuedAt: Date.now()
+      });
+      const hasLongSession = request.headers.get('Cookie')?.includes(`${SESSION_COOKIE_LONG}=`);
+      const activeCookie = hasLongSession
+        ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
+        : buildSessionCookie(SESSION_COOKIE_SHORT, sessionPayload);
+      const staleCookie = hasLongSession
+        ? clearSessionCookie(SESSION_COOKIE_SHORT)
+        : clearSessionCookie(SESSION_COOKIE_LONG);
+      return json({ success: true, user: { ...updated, roles: parsedRoles } }, 200, { 'Set-Cookie': [activeCookie, staleCookie] });
     }
 
     // ============================================================
@@ -519,7 +609,7 @@ export async function onRequest(context) {
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, ref, customer_name AS customerName, nin_bvn AS ninBvn, item, reason, notes FROM declined_log ORDER BY date DESC').all(),
           isAdmin
-            ? db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all()
+            ? db.prepare('SELECT id, username, role, roles, name, email, phone1, phone2, active, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] }),
         ]);
 
@@ -606,7 +696,7 @@ export async function onRequest(context) {
     if (path === 'users' && method === 'GET') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all();
+      const { results } = await db.prepare('SELECT id, username, role, roles, name, email, phone1, phone2, active, created_at FROM users ORDER BY created_at').all();
       return json(results.map(u => ({ ...u, roles: parseRoles(u.roles) })));
     }
     if (path === 'users' && method === 'POST') {

@@ -88,6 +88,8 @@ const clearAuthCache = () => {
   }
 };
 
+const notificationsStorageKey = (userId) => `cfc_notifications_${userId || 'guest'}`;
+
 const SHOP_CACHE_KEY = 'cfc_shop_items';
 const SHOP_CACHE_TTL_MS = 5 * 60 * 1000;
 const readShopCache = () => {
@@ -970,6 +972,7 @@ const PAGE_PATHS = {
   settings: '/admin/settings',
   users: '/admin/users',
   activity: '/activity',
+  profile: '/profile',
 };
 
 const PAGE_FROM_PATH = {
@@ -6815,6 +6818,13 @@ export default function App() {
   const [showSmsRechargeModal, setShowSmsRechargeModal] = useState(false);
   const [smsAutoSendDone, setSmsAutoSendDone] = useState(false); // prevent firing twice per session
   const [serpApiAccount, setSerpApiAccount] = useState(null); // live data from serpapi.com/account.json
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileEditMode, setProfileEditMode] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileSuccess, setProfileSuccess] = useState('');
+  const [profileForm, setProfileForm] = useState({ email: '', phone1: '', phone2: '', password: '', confirmPassword: '' });
+  const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -6838,6 +6848,72 @@ export default function App() {
     };
     restoreSession();
   }, []);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let mounted = true;
+    const loadProfile = async () => {
+      setProfileLoading(true);
+      const profile = await API.get('profile');
+      if (!mounted) return;
+      if (profile?.id) {
+        setProfileForm(prev => ({
+          ...prev,
+          email: profile.email || '',
+          phone1: profile.phone1 || '',
+          phone2: profile.phone2 || '',
+          password: '',
+          confirmPassword: ''
+        }));
+      }
+      setProfileLoading(false);
+    };
+    loadProfile();
+    return () => { mounted = false; };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) {
+      setNotifications([]);
+      return;
+    }
+    const key = notificationsStorageKey(currentUser.id);
+    const raw = readCache(key);
+    setNotifications(Array.isArray(raw) ? raw : []);
+  }, [currentUser?.id]);
+
+  const persistNotifications = (nextNotifications) => {
+    if (!currentUser?.id) return;
+    writeCache(notificationsStorageKey(currentUser.id), nextNotifications);
+    setNotifications(nextNotifications);
+  };
+
+  const pushNotification = (notification, dedupeKey) => {
+    if (!currentUser?.id) return;
+    const existing = Array.isArray(notifications) ? notifications : [];
+    if (dedupeKey && existing.some(n => n.dedupeKey === dedupeKey)) return;
+    const next = [{
+      id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      title: notification.title,
+      message: notification.message,
+      type: notification.type || 'general',
+      path: notification.path || PAGE_PATHS.profile,
+      createdAt: new Date().toISOString(),
+      readAt: null,
+      dedupeKey: dedupeKey || null
+    }, ...existing].slice(0, 100);
+    persistNotifications(next);
+  };
+
+  const markNotificationRead = (id) => {
+    const next = notifications.map(n => n.id === id ? { ...n, readAt: n.readAt || new Date().toISOString() } : n);
+    persistNotifications(next);
+  };
+
+  const markAllNotificationsRead = () => {
+    const now = new Date().toISOString();
+    persistNotifications(notifications.map(n => ({ ...n, readAt: n.readAt || now })));
+  };
 
   // Load critical data first, then hydrate heavy lists in the background.
   const ACTIVITY_CATS = [
@@ -7001,6 +7077,19 @@ export default function App() {
   const totalCapital = capital.reduce((s, c) => s + (c.amount || 0), 0);
   const totalDistributions = distributions.reduce((s, d) => s + (d.amount || 0), 0);
   const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory - totalDistributions;
+  const userCapitalEntries = capital.filter(c => {
+    const linked = c.user_id && c.user_id === currentUser?.id;
+    const byName = (c.name || '').trim().toLowerCase() === (currentUser?.name || '').trim().toLowerCase();
+    return linked || byName;
+  });
+  const userCapitalInvested = userCapitalEntries.reduce((s, c) => s + (c.amount || 0), 0);
+  const ownershipCfg = settings.stakeholderOwnership || {};
+  const userOwnershipPct = Number(ownershipCfg[currentUser?.name]?.share || 0);
+  const userProfitShareAmount = userOwnershipPct > 0 ? (netProfit * userOwnershipPct) / 100 : null;
+  const userDistributionReceived = distributions
+    .filter(d => (d.created_by || '').toLowerCase() === (currentUser?.username || '').toLowerCase())
+    .reduce((s, d) => s + (d.amount || 0), 0);
+  const unreadNotifications = notifications.filter(n => !n.readAt).length;
 
   // Capital prediction (memoised — only recomputes when source data or settings change)
   const capitalPrediction = useMemo(
@@ -7097,6 +7186,37 @@ export default function App() {
       }
     }
   }, [availableLendingCapital, totalCapital, capitalPrediction, settings.smsEnabled, settings.termiiApiKey, settings.smsCapitalDeficitEnabled, settings.smsCapitalLowEnabled, settings.smsCapitalWithdrawalEnabled, settings.capitalLowThreshold, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const today = localISODate();
+    const monthKey = today.slice(0, 7);
+    const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
+    if (availableLendingCapital < 0) {
+      pushNotification({
+        type: 'capital_alert',
+        title: 'Capital Deficit Alert',
+        message: `Business capital is negative (${fmtMoney(availableLendingCapital)}). Immediate top-up is needed.`,
+        path: PAGE_PATHS.capital
+      }, `capital-deficit-${today}`);
+    } else if (availableLendingCapital < threshold) {
+      pushNotification({
+        type: 'capital_alert',
+        title: 'Capital Running Low',
+        message: `Available lending capital is ${fmtMoney(availableLendingCapital)}, below your threshold (${fmtMoney(threshold)}).`,
+        path: PAGE_PATHS.capital
+      }, `capital-low-${today}`);
+    }
+
+    if (hasRole(currentUser, 'admin') || hasRole(currentUser, 'stakeholder')) {
+      pushNotification({
+        type: 'report',
+        title: 'Monthly Report Reminder',
+        message: `Your ${monthKey} report is ready to review. Open Monthly Report to track performance.`,
+        path: PAGE_PATHS.reports
+      }, `monthly-report-${monthKey}`);
+    }
+  }, [currentUser?.id, availableLendingCapital, settings.capitalLowThreshold, currentUser?.role, currentUser?.roles]);
 
   const filteredTxs = useMemo(() => {
     let result = [...transactions];
@@ -7238,6 +7358,7 @@ export default function App() {
     { id: 'activity', label: 'Activity Log', icon: '🕘', path: PAGE_PATHS.activity, roles: ['staff', 'admin', 'stakeholder'] },
     { id: 'settings', label: 'Settings', icon: '⚙', path: PAGE_PATHS.settings, roles: ['admin'] },
     { id: 'users', label: 'Users', icon: '👥', path: PAGE_PATHS.users, roles: ['admin'] },
+    { id: 'profile', label: 'Profile', icon: '👤', path: PAGE_PATHS.profile, roles: ['staff', 'admin', 'stakeholder'] },
   ].filter(n => n.roles.some(r => hasRole(currentUser, r)));
 
 
@@ -7353,6 +7474,12 @@ export default function App() {
     switch (page) {
       case 'dashboard': return (<div>{listLoadingNotice}
         <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📊 Dashboard</h2>
+        {unreadNotifications > 0 && (
+          <div style={{ ...S.alert('info'), marginBottom: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span>🔔 You have <strong>{unreadNotifications}</strong> unread notification{unreadNotifications === 1 ? '' : 's'}.</span>
+            <button style={S.btnSm('primary')} onClick={() => navigate(PAGE_PATHS.profile)}>View Notifications</button>
+          </div>
+        )}
         {(() => {
           const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
           if (availableLendingCapital >= threshold) return null;
@@ -10373,6 +10500,113 @@ export default function App() {
       );
       }
 
+      case 'profile': {
+        const saveProfile = async () => {
+          setProfileError('');
+          setProfileSuccess('');
+          if (!profileEditMode) return;
+          if (profileForm.password && profileForm.password !== profileForm.confirmPassword) {
+            setProfileError('New password and confirmation do not match.');
+            return;
+          }
+          setProfileSaving(true);
+          const result = await API.put('profile', { email: profileForm.email, phone1: profileForm.phone1, phone2: profileForm.phone2, password: profileForm.password });
+          setProfileSaving(false);
+          if (result?.error) {
+            setProfileError(result.error);
+            return;
+          }
+          if (result?.user) {
+            const normalizedUser = normalizeUser(result.user);
+            writeCache('cfc_user', normalizedUser);
+            setCurrentUser(normalizedUser);
+          }
+          setProfileForm(prev => ({ ...prev, password: '', confirmPassword: '' }));
+          setProfileEditMode(false);
+          setProfileSuccess('Profile updated successfully.');
+        };
+        const statCard = (title, value, note) => (
+          <div style={S.stat}><div style={S.statLabel}>{title}</div><div style={S.statValue}>{value}</div>{note ? <div style={{ fontSize: '12px', color: COLORS.textMuted }}>{note}</div> : null}</div>
+        );
+        return (<div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '18px', flexWrap: 'wrap' }}>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, margin: 0 }}>👤 My Profile</h2>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {!profileEditMode && <button style={S.btn('primary')} onClick={() => setProfileEditMode(true)}>✏️ Edit Profile</button>}
+              {profileEditMode && <><button style={S.btn('outline')} onClick={() => { setProfileEditMode(false); setProfileError(''); setProfileSuccess(''); setProfileForm(prev => ({ ...prev, password: '', confirmPassword: '' })); }}>Cancel</button><button style={S.btn('primary')} onClick={saveProfile} disabled={profileSaving}>{profileSaving ? 'Saving...' : 'Save Changes'}</button></>}
+            </div>
+          </div>
+          {profileError && <div style={{ ...S.alert('danger'), marginBottom: '14px' }}>⛔ {profileError}</div>}
+          {profileSuccess && <div style={{ ...S.alert('success'), marginBottom: '14px' }}>✅ {profileSuccess}</div>}
+          {profileLoading && <div style={{ ...S.alert('info'), marginBottom: '14px' }}>Loading profile details...</div>}
+          <div style={{ ...S.card, marginBottom: '16px' }}>
+            <div style={S.cardTitle}>Account Details</div>
+            <div style={S.grid2}>
+              <Field label="Full Name"><input style={{ ...S.input, background: '#f3f4f6' }} value={currentUser?.name || ''} readOnly /></Field>
+              <Field label="Username"><input style={{ ...S.input, background: '#f3f4f6' }} value={`@${currentUser?.username || ''}`} readOnly /></Field>
+              <Field label="Primary Phone"><input style={S.input} value={profileForm.phone1} readOnly={!profileEditMode} placeholder="e.g. 08012345678" onChange={e => setProfileForm(prev => ({ ...prev, phone1: e.target.value }))} /></Field>
+              <Field label="Secondary Phone"><input style={S.input} value={profileForm.phone2} readOnly={!profileEditMode} placeholder="Optional backup line" onChange={e => setProfileForm(prev => ({ ...prev, phone2: e.target.value }))} /></Field>
+              <Field label="Email Address"><input type="email" style={S.input} value={profileForm.email} readOnly={!profileEditMode} placeholder="you@example.com" onChange={e => setProfileForm(prev => ({ ...prev, email: e.target.value }))} /></Field>
+              <div />
+              <Field label="New Password"><input type="password" style={S.input} value={profileForm.password} readOnly={!profileEditMode} placeholder={profileEditMode ? "Leave empty to keep current password" : "********"} onChange={e => setProfileForm(prev => ({ ...prev, password: e.target.value }))} /></Field>
+              <Field label="Confirm New Password"><input type="password" style={S.input} value={profileForm.confirmPassword} readOnly={!profileEditMode} placeholder={profileEditMode ? "Repeat new password" : "********"} onChange={e => setProfileForm(prev => ({ ...prev, confirmPassword: e.target.value }))} /></Field>
+            </div>
+          </div>
+          <div style={{ ...S.card, marginBottom: '16px' }}>
+            <div style={{ ...S.cardTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <span>🔔 Notifications</span>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <span style={S.badge(unreadNotifications > 0 ? '#dc2626' : '#6b7280')}>{unreadNotifications} new</span>
+                <button style={S.btnSm('outline')} onClick={markAllNotificationsRead} disabled={notifications.length === 0}>Mark all as read</button>
+              </div>
+            </div>
+            {notifications.length === 0 ? (
+              <div style={{ fontSize: '13px', color: COLORS.textMuted }}>No notifications yet. Important items like capital alerts and monthly report reminders will appear here.</div>
+            ) : (
+              <div style={{ display: 'grid', gap: '10px' }}>
+                {notifications.map(note => (
+                  <div key={note.id} style={{ border: `1px solid ${note.readAt ? COLORS.border : '#fecaca'}`, background: note.readAt ? '#fff' : '#fff7ed', borderRadius: '10px', padding: '10px 12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
+                      <div>
+                        <div style={{ fontWeight: 700, color: COLORS.primaryDark, fontSize: '14px' }}>{note.title}</div>
+                        <div style={{ fontSize: '12px', color: COLORS.textMuted }}>{new Date(note.createdAt).toLocaleString()}</div>
+                      </div>
+                      {!note.readAt && <span style={S.badge('#dc2626')}>New</span>}
+                    </div>
+                    <div style={{ fontSize: '13px', color: COLORS.text, marginTop: '6px' }}>{note.message}</div>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+                      <button style={S.btnSm('primary')} onClick={() => { markNotificationRead(note.id); navigate(note.path || PAGE_PATHS.profile); }}>Open</button>
+                      {!note.readAt && <button style={S.btnSm('outline')} onClick={() => markNotificationRead(note.id)}>Mark as read</button>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          {isStaff && <div style={{ ...S.card, marginBottom: '16px' }}>
+            <div style={S.cardTitle}>Staff Performance Snapshot</div>
+            <div style={S.grid4}>
+              {statCard('Active Loans', activeTxs.length, 'Customers currently holding business capital')}
+              {statCard('Overdue Loans', overdueLoans.length, 'Need urgent follow-up and recovery')}
+              {statCard('Items Listed', forSaleTxs.length, 'Inventory already listed for sale')}
+              {statCard('Revenue', fmtMoney(totalRevenue), 'Interest + sales + service fees')}
+            </div>
+          </div>}
+          <div style={S.card}>
+            <div style={S.cardTitle}>Financial Position</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>A simple breakdown of your business money view and stakeholder position.</div>
+            <div style={S.grid2}>
+              {statCard('Total Capital Invested (You)', fmtMoney(userCapitalInvested), userCapitalEntries.length ? `${userCapitalEntries.length} contribution record(s)` : 'No contribution record linked to your account yet')}
+              {statCard('Business Net Profit', fmtMoney(netProfit), 'Revenue minus all recorded expenses')}
+              {statCard('Your Ownership Share', userOwnershipPct ? `${userOwnershipPct.toFixed(2)}%` : 'Not set', userOwnershipPct ? `Estimated share value: ${fmtMoney(userProfitShareAmount || 0)}` : 'Ask admin to configure stakeholder ownership')}
+              {statCard('Distributed Profit Logged By You', fmtMoney(userDistributionReceived), 'Profit payouts recorded under your username')}
+              {statCard('Available Lending Capital', fmtMoney(availableLendingCapital), 'Cash available for new loans right now')}
+              {statCard('Capital Currently Out', fmtMoney(totalCapitalOut), 'Money currently held by active customers')}
+            </div>
+          </div>
+        </div>);
+      }
+
       case 'users': if (!isAdmin) return <Navigate to="/dashboard" replace />; return (<div><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}><h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>👥 Users</h2><button style={S.btn('primary')} onClick={() => { setUsrForm({ name: '', username: '', password: '', role: 'staff' }); setUsrShowPwd(false); setShowAddUser(true); }}>+ Add User</button></div><div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 14px', background: COLORS.primaryLight, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>A user can hold multiple roles — for example, a staff member can also be a stakeholder. Use the <strong>Grant/Revoke Stakeholder</strong> button below to manage this without needing two accounts.</div><div style={S.card}><table style={S.table}><thead><tr><th style={S.th}>Name</th><th style={S.th}>Username</th><th style={S.th}>Roles</th><th style={S.th}>Status</th><th style={S.th}>Actions</th></tr></thead><tbody>{users.map(u => { const isActive = u.active !== 0; const extraRoles = u.roles || []; const isAlsoStakeholder = u.role !== 'stakeholder' && extraRoles.includes('stakeholder'); const canToggleStakeholder = u.role !== 'admin' && u.role !== 'stakeholder'; return (<tr key={u.id} style={{ opacity: isActive ? 1 : 0.6 }}><td style={S.td}><strong>{u.name}</strong></td><td style={S.td}>@{u.username}</td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}><span style={S.badge(u.role === 'admin' ? COLORS.primary : u.role === 'staff' ? COLORS.accent : '#6b7280')}>{u.role}</span>{extraRoles.map(r => <span key={r} style={S.badge('#8b5cf6')}>{r}</span>)}</div></td><td style={S.td}><span style={S.badge(isActive ? '#10b981' : COLORS.danger)}>{isActive ? 'Active' : 'Disabled'}</span></td><td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>{u.id !== 'admin' && <><button style={S.btnSm('accent')} onClick={() => { setEditUserUsername(u.username || ''); setEditUserPassword(''); setEditUserShowPwd(false); setShowEditUser(u); }}>Edit</button>{canToggleStakeholder && <button style={S.btnSm(isAlsoStakeholder ? 'danger' : 'primary')} onClick={async () => { const newRoles = isAlsoStakeholder ? extraRoles.filter(r => r !== 'stakeholder') : [...extraRoles, 'stakeholder']; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, roles: newRoles } : x)); await API.put(`users/${u.id}`, { roles: newRoles }); loadData(); }}>{isAlsoStakeholder ? '− Revoke Stakeholder' : '+ Grant Stakeholder'}</button>}<button style={S.btnSm(isActive ? 'danger' : 'primary')} onClick={async () => { const newActive = isActive ? 0 : 1; setUsers(prev => prev.map(x => x.id === u.id ? { ...x, active: newActive } : x)); await API.put(`users/${u.id}`, { active: newActive }); loadActivityLogs(); }}>{isActive ? 'Disable' : 'Enable'}</button><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Remove ${u.name}? This cannot be undone.`)) { setUsers(prev => prev.filter(x => x.id !== u.id)); await API.del(`users/${u.id}`); loadData(); } }}>Remove</button></>}</div></td></tr>); })}</tbody></table></div></div>);
 
       default: return <Navigate to="/dashboard" replace />;
@@ -10401,8 +10635,8 @@ export default function App() {
           <button onClick={() => navigate('/landing')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '16px' }}>
-          {!isMobile && <span style={{ fontSize: '13px', opacity: 0.8 }}>👤 {currentUser.name}</span>}
-          <span style={S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280')}>{currentUser.role}{(currentUser.roles || []).length > 0 ? ` + ${(currentUser.roles || []).join(', ')}` : ''}</span>
+          {!isMobile && <button onClick={() => navigate(PAGE_PATHS.profile)} style={{ background: 'none', border: 'none', fontSize: '13px', opacity: 0.8, cursor: 'pointer' }}>👤 {currentUser.name}</button>}
+          <button onClick={() => navigate(PAGE_PATHS.profile)} style={{ ...S.badge(currentUser.role === 'admin' ? '#c8a84e' : currentUser.role === 'staff' ? '#10b981' : '#6b7280'), border: 'none', cursor: 'pointer', position: 'relative' }}>{currentUser.role}{(currentUser.roles || []).length > 0 ? ` + ${(currentUser.roles || []).join(', ')}` : ''}{unreadNotifications > 0 && <span style={{ position: 'absolute', top: '-5px', right: '-5px', width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444', border: '1px solid #fff' }} />}</button>
           <button style={{ ...S.btnSm('danger'), fontSize: '11px' }} onClick={async () => { await API.post('logout', {}); clearAuthCache(); setCurrentUser(null); }}>{isMobile ? '✕' : 'Logout'}</button>
         </div>
       </div>
