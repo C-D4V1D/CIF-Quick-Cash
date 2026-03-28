@@ -6682,18 +6682,13 @@ export default function App() {
       }
 
       case 'actionLoans': {
-        // --- Helper: compute penalty / total owed for a loan ---
+        // --- Helper: compute total owed for a loan ---
         const computeTotalOwed = (tx) => {
           const elapsed = effectiveElapsedDays(tx, settings);
           const dailyFee = Number(tx.dailyFee) || 0;
           const cashAdvance = Number(tx.cashAdvance) || 0;
-          const maxLD = Math.max(1, Number(settings.maxLoanDays) || 30);
-          const penaltyMult = Number(settings.penaltyRateMultiplier) || 1.5;
-          const normalDays = Math.min(elapsed, maxLD);
-          const overdueDays = Math.max(0, elapsed - maxLD);
-          const normalFees = normalDays * dailyFee;
-          const penaltyFees = overdueDays * dailyFee * penaltyMult;
-          return { cashAdvance, normalFees, penaltyFees, totalOwed: cashAdvance + normalFees + penaltyFees, overdueDays };
+          const totalFees = elapsed * dailyFee;
+          return { cashAdvance, totalFees, totalOwed: cashAdvance + totalFees };
         };
 
         // --- Helper: build WhatsApp send link for a specific loan ---
@@ -6813,12 +6808,6 @@ export default function App() {
                             <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
                               Ownership date: {fmtDate(tx.internal_deadline || addDays(tx.dateGiven, maxLD))}
                             </div>
-                            {owed.penaltyFees > 0 && (
-                              <div style={{ fontSize: '12px', marginTop: '4px', padding: '4px 8px', background: '#fef2f2', borderRadius: '4px', display: 'inline-block' }}>
-                                <span style={{ color: '#991b1b', fontWeight: 600 }}>Total owed: {fmtMoney(owed.totalOwed)}</span>
-                                <span style={{ color: '#dc2626', fontSize: '11px', marginLeft: '6px' }}>(incl. {fmtMoney(owed.penaltyFees)} penalty)</span>
-                              </div>
-                            )}
                           </div>
                           <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
                             {waLink && (
@@ -8330,9 +8319,6 @@ export default function App() {
             <div style={S.cardTitle}>⚠ Overdue &amp; Penalty Rules</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure what happens when a customer fails to return on time — penalties, reminders, and auto-forfeiture.</div>
             <div style={S.grid2}>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Penalty Rate Multiplier<InfoIcon tip="After the grace period expires, the daily fee is multiplied by this number. For example, 1.5x means a ₦100/day fee becomes ₦150/day for overdue loans. Set to 1 for no penalty." /></span>}>
-                <input style={S.input} type="number" step="0.1" min="1" max="5" value={es.penaltyRateMultiplier ?? DEFAULT_SETTINGS.penaltyRateMultiplier} onChange={e => updateSettings({ ...es, penaltyRateMultiplier: Number(e.target.value) })} />
-              </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Follow-Up Days<InfoIcon tip="Comma-separated day offsets for when the Daily Follow-ups page should show a loan before its customer due date. Example: 3, 1, 0" /></span>}>
                 <ReminderDaysInput style={S.input} value={es.dueDateFollowUpDays} fallback={DEFAULT_SETTINGS.dueDateFollowUpDays} onChange={v => updateSettings({ ...es, dueDateFollowUpDays: v })} placeholder="e.g. 3, 1, 0" />
               </Field>
