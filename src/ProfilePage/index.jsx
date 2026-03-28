@@ -45,6 +45,8 @@ export default function ProfilePage({
   isMobile,
   onUnreadChange,
   onContactSaved,
+  onOpenSmsRecharge,
+  onOpenNinRecharge,
 }) {
   const [dataReady, setDataReady] = useState(false);
 
@@ -104,6 +106,8 @@ export default function ProfilePage({
         currentUser={currentUser}
         settings={settings}
         onUnreadChange={onUnreadChange}
+        onOpenSmsRecharge={onOpenSmsRecharge}
+        onOpenNinRecharge={onOpenNinRecharge}
         isMobile={isMobile}
       />
 

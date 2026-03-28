@@ -7,7 +7,6 @@ const COUNT_KEY = (uid) => `cfc_unread_notif_count_${uid}`;
 
 const hasRole = (u, r) => u?.role === r || (u?.roles || []).includes(r);
 
-// Stable UTC parsing for SQLite timestamps ("YYYY-MM-DD HH:MM:SS", no timezone)
 function parseUTC(d) {
   if (!d) return null;
   const s = String(d).trim().replace(' ', 'T');
@@ -136,7 +135,8 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
     }
   }
 
-  // ── Capital status alerts (staff / admin) ──
+  // ── Capital Alert SMS conditions (staff / admin) ──
+  // These match the 4 Capital Alert SMS templates configured in Admin Settings.
   if (isStaff) {
     const totalCapital = capital.reduce((s, c) => s + (Number(c.amount) || 0), 0);
     const activeStatuses = ['active', 'overdue', 'ownership_transferred'];
@@ -146,28 +146,29 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
     const available = totalCapital - deployed;
     const lowThreshold = Number(settings?.capitalLowThreshold ?? 50000);
 
+    // 1. Capital Deficit — mirrors smsCapitalDeficit
     if (available < 0) {
-      // Capital deficit
       const deficitAmt = Math.abs(available);
       notifs.push({
         id: 'cap_deficit',
         icon: '🚨',
-        title: 'Capital Deficit Alert',
-        short: `Available capital is negative — deficit of ${fmtMoney(deficitAmt)}`,
-        full: `The business is operating at a capital deficit of ${fmtMoney(deficitAmt)}.\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital currently deployed in loans: ${fmtMoney(deployed)}\nAvailable for new loans: ${fmtMoney(available)}\n\nNew loans cannot be issued until additional capital is brought in. Please notify stakeholders immediately to arrange a top-up.`,
+        title: 'Capital Deficit',
+        short: `Business is at a deficit of ${fmtMoney(deficitAmt)} — stakeholders need to top up`,
+        full: `The business has a capital deficit of ${fmtMoney(deficitAmt)}.\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital deployed in loans: ${fmtMoney(deployed)}\nNet available: ${fmtMoney(available)}\n\nNew loans cannot be funded until stakeholders bring in additional capital. An SMS alert${settings?.smsCapitalDeficitEnabled ? ' has been / will be' : ' can be'} sent to stakeholders from Admin › Settings › Capital Alert SMS.`,
         createdAt: new Date().toISOString(),
         priority: 'urgent',
         link: '/capital',
         linkLabel: 'View Capital',
       });
-    } else if (available < lowThreshold) {
-      // Capital low
+    }
+    // 2. Capital Low — mirrors smsCapitalLow
+    else if (available < lowThreshold) {
       notifs.push({
         id: 'cap_low',
         icon: '⚠️',
         title: 'Capital Running Low',
-        short: `Only ${fmtMoney(available)} available for new loans`,
-        full: `Available lending capital has fallen below the alert threshold (${fmtMoney(lowThreshold)}).\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital deployed in active loans: ${fmtMoney(deployed)}\nAvailable for new loans: ${fmtMoney(available)}\n\nConsider contacting stakeholders for a capital top-up to avoid disruption to operations.`,
+        short: `Only ${fmtMoney(available)} available — threshold is ${fmtMoney(lowThreshold)}`,
+        full: `Available lending capital has dropped below the alert threshold.\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital deployed in loans: ${fmtMoney(deployed)}\nAvailable for new loans: ${fmtMoney(available)}\nAlert threshold: ${fmtMoney(lowThreshold)}\n\nConsider contacting stakeholders for a top-up. An SMS alert${settings?.smsCapitalLowEnabled ? ' has been / will be' : ' can be'} sent to stakeholders from Admin › Settings › Capital Alert SMS.`,
         createdAt: new Date().toISOString(),
         priority: 'warning',
         link: '/capital',
@@ -175,24 +176,39 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
       });
     }
 
-    // Capital surplus — only for admin
-    if (isAdmin) {
-      const ownershipPct = settings?.stakeholderOwnership || {};
-      const totalPct = Object.values(ownershipPct).reduce((s, v) => s + (Number(v) || 0), 0);
-      // Surplus = available capital well above threshold (2×)
-      if (available > lowThreshold * 2 && totalCapital > 0) {
-        notifs.push({
-          id: 'cap_surplus',
-          icon: '📈',
-          title: 'Capital Surplus Available',
-          short: `${fmtMoney(available)} in available capital — consider stakeholder withdrawal`,
-          full: `The business currently has a healthy capital surplus.\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital deployed in active loans: ${fmtMoney(deployed)}\nAvailable (idle) capital: ${fmtMoney(available)}\n\nIdle capital above the operational threshold (${fmtMoney(lowThreshold)}) may be available for stakeholder withdrawal. Review the capital page and consider generating profit decisions for the current period.`,
-          createdAt: new Date().toISOString(),
-          priority: 'normal',
-          link: '/capital',
-          linkLabel: 'View Capital',
-        });
-      }
+    // 3. Capital Transaction Shortfall — mirrors smsCapitalTransactionShortfall
+    // Show when available capital is under the service fee threshold (near-zero funding ability)
+    const serviceFee = Number(settings?.serviceFee ?? 1000);
+    const minLoanCap = Number(settings?.loanCapNoReceipt ?? 40) * 1000;
+    if (available >= 0 && available < minLoanCap && available >= 0 && available < lowThreshold) {
+      // Already covered by cap_low above; only add shortfall if available is positive but can't fund even a small loan
+    } else if (available >= 0 && available < minLoanCap) {
+      notifs.push({
+        id: 'cap_shortfall',
+        icon: '🔴',
+        title: 'Insufficient Capital for New Loans',
+        short: `${fmtMoney(available)} available — not enough to fund a minimum loan (${fmtMoney(minLoanCap)})`,
+        full: `There is not enough capital to fund a new loan.\n\nAvailable capital: ${fmtMoney(available)}\nMinimum loan amount (no receipt): ${fmtMoney(minLoanCap)}\n\nNo new loan transactions can be processed until stakeholders deposit additional funds. An SMS alert${settings?.smsCapitalTransactionShortfallEnabled ? ' has been / will be' : ' can be'} sent to stakeholders from Admin › Settings › Capital Alert SMS.`,
+        createdAt: new Date().toISOString(),
+        priority: 'urgent',
+        link: '/capital',
+        linkLabel: 'View Capital',
+      });
+    }
+
+    // 4. Capital Surplus / Withdrawal — mirrors smsCapitalWithdrawal (admin only)
+    if (isAdmin && available > lowThreshold * 2 && totalCapital > 0) {
+      notifs.push({
+        id: 'cap_surplus',
+        icon: '📈',
+        title: 'Capital Surplus — Withdrawal Available',
+        short: `${fmtMoney(available)} idle capital — stakeholders may be able to withdraw`,
+        full: `The business has a capital surplus above operational needs.\n\nTotal capital: ${fmtMoney(totalCapital)}\nDeployed in loans: ${fmtMoney(deployed)}\nIdle / available: ${fmtMoney(available)}\nOperational threshold: ${fmtMoney(lowThreshold)}\n\nExcess capital may be returned to stakeholders as a withdrawal. An SMS alert${settings?.smsCapitalWithdrawalEnabled ? ' has been / will be' : ' can be'} sent to stakeholders from Admin › Settings › Capital Alert SMS.`,
+        createdAt: new Date().toISOString(),
+        priority: 'normal',
+        link: '/capital',
+        linkLabel: 'View Capital',
+      });
     }
   }
 
@@ -209,17 +225,18 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
           ? 'You have 0 credits — automated messages cannot be sent'
           : `Only ${smsCredits} SMS credits remaining (${fmtMoney(smsBalance)})`,
         full: urgent
-          ? `Your SMS credit balance has run out. Automated reminder messages to customers are currently disabled. Please top up immediately via the SMS Recharge option to restore messaging.\n\nCurrent wallet balance: ${fmtMoney(smsBalance)}`
-          : `Your SMS credit balance is running low — only ${smsCredits} credits (≈ ${fmtMoney(smsBalance)}) remaining.\n\nAt the current rate, you may run out soon. Top up to ensure automated loan reminders continue to be sent to customers.\n\nAlert threshold: ${threshold} credits`,
+          ? `Your SMS credit balance has run out. Automated reminder messages to customers are currently disabled. Head to Daily Follow-Ups to top up and restore messaging.\n\nCurrent wallet balance: ${fmtMoney(smsBalance)}`
+          : `Your SMS credit balance is running low — only ${smsCredits} credits (≈ ${fmtMoney(smsBalance)}) remaining.\n\nAt the current rate you may run out soon. Head to Daily Follow-Ups to top up and ensure automated loan reminders keep going out.\n\nAlert threshold: ${threshold} credits`,
         createdAt: new Date().toISOString(),
         priority: urgent ? 'urgent' : 'warning',
-        link: '/admin/settings',
-        linkLabel: 'Go to SMS Settings',
+        // Navigate to daily follow-ups where the SMS Recharge button lives
+        link: '/daily-follow-ups',
+        linkLabel: 'Go to Daily Follow-Ups',
       });
     }
   }
 
-  // ── NIN/BVN verification active (staff / admin) ──
+  // ── NIN/BVN verification active — Recharge Credits (staff / admin) ──
   if (isStaff && settings?.ninApiKey) {
     const ninThreshold = Number(settings?.ninLowCreditThreshold ?? 5);
     if (ninThreshold > 0) {
@@ -227,12 +244,13 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
         id: 'nin_info',
         icon: '🪪',
         title: 'NIN/BVN Verification Active',
-        short: `ID verification is enabled — alert threshold set at ${ninThreshold} credits`,
-        full: `NIN/BVN identity verification is active for this app. You will be alerted when your verification credits fall below ${ninThreshold}.\n\nRecharge bank: ${settings.ninRechargeBank || 'Not configured'}\nAccount: ${settings.ninRechargeAccountNumber || '—'} (${settings.ninRechargeAccountName || '—'})\n\nContact your admin to top up verification credits.`,
+        short: `ID verification enabled — alert threshold: ${ninThreshold} credits`,
+        full: `NIN/BVN identity verification is active. You will be alerted when credits fall below ${ninThreshold}.\n\nRecharge bank: ${settings.ninRechargeBank || 'Not configured'}\nAccount: ${settings.ninRechargeAccountNumber || '—'} (${settings.ninRechargeAccountName || '—'})\n\nUse the button below to view recharge instructions at any time.`,
         createdAt: null,
         priority: 'info',
-        link: '/admin/settings',
-        linkLabel: 'Go to Settings',
+        // Opens the NIN Recharge Credits modal (not navigation)
+        actionType: 'ninRecharge',
+        linkLabel: 'Recharge Credits',
       });
     }
   }
@@ -280,7 +298,7 @@ const PRIORITY_BADGE = {
 
 export default function NotificationsPanel({
   activityLogs, capital, distributions, transactions, smsCredits, smsBalance,
-  currentUser, settings, onUnreadChange, isMobile,
+  currentUser, settings, onUnreadChange, onOpenSmsRecharge, onOpenNinRecharge, isMobile,
 }) {
   const navigate = useNavigate();
   const [tab, setTab] = useState('all');
@@ -321,6 +339,12 @@ export default function NotificationsPanel({
   const handleClick = (n) => {
     setExpandedId(id => id === n.id ? null : n.id);
     if (!readIds.has(n.id)) markRead(n.id);
+  };
+
+  const handleAction = (n) => {
+    if (n.actionType === 'ninRecharge') { onOpenNinRecharge?.(); return; }
+    if (n.actionType === 'smsRecharge') { onOpenSmsRecharge?.(); return; }
+    if (n.link) navigate(n.link);
   };
 
   const tabs = [
@@ -385,6 +409,7 @@ export default function NotificationsPanel({
               const isExpanded = expandedId === n.id;
               const pStyle = PRIORITY_STYLE[n.priority] || PRIORITY_STYLE.normal;
               const pBadge = PRIORITY_BADGE[n.priority];
+              const hasAction = n.link || n.actionType;
 
               return (
                 <div
@@ -401,10 +426,7 @@ export default function NotificationsPanel({
                 >
                   {/* Row */}
                   <div style={{ padding: isMobile ? '12px' : '14px 16px', display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                    {/* Icon */}
                     <div style={{ fontSize: '22px', lineHeight: 1.2, flexShrink: 0, marginTop: '2px' }}>{n.icon}</div>
-
-                    {/* Content */}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', flexWrap: 'wrap' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
@@ -446,15 +468,14 @@ export default function NotificationsPanel({
                             {fmtDateFull(n.createdAt)}
                           </div>
                         ) : <div />}
-                        {n.link && (
+                        {hasAction && (
                           <button
-                            onClick={() => navigate(n.link)}
+                            onClick={() => handleAction(n)}
                             style={{
                               padding: '8px 18px', borderRadius: '8px', border: 'none',
                               background: COLORS.primary, color: '#fff',
                               fontWeight: 700, fontSize: '13px', cursor: 'pointer',
-                              fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: '6px',
-                              whiteSpace: 'nowrap',
+                              fontFamily: 'inherit', whiteSpace: 'nowrap',
                             }}
                           >
                             {n.linkLabel} →

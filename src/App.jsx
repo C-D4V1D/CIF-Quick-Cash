@@ -6932,6 +6932,7 @@ export default function App() {
   const [smsBalance, setSmsBalance] = useState(null);      // raw balance in naira | null
   const [smsCreditsLoading, setSmsCreditsLoading] = useState(false);
   const [showSmsRechargeModal, setShowSmsRechargeModal] = useState(false);
+  const [showNinRechargeModal, setShowNinRechargeModal] = useState(false);
   const [smsAutoSendDone, setSmsAutoSendDone] = useState(false); // prevent firing twice per session
   const [autoGenDone, setAutoGenDone] = useState(false); // prevent auto-generate firing twice per session
   const [serpApiAccount, setSerpApiAccount] = useState(null); // live data from serpapi.com/account.json
@@ -10870,6 +10871,8 @@ export default function App() {
             setCurrentUser(updated);
             writeCache('cfc_user', updated);
           }}
+          onOpenSmsRecharge={() => setShowSmsRechargeModal(true)}
+          onOpenNinRecharge={() => setShowNinRechargeModal(true)}
         />
       );
 
@@ -11016,6 +11019,7 @@ export default function App() {
       <Modal open={!!loggingContactTx} onClose={() => setLoggingContactTx(null)} title="Log Contact Attempt">{loggingContactTx && <ContactLogModal tx={loggingContactTx} currentUser={currentUser} onClose={() => setLoggingContactTx(null)} onSave={async (tx) => { await saveTx(tx); setLoggingContactTx(null); }} />}</Modal>
       <Modal open={!!shopListingTx} onClose={() => setShopListingTx(null)} title={shopListingTx?.status === 'for_sale' ? '🏪 Edit Shop Listing' : '🏪 List Item in Shop'} wide>{shopListingTx && <ShopListingModal tx={shopListingTx} settings={settings} onClose={() => setShopListingTx(null)} onSave={async (tx) => { await saveTx(tx); loadData(); setShopListingTx(null); }} />}</Modal>
       {showSmsRechargeModal && <SmsRechargeModal onClose={() => setShowSmsRechargeModal(false)} settings={settings} smsBalance={smsBalance} smsCredits={smsCredits} smsNairaPerCredit={settings.smsNairaPerCredit ?? 5} />}
+      {showNinRechargeModal && <NinRechargeModal onClose={() => setShowNinRechargeModal(false)} settings={settings} />}
       <style>{`
         input:focus,select:focus,textarea:focus{border-color:${COLORS.primary}!important;box-shadow:0 0 0 3px ${COLORS.primaryLight};}
         ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:${COLORS.bg}}::-webkit-scrollbar-thumb{background:${COLORS.border};border-radius:3px}
