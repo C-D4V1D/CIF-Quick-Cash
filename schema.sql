@@ -9,12 +9,19 @@ CREATE TABLE IF NOT EXISTS users (
   roles       TEXT    NOT NULL DEFAULT '[]',  -- JSON array of additional roles, e.g. '["stakeholder"]'
   name        TEXT    NOT NULL,
   active      INTEGER NOT NULL DEFAULT 1,
+  phone1      TEXT    DEFAULT NULL,
+  phone2      TEXT    DEFAULT NULL,
+  email       TEXT    DEFAULT NULL,
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Migration for existing databases:
 -- ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
 -- ALTER TABLE users ADD COLUMN roles TEXT NOT NULL DEFAULT '[]';
+-- ALTER TABLE users ADD COLUMN phone1 TEXT DEFAULT NULL;
+-- ALTER TABLE users ADD COLUMN phone2 TEXT DEFAULT NULL;
+-- ALTER TABLE users ADD COLUMN email  TEXT DEFAULT NULL;
+-- (Or run: migrate-user-contact.sql)
 
 -- Default admin user
 INSERT OR IGNORE INTO users (id, username, password, role, name)

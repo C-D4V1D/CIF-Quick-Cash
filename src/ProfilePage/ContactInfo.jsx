@@ -2,17 +2,6 @@ import { useState } from 'react';
 import { COLORS } from '../theme';
 import ChangePasswordModal from './ChangePasswordModal';
 
-const PROFILE_STORE_KEY = (uid) => `cfc_profile_ext_${uid}`;
-
-function readExt(uid) {
-  try { return JSON.parse(localStorage.getItem(PROFILE_STORE_KEY(uid)) || '{}'); }
-  catch { return {}; }
-}
-
-function writeExt(uid, data) {
-  localStorage.setItem(PROFILE_STORE_KEY(uid), JSON.stringify(data));
-}
-
 const inputStyle = {
   width: '100%', padding: '10px 12px', borderRadius: '8px',
   border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none',
@@ -43,43 +32,46 @@ function Row({ label, value, editMode, inputProps }) {
 }
 
 export default function ContactInfo({ currentUser, onSaved, isMobile }) {
-  const ext = readExt(currentUser.id);
   const [editMode, setEditMode] = useState(false);
-  const [phone1, setPhone1] = useState(ext.phone1 || '');
-  const [phone2, setPhone2] = useState(ext.phone2 || '');
-  const [email, setEmail] = useState(ext.email || '');
+  const [phone1, setPhone1] = useState(currentUser.phone1 || '');
+  const [phone2, setPhone2] = useState(currentUser.phone2 || '');
+  const [email, setEmail] = useState(currentUser.email || '');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [showPwModal, setShowPwModal] = useState(false);
-
-  // Expose edit trigger from parent (ProfileHeader "Edit Profile" button)
-  ContactInfo._openEdit = () => setEditMode(true);
 
   const handleSave = async () => {
     setSaving(true);
-    const update = { phone1, phone2, email };
-    writeExt(currentUser.id, update);
-    // Optimistically call the API (backend may or may not support these fields)
+    setSaveError('');
     try {
-      await fetch(`/api/users/${currentUser.id}`, {
+      const res = await fetch(`/api/users/${currentUser.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(update),
+        body: JSON.stringify({ phone1: phone1.trim(), phone2: phone2.trim(), email: email.trim() }),
       });
-    } catch { /* backend may not support yet; localStorage saves it client-side */ }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setSaveError(body.error || 'Failed to save. Please try again.');
+        setSaving(false);
+        return;
+      }
+      setSaved(true);
+      setEditMode(false);
+      setTimeout(() => setSaved(false), 2500);
+      if (onSaved) onSaved({ phone1: phone1.trim(), phone2: phone2.trim(), email: email.trim() });
+    } catch {
+      setSaveError('Network error. Please try again.');
+    }
     setSaving(false);
-    setSaved(true);
-    setEditMode(false);
-    setTimeout(() => setSaved(false), 2500);
-    if (onSaved) onSaved();
   };
 
   const handleCancel = () => {
-    const ext2 = readExt(currentUser.id);
-    setPhone1(ext2.phone1 || '');
-    setPhone2(ext2.phone2 || '');
-    setEmail(ext2.email || '');
+    setPhone1(currentUser.phone1 || '');
+    setPhone2(currentUser.phone2 || '');
+    setEmail(currentUser.email || '');
+    setSaveError('');
     setEditMode(false);
   };
 
@@ -132,6 +124,12 @@ export default function ContactInfo({ currentUser, onSaved, isMobile }) {
               inputProps={{ value: email, onChange: e => setEmail(e.target.value), placeholder: 'yourname@email.com', type: 'email' }} />
           </div>
         </div>
+
+        {saveError && (
+          <div style={{ padding: '10px 14px', background: COLORS.dangerLight, borderRadius: '8px', color: COLORS.danger, fontSize: '13px', fontWeight: 600, marginBottom: '10px' }}>
+            {saveError}
+          </div>
+        )}
 
         {/* Save / Cancel */}
         {editMode && (

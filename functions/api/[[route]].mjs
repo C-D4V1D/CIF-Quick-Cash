@@ -440,7 +440,7 @@ export async function onRequest(context) {
       }
 
       let user = await db
-        .prepare('SELECT id, username, password, role, roles, name, active FROM users WHERE username = ?')
+        .prepare('SELECT id, username, password, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE username = ?')
         .bind(username)
         .first()
         .catch(() =>
@@ -467,7 +467,7 @@ export async function onRequest(context) {
       }
 
       const parsedRoles = parseRoles(user.roles);
-      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, issuedAt: Date.now() });
+      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, phone1: user.phone1 || null, phone2: user.phone2 || null, email: user.email || null, created_at: user.created_at || null, issuedAt: Date.now() });
       const activeCookie = rememberMe
         ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
         : buildSessionCookie(SESSION_COOKIE_SHORT, sessionPayload);
@@ -485,7 +485,12 @@ export async function onRequest(context) {
     if (path === 'me' && method === 'GET') {
       const user = getSessionUser(request);
       if (!user) return error('Not authenticated', 401);
-      return json(user);
+      // Always query fresh so contact info (phone1/phone2/email) reflects latest updates
+      const fresh = await db
+        .prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE id = ?')
+        .bind(user.id).first().catch(() => null);
+      if (!fresh) return json(user); // fallback to session data if DB unreachable
+      return json({ ...user, phone1: fresh.phone1 || null, phone2: fresh.phone2 || null, email: fresh.email || null, created_at: fresh.created_at || null, roles: parseRoles(fresh.roles), active: fresh.active });
     }
 
     // ============================================================
@@ -503,6 +508,23 @@ export async function onRequest(context) {
         await db.prepare('UPDATE users SET password = ? WHERE id = ?').bind(upgradedHash, auth.user.id).run();
       }
       return json({ ok: true });
+    }
+
+    // ============================================================
+    // AUTH: POST /api/change-password
+    // ============================================================
+    if (path === 'change-password' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { currentPassword, newPassword } = await request.json();
+      if (!newPassword || newPassword.length < 6) return error('New password must be at least 6 characters');
+      const user = await db.prepare('SELECT id, password, name, username FROM users WHERE id = ?').bind(auth.user.id).first();
+      const check = await verifyPassword(currentPassword, user?.password);
+      if (!check.ok) return error('Current password is incorrect', 401);
+      const hashed = await hashPassword(newPassword);
+      await db.prepare('UPDATE users SET password = ? WHERE id = ?').bind(hashed, auth.user.id).run();
+      await logActivity({ user: auth.user, action: 'change_password', entityType: 'user', entityId: auth.user.id, description: `🔒 ${user.name} changed their password` });
+      return json({ success: true });
     }
 
     // ============================================================
@@ -533,7 +555,7 @@ export async function onRequest(context) {
           db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, ref, customer_name AS customerName, nin_bvn AS ninBvn, item, reason, notes FROM declined_log ORDER BY date DESC').all(),
           isAdmin
-            ? db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all()
+            ? db.prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, created_at FROM users ORDER BY created_at').all()
             : Promise.resolve({ results: [] }),
         ]);
 
@@ -634,7 +656,7 @@ export async function onRequest(context) {
     if (path === 'users' && method === 'GET') {
       const auth = requireAdmin(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, username, role, roles, name, active, created_at FROM users ORDER BY created_at').all();
+      const { results } = await db.prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, created_at FROM users ORDER BY created_at').all();
       return json(results.map(u => ({ ...u, roles: parseRoles(u.roles) })));
     }
     if (path === 'users' && method === 'POST') {
@@ -673,32 +695,52 @@ export async function onRequest(context) {
       return json({ success: true });
     }
     if (path.startsWith('users/') && method === 'PUT') {
-      const auth = requireAdmin(request);
-      if (auth.error) return auth.error;
       const id = path.split('/')[1];
       if (id === 'admin') return error('Cannot modify the admin account');
-      const { username, password, active, roles } = await request.json();
-      const cur = await db.prepare('SELECT username, name, role, roles, active FROM users WHERE id = ?').bind(id).first();
+      // Allow any authenticated user to update their own contact info (phone1/phone2/email).
+      // All other fields (username, password, active, roles) are admin-only.
+      const sessionAuth = requireAuth(request);
+      if (sessionAuth.error) return sessionAuth.error;
+      const isSelf = sessionAuth.user.id === id;
+      const isAdmin = sessionAuth.user.role === 'admin';
+      const body = await request.json();
+      const { username, password, active, roles, phone1, phone2, email } = body;
+      // Non-admin trying to modify privileged fields
+      if (!isAdmin && (username !== undefined || password !== undefined || active !== undefined || roles !== undefined)) {
+        return error('Admin access required', 403);
+      }
+      // Non-admin can only edit their own contact info
+      if (!isAdmin && !isSelf) return error('Forbidden', 403);
+      const cur = await db.prepare('SELECT username, name, role, roles, active, phone1, phone2, email FROM users WHERE id = ?').bind(id).first();
       if (!cur) return error('User not found', 404);
       const setClauses = []; const setParams = [];
-      if (username !== undefined && username.trim() && username.trim() !== cur.username) { setClauses.push('username = ?'); setParams.push(username.trim()); }
-      if (password !== undefined && password.trim()) { setClauses.push('password = ?'); setParams.push(await hashPassword(password.trim())); }
-      if (active !== undefined && Number(active) !== Number(cur.active ?? 1)) { setClauses.push('active = ?'); setParams.push(active ? 1 : 0); }
-      if (roles !== undefined && Array.isArray(roles)) { setClauses.push('roles = ?'); setParams.push(JSON.stringify(roles)); }
-      if (setClauses.length) await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, id).run();
-      if (username !== undefined && username.trim() && username.trim() !== cur.username)
-        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `👤 Username changed: ${cur.name} — @${cur.username} → @${username.trim()}` });
-      if (password !== undefined && password.trim())
-        await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `🔑 Password changed for ${cur.name} (@${cur.username})` });
-      if (active !== undefined && Number(active) !== Number(cur.active ?? 1))
-        await logActivity({ user: auth.user, action: active ? 'activate' : 'deactivate', entityType: 'user', entityId: id, description: `${active ? '✅' : '🔒'} User account ${active ? 'activated' : 'deactivated'}: ${cur.name} (@${cur.username})` });
-      if (roles !== undefined && Array.isArray(roles)) {
-        const curRoles = parseRoles(cur.roles);
-        const added = roles.filter(r => !curRoles.includes(r));
-        const removed = curRoles.filter(r => !roles.includes(r));
-        if (added.length || removed.length)
-          await logActivity({ user: auth.user, action: 'update', entityType: 'user', entityId: id, description: `🎭 Roles updated for ${cur.name} (@${cur.username})${added.length ? ` — granted: ${added.join(', ')}` : ''}${removed.length ? ` — revoked: ${removed.join(', ')}` : ''}` });
+      if (isAdmin) {
+        if (username !== undefined && username.trim() && username.trim() !== cur.username) { setClauses.push('username = ?'); setParams.push(username.trim()); }
+        if (password !== undefined && password.trim()) { setClauses.push('password = ?'); setParams.push(await hashPassword(password.trim())); }
+        if (active !== undefined && Number(active) !== Number(cur.active ?? 1)) { setClauses.push('active = ?'); setParams.push(active ? 1 : 0); }
+        if (roles !== undefined && Array.isArray(roles)) { setClauses.push('roles = ?'); setParams.push(JSON.stringify(roles)); }
       }
+      if (phone1 !== undefined) { setClauses.push('phone1 = ?'); setParams.push(phone1 || null); }
+      if (phone2 !== undefined) { setClauses.push('phone2 = ?'); setParams.push(phone2 || null); }
+      if (email  !== undefined) { setClauses.push('email = ?');  setParams.push(email  || null); }
+      if (setClauses.length) await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, id).run();
+      if (isAdmin) {
+        if (username !== undefined && username.trim() && username.trim() !== cur.username)
+          await logActivity({ user: sessionAuth.user, action: 'update', entityType: 'user', entityId: id, description: `👤 Username changed: ${cur.name} — @${cur.username} → @${username.trim()}` });
+        if (password !== undefined && password.trim())
+          await logActivity({ user: sessionAuth.user, action: 'update', entityType: 'user', entityId: id, description: `🔑 Password changed for ${cur.name} (@${cur.username})` });
+        if (active !== undefined && Number(active) !== Number(cur.active ?? 1))
+          await logActivity({ user: sessionAuth.user, action: active ? 'activate' : 'deactivate', entityType: 'user', entityId: id, description: `${active ? '✅' : '🔒'} User account ${active ? 'activated' : 'deactivated'}: ${cur.name} (@${cur.username})` });
+        if (roles !== undefined && Array.isArray(roles)) {
+          const curRoles = parseRoles(cur.roles);
+          const added = roles.filter(r => !curRoles.includes(r));
+          const removed = curRoles.filter(r => !roles.includes(r));
+          if (added.length || removed.length)
+            await logActivity({ user: sessionAuth.user, action: 'update', entityType: 'user', entityId: id, description: `🎭 Roles updated for ${cur.name} (@${cur.username})${added.length ? ` — granted: ${added.join(', ')}` : ''}${removed.length ? ` — revoked: ${removed.join(', ')}` : ''}` });
+        }
+      }
+      if (phone1 !== undefined || phone2 !== undefined || email !== undefined)
+        await logActivity({ user: sessionAuth.user, action: 'update', entityType: 'profile', entityId: id, description: `📋 Contact details updated for ${cur.name}` });
       return json({ success: true });
     }
 

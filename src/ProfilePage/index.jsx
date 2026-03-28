@@ -44,6 +44,7 @@ export default function ProfilePage({
   loadData,
   isMobile,
   onUnreadChange,
+  onContactSaved,
 }) {
   const [dataReady, setDataReady] = useState(false);
 
@@ -89,6 +90,7 @@ export default function ProfilePage({
 
       <ContactInfo
         currentUser={currentUser}
+        onSaved={onContactSaved}
         isMobile={isMobile}
       />
 
