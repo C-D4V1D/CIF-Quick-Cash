@@ -375,6 +375,10 @@ const DEFAULT_SETTINGS = {
   ownershipFollowUpDays: [3, 0],
   penaltyRateMultiplier: 1.5,
   distributionAuthorizedUserIds: [],
+  // Distribution Decisions (Capital-Days)
+  distributionDeadlineDays: 3,
+  smsMonthlyProfitEnabled: true,
+  smsMonthlyProfitTemplate: '{businessName} — Your profit for {period} is {profitAmount}. Log in to choose: Distribute or Reinvest. If no response by {deadline}, it will be added to your capital. Questions? Call {adminPhone}',
   // Security
   sessionTimeoutMinutes: 480,
   minPasswordLength: 6,
@@ -6738,6 +6742,9 @@ export default function App() {
   const [expenses, setExpenses] = useState([]);
   const [capital, setCapital] = useState([]);
   const [distributions, setDistributions] = useState([]);
+  const [distDecisions, setDistDecisions] = useState([]);
+  const [distDecisionPeriod, setDistDecisionPeriod] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
+  const [distDecisionLoading, setDistDecisionLoading] = useState(false);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
   const [activityMeta, setActivityMeta] = useState({ total: 0, limit: ACTIVITY_PAGE_SIZE, offset: 0 });
@@ -8154,15 +8161,38 @@ export default function App() {
           return acc;
         }, {});
         const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` };
-        const rStakeholders = Object.values(capital.reduce((acc, c) => {
-          const key = c.name.toLowerCase();
-          if (!acc[key]) acc[key] = { name: c.name, total: 0 };
-          acc[key].total += (c.amount || 0);
-          return acc;
-        }, {})).map(s => {
-          const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
-          return { ...s, pct, share: Math.floor(rStakeholder * pct / 100) };
-        });
+        // ── CAPITAL-DAYS METHOD ──
+        // Each capital entry earns capital-days = amount × days active within the report period.
+        // Profit is split proportionally by capital-days, not raw capital amount.
+        const periodStart = new Date(Date.UTC(fromYear, fromMonth - 1, 1));
+        const periodEnd = new Date(Date.UTC(toYear, toMonth, 0)); // last day of toMonth
+        const periodDays = Math.round((periodEnd - periodStart) / 86400000) + 1; // inclusive
+        const rStakeholders = (() => {
+          // Group capital entries by stakeholder and compute capital-days per entry
+          const byStakeholder = {};
+          for (const c of capital) {
+            const key = c.name.toLowerCase();
+            if (!byStakeholder[key]) byStakeholder[key] = { name: c.name, total: 0, capitalDays: 0, entries: [] };
+            byStakeholder[key].total += (c.amount || 0);
+            const entryDate = new Date(c.date);
+            if (Number.isNaN(entryDate.getTime())) continue;
+            const entryUTC = new Date(Date.UTC(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()));
+            // Skip entries deposited after the report period
+            if (entryUTC > periodEnd) continue;
+            // Start counting from the later of entry date or period start
+            const effectiveStart = entryUTC > periodStart ? entryUTC : periodStart;
+            const days = Math.round((periodEnd - effectiveStart) / 86400000) + 1; // inclusive
+            const cd = (c.amount || 0) * days;
+            byStakeholder[key].capitalDays += cd;
+            byStakeholder[key].entries.push({ amount: c.amount, date: c.date, days, capitalDays: cd });
+          }
+          const arr = Object.values(byStakeholder);
+          const totalCapitalDays = arr.reduce((s, x) => s + x.capitalDays, 0);
+          return arr.map(s => {
+            const pct = totalCapitalDays > 0 ? (s.capitalDays / totalCapitalDays * 100) : 0;
+            return { ...s, pct, share: Math.floor(rStakeholder * pct / 100), effectiveDays: periodDays, totalCapitalDays };
+          });
+        })();
         // ── TASK-BASED STAFF SCORING ──
         // Points per task (all tasks weighted equally at 1 point each):
         // 1. Loan Intake      – completing a new cash advance or outright purchase (completedBy)
@@ -8255,6 +8285,10 @@ export default function App() {
             toCSV(['Staff','Loan Intake','Repayment','Sale','Contact Logged','Sold at Target','Sold On Time','Total Points','Share %','Amount'],
               rStaffByTask.map(s => [s.name, s.scores.loan_intake, s.scores.repayment, s.scores.sale, s.scores.contact, s.scores.sold_at_target, s.scores.sold_on_time, s.total, s.pct.toFixed(1)+'%', s.share])),
             '',
+            'STAKEHOLDER DISTRIBUTION (Capital-Days)',
+            toCSV(['Stakeholder','Total Capital','Capital-Days','Share %','Profit Share'],
+              rStakeholders.map(s => [s.name, s.total, s.capitalDays, s.pct.toFixed(1)+'%', s.share])),
+            '',
             'REPAYMENTS',
             toCSV(['Ref','Customer','Cash Advanced','Fees Collected','Date Repaid'],
               rClosed.map(t => [t.ref, t.fullName, t.cashAdvance, t.totalFees, t.dateRepaid || t.updated_at])),
@@ -8345,7 +8379,7 @@ export default function App() {
             {/* Profit distribution */}
             <div style={S.grid2}>
               <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Staff Share ({staffSharePct}%)<InfoIcon tip={`The staff's collective share for running the business — ${staffSharePct}% of the net profit, split equally among all active staff members.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rStaff)}</div></div>
-              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders ({100 - staffSharePct}%)<InfoIcon tip={`The investors' share of the profit — ${100 - staffSharePct}% split among them based on how much each person put in.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
+              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders ({100 - staffSharePct}%)<InfoIcon tip={`The investors' share of the profit — ${100 - staffSharePct}% split among them based on capital-days (capital × days active in the period). Money invested longer earns a bigger share.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
             </div>
             <div style={S.card}>
               <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>👥 Staff Performance & Distribution<InfoIcon tip="Each staff member's profit share is based on task points earned in this period. Points are earned for: new loans, repayments, sales, contact attempts, selling at target price, and selling within the deadline." /></div>
@@ -8386,14 +8420,36 @@ export default function App() {
               )}
             </div>
             <div style={S.card}>
-              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution<InfoIcon tip="How each investor's profit share is worked out — based on how much they put in compared to everyone else combined." /></div>
-              {rStakeholders.map(s => (
-                <div key={s.name} style={rowStyle}>
-                  <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({s.pct.toFixed(1)}%)</span>
-                  <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(s.share)}</strong>
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution (Capital-Days)<InfoIcon tip="Profit is split by capital-days: each investor's capital × the number of days it was active during the report period. Money invested earlier earns more." /></div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Report period: <strong>{periodDays} days</strong> · Total capital-days: <strong>{rStakeholders[0]?.totalCapitalDays?.toLocaleString() || 0}</strong></div>
+              {rStakeholders.length > 0 ? (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ ...S.table, fontSize: '12px' }}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Stakeholder</th>
+                        <th style={S.th}>Capital</th>
+                        <th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Capital-Days<InfoIcon tip="Sum of (each deposit × days it was active in the period). A deposit made on Day 1 of a 30-day month earns 30× its amount in capital-days." /></div></th>
+                        <th style={S.th}>Share %</th>
+                        <th style={S.th}>Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rStakeholders.map(s => (
+                        <tr key={s.name}>
+                          <td style={{ ...S.td, fontWeight: 700 }}>{s.name}</td>
+                          <td style={S.td}>{fmtMoney(s.total)}</td>
+                          <td style={S.td}>{s.capitalDays.toLocaleString()}</td>
+                          <td style={{ ...S.td, textAlign: 'center' }}>{s.pct.toFixed(1)}%</td>
+                          <td style={{ ...S.td, fontWeight: 700, color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(s.share)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
-              {capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}
+              ) : (
+                <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>
+              )}
             </div>
 
             {/* Repayments detail */}
@@ -8564,8 +8620,9 @@ export default function App() {
                   ['Capital Deployed', 'Total advance money given out as new loans this period. This money is out in the field.'],
                   ['Capital Returned', 'Total advance money recovered from customers who paid back their loans this period.'],
                   [`Staff Share (${staffSharePct}%)`, `The staff's collective management share — ${staffSharePct}% of the net profit divided among staff based on their task performance. Each person's portion equals their task points ÷ total team task points.`],
-                  [`Stakeholders (${100 - staffSharePct}%)`, `The remaining ${100 - staffSharePct}% of profit is shared among investors, each getting a share based on how much capital they put into the business.`],
-                  ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from their capital contribution compared to the total capital. More capital = higher share.'],
+                  [`Stakeholders (${100 - staffSharePct}%)`, `The remaining ${100 - staffSharePct}% of profit is shared among investors using the capital-days method. Each investor's share is based on how much capital they put in AND how long it was active during the period.`],
+                  ['Capital-Days', 'A fairness measure: capital amount × number of days it was active in the report period. Money invested on Day 1 of a 30-day month earns 30× its amount in capital-days, while money invested on Day 20 earns only 11×. This ensures earlier or longer investments earn a proportionally larger profit share.'],
+                  ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from their capital-days compared to the total capital-days. More capital invested for longer = higher share.'],
                 ].map(([term, def]) => (
                   <div key={term} style={{ padding: '10px 0', borderBottom: `1px solid ${COLORS.border}` }}>
                     <div style={{ fontWeight: 700, fontSize: '13px', color: COLORS.primaryDark, marginBottom: '3px' }}>{term}</div>
@@ -8869,6 +8926,158 @@ export default function App() {
                 </tbody>
               </table>
               <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total distributed: {fmtMoney(totalDistributions)}</div>
+            </div>
+
+            {/* ── Distribution Decisions (Capital-Days) ── */}
+            <div style={S.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📋 Distribution Decisions<InfoIcon tip="At the end of each month, each stakeholder chooses whether to take their profit share (distribute) or add it to their capital (reinvest). Decisions not made within the deadline are automatically reinvested." /></div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input type="month" value={distDecisionPeriod} onChange={e => setDistDecisionPeriod(e.target.value)} style={{ ...S.input, width: '150px', fontSize: '13px' }} />
+                  <button style={S.btn('secondary')} disabled={distDecisionLoading} onClick={async () => {
+                    setDistDecisionLoading(true);
+                    const res = await API.get(`distribution-decisions?period=${distDecisionPeriod}`);
+                    setDistDecisions(res?.decisions || []);
+                    setDistDecisionLoading(false);
+                  }}>Load</button>
+                </div>
+              </div>
+
+              {/* Admin: Generate Decisions */}
+              {isAdmin && distDecisions.length === 0 && (
+                <div style={{ padding: '16px', background: COLORS.primaryLight, borderRadius: '8px', marginBottom: '14px' }}>
+                  <p style={{ fontSize: '13px', color: COLORS.text, marginBottom: '10px' }}>
+                    No decisions found for <strong>{distDecisionPeriod}</strong>. Generate them from the monthly report to notify stakeholders and start the distribution cycle.
+                  </p>
+                  <button style={S.btn('primary')} disabled={distDecisionLoading} onClick={async () => {
+                    // Compute capital-days for this period
+                    const [pYear, pMonth] = distDecisionPeriod.split('-').map(Number);
+                    const pStart = new Date(Date.UTC(pYear, pMonth - 1, 1));
+                    const pEnd = new Date(Date.UTC(pYear, pMonth, 0));
+                    const byStake = {};
+                    for (const c of capital) {
+                      const key = c.name.toLowerCase();
+                      if (!byStake[key]) byStake[key] = { name: c.name, user_id: c.user_id, capitalDays: 0 };
+                      const entryDate = new Date(c.date);
+                      if (Number.isNaN(entryDate.getTime())) continue;
+                      const entryUTC = new Date(Date.UTC(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()));
+                      if (entryUTC > pEnd) continue;
+                      const effectiveStart = entryUTC > pStart ? entryUTC : pStart;
+                      const days = Math.round((pEnd - effectiveStart) / 86400000) + 1;
+                      byStake[key].capitalDays += (c.amount || 0) * days;
+                    }
+                    const arr = Object.values(byStake);
+                    const totalCD = arr.reduce((s, x) => s + x.capitalDays, 0);
+                    if (totalCD === 0) { alert('No capital-days for this period. Ensure capital entries exist.'); return; }
+                    // Calculate stakeholder profit for the period
+                    const periodTxs = transactions.filter(t => { if (!t.created_at) return false; const d = new Date(t.created_at.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const periodClosed = closedTxs.filter(t => { const ds = t.dateRepaid || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const periodSold = soldTxs.filter(t => { const ds = t.saleDate || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const periodNewLoans = periodTxs.filter(t => t.type !== 'outright' && t.status !== 'declined');
+                    const periodExp = expenses.filter(e => { if (!e.date) return false; const d = new Date(e.date.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + (t.salePrice || 0), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+                    const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
+                    const profit = rev - expT;
+                    const sPct = settings.staffSharePct ?? 10;
+                    const stakeholderPool = profit - Math.floor(profit * sPct / 100);
+                    if (stakeholderPool <= 0) { alert(`No stakeholder profit for ${distDecisionPeriod} (pool: ${fmtMoney(stakeholderPool)}). Cannot generate decisions.`); return; }
+                    const stakeData = arr.filter(s => s.user_id).map(s => ({
+                      user_id: s.user_id, name: s.name, capitalDays: s.capitalDays, totalCapitalDays: totalCD,
+                      profitAmount: Math.floor(stakeholderPool * (s.capitalDays / totalCD)),
+                    }));
+                    if (stakeData.length === 0) { alert('No stakeholders with linked user accounts found. Link users to capital entries in Capital settings.'); return; }
+                    if (!window.confirm(`Generate distribution decisions for ${distDecisionPeriod}?\n\nStakeholder profit pool: ${fmtMoney(stakeholderPool)}\n${stakeData.map(s => `  ${s.name}: ${fmtMoney(s.profitAmount)} (${(s.capitalDays/totalCD*100).toFixed(1)}%)`).join('\n')}\n\nSend SMS notifications?`)) return;
+                    setDistDecisionLoading(true);
+                    const res = await API.post('distribution-decisions/generate', { period: distDecisionPeriod, stakeholders: stakeData, sendSms: true });
+                    if (res?.ok) {
+                      alert(`Decisions generated! Deadline: ${res.deadline}\n\nSMS: ${(res.smsResults || []).map(r => `${r.name}: ${r.status}`).join(', ') || 'none sent'}`);
+                      const reload = await API.get(`distribution-decisions?period=${distDecisionPeriod}`);
+                      setDistDecisions(reload?.decisions || []);
+                    } else { alert('Error: ' + (res?.error || 'Unknown error')); }
+                    setDistDecisionLoading(false);
+                  }}>Generate Decisions & Notify</button>
+                </div>
+              )}
+
+              {/* Decision Table */}
+              {distDecisions.length > 0 && (
+                <>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ ...S.table, fontSize: '12px' }}>
+                      <thead>
+                        <tr>
+                          <th style={S.th}>Stakeholder</th>
+                          <th style={S.th}>Profit</th>
+                          <th style={S.th}>Capital-Days</th>
+                          <th style={S.th}>Decision</th>
+                          <th style={S.th}>Deadline</th>
+                          <th style={S.th}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {distDecisions.map(d => {
+                          const isPending = d.decision === 'pending';
+                          const canAct = isPending && (isAdmin || d.user_id === currentUser?.id);
+                          const statusColor = d.decision === 'distribute' ? COLORS.accent : d.decision === 'reinvest' ? COLORS.primary : '#6b7280';
+                          return (
+                            <tr key={d.id}>
+                              <td style={{ ...S.td, fontWeight: 700 }}>{d.stakeholder_name}</td>
+                              <td style={{ ...S.td, fontWeight: 700, color: COLORS.primary }}>{fmtMoney(d.profit_amount)}</td>
+                              <td style={S.td}>{Number(d.capital_days).toLocaleString()}</td>
+                              <td style={S.td}>
+                                <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: 700, color: '#fff', background: statusColor }}>
+                                  {d.decision.toUpperCase()}{d.auto_decided ? ' (auto)' : ''}
+                                </span>
+                              </td>
+                              <td style={{ ...S.td, fontSize: '12px', color: COLORS.textMuted }}>{fmtDate(d.deadline)}</td>
+                              <td style={S.td}>
+                                {canAct ? (
+                                  <div style={{ display: 'flex', gap: '4px' }}>
+                                    <button style={S.btnSm('primary')} onClick={async () => {
+                                      if (!window.confirm(`Reinvest ${fmtMoney(d.profit_amount)} as new capital?`)) return;
+                                      const res = await API.put(`distribution-decisions/${d.id}`, { decision: 'reinvest' });
+                                      if (res?.ok) { setDistDecisions(prev => prev.map(x => x.id === d.id ? { ...x, decision: 'reinvest', decided_at: new Date().toISOString() } : x)); loadData(); }
+                                      else alert('Error: ' + (res?.error || 'Unknown'));
+                                    }}>Reinvest</button>
+                                    <button style={S.btnSm('accent')} onClick={async () => {
+                                      if (!window.confirm(`Distribute ${fmtMoney(d.profit_amount)} to ${d.stakeholder_name}?`)) return;
+                                      const res = await API.put(`distribution-decisions/${d.id}`, { decision: 'distribute' });
+                                      if (res?.ok) { setDistDecisions(prev => prev.map(x => x.id === d.id ? { ...x, decision: 'distribute', decided_at: new Date().toISOString() } : x)); }
+                                      else alert('Error: ' + (res?.error || 'Unknown'));
+                                    }}>Distribute</button>
+                                  </div>
+                                ) : (
+                                  <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{d.decided_at ? fmtDate(d.decided_at) : '—'}</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Admin: Auto-reinvest expired */}
+                  {isAdmin && distDecisions.some(d => d.decision === 'pending') && (
+                    <button style={{ ...S.btn('secondary'), marginTop: '10px' }} onClick={async () => {
+                      if (!window.confirm('Auto-reinvest all expired pending decisions?')) return;
+                      setDistDecisionLoading(true);
+                      const res = await API.post('distribution-decisions/auto-reinvest');
+                      if (res?.ok) {
+                        alert(`${res.processed} decision(s) auto-reinvested.`);
+                        const reload = await API.get(`distribution-decisions?period=${distDecisionPeriod}`);
+                        setDistDecisions(reload?.decisions || []);
+                        loadData();
+                      } else { alert('Error: ' + (res?.error || 'Unknown')); }
+                      setDistDecisionLoading(false);
+                    }}>Auto-Reinvest Expired</button>
+                  )}
+                </>
+              )}
+
+              {distDecisions.length === 0 && !distDecisionLoading && (
+                <p style={{ fontSize: '13px', color: COLORS.textMuted }}>No distribution decisions for this period. {isAdmin ? 'Use "Generate Decisions & Notify" after completing the monthly report.' : 'Check back after the monthly report is generated.'}</p>
+              )}
+              {distDecisionLoading && <p style={{ fontSize: '13px', color: COLORS.textMuted }}>Loading...</p>}
             </div>
 
             {/* ── Capital Analysis ── */}
@@ -10275,6 +10484,29 @@ export default function App() {
             </div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '12px', padding: '10px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
               <strong>How staff shares are calculated:</strong> Each period, the staff pool ({es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct}% of net profit) is divided based on task points. Points are earned for: completing a new loan intake (+1), processing a repayment (+1), completing a sale (+1), logging a contact attempt on an overdue loan (+1), selling at or above the target price (+1 bonus), and selling on or before the intake-anchored target sale date ({es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} days after the max loan and grace window) (+1 bonus). Each staff member's share = their points ÷ total points.
+            </div>
+          </div>
+
+          {/* ── 13b. DISTRIBUTION DECISIONS (Capital-Days) ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>📋 Distribution Decisions</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure the monthly profit distribution decision cycle. Each stakeholder can choose to take their profit or reinvest it as new capital.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Decision Deadline (days)<InfoIcon tip="Number of days stakeholders have to choose 'distribute' or 'reinvest' before their profit is automatically reinvested. Default: 3 days." /></span>}>
+                <input style={S.input} type="number" min="1" max="14" value={es.distributionDeadlineDays ?? 3} onChange={e => updateSettings({ ...es, distributionDeadlineDays: Math.min(14, Math.max(1, Number(e.target.value))) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Monthly Profit SMS<InfoIcon tip="When enabled, an SMS is sent to each stakeholder when distribution decisions are generated, notifying them of their profit share and deadline." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsMonthlyProfitEnabled !== false} onChange={e => updateSettings({ ...es, smsMonthlyProfitEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsMonthlyProfitEnabled !== false ? <span style={{ color: '#10b981' }}>Enabled</span> : <span style={{ color: COLORS.textMuted }}>Disabled</span>}
+                </label>
+              </Field>
+            </div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Monthly Profit SMS Template<InfoIcon tip="Message sent to stakeholders when distribution decisions are generated. Placeholders: {businessName}, {period}, {profitAmount}, {deadline}, {adminPhone}, {stakeholderName}" /></span>}>
+              <textarea style={{ ...S.textarea, minHeight: '80px' }} value={es.smsMonthlyProfitTemplate ?? '{businessName} — Your profit for {period} is {profitAmount}. Log in to choose: Distribute or Reinvest. If no response by {deadline}, it will be added to your capital. Questions? Call {adminPhone}'} onChange={e => updateSettings({ ...es, smsMonthlyProfitTemplate: e.target.value })} />
+            </Field>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '12px', padding: '10px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+              <strong>How capital-days work:</strong> Stakeholder profit shares are calculated using the capital-days method. Each investor&apos;s share = (their capital x days active in the period) / (total capital-days). Money invested earlier in the month earns more than money invested later — this is fairer for all stakeholders.
             </div>
           </div>
 

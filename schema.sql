@@ -160,3 +160,27 @@ CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts (userna
 -- Migration for existing databases (run once against live D1):
 -- CREATE TABLE IF NOT EXISTS login_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, attempted_at TEXT NOT NULL DEFAULT (datetime('now')), success INTEGER NOT NULL DEFAULT 0);
 -- CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts (username, attempted_at DESC);
+
+-- Distribution decisions — tracks each stakeholder's distribute-or-reinvest choice per profit period
+CREATE TABLE IF NOT EXISTS distribution_decisions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  period              TEXT    NOT NULL,              -- e.g. '2026-03'
+  user_id             TEXT    NOT NULL REFERENCES users(id),
+  stakeholder_name    TEXT    NOT NULL,
+  profit_amount       REAL    NOT NULL,              -- calculated profit share
+  capital_days        REAL    NOT NULL,              -- their capital-days (audit trail)
+  total_capital_days  REAL    NOT NULL,              -- total capital-days across all stakeholders
+  decision            TEXT    NOT NULL DEFAULT 'pending', -- 'pending', 'distribute', 'reinvest'
+  decided_at          TEXT,                          -- when decision was made (or auto-decided)
+  auto_decided        INTEGER NOT NULL DEFAULT 0,    -- 1 if auto-reinvested after deadline
+  deadline            TEXT    NOT NULL,              -- 3 days after notification sent
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_distribution_decisions_period ON distribution_decisions (period);
+CREATE INDEX IF NOT EXISTS idx_distribution_decisions_user   ON distribution_decisions (user_id);
+
+-- Migration for existing databases (run once against live D1):
+-- CREATE TABLE IF NOT EXISTS distribution_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, period TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), stakeholder_name TEXT NOT NULL, profit_amount REAL NOT NULL, capital_days REAL NOT NULL, total_capital_days REAL NOT NULL, decision TEXT NOT NULL DEFAULT 'pending', decided_at TEXT, auto_decided INTEGER NOT NULL DEFAULT 0, deadline TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+-- CREATE INDEX IF NOT EXISTS idx_distribution_decisions_period ON distribution_decisions (period);
+-- CREATE INDEX IF NOT EXISTS idx_distribution_decisions_user ON distribution_decisions (user_id);

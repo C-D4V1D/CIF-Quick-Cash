@@ -2359,6 +2359,167 @@ export async function onRequest(context) {
       });
     }
 
+    // ── GET /api/distribution-decisions?period=2026-03 — list all decisions for a period ──
+    if (path === 'distribution-decisions' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const period = url.searchParams.get('period');
+      if (!period) return error('period query param required (e.g. 2026-03)', 400);
+      const isAdmin = auth.user.role === 'admin';
+      const isStakeholder = (JSON.parse(auth.user.roles || '[]')).includes('stakeholder') || auth.user.role === 'stakeholder';
+      let rows;
+      if (isAdmin) {
+        rows = (await db.prepare('SELECT * FROM distribution_decisions WHERE period = ? ORDER BY stakeholder_name').bind(period).all()).results;
+      } else if (isStakeholder) {
+        rows = (await db.prepare('SELECT * FROM distribution_decisions WHERE period = ? AND user_id = ?').bind(period, auth.user.id).all()).results;
+      } else {
+        return error('Not authorized', 403);
+      }
+      return json({ decisions: rows });
+    }
+
+    // ── POST /api/distribution-decisions/generate — generate decisions for a period (admin only) ──
+    if (path === 'distribution-decisions/generate' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      if (auth.user.role !== 'admin') return error('Admin only', 403);
+
+      const { period, stakeholders: stakeData, sendSms } = await request.json();
+      // period: '2026-03', stakeData: [{ user_id, name, profitAmount, capitalDays, totalCapitalDays }]
+      if (!period || !Array.isArray(stakeData) || stakeData.length === 0) return error('period and stakeholders[] required', 400);
+
+      // Check if decisions already exist for this period
+      const existing = (await db.prepare('SELECT COUNT(*) as cnt FROM distribution_decisions WHERE period = ?').bind(period).first());
+      if (existing.cnt > 0) return error(`Decisions already exist for ${period}. Delete them first to regenerate.`, 400);
+
+      const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      const cfg = row ? JSON.parse(row.value) : {};
+      const deadlineDays = Math.max(1, Number(cfg.distributionDeadlineDays) || 3);
+      const today = todayNigeria();
+      const deadline = addDaysToDate(today, deadlineDays);
+
+      const insertStmt = db.prepare(
+        'INSERT INTO distribution_decisions (period, user_id, stakeholder_name, profit_amount, capital_days, total_capital_days, deadline) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+      const batch = [];
+      for (const s of stakeData) {
+        batch.push(insertStmt.bind(period, s.user_id, s.name, s.profitAmount, s.capitalDays, s.totalCapitalDays, deadline));
+      }
+      await db.batch(batch);
+
+      // Optionally send SMS to each stakeholder
+      const smsResults = [];
+      if (sendSms) {
+        const smsCfg = await loadSmsConfig();
+        if (smsCfg.apiKey && smsCfg.enabled && cfg.smsMonthlyProfitEnabled !== false) {
+          const tmpl = cfg.smsMonthlyProfitTemplate || '{businessName} — Your profit for {period} is {profitAmount}. Log in to choose: Distribute or Reinvest. If no response by {deadline}, it will be added to your capital. Questions? Call {adminPhone}';
+          // Get stakeholder phone numbers from users table
+          for (const s of stakeData) {
+            // Look for phone in stakeholderOwnership config (keyed by stakeholder name)
+            const soConfig = cfg.stakeholderOwnership || {};
+            const stakeConfig = soConfig[s.name] || {};
+            const phone = stakeConfig.phone;
+            if (!phone) { smsResults.push({ name: s.name, status: 'skipped', reason: 'no_phone' }); continue; }
+            const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+            const msg = tmpl
+              .replace(/\{businessName\}/g, cfg.businessName || 'CIF Quick Cash')
+              .replace(/\{period\}/g, period)
+              .replace(/\{profitAmount\}/g, fmtN(s.profitAmount))
+              .replace(/\{deadline\}/g, deadline)
+              .replace(/\{adminPhone\}/g, cfg.adminPhone || cfg.shopPhone1 || '')
+              .replace(/\{stakeholderName\}/g, s.name);
+            const intlPhone = toIntlPhone(phone);
+            if (!intlPhone) { smsResults.push({ name: s.name, status: 'skipped', reason: 'invalid_phone' }); continue; }
+            const { ok, messageId, response } = await termiiSend(smsCfg, intlPhone, msg);
+            await db.prepare(
+              "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'profit_distribution', ?, ?, ?, ?, ?)"
+            ).bind(`PROFIT-${period}`, msg, intlPhone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+            smsResults.push({ name: s.name, status: ok ? 'sent' : 'failed', messageId });
+          }
+        }
+      }
+
+      await logActivity({
+        user: auth.user, action: 'create', entityType: 'distribution_decisions', entityId: period,
+        description: `Generated distribution decisions for ${period} — ${stakeData.length} stakeholder(s)${sendSms ? ', SMS sent' : ''}`,
+      });
+
+      return json({ ok: true, period, deadline, count: stakeData.length, smsResults });
+    }
+
+    // ── PUT /api/distribution-decisions/:id — update decision (stakeholder or admin) ──
+    if (path.startsWith('distribution-decisions/') && !path.includes('generate') && !path.includes('auto-reinvest') && method === 'PUT') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const id = path.split('/')[1];
+      const { decision } = await request.json();
+      if (!['distribute', 'reinvest'].includes(decision)) return error('decision must be "distribute" or "reinvest"', 400);
+
+      const row = await db.prepare('SELECT * FROM distribution_decisions WHERE id = ?').bind(id).first();
+      if (!row) return error('Decision not found', 404);
+
+      const isAdmin = auth.user.role === 'admin';
+      const isOwner = row.user_id === auth.user.id;
+      if (!isAdmin && !isOwner) return error('Not authorized', 403);
+      if (row.decision !== 'pending' && !isAdmin) return error('Decision already made', 400);
+
+      const now = new Date().toISOString();
+      await db.prepare('UPDATE distribution_decisions SET decision = ?, decided_at = ?, auto_decided = 0 WHERE id = ?')
+        .bind(decision, now, id).run();
+
+      // If reinvest, create a new capital entry dated 1st of the month after the period
+      if (decision === 'reinvest') {
+        const [pYear, pMonth] = row.period.split('-').map(Number);
+        const reinvestDate = pMonth === 12
+          ? `${pYear + 1}-01-01`
+          : `${pYear}-${String(pMonth + 1).padStart(2, '0')}-01`;
+        await db.prepare('INSERT INTO capital (name, amount, date, method, user_id) VALUES (?, ?, ?, ?, ?)')
+          .bind(row.stakeholder_name, row.profit_amount, reinvestDate, 'reinvestment', row.user_id).run();
+
+        await logActivity({
+          user: auth.user, action: 'create', entityType: 'capital', entityId: null,
+          description: `Reinvested ${row.stakeholder_name}'s profit of ₦${Number(row.profit_amount).toLocaleString()} from ${row.period} as new capital (${reinvestDate})`,
+        });
+      }
+
+      await logActivity({
+        user: auth.user, action: 'update', entityType: 'distribution_decisions', entityId: String(id),
+        description: `${row.stakeholder_name} chose to ${decision} ₦${Number(row.profit_amount).toLocaleString()} profit from ${row.period}`,
+      });
+
+      return json({ ok: true, decision, id });
+    }
+
+    // ── POST /api/distribution-decisions/auto-reinvest — process expired pending decisions ──
+    if (path === 'distribution-decisions/auto-reinvest' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+
+      const today = todayNigeria();
+      const pending = (await db.prepare("SELECT * FROM distribution_decisions WHERE decision = 'pending' AND deadline < ?").bind(today).all()).results;
+      if (pending.length === 0) return json({ ok: true, processed: 0 });
+
+      const now = new Date().toISOString();
+      for (const row of pending) {
+        await db.prepare('UPDATE distribution_decisions SET decision = ?, decided_at = ?, auto_decided = 1 WHERE id = ?')
+          .bind('reinvest', now, row.id).run();
+
+        const [pYear, pMonth] = row.period.split('-').map(Number);
+        const reinvestDate = pMonth === 12
+          ? `${pYear + 1}-01-01`
+          : `${pYear}-${String(pMonth + 1).padStart(2, '0')}-01`;
+        await db.prepare('INSERT INTO capital (name, amount, date, method, user_id) VALUES (?, ?, ?, ?, ?)')
+          .bind(row.stakeholder_name, row.profit_amount, reinvestDate, 'reinvestment', row.user_id).run();
+      }
+
+      await logActivity({
+        user: auth.user, action: 'update', entityType: 'distribution_decisions', entityId: null,
+        description: `Auto-reinvested ${pending.length} expired distribution decision(s)`,
+      });
+
+      return json({ ok: true, processed: pending.length });
+    }
+
     return error('Not found', 404);
 
   } catch (e) {
