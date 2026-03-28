@@ -6845,20 +6845,21 @@ export default function App() {
   });
   const [drafts, setDrafts] = useState(() => readCache('cfc_transactions')?.drafts || []);
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
-  const [users, setUsers] = useState([]);
-  const [expenses, setExpenses] = useState([]);
-  const [capital, setCapital] = useState([]);
-  const [distributions, setDistributions] = useState([]);
+  const [users, setUsers] = useState(() => readCache('cfc_secondary')?.users || []);
+  const [expenses, setExpenses] = useState(() => readCache('cfc_secondary')?.expenses || []);
+  const [capital, setCapital] = useState(() => readCache('cfc_secondary')?.capital || []);
+  const [distributions, setDistributions] = useState(() => readCache('cfc_secondary')?.distributions || []);
   const [distDecisions, setDistDecisions] = useState([]);
   const [distDecisionPeriod, setDistDecisionPeriod] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
   const [distDecisionLoading, setDistDecisionLoading] = useState(false);
-  const [declinedLog, setDeclinedLog] = useState([]);
+  const [declinedLog, setDeclinedLog] = useState(() => readCache('cfc_secondary')?.declined || []);
   const [activityLogs, setActivityLogs] = useState([]);
   const [activityMeta, setActivityMeta] = useState({ total: 0, limit: ACTIVITY_PAGE_SIZE, offset: 0 });
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityFilter, setActivityFilter] = useState({ q: '', from: '', to: '', category: '', sort: 'desc' });
   const [showEditUser, setShowEditUser] = useState(null);
   const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
+  const [secondaryLoading, setSecondaryLoading] = useState(() => !readCache('cfc_secondary'));
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
   const [loggingContactTx, setLoggingContactTx] = useState(null);
@@ -6988,10 +6989,12 @@ export default function App() {
   const loadData = async () => {
     const criticalCache = readCache('cfc_critical');
     const listCache = readCache('cfc_transactions');
+    const secondaryCache = readCache('cfc_secondary');
 
     // Only show a full-screen loader if we cannot render the shell from cache.
     if (!criticalCache) setLoading(true);
     if (!listCache) setListLoading(true);
+    if (!secondaryCache) setSecondaryLoading(true);
 
     const critical = await API.get('bootstrap?scope=critical');
     const freshSettings = { ...DEFAULT_SETTINGS, ...(critical?.settings || {}) };
@@ -7033,7 +7036,15 @@ export default function App() {
       if (secondary.decisions?.length) setDistDecisions(secondary.decisions);
       setDeclinedLog(secondary.declined || []);
       setUsers(secondary.users || []);
+      writeCache('cfc_secondary', {
+        expenses: secondary.expenses || [],
+        capital: secondary.capital || [],
+        distributions: secondary.distributions || [],
+        declined: secondary.declined || [],
+        users: secondary.users || [],
+      });
     }
+    setSecondaryLoading(false);
 
     await loadActivityLogs();
   };
@@ -7493,6 +7504,7 @@ export default function App() {
         <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📊 Dashboard</h2>
         {(() => {
           const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
+          if (secondaryLoading) return null;
           if (availableLendingCapital >= threshold) return null;
           const isNegative = availableLendingCapital < 0;
           return (
@@ -7514,7 +7526,7 @@ export default function App() {
           );
         })()}
         <div style={S.grid4}>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Available Lending Capital<InfoIcon tip="The money we have available to give out as new loans right now. It's what's left after taking away everything that's already out or paid out." /></div><div style={S.statValue}>{fmtMoney(availableLendingCapital)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Available Lending Capital<InfoIcon tip="The money we have available to give out as new loans right now. It's what's left after taking away everything that's already out or paid out." /></div><div style={S.statValue}>{secondaryLoading ? '—' : fmtMoney(availableLendingCapital)}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital Out<InfoIcon tip="The total cash that's currently with customers who haven't paid back yet." /></div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Active Loans<InfoIcon tip="How many customers still have active loans — they took money but haven't come back yet." /></div><div style={S.statValue}>{activeTxs.length}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money the business has ever earned — from daily fees, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
