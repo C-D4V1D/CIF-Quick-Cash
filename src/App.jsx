@@ -6824,6 +6824,7 @@ export default function App() {
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState('');
   const [profileForm, setProfileForm] = useState({ email: '', phone1: '', phone2: '', password: '', confirmPassword: '' });
+  const [profileMeta, setProfileMeta] = useState({ createdAt: null });
   const [notifications, setNotifications] = useState([]);
 
   useEffect(() => {
@@ -6865,6 +6866,7 @@ export default function App() {
           password: '',
           confirmPassword: ''
         }));
+        setProfileMeta({ createdAt: profile.created_at || null });
       }
       setProfileLoading(false);
     };
@@ -7090,6 +7092,39 @@ export default function App() {
     .filter(d => (d.created_by || '').toLowerCase() === (currentUser?.username || '').toLowerCase())
     .reduce((s, d) => s + (d.amount || 0), 0);
   const unreadNotifications = notifications.filter(n => !n.readAt).length;
+  const isStaffProfileUser = hasRole(currentUser, 'staff');
+  const actorKeysForUser = [currentUser?.name, currentUser?.username, `@${currentUser?.username}`]
+    .filter(Boolean)
+    .map(v => String(v).trim().toLowerCase());
+  const isActorMatch = (value, keys = actorKeysForUser) => keys.includes(String(value || '').trim().toLowerCase());
+  const userOriginatedTx = transactions.filter(t => isActorMatch(t.createdBy));
+  const userRecoveredTx = transactions.filter(t => isActorMatch(t.repaidBy));
+  const userSalesTx = transactions.filter(t => isActorMatch(t.soldBy));
+  const userOriginatedValue = userOriginatedTx.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const userRecoveredInterest = userRecoveredTx.reduce((s, t) => s + (t.totalFees || 0), 0);
+  const userSalesValue = userSalesTx.reduce((s, t) => s + (t.salePrice || 0), 0);
+  const userActivePortfolioCount = userOriginatedTx.filter(t => t.status === 'active').length;
+  const userClosedPortfolioCount = userOriginatedTx.filter(t => t.status === 'closed' || t.status === 'sold').length;
+  const userPortfolioCompletionRate = userOriginatedTx.length ? Math.round((userClosedPortfolioCount / userOriginatedTx.length) * 100) : 0;
+  const staffActorMap = transactions.reduce((acc, tx) => {
+    const touchPoints = [
+      { key: tx.createdBy, metric: 'originated', value: tx.cashAdvance || 0 },
+      { key: tx.repaidBy, metric: 'recovered', value: tx.totalFees || 0 },
+      { key: tx.soldBy, metric: 'sold', value: tx.salePrice || 0 },
+    ];
+    touchPoints.forEach(({ key, metric, value }) => {
+      const actor = String(key || '').trim();
+      if (!actor || actor.toLowerCase() === 'staff') return;
+      if (!acc[actor]) acc[actor] = { actor, originated: 0, recovered: 0, sold: 0, originatedValue: 0, recoveredValue: 0, soldValue: 0 };
+      acc[actor][metric] += 1;
+      acc[actor][`${metric}Value`] += Number(value) || 0;
+    });
+    return acc;
+  }, {});
+  const staffComparison = Object.values(staffActorMap)
+    .sort((a, b) => (b.originated + b.recovered + b.sold) - (a.originated + a.recovered + a.sold))
+    .slice(0, 8);
+  const userComparisonRow = staffComparison.find(row => isActorMatch(row.actor));
 
   // Capital prediction (memoised — only recomputes when source data or settings change)
   const capitalPrediction = useMemo(
@@ -10583,26 +10618,87 @@ export default function App() {
               </div>
             )}
           </div>
-          {isStaff && <div style={{ ...S.card, marginBottom: '16px' }}>
-            <div style={S.cardTitle}>Staff Performance Snapshot</div>
+          {isStaffProfileUser && <div style={{ ...S.card, marginBottom: '16px' }}>
+            <div style={S.cardTitle}>Staff Performance (Your Work)</div>
             <div style={S.grid4}>
-              {statCard('Active Loans', activeTxs.length, 'Customers currently holding business capital')}
-              {statCard('Overdue Loans', overdueLoans.length, 'Need urgent follow-up and recovery')}
-              {statCard('Items Listed', forSaleTxs.length, 'Inventory already listed for sale')}
-              {statCard('Revenue', fmtMoney(totalRevenue), 'Interest + sales + service fees')}
+              {statCard('Loans You Originated', userOriginatedTx.length, `Total value: ${fmtMoney(userOriginatedValue)}`)}
+              {statCard('Repayments You Collected', userRecoveredTx.length, `Interest recovered: ${fmtMoney(userRecoveredInterest)}`)}
+              {statCard('Sales You Closed', userSalesTx.length, `Sales value: ${fmtMoney(userSalesValue)}`)}
+              {statCard('Portfolio Completion', `${userPortfolioCompletionRate}%`, `${userClosedPortfolioCount}/${userOriginatedTx.length} originated loans resolved`)}
             </div>
+            <div style={{ ...S.grid2, marginTop: '14px' }}>
+              {statCard('Your Active Portfolio', userActivePortfolioCount, 'Loans you started that are still active')}
+              {statCard('Avg Revenue Per Repayment (You)', userRecoveredTx.length ? fmtMoney(userRecoveredInterest / userRecoveredTx.length) : fmtMoney(0), 'How much fee income each repayment yields on average')}
+            </div>
+            <div style={{ marginTop: '16px', background: '#fff', border: `1px solid ${COLORS.border}`, borderRadius: '10px', padding: '12px' }}>
+              <div style={{ fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Team Comparison (Top contributors)</div>
+              {staffComparison.length === 0 ? (
+                <div style={{ fontSize: '13px', color: COLORS.textMuted }}>No staff activity data available yet.</div>
+              ) : (
+                <div style={{ width: '100%', height: 280 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={staffComparison} margin={{ top: 8, right: 12, left: 0, bottom: 12 }}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="actor" tick={{ fontSize: 11 }} interval={0} angle={-20} textAnchor="end" height={56} />
+                      <YAxis allowDecimals={false} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="originated" name="Loans Originated" fill="#2563eb" />
+                      <Bar dataKey="recovered" name="Repayments Collected" fill="#10b981" />
+                      <Bar dataKey="sold" name="Sales Closed" fill="#7c3aed" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+            {userComparisonRow && <div style={{ ...S.alert('info'), marginTop: '12px' }}>You are currently represented in the team comparison as <strong>{userComparisonRow.actor}</strong>.</div>}
           </div>}
           <div style={S.card}>
-            <div style={S.cardTitle}>Financial Position</div>
-            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>A simple breakdown of your business money view and stakeholder position.</div>
+            <div style={S.cardTitle}>Personal Financial Position</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Only figures tied to your account are shown here to keep the profile personal and easy to understand.</div>
             <div style={S.grid2}>
               {statCard('Total Capital Invested (You)', fmtMoney(userCapitalInvested), userCapitalEntries.length ? `${userCapitalEntries.length} contribution record(s)` : 'No contribution record linked to your account yet')}
-              {statCard('Business Net Profit', fmtMoney(netProfit), 'Revenue minus all recorded expenses')}
-              {statCard('Your Ownership Share', userOwnershipPct ? `${userOwnershipPct.toFixed(2)}%` : 'Not set', userOwnershipPct ? `Estimated share value: ${fmtMoney(userProfitShareAmount || 0)}` : 'Ask admin to configure stakeholder ownership')}
+              {statCard('Your Ownership Share', userOwnershipPct ? `${userOwnershipPct.toFixed(2)}%` : 'Not set', userOwnershipPct ? `Estimated value based on current net profit: ${fmtMoney(userProfitShareAmount || 0)}` : 'Ask admin to configure stakeholder ownership')}
               {statCard('Distributed Profit Logged By You', fmtMoney(userDistributionReceived), 'Profit payouts recorded under your username')}
-              {statCard('Available Lending Capital', fmtMoney(availableLendingCapital), 'Cash available for new loans right now')}
-              {statCard('Capital Currently Out', fmtMoney(totalCapitalOut), 'Money currently held by active customers')}
+              {statCard('Your Estimated Retained Profit', fmtMoney((userProfitShareAmount || 0) - userDistributionReceived), 'Estimated share minus distributions recorded for you')}
+              {statCard('Account Age', profileMeta.createdAt ? `${daysBetween(profileMeta.createdAt)} day(s)` : '—', profileMeta.createdAt ? `Since ${fmtDate(profileMeta.createdAt)}` : 'Profile creation date unavailable')}
             </div>
+            {userOwnershipPct > 0 && (
+              <div style={{ marginTop: '16px', background: '#fff', border: `1px solid ${COLORS.border}`, borderRadius: '10px', padding: '12px' }}>
+                <div style={{ fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>Your Profit Position</div>
+                <div style={{ width: '100%', height: 260 }}>
+                  <ResponsiveContainer>
+                    <PieChart>
+                      <Pie
+                        data={[
+                          { name: 'Distributed to You', value: Math.max(0, userDistributionReceived) },
+                          { name: 'Still Retained', value: Math.max(0, (userProfitShareAmount || 0) - userDistributionReceived) },
+                        ]}
+                        dataKey="value"
+                        nameKey="name"
+                        outerRadius={88}
+                        label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                      >
+                        <Cell fill="#16a34a" />
+                        <Cell fill="#0ea5e9" />
+                      </Pie>
+                      <Tooltip formatter={(v) => fmtMoney(v)} />
+                      <Legend />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+            {!isStaffProfileUser && (
+              <div style={{ ...S.alert('info'), marginTop: '12px' }}>
+                Staff-performance analytics are hidden because your account is not a staff account.
+              </div>
+            )}
+            {isStaffProfileUser && (
+              <div style={{ ...S.alert('info'), marginTop: '12px' }}>
+                Staff charts above compare your activity against other recorded staff names from transaction history.
+              </div>
+            )}
           </div>
         </div>);
       }
