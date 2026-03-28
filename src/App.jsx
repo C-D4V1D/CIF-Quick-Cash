@@ -86,6 +86,7 @@ const clearAuthCache = () => {
     localStorage.removeItem('cfc_user');
     localStorage.removeItem('cfc_critical');
     localStorage.removeItem('cfc_transactions');
+    localStorage.removeItem('cfc_secondary');
   } catch (error) {
     console.debug('Failed to clear auth cache', error);
   }
@@ -6838,6 +6839,13 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
+  const initialSecondaryCache = readCache('cfc_secondary');
+  const canUseInitialSecondaryCache = !!(
+    initialSecondaryCache &&
+    currentUser?.id &&
+    initialSecondaryCache.userId === currentUser.id &&
+    initialSecondaryCache.role === currentUser.role
+  );
   const [authLoading, setAuthLoading] = useState(() => !readCache('cfc_user'));
   const [transactions, setTransactions] = useState(() => {
     const cachedSettings = { ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) };
@@ -6845,21 +6853,21 @@ export default function App() {
   });
   const [drafts, setDrafts] = useState(() => readCache('cfc_transactions')?.drafts || []);
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS, ...(readCache('cfc_critical')?.settings || {}) }));
-  const [users, setUsers] = useState(() => readCache('cfc_secondary')?.users || []);
-  const [expenses, setExpenses] = useState(() => readCache('cfc_secondary')?.expenses || []);
-  const [capital, setCapital] = useState(() => readCache('cfc_secondary')?.capital || []);
-  const [distributions, setDistributions] = useState(() => readCache('cfc_secondary')?.distributions || []);
+  const [users, setUsers] = useState(() => canUseInitialSecondaryCache ? (initialSecondaryCache.users || []) : []);
+  const [expenses, setExpenses] = useState(() => canUseInitialSecondaryCache ? (initialSecondaryCache.expenses || []) : []);
+  const [capital, setCapital] = useState(() => canUseInitialSecondaryCache ? (initialSecondaryCache.capital || []) : []);
+  const [distributions, setDistributions] = useState(() => canUseInitialSecondaryCache ? (initialSecondaryCache.distributions || []) : []);
   const [distDecisions, setDistDecisions] = useState([]);
   const [distDecisionPeriod, setDistDecisionPeriod] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
   const [distDecisionLoading, setDistDecisionLoading] = useState(false);
-  const [declinedLog, setDeclinedLog] = useState(() => readCache('cfc_secondary')?.declined || []);
+  const [declinedLog, setDeclinedLog] = useState(() => canUseInitialSecondaryCache ? (initialSecondaryCache.declined || []) : []);
   const [activityLogs, setActivityLogs] = useState([]);
   const [activityMeta, setActivityMeta] = useState({ total: 0, limit: ACTIVITY_PAGE_SIZE, offset: 0 });
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityFilter, setActivityFilter] = useState({ q: '', from: '', to: '', category: '', sort: 'desc' });
   const [showEditUser, setShowEditUser] = useState(null);
   const [loading, setLoading] = useState(() => !readCache('cfc_user') || !readCache('cfc_critical'));
-  const [secondaryLoading, setSecondaryLoading] = useState(() => !readCache('cfc_secondary'));
+  const [secondaryLoading, setSecondaryLoading] = useState(() => !canUseInitialSecondaryCache);
   const [listLoading, setListLoading] = useState(() => !readCache('cfc_transactions'));
   const [editingTx, setEditingTx] = useState(null);
   const [loggingContactTx, setLoggingContactTx] = useState(null);
@@ -6990,11 +6998,17 @@ export default function App() {
     const criticalCache = readCache('cfc_critical');
     const listCache = readCache('cfc_transactions');
     const secondaryCache = readCache('cfc_secondary');
+    const canUseSecondaryCache = !!(
+      secondaryCache &&
+      currentUser?.id &&
+      secondaryCache.userId === currentUser.id &&
+      secondaryCache.role === currentUser.role
+    );
 
     // Only show a full-screen loader if we cannot render the shell from cache.
     if (!criticalCache) setLoading(true);
     if (!listCache) setListLoading(true);
-    if (!secondaryCache) setSecondaryLoading(true);
+    if (!canUseSecondaryCache) setSecondaryLoading(true);
 
     const critical = await API.get('bootstrap?scope=critical');
     const freshSettings = { ...DEFAULT_SETTINGS, ...(critical?.settings || {}) };
@@ -7037,6 +7051,8 @@ export default function App() {
       setDeclinedLog(secondary.declined || []);
       setUsers(secondary.users || []);
       writeCache('cfc_secondary', {
+        userId: currentUser?.id || null,
+        role: currentUser?.role || null,
         expenses: secondary.expenses || [],
         capital: secondary.capital || [],
         distributions: secondary.distributions || [],
