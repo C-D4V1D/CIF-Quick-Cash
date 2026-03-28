@@ -2375,31 +2375,37 @@ export async function onRequest(context) {
 
     // ── GET /api/distribution-decisions — list decisions with optional filters ──
     if (path === 'distribution-decisions' && method === 'GET') {
-      const auth = requireAuth(request);
-      if (auth.error) return auth.error;
-      const period = url.searchParams.get('period');
-      const stakeholder = url.searchParams.get('stakeholder');
-      const unpaid = url.searchParams.get('unpaid') === 'true';
-      const decisionFilter = url.searchParams.get('decision'); // e.g. 'distribute_all,reinvest_and_distribute'
-      const isAdmin = auth.user.role === 'admin';
-      const isStakeholder = (JSON.parse(auth.user.roles || '[]')).includes('stakeholder') || auth.user.role === 'stakeholder';
-      if (!isAdmin && !isStakeholder) return error('Not authorized', 403);
+      try {
+        const auth = requireAuth(request);
+        if (auth.error) return auth.error;
+        const period = url.searchParams.get('period');
+        const stakeholder = url.searchParams.get('stakeholder');
+        const unpaid = url.searchParams.get('unpaid') === 'true';
+        const decisionFilter = url.searchParams.get('decision'); // e.g. 'distribute_all,reinvest_and_distribute'
+        const isAdmin = auth.user.role === 'admin';
+        let isStakeholder = false;
+        try { isStakeholder = (JSON.parse(auth.user.roles || '[]')).includes('stakeholder'); } catch (_) {}
+        isStakeholder = isStakeholder || auth.user.role === 'stakeholder';
+        if (!isAdmin && !isStakeholder) return error('Not authorized', 403);
 
-      let sql = 'SELECT * FROM distribution_decisions WHERE 1=1';
-      const params = [];
-      if (period) { sql += ' AND period = ?'; params.push(period); }
-      if (stakeholder) { sql += ' AND stakeholder_name = ?'; params.push(stakeholder); }
-      if (unpaid) { sql += ' AND paid_at IS NULL'; }
-      if (decisionFilter) {
-        const vals = decisionFilter.split(',').map(v => v.trim()).filter(Boolean);
-        if (vals.length > 0) { sql += ` AND decision IN (${vals.map(() => '?').join(',')})`; params.push(...vals); }
+        let sql = 'SELECT * FROM distribution_decisions WHERE 1=1';
+        const params = [];
+        if (period) { sql += ' AND period = ?'; params.push(period); }
+        if (stakeholder) { sql += ' AND stakeholder_name = ?'; params.push(stakeholder); }
+        if (unpaid) { sql += ' AND paid_at IS NULL'; }
+        if (decisionFilter) {
+          const vals = decisionFilter.split(',').map(v => v.trim()).filter(Boolean);
+          if (vals.length > 0) { sql += ` AND decision IN (${vals.map(() => '?').join(',')})`; params.push(...vals); }
+        }
+        if (!isAdmin) { sql += ' AND user_id = ?'; params.push(auth.user.id); }
+        sql += ' ORDER BY period DESC, stakeholder_name';
+
+        const stmt = db.prepare(sql);
+        const rows = (await (params.length > 0 ? stmt.bind(...params) : stmt).all()).results;
+        return json({ decisions: rows || [] });
+      } catch (e) {
+        return error('distribution-decisions GET failed: ' + (e?.message || String(e)), 500);
       }
-      if (!isAdmin) { sql += ' AND user_id = ?'; params.push(auth.user.id); }
-      sql += ' ORDER BY period DESC, stakeholder_name';
-
-      const stmt = db.prepare(sql);
-      const rows = (await (params.length > 0 ? stmt.bind(...params) : stmt).all()).results;
-      return json({ decisions: rows });
     }
 
     // ── POST /api/distribution-decisions/generate — generate decisions for a period (admin only) ──

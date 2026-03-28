@@ -30,7 +30,10 @@ const API = {
   async get(endpoint) {
     try {
       const r = await fetch(`/api/${endpoint}`, { cache: 'no-store', credentials: 'same-origin' });
-      if (!r.ok) throw new Error(`API error: ${r.status}`);
+      if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        throw new Error(`API error: ${r.status}${body?.error ? ' — ' + body.error : ''}`);
+      }
       return await r.json();
     } catch (e) { console.error(`GET /api/${endpoint}:`, e); return null; }
   },
