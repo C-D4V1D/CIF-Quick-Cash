@@ -202,6 +202,20 @@ const elapsedDaysSince = (dateStr) => {
   return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
+// Returns the number of chargeable days for fee calculation.
+// Freezes at (maxLoanDays + graceDays) once the grace period has ended so that
+// the amount due stops growing after the business takes undisputed ownership.
+// For voluntary surrenders (ready_to_sell) it freezes at the surrender date.
+const effectiveElapsedDaysSince = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) => {
+  if (!txData?.dateGiven) return 0;
+  const graceCap = maxLoanDays + graceDays;
+  const raw = elapsedDaysSince(txData.dateGiven);
+  if (txData.status === 'ready_to_sell' && txData.surrenderDate) {
+    return Math.max(0, raw - elapsedDaysSince(txData.surrenderDate));
+  }
+  return Math.min(raw, graceCap);
+};
+
 // Load loan-duration settings from D1.
 // Returns { maxLoanDays, graceDays } with safe defaults.
 const loadLoanConfig = async (db) => {
@@ -2015,7 +2029,7 @@ export async function onRequest(context) {
         // Shared balance calculation for overdue and mid-loan triggers.
         // Computed once per transaction to avoid duplication.
         const dailyFeeAmt = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
-        const elapsedDays = elapsedDaysSince(txData.dateGiven);
+        const elapsedDays = effectiveElapsedDaysSince(txData, { maxLoanDays: smsCfg.maxLoanDays, graceDays: smsCfg.graceDays });
         const currentBalance = (txData.cashAdvance || 0) + elapsedDays * dailyFeeAmt;
 
         // Overdue reminders: fired N days AFTER the customer due date while still

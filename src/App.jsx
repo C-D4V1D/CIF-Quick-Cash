@@ -136,6 +136,22 @@ const daysBetween = (dateStr) => {
   return Math.max(0, Math.floor((nowMidnight - givenMidnight) / 86400000));
 };
 
+// Returns the number of chargeable days for fee calculation.
+// Freezes at (maxLoanDays + graceDays) once the grace period has ended so that
+// the amount due stops growing after the business takes undisputed ownership.
+// For voluntary surrenders (ready_to_sell) it freezes at the surrender date.
+const effectiveElapsedDays = (tx, settings = {}) => {
+  if (!tx?.dateGiven) return 0;
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const graceDays   = Math.max(0, Number(settings.graceDays)   || 3);
+  const graceCap    = maxLoanDays + graceDays;
+  const raw         = daysBetween(tx.dateGiven);
+  if (tx.status === 'ready_to_sell' && tx.surrenderDate) {
+    return Math.max(0, raw - daysBetween(tx.surrenderDate));
+  }
+  return Math.min(raw, graceCap);
+};
+
 // Adds N calendar days to a YYYY-MM-DD (or ISO) date string and returns YYYY-MM-DD.
 // Uses UTC throughout so that the result is the same calendar date regardless of
 // the device's local timezone (mirrors the server-side addDaysToDate() helper).
@@ -2019,7 +2035,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
           <div style={{ fontWeight: 700, fontSize: '15px', color: '#111' }}>{tx.aiBrand} {tx.aiModel}</div>
           <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
           {tx.cashAdvance > 0 && <div style={{ fontSize: '12px', color: '#374151', fontWeight: 600, marginTop: '2px' }}>Cash advance: {fmtMoney(tx.cashAdvance)}</div>}
-          {tx.type === 'advance' && tx.cashAdvance > 0 && (() => { const elapsed = daysBetween(tx.dateGiven); const amountDue = tx.cashAdvance + elapsed * dailyFee; return <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '2px' }}>Amount due: {fmtMoney(amountDue)}</div>; })()}
+          {tx.type === 'advance' && tx.cashAdvance > 0 && (() => { const elapsed = effectiveElapsedDays(tx, settings); const amountDue = tx.cashAdvance + elapsed * dailyFee; return <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '2px' }}>Amount due: {fmtMoney(amountDue)}</div>; })()}
           {tx.imei && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>IMEI: {tx.imei}</div>}
           {tx.serialNumber && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>Serial: {tx.serialNumber}</div>}
         </div>
@@ -2343,7 +2359,7 @@ function CustomerPortal({ onBack, settings }) {
 
   const calcOwedToday = (tx) => {
     if (!tx || tx.type === 'outright') return tx?.cashAdvance || 0;
-    const elapsed = daysBetween(tx.dateGiven);
+    const elapsed = effectiveElapsedDays(tx, s);
     return (tx.cashAdvance || 0) + elapsed * (tx.dailyFee || 0);
   };
 
@@ -4825,7 +4841,7 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
 // REPAYMENT & SALE MODALS
 // ============================================================
 function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
-  const days = daysBetween(tx.dateGiven);
+  const days = effectiveElapsedDays(tx, settings);
   const today = localISODate();
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
   const totalFees = days * dailyFee;
@@ -5184,7 +5200,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const customerDaysLeft = tx.type === 'advance' ? getCustomerDaysLeft(tx) : null;
   const dailyInterest = tx.cashAdvance ? Math.floor((tx.cashAdvance * (settings.interestRate || 1)) / 100) : 0;
   const daysOut = timeline ? timeline.elapsedDays : 0;
-  const amountDueToday = tx.cashAdvance ? tx.cashAdvance + daysOut * dailyInterest : 0;
+  const amountDueToday = tx.cashAdvance ? tx.cashAdvance + effectiveElapsedDays(tx, settings) * dailyInterest : 0;
   const [smsLogs, setSmsLogs] = useState(null);
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
@@ -6668,7 +6684,7 @@ export default function App() {
       case 'actionLoans': {
         // --- Helper: compute penalty / total owed for a loan ---
         const computeTotalOwed = (tx) => {
-          const elapsed = daysBetween(tx.dateGiven);
+          const elapsed = effectiveElapsedDays(tx, settings);
           const dailyFee = Number(tx.dailyFee) || 0;
           const cashAdvance = Number(tx.cashAdvance) || 0;
           const maxLD = Math.max(1, Number(settings.maxLoanDays) || 30);
