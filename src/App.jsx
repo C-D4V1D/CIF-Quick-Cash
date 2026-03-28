@@ -785,8 +785,12 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   // Safe withdrawal — only recommend when surplus has been sustained
   let actualStreak = 0;
   for (let i = snapshots.length - 1; i >= 0; i--) {
-    // Surplus month = recoveries covered all new deployments + expenses (net cash flow is positive for the business)
-    if (snapshots[i].netConsumed <= 0) actualStreak++;
+    const s = snapshots[i];
+    // A month only counts as surplus if real activity happened (otherwise zero-activity months
+    // trivially satisfy netConsumed === 0 and would inflate the streak with no signal).
+    const hadActivity = s.loanOriginations + s.outrightSpend + s.loanRecoveries + s.saleRecoveries + s.expenseTotal + s.distributionTotal > 0;
+    // Surplus month = the business was active AND recoveries/income covered all outflows
+    if (hadActivity && s.netConsumed <= 0) actualStreak++;
     else break;
   }
   const streakMet = actualStreak >= surplusStreakMonths;
