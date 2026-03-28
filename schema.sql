@@ -89,14 +89,16 @@ CREATE TABLE IF NOT EXISTS declined_log (
 CREATE INDEX IF NOT EXISTS idx_declined_log_date ON declined_log (date DESC);
 
 CREATE TABLE IF NOT EXISTS profit_distributions (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  date        TEXT    NOT NULL,
-  amount      REAL    NOT NULL,
-  method      TEXT    NOT NULL,
-  note        TEXT,
-  receipt     TEXT,
-  created_by  TEXT,
-  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  date             TEXT    NOT NULL,
+  amount           REAL    NOT NULL,
+  method           TEXT    NOT NULL,
+  note             TEXT,
+  receipt          TEXT,
+  created_by       TEXT,
+  decision_ids     TEXT,              -- JSON array of distribution_decisions IDs paid
+  stakeholder_name TEXT,              -- which stakeholder was paid
+  created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_profit_distributions_date ON profit_distributions (date DESC);
@@ -160,3 +162,42 @@ CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts (userna
 -- Migration for existing databases (run once against live D1):
 -- CREATE TABLE IF NOT EXISTS login_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, attempted_at TEXT NOT NULL DEFAULT (datetime('now')), success INTEGER NOT NULL DEFAULT 0);
 -- CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts (username, attempted_at DESC);
+
+-- Distribution decisions — tracks each stakeholder's distribute-or-reinvest choice per profit period
+CREATE TABLE IF NOT EXISTS distribution_decisions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  period              TEXT    NOT NULL,              -- e.g. '2026-03'
+  user_id             TEXT    NOT NULL REFERENCES users(id),
+  stakeholder_name    TEXT    NOT NULL,
+  profit_amount       REAL    NOT NULL,              -- calculated profit share
+  capital_days        REAL    NOT NULL,              -- their capital-days (audit trail)
+  total_capital_days  REAL    NOT NULL,              -- total capital-days across all stakeholders
+  reinvest_amount     REAL    NOT NULL DEFAULT 0,    -- max reinvest (from expected contribution)
+  distribute_amount   REAL    NOT NULL DEFAULT 0,    -- balance (profit_amount - reinvest_amount)
+  decision            TEXT    NOT NULL DEFAULT 'pending', -- 'pending', 'reinvest_and_distribute', 'distribute_all'
+  decided_at          TEXT,                          -- when decision was made (or auto-decided)
+  auto_decided        INTEGER NOT NULL DEFAULT 0,    -- 1 if auto-resolved after deadline
+  capital_surplus     INTEGER NOT NULL DEFAULT 0,    -- 1 if surplus detected at generation time
+  system_note         TEXT,                          -- plain English explanation of automated decisions
+  deadline            TEXT    NOT NULL,              -- 3 days after notification sent
+  paid_at             TEXT,                          -- when the distribute portion was paid out
+  paid_by             TEXT,                          -- who recorded the payout
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_distribution_decisions_period ON distribution_decisions (period);
+CREATE INDEX IF NOT EXISTS idx_distribution_decisions_user   ON distribution_decisions (user_id);
+
+-- Migration for existing databases (run once against live D1):
+-- CREATE TABLE IF NOT EXISTS distribution_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, period TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), stakeholder_name TEXT NOT NULL, profit_amount REAL NOT NULL, capital_days REAL NOT NULL, total_capital_days REAL NOT NULL, reinvest_amount REAL NOT NULL DEFAULT 0, distribute_amount REAL NOT NULL DEFAULT 0, decision TEXT NOT NULL DEFAULT 'pending', decided_at TEXT, auto_decided INTEGER NOT NULL DEFAULT 0, capital_surplus INTEGER NOT NULL DEFAULT 0, system_note TEXT, deadline TEXT NOT NULL, paid_at TEXT, paid_by TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+-- CREATE INDEX IF NOT EXISTS idx_distribution_decisions_period ON distribution_decisions (period);
+-- CREATE INDEX IF NOT EXISTS idx_distribution_decisions_user ON distribution_decisions (user_id);
+-- If distribution_decisions already exists (from earlier migration), add new columns:
+-- ALTER TABLE distribution_decisions ADD COLUMN reinvest_amount REAL NOT NULL DEFAULT 0;
+-- ALTER TABLE distribution_decisions ADD COLUMN distribute_amount REAL NOT NULL DEFAULT 0;
+-- ALTER TABLE distribution_decisions ADD COLUMN capital_surplus INTEGER NOT NULL DEFAULT 0;
+-- ALTER TABLE distribution_decisions ADD COLUMN system_note TEXT;
+-- ALTER TABLE distribution_decisions ADD COLUMN paid_at TEXT;
+-- ALTER TABLE distribution_decisions ADD COLUMN paid_by TEXT;
+-- ALTER TABLE profit_distributions ADD COLUMN decision_ids TEXT;
+-- ALTER TABLE profit_distributions ADD COLUMN stakeholder_name TEXT;

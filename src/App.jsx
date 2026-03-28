@@ -375,6 +375,11 @@ const DEFAULT_SETTINGS = {
   ownershipFollowUpDays: [3, 0],
   penaltyRateMultiplier: 1.5,
   distributionAuthorizedUserIds: [],
+  // Distribution Decisions (Capital-Days)
+  distributionDeadlineDays: 3,
+  allowAdHocDistributions: false,
+  smsMonthlyProfitEnabled: true,
+  smsMonthlyProfitTemplate: '{businessName} — Your profit for {period} is {profitAmount}. Log in to choose: Distribute or Reinvest. If no response by {deadline}, it will be added to your capital. Questions? Call {adminPhone}',
   // Security
   sessionTimeoutMinutes: 480,
   minPasswordLength: 6,
@@ -6541,44 +6546,126 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
   );
 }
 
-function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setDistForm, setDistributions, currentUser, loadData }) {
-  const missingRequired = !distForm.date || !(Number(distForm.amount) > 0) || !distForm.method;
+function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setDistForm, setDistributions, currentUser, loadData, settings, distDecisions, setDistDecisions }) {
+  const allowAdHoc = !!settings?.allowAdHocDistributions;
+  // Get approved but unpaid decisions
+  const payableDecisions = (distDecisions || []).filter(d =>
+    (d.decision === 'distribute_all' || d.decision === 'reinvest_and_distribute') && !d.paid_at
+  );
+  const selectedDecision = payableDecisions.find(d => (distForm.decisionIds || []).includes(d.id));
+  const ownershipCfg = settings?.stakeholderOwnership || {};
+  const bankInfo = selectedDecision ? ownershipCfg[selectedDecision.stakeholder_name] : null;
+
+  const missingRequired = !distForm.date || !(Number(distForm.amount) > 0) || !distForm.method || (!distForm.stakeholderName && !allowAdHoc);
+  const missingDecision = !allowAdHoc && (!distForm.decisionIds || distForm.decisionIds.length === 0);
+
   const handleSave = async () => {
     const amount = Number(distForm.amount) || 0;
     if (!amount || !distForm.date || !distForm.method) return;
-    const entry = { date: distForm.date, amount, method: distForm.method, note: distForm.note.trim(), receipt: distForm.receipt };
+    const entry = {
+      date: distForm.date, amount, method: distForm.method, note: distForm.note.trim(),
+      receipt: distForm.receipt, stakeholder_name: distForm.stakeholderName || '',
+      decision_ids: JSON.stringify(distForm.decisionIds || []),
+    };
     const res = await API.post('distributions', entry);
     if (res?.error) { window.alert(res.error); return; }
-    setDistributions(prev => [{ ...entry, id: Date.now(), created_by: currentUser?.name || currentUser?.username || '', created_at: new Date().toISOString() }, ...prev]);
+    // Update local decisions to mark as paid
+    if (distForm.decisionIds?.length) {
+      setDistDecisions(prev => prev.map(d => distForm.decisionIds.includes(d.id) ? { ...d, paid_at: new Date().toISOString() } : d));
+    }
+    setDistributions(prev => [{ ...entry, id: res?.id || Date.now(), created_by: currentUser?.name || currentUser?.username || '', created_at: new Date().toISOString(), stakeholder_name: distForm.stakeholderName } , ...prev]);
     setShowAddDistribution(false);
     loadData();
   };
   return (
-    <Modal open={showAddDistribution} onClose={() => setShowAddDistribution(false)} title="Record Profit Distribution">
+    <Modal open={showAddDistribution} onClose={() => setShowAddDistribution(false)} title="Pay out Profit">
       <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px', padding: '10px 12px', background: COLORS.primaryLight, borderRadius: '8px' }}>
-        Record a payment made to stakeholders from the business profit. Fields marked with <strong>*</strong> are mandatory. This amount will be deducted from the available lending capital.
+        Record a profit payment to a stakeholder. {allowAdHoc ? 'You can link to an approved decision or record an ad-hoc payment.' : 'Select an approved distribution decision to pay out.'} Fields marked with <strong>*</strong> are mandatory.
       </div>
-      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ Date, Total Amount Distributed, and Payment Method are required.</div>}
+
+      {/* Step 1: Select decision */}
+      {payableDecisions.length > 0 && (
+        <Field label="Link to Decision" required={!allowAdHoc}>
+          <select style={S.select} value={(distForm.decisionIds || [])[0] || ''} onChange={e => {
+            const decId = Number(e.target.value);
+            const dec = payableDecisions.find(d => d.id === decId);
+            if (dec) {
+              const payAmount = dec.decision === 'distribute_all' ? dec.profit_amount : (dec.distribute_amount || dec.profit_amount);
+              setDistForm({
+                ...distForm,
+                decisionIds: [decId],
+                stakeholderName: dec.stakeholder_name,
+                amount: payAmount,
+                note: `${dec.period} profit payout — ${dec.decision === 'distribute_all' ? 'Distribute All' : 'Reinvest + Distribute'}`,
+              });
+            } else {
+              setDistForm({ ...distForm, decisionIds: [], stakeholderName: '', amount: '', note: '' });
+            }
+          }}>
+            <option value="">— Select an approved decision —</option>
+            {payableDecisions.map(d => (
+              <option key={d.id} value={d.id}>
+                {d.stakeholder_name} — {d.period} — {fmtMoney(d.decision === 'distribute_all' ? d.profit_amount : (d.distribute_amount || d.profit_amount))} ({d.decision === 'distribute_all' ? 'Distribute All' : 'Reinvest + Distribute'})
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+
+      {payableDecisions.length === 0 && !allowAdHoc && (
+        <div style={{ ...S.alert('warning'), marginBottom: '12px' }}>No approved unpaid decisions found. Stakeholders must approve their distribution decisions before you can pay out.</div>
+      )}
+
+      {missingDecision && payableDecisions.length > 0 && (
+        <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>Please select a distribution decision to link this payout to.</div>
+      )}
+
+      {(missingRequired && !missingDecision) && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>Date, Amount, Stakeholder, and Payment Method are required.</div>}
+
+      {/* Bank details display */}
+      {selectedDecision && distForm.method === 'Bank Transfer' && bankInfo && (bankInfo.bankName || bankInfo.bankAccountNumber) && (
+        <div style={{ padding: '12px', background: '#f0fdf4', borderRadius: '8px', marginBottom: '14px', border: '1px solid #86efac' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Bank Details for {selectedDecision.stakeholder_name}</div>
+          <div style={{ fontSize: '13px', color: COLORS.text }}>
+            {bankInfo.bankName && <div>Bank: <strong>{bankInfo.bankName}</strong></div>}
+            {bankInfo.bankAccountNumber && <div>Account No: <strong>{bankInfo.bankAccountNumber}</strong></div>}
+            {bankInfo.bankAccountName && <div>Account Name: <strong>{bankInfo.bankAccountName}</strong></div>}
+          </div>
+        </div>
+      )}
+
       <div style={S.grid2}>
         <Field label="Date" required><input style={S.input} type="date" value={distForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDistForm({ ...distForm, date: e.target.value })} /></Field>
-        <Field label="Total Amount Distributed (₦)" required><input style={S.input} type="number" value={distForm.amount} placeholder="0" onChange={e => setDistForm({ ...distForm, amount: e.target.value })} /></Field>
-        <Field label="Payment Method" required style={{ gridColumn: '1 / -1' }}>
+        <Field label="Stakeholder" required>
+          <input style={{ ...S.input, background: selectedDecision ? COLORS.bg : undefined }} type="text" value={distForm.stakeholderName || ''} readOnly={!!selectedDecision} placeholder="Stakeholder name" onChange={e => setDistForm({ ...distForm, stakeholderName: e.target.value })} />
+        </Field>
+        <Field label="Amount (₦)" required>
+          <input style={{ ...S.input, background: selectedDecision ? COLORS.bg : undefined }} type="number" value={distForm.amount} readOnly={!!selectedDecision} placeholder="0" onChange={e => setDistForm({ ...distForm, amount: e.target.value })} />
+        </Field>
+        <Field label="Payment Method" required>
           <select style={S.select} value={distForm.method} onChange={e => setDistForm({ ...distForm, method: e.target.value })}>
             <option value="">— Select method —</option>
             <option value="Cash">Cash</option>
             <option value="Bank Transfer">Bank Transfer</option>
-            <option value="Mobile Transfer (Opay/Palmpay)">Mobile Transfer (Opay/Palmpay)</option>
             <option value="Cheque">Cheque</option>
           </select>
         </Field>
         <Field label="Note (optional)" style={{ gridColumn: '1 / -1' }}>
-          <textarea style={S.textarea} value={distForm.note} placeholder="e.g. Q1 2026 profit share, Month of January…" onChange={e => setDistForm({ ...distForm, note: e.target.value })} rows={2} />
+          <textarea style={S.textarea} value={distForm.note} placeholder="e.g. January 2026 profit share" onChange={e => setDistForm({ ...distForm, note: e.target.value })} rows={2} />
         </Field>
       </div>
       <Field label="Receipt / Proof of Payment (optional)">
         <PhotoUpload label="Receipt" value={distForm.receipt} onChange={v => setDistForm({ ...distForm, receipt: v })} size={120} />
       </Field>
-      <button style={S.btn('primary')} disabled={missingRequired} onClick={handleSave}>Save Distribution</button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+        <input type="checkbox" id="confirmPayout" style={{ width: '16px', height: '16px' }} />
+        <label htmlFor="confirmPayout" style={{ fontSize: '13px', color: COLORS.text }}>I confirm this payment has been made to the stakeholder.</label>
+      </div>
+      <button style={S.btn('primary')} disabled={missingRequired || missingDecision || (payableDecisions.length === 0 && !allowAdHoc)} onClick={() => {
+        const cb = document.getElementById('confirmPayout');
+        if (!cb?.checked) { alert('Please confirm the payment before saving.'); return; }
+        handleSave();
+      }}>Save Payout</button>
     </Modal>
   );
 }
@@ -6738,6 +6825,9 @@ export default function App() {
   const [expenses, setExpenses] = useState([]);
   const [capital, setCapital] = useState([]);
   const [distributions, setDistributions] = useState([]);
+  const [distDecisions, setDistDecisions] = useState([]);
+  const [distDecisionPeriod, setDistDecisionPeriod] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; });
+  const [distDecisionLoading, setDistDecisionLoading] = useState(false);
   const [declinedLog, setDeclinedLog] = useState([]);
   const [activityLogs, setActivityLogs] = useState([]);
   const [activityMeta, setActivityMeta] = useState({ total: 0, limit: ACTIVITY_PAGE_SIZE, offset: 0 });
@@ -8154,15 +8244,39 @@ export default function App() {
           return acc;
         }, {});
         const rowStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` };
-        const rStakeholders = Object.values(capital.reduce((acc, c) => {
-          const key = c.name.toLowerCase();
-          if (!acc[key]) acc[key] = { name: c.name, total: 0 };
-          acc[key].total += (c.amount || 0);
-          return acc;
-        }, {})).map(s => {
-          const pct = totalCapital > 0 ? (s.total / totalCapital * 100) : 0;
-          return { ...s, pct, share: Math.floor(rStakeholder * pct / 100) };
-        });
+        // ── CAPITAL-DAYS METHOD ──
+        // Each capital entry earns capital-days = amount × days active within the report period.
+        // Profit is split proportionally by capital-days, not raw capital amount.
+        const periodStart = new Date(Date.UTC(fromYear, fromMonth - 1, 1));
+        const periodEnd = new Date(Date.UTC(toYear, toMonth, 0)); // last day of toMonth
+        const periodDays = Math.round((periodEnd - periodStart) / 86400000) + 1; // inclusive
+        const rStakeholders = (() => {
+          // Group capital entries by stakeholder and compute capital-days per entry
+          const byStakeholder = {};
+          for (const c of capital) {
+            const key = c.name.toLowerCase();
+            if (!byStakeholder[key]) byStakeholder[key] = { name: c.name, total: 0, capitalDays: 0, entries: [] };
+            byStakeholder[key].total += (c.amount || 0);
+            const entryDate = new Date(c.date);
+            if (Number.isNaN(entryDate.getTime())) continue;
+            const entryUTC = new Date(Date.UTC(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()));
+            // Skip entries deposited after the report period
+            if (entryUTC > periodEnd) continue;
+            // Start counting from the later of entry date or period start
+            const effectiveStart = entryUTC > periodStart ? entryUTC : periodStart;
+            const days = Math.round((periodEnd - effectiveStart) / 86400000) + 1; // inclusive
+            const cd = (c.amount || 0) * days;
+            byStakeholder[key].capitalDays += cd;
+            byStakeholder[key].entries.push({ amount: c.amount, date: c.date, days, capitalDays: cd });
+          }
+          const arr = Object.values(byStakeholder);
+          const totalCapitalDays = arr.reduce((s, x) => s + x.capitalDays, 0);
+          return arr.map(s => {
+            const pct = totalCapitalDays > 0 ? (s.capitalDays / totalCapitalDays * 100) : 0;
+            const avgActiveDays = s.total > 0 ? Math.round(s.capitalDays / s.total * 10) / 10 : 0;
+            return { ...s, pct, share: Math.floor(rStakeholder * pct / 100), effectiveDays: periodDays, totalCapitalDays, avgActiveDays };
+          });
+        })();
         // ── TASK-BASED STAFF SCORING ──
         // Points per task (all tasks weighted equally at 1 point each):
         // 1. Loan Intake      – completing a new cash advance or outright purchase (completedBy)
@@ -8255,6 +8369,10 @@ export default function App() {
             toCSV(['Staff','Loan Intake','Repayment','Sale','Contact Logged','Sold at Target','Sold On Time','Total Points','Share %','Amount'],
               rStaffByTask.map(s => [s.name, s.scores.loan_intake, s.scores.repayment, s.scores.sale, s.scores.contact, s.scores.sold_at_target, s.scores.sold_on_time, s.total, s.pct.toFixed(1)+'%', s.share])),
             '',
+            'STAKEHOLDER DISTRIBUTION',
+            toCSV(['Stakeholder','Total Capital','Avg Active Days','Share %','Profit Share'],
+              rStakeholders.map(s => [s.name, s.total, s.avgActiveDays, s.pct.toFixed(1)+'%', s.share])),
+            '',
             'REPAYMENTS',
             toCSV(['Ref','Customer','Cash Advanced','Fees Collected','Date Repaid'],
               rClosed.map(t => [t.ref, t.fullName, t.cashAdvance, t.totalFees, t.dateRepaid || t.updated_at])),
@@ -8345,7 +8463,7 @@ export default function App() {
             {/* Profit distribution */}
             <div style={S.grid2}>
               <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Staff Share ({staffSharePct}%)<InfoIcon tip={`The staff's collective share for running the business — ${staffSharePct}% of the net profit, split equally among all active staff members.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rStaff)}</div></div>
-              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders ({100 - staffSharePct}%)<InfoIcon tip={`The investors' share of the profit — ${100 - staffSharePct}% split among them based on how much each person put in.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
+              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders ({100 - staffSharePct}%)<InfoIcon tip={`The investors' share of the profit — ${100 - staffSharePct}% split among them based on how much each person put in AND how long it was active during the period. Money invested longer earns a bigger share.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
             </div>
             <div style={S.card}>
               <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>👥 Staff Performance & Distribution<InfoIcon tip="Each staff member's profit share is based on task points earned in this period. Points are earned for: new loans, repayments, sales, contact attempts, selling at target price, and selling within the deadline." /></div>
@@ -8386,14 +8504,36 @@ export default function App() {
               )}
             </div>
             <div style={S.card}>
-              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution<InfoIcon tip="How each investor's profit share is worked out — based on how much they put in compared to everyone else combined." /></div>
-              {rStakeholders.map(s => (
-                <div key={s.name} style={rowStyle}>
-                  <span><strong>{s.name}</strong> — {fmtMoney(s.total)} ({s.pct.toFixed(1)}%)</span>
-                  <strong style={{ color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(s.share)}</strong>
+              <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📊 Stakeholder Distribution<InfoIcon tip="Profit is split based on how much each investor put in AND how long their money was active during the report period. Money invested earlier earns a bigger share." /></div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Report period: <strong>{periodDays} days</strong></div>
+              {rStakeholders.length > 0 ? (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ ...S.table, fontSize: '12px' }}>
+                    <thead>
+                      <tr>
+                        <th style={S.th}>Stakeholder</th>
+                        <th style={S.th}>Capital</th>
+                        <th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Avg Active Days<InfoIcon tip="The average number of days your money was working during the report period. If you deposited ₦500k on Day 1 of a 30-day month, it's 30 days. If deposited on Day 20, it's 11 days. Multiple deposits are averaged by amount." /></div></th>
+                        <th style={S.th}>Share %</th>
+                        <th style={S.th}>Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rStakeholders.map(s => (
+                        <tr key={s.name}>
+                          <td style={{ ...S.td, fontWeight: 700 }}>{s.name}</td>
+                          <td style={S.td}>{fmtMoney(s.total)}</td>
+                          <td style={{ ...S.td, textAlign: 'center' }}>{s.avgActiveDays}</td>
+                          <td style={{ ...S.td, textAlign: 'center' }}>{s.pct.toFixed(1)}%</td>
+                          <td style={{ ...S.td, fontWeight: 700, color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(s.share)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
-              {capital.length === 0 && <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>}
+              ) : (
+                <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>
+              )}
             </div>
 
             {/* Repayments detail */}
@@ -8564,8 +8704,9 @@ export default function App() {
                   ['Capital Deployed', 'Total advance money given out as new loans this period. This money is out in the field.'],
                   ['Capital Returned', 'Total advance money recovered from customers who paid back their loans this period.'],
                   [`Staff Share (${staffSharePct}%)`, `The staff's collective management share — ${staffSharePct}% of the net profit divided among staff based on their task performance. Each person's portion equals their task points ÷ total team task points.`],
-                  [`Stakeholders (${100 - staffSharePct}%)`, `The remaining ${100 - staffSharePct}% of profit is shared among investors, each getting a share based on how much capital they put into the business.`],
-                  ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from their capital contribution compared to the total capital. More capital = higher share.'],
+                  [`Stakeholders (${100 - staffSharePct}%)`, `The remaining ${100 - staffSharePct}% of profit is shared among investors. Each investor's share is based on how much capital they put in AND how long it was active during the period.`],
+                  ['Avg Active Days', 'The average number of days your money was working during the report period. If you deposited ₦500k on Day 1 of a 30-day month, your average active days = 30. If you deposited on Day 20, it\'s 11 days. More active days means your money was at work longer, so you get a bigger share of the profit.'],
+                  ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from how much they invested and for how long. More capital invested for longer = higher share.'],
                 ].map(([term, def]) => (
                   <div key={term} style={{ padding: '10px 0', borderBottom: `1px solid ${COLORS.border}` }}>
                     <div style={{ fontWeight: 700, fontSize: '13px', color: COLORS.primaryDark, marginBottom: '3px' }}>{term}</div>
@@ -8832,19 +8973,227 @@ export default function App() {
               <div style={{ marginTop: '12px', padding: '12px', background: COLORS.primaryLight, borderRadius: '8px', fontWeight: 700 }}>Total capital invested: {fmtMoney(totalCapital)}</div>
             </div>
 
-            {/* Profit Distributions */}
+            {/* ── Distribution Decisions (Capital-Days) ── */}
+            <div style={S.card}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📋 Distribution Decisions<InfoIcon tip="At the end of each month, each stakeholder's profit is calculated using capital-days. If the business needs capital, a portion (up to the expected contribution) is reinvested and the rest is distributed. If capital is in surplus, everything is distributed." /></div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input type="month" value={distDecisionPeriod} onChange={e => setDistDecisionPeriod(e.target.value)} style={{ ...S.input, width: '150px', fontSize: '13px' }} />
+                  <button style={S.btn('secondary')} disabled={distDecisionLoading} onClick={async () => {
+                    setDistDecisionLoading(true);
+                    const res = await API.get(`distribution-decisions?period=${distDecisionPeriod}`);
+                    setDistDecisions(res?.decisions || []);
+                    setDistDecisionLoading(false);
+                  }}>Load</button>
+                </div>
+              </div>
+
+              {/* Admin: Generate Decisions */}
+              {isAdmin && distDecisions.length === 0 && (
+                <div style={{ padding: '16px', background: COLORS.primaryLight, borderRadius: '8px', marginBottom: '14px' }}>
+                  <p style={{ fontSize: '13px', color: COLORS.text, marginBottom: '10px' }}>
+                    No decisions found for <strong>{distDecisionPeriod}</strong>. Generate them from the monthly report to notify stakeholders and start the distribution cycle.
+                  </p>
+                  <button style={S.btn('primary')} disabled={distDecisionLoading} onClick={async () => {
+                    // Compute capital-days for this period
+                    const [pYear, pMonth] = distDecisionPeriod.split('-').map(Number);
+                    const pStart = new Date(Date.UTC(pYear, pMonth - 1, 1));
+                    const pEnd = new Date(Date.UTC(pYear, pMonth, 0));
+                    const byStake = {};
+                    for (const c of capital) {
+                      const key = c.name.toLowerCase();
+                      if (!byStake[key]) byStake[key] = { name: c.name, user_id: c.user_id, capitalDays: 0, total: 0 };
+                      byStake[key].total += (c.amount || 0);
+                      const entryDate = new Date(c.date);
+                      if (Number.isNaN(entryDate.getTime())) continue;
+                      const entryUTC = new Date(Date.UTC(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()));
+                      if (entryUTC > pEnd) continue;
+                      const effectiveStart = entryUTC > pStart ? entryUTC : pStart;
+                      const days = Math.round((pEnd - effectiveStart) / 86400000) + 1;
+                      byStake[key].capitalDays += (c.amount || 0) * days;
+                    }
+                    const arr = Object.values(byStake);
+                    const totalCD = arr.reduce((s, x) => s + x.capitalDays, 0);
+                    if (totalCD === 0) { alert('No capital-days for this period. Ensure capital entries exist.'); return; }
+                    // Calculate stakeholder profit for the period
+                    const periodTxs = transactions.filter(t => { if (!t.created_at) return false; const d = new Date(t.created_at.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const periodClosed = closedTxs.filter(t => { const ds = t.dateRepaid || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const periodSold = soldTxs.filter(t => { const ds = t.saleDate || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const periodNewLoans = periodTxs.filter(t => t.type !== 'outright' && t.status !== 'declined');
+                    const periodExp = expenses.filter(e => { if (!e.date) return false; const d = new Date(e.date.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
+                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + (t.salePrice || 0), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+                    const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
+                    const profit = rev - expT;
+                    const sPct = settings.staffSharePct ?? 10;
+                    const stakeholderPool = profit - Math.floor(profit * sPct / 100);
+                    if (stakeholderPool <= 0) { alert(`No stakeholder profit for ${distDecisionPeriod} (pool: ${fmtMoney(stakeholderPool)}). Cannot generate decisions.`); return; }
+
+                    // Detect capital surplus using capitalPrediction
+                    const isSurplus = capitalPrediction?.streakMet && capitalPrediction?.safeWithdrawal > 0;
+
+                    // Compute expected contributions using the three-phase algorithm
+                    const capBN = arr.filter(s => s.user_id).map(s => ({ name: s.name, total: s.total }));
+                    const tcap = capBN.reduce((s, x) => s + x.total, 0);
+                    const ownershipCfg = settings.stakeholderOwnership || {};
+
+                    // Determine shortfall: how much capital the business needs
+                    const shortfallAmount = capitalPrediction?.primaryForecast
+                      ? Math.max(0, (capitalPrediction.primaryForecast.predictedRequired || 0) - (capitalPrediction.availableLendingCapital || 0))
+                      : 0;
+
+                    // Use the three-phase algorithm to compute each stakeholder's expected contribution
+                    const { allocations } = !isSurplus && shortfallAmount > 0
+                      ? computeRealTimeShortfall(shortfallAmount, capBN, tcap, ownershipCfg)
+                      : { allocations: [] };
+
+                    // Build a lookup of expected contribution by stakeholder name
+                    const expectedByName = {};
+                    for (const a of allocations) expectedByName[a.name] = Math.round(a.suggested || 0);
+
+                    const stakeData = arr.filter(s => s.user_id).map(s => {
+                      const profitAmount = Math.floor(stakeholderPool * (s.capitalDays / totalCD));
+                      const expectedContrib = expectedByName[s.name] || 0;
+                      // Reinvest amount = min(profit, expected contribution). 0 if surplus.
+                      const reinvestAmount = isSurplus ? 0 : Math.min(profitAmount, expectedContrib);
+                      const distributeAmount = profitAmount - reinvestAmount;
+                      const systemNote = isSurplus
+                        ? 'Capital is in surplus — full profit will be distributed.'
+                        : reinvestAmount > 0
+                          ? `Business needs capital. ${fmtMoney(reinvestAmount)} will be reinvested (your expected contribution), ${fmtMoney(distributeAmount)} distributed to you.`
+                          : 'No capital shortfall for your share — full profit will be distributed.';
+                      return {
+                        user_id: s.user_id, name: s.name, capitalDays: s.capitalDays, totalCapitalDays: totalCD,
+                        profitAmount, reinvestAmount, distributeAmount,
+                        capitalSurplus: isSurplus ? 1 : 0, systemNote,
+                      };
+                    });
+                    if (stakeData.length === 0) { alert('No stakeholders with linked user accounts found. Link users to capital entries in Capital settings.'); return; }
+                    const confirmMsg = `Generate distribution decisions for ${distDecisionPeriod}?\n\n` +
+                      (isSurplus ? '✅ Capital is in SURPLUS — all profit will be distributed.\n\n' : shortfallAmount > 0 ? `⚠️ Capital shortfall: ${fmtMoney(shortfallAmount)} — reinvestment amounts calculated per expected contributions.\n\n` : '') +
+                      `Stakeholder profit pool: ${fmtMoney(stakeholderPool)}\n` +
+                      stakeData.map(s => `  ${s.name}: ${fmtMoney(s.profitAmount)} (reinvest ${fmtMoney(s.reinvestAmount)}, distribute ${fmtMoney(s.distributeAmount)})`).join('\n') +
+                      '\n\nSend SMS notifications?';
+                    if (!window.confirm(confirmMsg)) return;
+                    setDistDecisionLoading(true);
+                    const res = await API.post('distribution-decisions/generate', { period: distDecisionPeriod, stakeholders: stakeData, sendSms: true });
+                    if (res?.ok) {
+                      alert(`Decisions generated! Deadline: ${res.deadline}\n\nSMS: ${(res.smsResults || []).map(r => `${r.name}: ${r.status}`).join(', ') || 'none sent'}`);
+                      const reload = await API.get(`distribution-decisions?period=${distDecisionPeriod}`);
+                      setDistDecisions(reload?.decisions || []);
+                    } else { alert('Error: ' + (res?.error || 'Unknown error')); }
+                    setDistDecisionLoading(false);
+                  }}>Generate Decisions & Notify</button>
+                </div>
+              )}
+
+              {/* Decision Table */}
+              {distDecisions.length > 0 && (
+                <>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ ...S.table, fontSize: '12px' }}>
+                      <thead>
+                        <tr>
+                          <th style={S.th}>Stakeholder</th>
+                          <th style={S.th}>Profit</th>
+                          <th style={S.th}>Reinvest</th>
+                          <th style={S.th}>Distribute</th>
+                          <th style={S.th}>Decision</th>
+                          <th style={S.th}>Deadline</th>
+                          <th style={S.th}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {distDecisions.map(d => {
+                          const isPending = d.decision === 'pending';
+                          const canAct = isPending && (isAdmin || d.user_id === currentUser?.id);
+                          const statusColor = d.decision === 'distribute_all' ? COLORS.accent : d.decision === 'reinvest_and_distribute' ? COLORS.primary : '#6b7280';
+                          const decisionLabel = d.decision === 'reinvest_and_distribute' ? 'REINVEST + DISTRIBUTE'
+                            : d.decision === 'distribute_all' ? 'DISTRIBUTE ALL'
+                            : 'PENDING';
+                          const canReinvest = !d.capital_surplus && (d.reinvest_amount || 0) > 0;
+                          return (
+                            <tr key={d.id}>
+                              <td style={{ ...S.td, fontWeight: 700 }}>
+                                {d.stakeholder_name}
+                                {d.system_note && (
+                                  <InfoIcon tip={d.system_note} />
+                                )}
+                              </td>
+                              <td style={{ ...S.td, fontWeight: 700, color: COLORS.primary }}>{fmtMoney(d.profit_amount)}</td>
+                              <td style={{ ...S.td, color: (d.reinvest_amount || 0) > 0 ? COLORS.primary : COLORS.textMuted }}>{fmtMoney(d.reinvest_amount || 0)}</td>
+                              <td style={{ ...S.td, color: COLORS.accent, fontWeight: 600 }}>{fmtMoney(d.distribute_amount || d.profit_amount)}</td>
+                              <td style={S.td}>
+                                <span style={{ display: 'inline-block', padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: 700, color: '#fff', background: statusColor }}>
+                                  {decisionLabel}{d.auto_decided ? ' (auto)' : ''}
+                                </span>
+                              </td>
+                              <td style={{ ...S.td, fontSize: '12px', color: COLORS.textMuted }}>{fmtDate(d.deadline)}</td>
+                              <td style={S.td}>
+                                {canAct ? (
+                                  <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                                    {canReinvest && (
+                                      <button style={S.btnSm('primary')} onClick={async () => {
+                                        if (!window.confirm(`Reinvest ${fmtMoney(d.reinvest_amount)} as capital + receive ${fmtMoney(d.distribute_amount || d.profit_amount - (d.reinvest_amount || 0))}?`)) return;
+                                        const res = await API.put(`distribution-decisions/${d.id}`, { decision: 'reinvest_and_distribute' });
+                                        if (res?.ok) { setDistDecisions(prev => prev.map(x => x.id === d.id ? { ...x, decision: 'reinvest_and_distribute', decided_at: new Date().toISOString() } : x)); loadData(); }
+                                        else alert('Error: ' + (res?.error || 'Unknown'));
+                                      }}>Reinvest {fmtMoney(d.reinvest_amount)} + Distribute {fmtMoney(d.distribute_amount || d.profit_amount - (d.reinvest_amount || 0))}</button>
+                                    )}
+                                    <button style={S.btnSm('accent')} onClick={async () => {
+                                      if (!window.confirm(`Distribute all ${fmtMoney(d.profit_amount)} to ${d.stakeholder_name}?`)) return;
+                                      const res = await API.put(`distribution-decisions/${d.id}`, { decision: 'distribute_all' });
+                                      if (res?.ok) { setDistDecisions(prev => prev.map(x => x.id === d.id ? { ...x, decision: 'distribute_all', decided_at: new Date().toISOString() } : x)); }
+                                      else alert('Error: ' + (res?.error || 'Unknown'));
+                                    }}>Distribute All {fmtMoney(d.profit_amount)}</button>
+                                  </div>
+                                ) : (
+                                  <span style={{ fontSize: '12px', color: COLORS.textMuted }}>{d.decided_at ? fmtDate(d.decided_at) : '—'}</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Admin: Auto-resolve expired */}
+                  {isAdmin && distDecisions.some(d => d.decision === 'pending') && (
+                    <button style={{ ...S.btn('secondary'), marginTop: '10px' }} onClick={async () => {
+                      if (!window.confirm('Auto-resolve all expired pending decisions?\n\nSurplus → distribute all. Deficit → reinvest expected contribution + distribute balance.')) return;
+                      setDistDecisionLoading(true);
+                      const res = await API.post('distribution-decisions/auto-resolve');
+                      if (res?.ok) {
+                        alert(`${res.processed} decision(s) auto-resolved.`);
+                        const reload = await API.get(`distribution-decisions?period=${distDecisionPeriod}`);
+                        setDistDecisions(reload?.decisions || []);
+                        loadData();
+                      } else { alert('Error: ' + (res?.error || 'Unknown')); }
+                      setDistDecisionLoading(false);
+                    }}>Auto-Resolve Expired</button>
+                  )}
+                </>
+              )}
+
+              {distDecisions.length === 0 && !distDecisionLoading && (
+                <p style={{ fontSize: '13px', color: COLORS.textMuted }}>No distribution decisions for this period. {isAdmin ? 'Use "Generate Decisions & Notify" after completing the monthly report.' : 'Check back after the monthly report is generated.'}</p>
+              )}
+              {distDecisionLoading && <p style={{ fontSize: '13px', color: COLORS.textMuted }}>Loading...</p>}
+            </div>
+
+            {/* ── Pay out Profit (Profit Distributions) ── */}
             <div style={S.card}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <div style={S.cardTitle}>💸 Profit Distributions</div>
-                {canRecordDistributions && <button style={S.btn('primary')} onClick={() => { setDistForm({ date: localISODate(), amount: '', method: '', note: '', receipt: '' }); setShowAddDistribution(true); }}>+ Record Distribution</button>}
+                <div style={S.cardTitle}>💸 Pay out Profit</div>
+                {canRecordDistributions && <button style={S.btn('primary')} onClick={() => { setDistForm({ date: localISODate(), amount: '', method: '', note: '', receipt: '', stakeholderName: '', decisionIds: [] }); setShowAddDistribution(true); }}>+ Pay out Profit</button>}
               </div>
               <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
-                Every time profit is paid out to stakeholders, Fabian records it here. All stakeholders can see this record.
+                Record payments made to stakeholders from business profit. Payments should be linked to approved distribution decisions above.
               </p>
               <table style={S.table}>
                 <thead>
                   <tr>
                     <th style={S.th}>Date</th>
+                    <th style={S.th}>Stakeholder</th>
                     <th style={S.th}>Amount</th>
                     <th style={S.th}>Method</th>
                     <th style={S.th}>Note</th>
@@ -8857,6 +9206,7 @@ export default function App() {
                   {distributions.map((d, i) => (
                     <tr key={i}>
                       <td style={S.td}>{fmtDate(d.date)}</td>
+                      <td style={{ ...S.td, fontWeight: 600 }}>{d.stakeholder_name || '—'}</td>
                       <td style={S.td}><strong style={{ color: COLORS.danger }}>{fmtMoney(d.amount)}</strong></td>
                       <td style={S.td}>{d.method}</td>
                       <td style={S.td}>{d.note || <span style={{ color: COLORS.textMuted }}>—</span>}</td>
@@ -8865,7 +9215,7 @@ export default function App() {
                       {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { const ok = await API.del(`distributions/${d.id}`); if (ok) setDistributions(prev => prev.filter(x => x.id !== d.id)); loadData(); } }}>Del</button></td>}
                     </tr>
                   ))}
-                  {distributions.length === 0 && <tr><td style={{ ...S.td, color: COLORS.textMuted }} colSpan={isAdmin ? 7 : 6}>No distributions recorded yet.</td></tr>}
+                  {distributions.length === 0 && <tr><td style={{ ...S.td, color: COLORS.textMuted }} colSpan={isAdmin ? 8 : 7}>No payouts recorded yet.</td></tr>}
                 </tbody>
               </table>
               <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total distributed: {fmtMoney(totalDistributions)}</div>
@@ -9769,7 +10119,7 @@ export default function App() {
           <div style={S.card}>
             <div style={S.cardTitle}>🎯 Stakeholder Ownership Targets</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
-              Set the minimum, maximum, and target ownership percentage for each stakeholder. Also add their phone and email so the system can notify them directly when a capital top-up or withdrawal opportunity arises.
+              Set the minimum, maximum, and target ownership percentage for each stakeholder. Also add their phone, email, and bank details so the system can notify them and display payment info during profit payouts.
               <br /><br />
               <strong>Note:</strong> Targets do not need to sum to 100%. Any unallocated remainder is treated as unassigned.
             </div>
@@ -9782,7 +10132,7 @@ export default function App() {
               const thStyle = { ...S.th, whiteSpace: 'nowrap' };
               return (
                 <div style={{ overflowX: 'auto' }}>
-                <table style={{ ...S.table, minWidth: '720px' }}>
+                <table style={{ ...S.table, minWidth: '1000px' }}>
                   <thead>
                     <tr>
                       <th style={thStyle}>Stakeholder</th>
@@ -9791,6 +10141,9 @@ export default function App() {
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Max %<InfoIcon tip="The maximum ownership percentage this stakeholder should hold. Stakeholders above their max get a higher share of any recommended withdrawal." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Phone (SMS)<InfoIcon tip="Nigerian mobile number for this stakeholder. Used to send SMS alerts when capital is low or a withdrawal is available. Format: 080XXXXXXXX" /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Email<InfoIcon tip="Email address for this stakeholder. Used to generate pre-filled email alerts when capital is low or a withdrawal is available." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Bank Name<InfoIcon tip="Stakeholder's bank name. Displayed when paying out profit via Bank Transfer." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Account No.<InfoIcon tip="Stakeholder's bank account number. Displayed during Bank Transfer payouts." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Account Name<InfoIcon tip="Name on the stakeholder's bank account. Displayed during Bank Transfer payouts." /></span></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -9845,6 +10198,33 @@ export default function App() {
                               placeholder="name@example.com"
                               value={tgt.email ?? ''}
                               onChange={e => setTgt({ email: e.target.value })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '140px' }}
+                              type="text"
+                              placeholder="e.g. Access Bank"
+                              value={tgt.bankName ?? ''}
+                              onChange={e => setTgt({ bankName: e.target.value })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '130px' }}
+                              inputMode="numeric"
+                              placeholder="0123456789"
+                              value={tgt.bankAccountNumber ?? ''}
+                              onChange={e => setTgt({ bankAccountNumber: e.target.value.replace(/\D/g, '') })}
+                            />
+                          </td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '160px' }}
+                              type="text"
+                              placeholder="Account holder name"
+                              value={tgt.bankAccountName ?? ''}
+                              onChange={e => setTgt({ bankAccountName: e.target.value })}
                             />
                           </td>
                         </tr>
@@ -10278,6 +10658,35 @@ export default function App() {
             </div>
           </div>
 
+          {/* ── 13b. DISTRIBUTION DECISIONS (Capital-Days) ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>📋 Distribution Decisions</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure the monthly profit distribution decision cycle. When capital is needed, each stakeholder's expected contribution is reinvested and the rest is distributed. When capital is in surplus, everything is distributed.</div>
+            <div style={S.grid2}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Decision Deadline (days)<InfoIcon tip="Number of days stakeholders have to respond before the system auto-resolves their decision. Surplus → distribute all. Deficit → reinvest expected contribution + distribute balance. Default: 3 days." /></span>}>
+                <input style={S.input} type="number" min="1" max="14" value={es.distributionDeadlineDays ?? 3} onChange={e => updateSettings({ ...es, distributionDeadlineDays: Math.min(14, Math.max(1, Number(e.target.value))) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Monthly Profit SMS<InfoIcon tip="When enabled, an SMS is sent to each stakeholder when distribution decisions are generated, notifying them of their profit share and deadline." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={es.smsMonthlyProfitEnabled !== false} onChange={e => updateSettings({ ...es, smsMonthlyProfitEnabled: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.smsMonthlyProfitEnabled !== false ? <span style={{ color: '#10b981' }}>Enabled</span> : <span style={{ color: COLORS.textMuted }}>Disabled</span>}
+                </label>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Allow Ad-Hoc Payouts<InfoIcon tip="When enabled, the 'Pay out Profit' button allows recording payments that are not linked to any distribution decision. When disabled (default), all payouts must be linked to approved decisions." /></span>}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                  <input type="checkbox" checked={!!es.allowAdHocDistributions} onChange={e => updateSettings({ ...es, allowAdHocDistributions: e.target.checked })} style={{ width: '16px', height: '16px' }} />
+                  {es.allowAdHocDistributions ? <span style={{ color: '#10b981' }}>Enabled</span> : <span style={{ color: COLORS.textMuted }}>Disabled (decision-linked only)</span>}
+                </label>
+              </Field>
+            </div>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Monthly Profit SMS Template<InfoIcon tip="Message sent to stakeholders when distribution decisions are generated. Placeholders: {businessName}, {period}, {profitAmount}, {deadline}, {adminPhone}, {stakeholderName}" /></span>}>
+              <textarea style={{ ...S.textarea, minHeight: '80px' }} value={es.smsMonthlyProfitTemplate ?? '{businessName} — Your profit for {period} is {profitAmount}. Log in to choose: Distribute or Reinvest. If no response by {deadline}, it will be added to your capital. Questions? Call {adminPhone}'} onChange={e => updateSettings({ ...es, smsMonthlyProfitTemplate: e.target.value })} />
+            </Field>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '12px', padding: '10px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+              <strong>How capital-days work:</strong> Stakeholder profit shares are calculated using the capital-days method. Each investor&apos;s share = (their capital x days active in the period) / (total capital-days). Money invested earlier in the month earns more than money invested later — this is fairer for all stakeholders.
+            </div>
+          </div>
+
           {/* ── 14. PROFIT DISTRIBUTION ACCESS ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>💸 Profit Distribution Access</div>
@@ -10466,7 +10875,7 @@ export default function App() {
 
       <ExpModal showAddExpense={showAddExpense} setShowAddExpense={setShowAddExpense} expForm={expForm} setExpForm={setExpForm} settings={settings} currentUser={currentUser} setExpenses={setExpenses} loadData={loadData} />
       <CapModal showAddCapital={showAddCapital} setShowAddCapital={setShowAddCapital} capitalTopUpFor={capitalTopUpFor} setCapitalTopUpFor={setCapitalTopUpFor} capital={capital} setCapital={setCapital} capForm={capForm} setCapForm={setCapForm} capShowPwd={capShowPwd} setCapShowPwd={setCapShowPwd} capAccountMode={capAccountMode} setCapAccountMode={setCapAccountMode} capSelectedUserId={capSelectedUserId} setCapSelectedUserId={setCapSelectedUserId} users={users} setUsers={setUsers} loadData={loadData} />
-      <DistModal showAddDistribution={showAddDistribution} setShowAddDistribution={setShowAddDistribution} distForm={distForm} setDistForm={setDistForm} setDistributions={setDistributions} currentUser={currentUser} loadData={loadData} />
+      <DistModal showAddDistribution={showAddDistribution} setShowAddDistribution={setShowAddDistribution} distForm={distForm} setDistForm={setDistForm} setDistributions={setDistributions} currentUser={currentUser} loadData={loadData} settings={settings} distDecisions={distDecisions} setDistDecisions={setDistDecisions} />
       <DecModal showAddDeclined={showAddDeclined} setShowAddDeclined={setShowAddDeclined} decForm={decForm} setDecForm={setDecForm} setDeclinedLog={setDeclinedLog} loadData={loadData} />
       <DeclineDraftModal declineDraftModal={declineDraftModal} setDeclineDraftModal={setDeclineDraftModal} declineDraftDec={declineDraftDec} setDeclineDraftDec={setDeclineDraftDec} setDeclinedLog={setDeclinedLog} setDrafts={setDrafts} currentUser={currentUser} loadData={loadData} />
       <UsrModal showAddUser={showAddUser} setShowAddUser={setShowAddUser} usrForm={usrForm} setUsrForm={setUsrForm} usrShowPwd={usrShowPwd} setUsrShowPwd={setUsrShowPwd} setUsers={setUsers} loadData={loadData} />
