@@ -96,6 +96,7 @@ const SHOP_CACHE_KEY = 'cfc_shop_items';
 const SHOP_CACHE_TTL_MS = 5 * 60 * 1000;
 const SECONDARY_CACHE_KEY = 'cfc_secondary';
 const SECONDARY_CACHE_TTL_MS = 10 * 60 * 1000;
+const LIVE_REFRESH_INTERVAL_MS = 15 * 1000;
 const readShopCache = () => {
   const cached = readCache(SHOP_CACHE_KEY);
   if (!cached?.savedAt || Date.now() - cached.savedAt > SHOP_CACHE_TTL_MS) return null;
@@ -7074,6 +7075,16 @@ export default function App() {
   };
 
   useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
+
+  // Lightweight live updates: refresh data every 15s while tab is visible.
+  useEffect(() => {
+    if (!currentUser) return undefined;
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      loadData();
+    }, LIVE_REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [currentUser]);
 
   // Fetch Termii SMS balance when user is authenticated
   const refreshSmsBalance = async () => {
