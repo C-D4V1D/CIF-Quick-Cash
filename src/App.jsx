@@ -681,10 +681,10 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
 
     const projNetConsumed = projOrig - projRecoveries + expWeighted * seasonIdx + distWeighted;
 
+    const currentlyDeployed = totalCapitalOut + totalCapitalInForSale;
     const predictedRequired = Math.max(0,
-      totalCapitalOut + totalCapitalInForSale
-      + projNetConsumed * h
-      + minimumCapitalRequired
+      currentlyDeployed,
+      currentlyDeployed + projNetConsumed * h + minimumCapitalRequired
     );
 
     const confidenceMultiplier = Math.pow(1.4, h - 1);
