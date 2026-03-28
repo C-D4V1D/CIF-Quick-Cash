@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { COLORS } from '../theme';
 
 const READ_KEY = (uid) => `cfc_biz_notifs_read_${uid}`;
@@ -9,7 +10,6 @@ const hasRole = (u, r) => u?.role === r || (u?.roles || []).includes(r);
 // Stable UTC parsing for SQLite timestamps ("YYYY-MM-DD HH:MM:SS", no timezone)
 function parseUTC(d) {
   if (!d) return null;
-  // Append 'Z' so JS treats it as UTC, not local
   const s = String(d).trim().replace(' ', 'T');
   return new Date(s.endsWith('Z') ? s : s + 'Z');
 }
@@ -40,9 +40,10 @@ function timeAgo(d) {
 }
 
 // Build rich business notifications from all data sources
-function buildNotifications({ currentUser, capital, distributions, activityLogs, smsCredits, smsBalance, settings }) {
+function buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings }) {
   const isStaff = hasRole(currentUser, 'staff') || hasRole(currentUser, 'admin');
   const isStakeholder = hasRole(currentUser, 'stakeholder') || hasRole(currentUser, 'admin');
+  const isAdmin = hasRole(currentUser, 'admin');
   const notifs = [];
 
   // ── Capital entries (stakeholder / admin) ──
@@ -51,7 +52,6 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
       c.user_id === currentUser.id || c.name === currentUser.name
     );
     myCapital.forEach(entry => {
-      const dt = parseUTC(entry.date);
       notifs.push({
         id: `cap_${entry.id}`,
         icon: '💰',
@@ -60,6 +60,8 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
         full: `A capital contribution of ${fmtMoney(entry.amount)} was recorded for you on ${fmtDateFull(entry.date)} via ${entry.method}. Your total capital in the business has been updated.${entry.receipt ? ' A receipt was attached.' : ''}`,
         createdAt: entry.date,
         priority: 'normal',
+        link: '/capital',
+        linkLabel: 'View Capital',
       });
     });
   }
@@ -80,6 +82,8 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
         full: `A profit distribution of ${fmtMoney(dist.amount)} was recorded on ${fmtDateFull(dist.date || dist.created_at)} via ${dist.method || 'cash'}.${dist.note ? `\n\nNote: "${dist.note}"` : ''}\n\nThis payment has been recorded in your financial summary.`,
         createdAt: dist.date || dist.created_at,
         priority: 'high',
+        link: '/capital',
+        linkLabel: 'View Distributions',
       });
     });
   }
@@ -102,6 +106,8 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
         : `Your profile was updated on ${fmtDateFull(log.created_at)}. ${log.description || ''}`,
       createdAt: log.created_at,
       priority: 'high',
+      link: '/profile',
+      linkLabel: 'Go to Profile',
     });
   });
 
@@ -121,10 +127,72 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
         icon: '📊',
         title: `${monthName} ${ly} Report Ready`,
         short: `Your business report for ${monthName} is available to view`,
-        full: `The monthly business performance report for ${monthName} ${ly} has been generated. It includes profit calculations, capital movements, and your share of this month's returns.\n\nHead to the Monthly Report page (📈) in the menu to view the full breakdown and download a PDF copy.`,
+        full: `The monthly business performance report for ${monthName} ${ly} has been generated. It includes profit calculations, capital movements, and your share of this month's returns.\n\nOpen the Monthly Report page to view the full breakdown.`,
         createdAt: new Date(ly, lm + 1, 1).toISOString(),
         priority: 'normal',
+        link: '/reports',
+        linkLabel: 'View Monthly Report',
       });
+    }
+  }
+
+  // ── Capital status alerts (staff / admin) ──
+  if (isStaff) {
+    const totalCapital = capital.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const activeStatuses = ['active', 'overdue', 'ownership_transferred'];
+    const deployed = transactions
+      .filter(t => activeStatuses.includes(t.status) && t.type !== 'outright')
+      .reduce((s, t) => s + (Number(t.cashAdvance) || 0), 0);
+    const available = totalCapital - deployed;
+    const lowThreshold = Number(settings?.capitalLowThreshold ?? 50000);
+
+    if (available < 0) {
+      // Capital deficit
+      const deficitAmt = Math.abs(available);
+      notifs.push({
+        id: 'cap_deficit',
+        icon: '🚨',
+        title: 'Capital Deficit Alert',
+        short: `Available capital is negative — deficit of ${fmtMoney(deficitAmt)}`,
+        full: `The business is operating at a capital deficit of ${fmtMoney(deficitAmt)}.\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital currently deployed in loans: ${fmtMoney(deployed)}\nAvailable for new loans: ${fmtMoney(available)}\n\nNew loans cannot be issued until additional capital is brought in. Please notify stakeholders immediately to arrange a top-up.`,
+        createdAt: new Date().toISOString(),
+        priority: 'urgent',
+        link: '/capital',
+        linkLabel: 'View Capital',
+      });
+    } else if (available < lowThreshold) {
+      // Capital low
+      notifs.push({
+        id: 'cap_low',
+        icon: '⚠️',
+        title: 'Capital Running Low',
+        short: `Only ${fmtMoney(available)} available for new loans`,
+        full: `Available lending capital has fallen below the alert threshold (${fmtMoney(lowThreshold)}).\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital deployed in active loans: ${fmtMoney(deployed)}\nAvailable for new loans: ${fmtMoney(available)}\n\nConsider contacting stakeholders for a capital top-up to avoid disruption to operations.`,
+        createdAt: new Date().toISOString(),
+        priority: 'warning',
+        link: '/capital',
+        linkLabel: 'View Capital',
+      });
+    }
+
+    // Capital surplus — only for admin
+    if (isAdmin) {
+      const ownershipPct = settings?.stakeholderOwnership || {};
+      const totalPct = Object.values(ownershipPct).reduce((s, v) => s + (Number(v) || 0), 0);
+      // Surplus = available capital well above threshold (2×)
+      if (available > lowThreshold * 2 && totalCapital > 0) {
+        notifs.push({
+          id: 'cap_surplus',
+          icon: '📈',
+          title: 'Capital Surplus Available',
+          short: `${fmtMoney(available)} in available capital — consider stakeholder withdrawal`,
+          full: `The business currently has a healthy capital surplus.\n\nTotal capital deposited: ${fmtMoney(totalCapital)}\nCapital deployed in active loans: ${fmtMoney(deployed)}\nAvailable (idle) capital: ${fmtMoney(available)}\n\nIdle capital above the operational threshold (${fmtMoney(lowThreshold)}) may be available for stakeholder withdrawal. Review the capital page and consider generating profit decisions for the current period.`,
+          createdAt: new Date().toISOString(),
+          priority: 'normal',
+          link: '/capital',
+          linkLabel: 'View Capital',
+        });
+      }
     }
   }
 
@@ -139,22 +207,22 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
         title: urgent ? 'SMS Credits Depleted!' : 'Low SMS Credits',
         short: urgent
           ? 'You have 0 credits — automated messages cannot be sent'
-          : `Only ${smsCredits} SMS credits remaining (₦${fmtMoney(smsBalance)})`,
+          : `Only ${smsCredits} SMS credits remaining (${fmtMoney(smsBalance)})`,
         full: urgent
           ? `Your SMS credit balance has run out. Automated reminder messages to customers are currently disabled. Please top up immediately via the SMS Recharge option to restore messaging.\n\nCurrent wallet balance: ${fmtMoney(smsBalance)}`
           : `Your SMS credit balance is running low — only ${smsCredits} credits (≈ ${fmtMoney(smsBalance)}) remaining.\n\nAt the current rate, you may run out soon. Top up to ensure automated loan reminders continue to be sent to customers.\n\nAlert threshold: ${threshold} credits`,
         createdAt: new Date().toISOString(),
         priority: urgent ? 'urgent' : 'warning',
+        link: '/admin/settings',
+        linkLabel: 'Go to SMS Settings',
       });
     }
   }
 
-  // ── Low NIN/BVN credits (staff / admin) ──
+  // ── NIN/BVN verification active (staff / admin) ──
   if (isStaff && settings?.ninApiKey) {
     const ninThreshold = Number(settings?.ninLowCreditThreshold ?? 5);
-    // We don't have a live balance, but we can check if the API key is set and warn about the threshold
-    // This alert fires when the setting has a low threshold configured (admin-configurable signal)
-    if (ninThreshold > 0 && settings?.ninApiKey) {
+    if (ninThreshold > 0) {
       notifs.push({
         id: 'nin_info',
         icon: '🪪',
@@ -163,6 +231,8 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
         full: `NIN/BVN identity verification is active for this app. You will be alerted when your verification credits fall below ${ninThreshold}.\n\nRecharge bank: ${settings.ninRechargeBank || 'Not configured'}\nAccount: ${settings.ninRechargeAccountNumber || '—'} (${settings.ninRechargeAccountName || '—'})\n\nContact your admin to top up verification credits.`,
         createdAt: null,
         priority: 'info',
+        link: '/admin/settings',
+        linkLabel: 'Go to Settings',
       });
     }
   }
@@ -209,16 +279,17 @@ const PRIORITY_BADGE = {
 };
 
 export default function NotificationsPanel({
-  activityLogs, capital, distributions, smsCredits, smsBalance,
+  activityLogs, capital, distributions, transactions, smsCredits, smsBalance,
   currentUser, settings, onUnreadChange, isMobile,
 }) {
+  const navigate = useNavigate();
   const [tab, setTab] = useState('all');
   const [expandedId, setExpandedId] = useState(null);
   const [readIds, setReadIds] = useState(() => getReadIds(currentUser.id));
 
   const notifs = useMemo(() =>
-    buildNotifications({ currentUser, capital, distributions, activityLogs, smsCredits, smsBalance, settings }),
-    [currentUser, capital, distributions, activityLogs, smsCredits, smsBalance, settings]
+    buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings }),
+    [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings]
   );
 
   const unreadCount = notifs.filter(n => !readIds.has(n.id)).length;
@@ -358,19 +429,38 @@ export default function NotificationsPanel({
 
                   {/* Expanded full message */}
                   {isExpanded && (
-                    <div style={{
-                      padding: isMobile ? '0 12px 14px 48px' : '0 16px 16px 50px',
-                      borderTop: `1px dashed ${COLORS.border}`,
-                      background: 'rgba(26,95,42,0.03)',
-                    }}>
+                    <div
+                      style={{
+                        padding: isMobile ? '0 12px 14px 48px' : '0 16px 16px 50px',
+                        borderTop: `1px dashed ${COLORS.border}`,
+                        background: 'rgba(26,95,42,0.03)',
+                      }}
+                      onClick={e => e.stopPropagation()}
+                    >
                       <div style={{ fontSize: '14px', color: COLORS.text, lineHeight: 1.7, marginTop: '12px', whiteSpace: 'pre-line' }}>
                         {n.full}
                       </div>
-                      {n.createdAt && (
-                        <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '10px', fontStyle: 'italic' }}>
-                          {fmtDateFull(n.createdAt)}
-                        </div>
-                      )}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginTop: '14px' }}>
+                        {n.createdAt ? (
+                          <div style={{ fontSize: '11px', color: COLORS.textMuted, fontStyle: 'italic' }}>
+                            {fmtDateFull(n.createdAt)}
+                          </div>
+                        ) : <div />}
+                        {n.link && (
+                          <button
+                            onClick={() => navigate(n.link)}
+                            style={{
+                              padding: '8px 18px', borderRadius: '8px', border: 'none',
+                              background: COLORS.primary, color: '#fff',
+                              fontWeight: 700, fontSize: '13px', cursor: 'pointer',
+                              fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: '6px',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {n.linkLabel} →
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>

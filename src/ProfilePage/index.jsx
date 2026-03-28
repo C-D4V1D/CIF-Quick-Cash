@@ -98,6 +98,7 @@ export default function ProfilePage({
         activityLogs={activityLogs}
         capital={capital}
         distributions={distributions}
+        transactions={transactions}
         smsCredits={smsCredits}
         smsBalance={smsBalance}
         currentUser={currentUser}
