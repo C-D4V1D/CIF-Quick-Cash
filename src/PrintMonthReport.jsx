@@ -92,7 +92,7 @@ const buildReportHTML = ({
     <tr>
       <td>${esc(s.name)}</td>
       <td class="num">${fmtMoney(s.total)}</td>
-      <td class="num">${(s.capitalDays || 0).toLocaleString()}</td>
+      <td class="num">${s.total > 0 ? (Math.round((s.capitalDays || 0) / s.total * 10) / 10) : 0}</td>
       <td class="num">${s.pct.toFixed(1)}%</td>
       <td class="num green">${fmtMoney(s.share)}</td>
     </tr>`).join('');
@@ -333,20 +333,20 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
   </table>
   <div style="font-size:7.5pt;color:#6b7280;margin-top:5px"><em>Intake = new loan/purchase · Repaymt = repayment collected · Contact = overdue contact attempt (max 1/transaction) · @Target = sold at/above target price · On-Time = sold within deadline</em></div>` : '<p style="color:#6b7280;font-size:9pt">No staff task data recorded for this period.</p>'}
 
-  <div style="font-size:9pt;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px">Stakeholder Distribution — Capital-Days Method</div>
+  <div style="font-size:9pt;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px">Stakeholder Distribution</div>
   <table class="data" style="margin-top:0">
     <thead>
       <tr>
         <th>Stakeholder</th>
         <th>Capital</th>
-        <th>Capital-Days</th>
+        <th>Avg Active Days</th>
         <th>Share %</th>
         <th>Profit Share</th>
       </tr>
     </thead>
     <tbody>${stakeholderRows}</tbody>
   </table>
-  <div style="font-size:7.5pt;color:#6b7280;margin-top:5px"><em>Capital-Days = capital amount × days active in the report period. Profit is split proportionally by capital-days, not raw capital amount.</em></div>
+  <div style="font-size:7.5pt;color:#6b7280;margin-top:5px"><em>Avg Active Days = the average number of days your capital was working during the period. More days active = bigger profit share.</em></div>
 
   <!-- REPAYMENTS -->
   ${rClosed.length > 0 ? `
@@ -448,7 +448,7 @@ table.data td.red{ color: #8B1A1A; font-weight: 600; }
     ['Capital Returned', 'The total advance money that came back from customers who repaid their loans in this period. This money is now available to be lent out again.'],
     [`Staff Share (${staffSharePct ?? 10}%)`, `The staff's collective share for running the business — ${staffSharePct ?? 10}% of the net profit. It is divided among staff based on task performance: each person receives a share proportional to their task points (new loans, repayments, sales, contact attempts, and bonus points for quality outcomes).`],
     [`Stakeholders (${100 - (staffSharePct ?? 10)}%)`, `The remaining ${100 - (staffSharePct ?? 10)}% of net profit is shared among all investors (stakeholders) using the capital-days method. Each investor gets a portion based on how much capital they contributed AND how long it was active during the period.`],
-    ['Capital-Days', 'A fairness measure: capital amount multiplied by the number of days it was active in the report period. Money invested on Day 1 of a 30-day month earns 30 times its amount in capital-days, while money invested on Day 20 earns only 11 times. This ensures earlier or longer investments earn a proportionally larger profit share.'],
+    ['Avg Active Days', 'The average number of days your money was working during the report period. If you deposited money on Day 1 of a 30-day month, your average active days = 30. If you deposited on Day 20, it is 11 days. More active days means your money was at work longer, so you get a bigger share of the profit.'],
     ['Stakeholder % Share', 'Each stakeholder\'s percentage is worked out by dividing their capital-days by the total capital-days. A person who put in more money for a longer time receives a proportionally larger share of the profit.'],
   ].map(([term, def]) => `
   <div style="margin-bottom:10px;padding:8px 12px;border:1px solid #e5e7eb;background:#f8f9fa;border-left:4px solid #1A3A5C">
