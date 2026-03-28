@@ -526,9 +526,22 @@ export async function onRequest(context) {
         // Query distributions separately — table may not exist on older deployments
         let distributionsResults = [];
         try {
-          const distributionsRes = await db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at FROM profit_distributions ORDER BY date DESC, created_at DESC').all();
+          const distributionsRes = await db.prepare('SELECT id, date, amount, method, note, receipt, created_by, created_at, stakeholder_name, decision_ids FROM profit_distributions ORDER BY date DESC, created_at DESC').all();
           distributionsResults = distributionsRes.results;
         } catch (_) { /* table not yet migrated — return empty */ }
+
+        // Auto-load current month's profit decisions
+        let decisionsResults = [];
+        try {
+          const now = new Date();
+          const curPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+          let decSql = 'SELECT * FROM distribution_decisions WHERE period = ?';
+          const decParams = [curPeriod];
+          if (!isAdmin) { decSql += ' AND user_id = ?'; decParams.push(auth.user.id); }
+          decSql += ' ORDER BY stakeholder_name';
+          const decRes = await db.prepare(decSql).bind(...decParams).all();
+          decisionsResults = decRes.results;
+        } catch (_) { /* table not yet created */ }
 
         return json({
           expenses: expensesRes.results,
@@ -536,6 +549,7 @@ export async function onRequest(context) {
           declined: declinedRes.results,
       users: usersRes.results.map(u => ({ ...u, roles: parseRoles(u.roles) })),
       distributions: distributionsResults,
+      decisions: decisionsResults,
         });
       }
 

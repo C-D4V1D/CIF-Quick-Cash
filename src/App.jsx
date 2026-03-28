@@ -6625,18 +6625,6 @@ function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setD
 
       {(missingRequired && !missingDecision) && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>Date, Amount, Stakeholder, and Payment Method are required.</div>}
 
-      {/* Bank details display */}
-      {selectedDecision && distForm.method === 'Bank Transfer' && bankInfo && (bankInfo.bankName || bankInfo.bankAccountNumber) && (
-        <div style={{ padding: '12px', background: '#f0fdf4', borderRadius: '8px', marginBottom: '14px', border: '1px solid #86efac' }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Bank Details for {selectedDecision.stakeholder_name}</div>
-          <div style={{ fontSize: '13px', color: COLORS.text }}>
-            {bankInfo.bankName && <div>Bank: <strong>{bankInfo.bankName}</strong></div>}
-            {bankInfo.bankAccountNumber && <div>Account No: <strong>{bankInfo.bankAccountNumber}</strong></div>}
-            {bankInfo.bankAccountName && <div>Account Name: <strong>{bankInfo.bankAccountName}</strong></div>}
-          </div>
-        </div>
-      )}
-
       <div style={S.grid2}>
         <Field label="Date" required><input style={S.input} type="date" value={distForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDistForm({ ...distForm, date: e.target.value })} /></Field>
         <Field label="Stakeholder" required>
@@ -6653,6 +6641,23 @@ function DistModal({ showAddDistribution, setShowAddDistribution, distForm, setD
             <option value="Cheque">Cheque</option>
           </select>
         </Field>
+      </div>
+
+      {/* Bank details — shown when Bank Transfer is selected and stakeholder has bank info */}
+      {selectedDecision && distForm.method === 'Bank Transfer' && bankInfo && (bankInfo.bankName || bankInfo.bankAccountNumber) && (
+        <div style={{ padding: '12px', background: '#f0fdf4', borderRadius: '8px', marginBottom: '14px', marginTop: '4px', border: '1px solid #86efac' }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Bank Details for {selectedDecision.stakeholder_name}</div>
+          <div style={{ fontSize: '13px', color: COLORS.text }}>
+            {bankInfo.bankName && <div>Bank: <strong>{bankInfo.bankName}</strong></div>}
+            {bankInfo.bankAccountNumber && <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>Account No: <strong>{bankInfo.bankAccountNumber}</strong>
+              <button style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', fontSize: '14px', color: COLORS.primary }} title="Copy account number" onClick={() => { navigator.clipboard.writeText(bankInfo.bankAccountNumber).then(() => { const btn = document.getElementById('copyAccBtn'); if (btn) { btn.textContent = '✓'; setTimeout(() => { btn.textContent = '📋'; }, 1500); } }); }} id="copyAccBtn">📋</button>
+            </div>}
+            {bankInfo.bankAccountName && <div>Account Name: <strong>{bankInfo.bankAccountName}</strong></div>}
+          </div>
+        </div>
+      )}
+
+      <div style={S.grid2}>
         <Field label="Note (optional)" style={{ gridColumn: '1 / -1' }}>
           <textarea style={S.textarea} value={distForm.note} placeholder="e.g. January 2026 profit share" onChange={e => setDistForm({ ...distForm, note: e.target.value })} rows={2} />
         </Field>
@@ -7008,6 +7013,7 @@ export default function App() {
       setExpenses(secondary.expenses || []);
       setCapital(secondary.capital || []);
       setDistributions(secondary.distributions || []);
+      if (secondary.decisions?.length) setDistDecisions(secondary.decisions);
       setDeclinedLog(secondary.declined || []);
       setUsers(secondary.users || []);
     }
@@ -9184,19 +9190,27 @@ export default function App() {
             </div>
 
             {/* ── Pay out Profit (Profit Distributions) ── */}
+            {(() => {
+              // Stakeholders only see their own payouts; admins and authorized staff see all
+              const myStakeName = !canRecordDistributions ? capital.find(c => c.user_id === currentUser?.id)?.name : null;
+              const visibleDists = myStakeName
+                ? distributions.filter(d => d.stakeholder_name?.toLowerCase() === myStakeName.toLowerCase())
+                : distributions;
+              const visibleTotal = visibleDists.reduce((s, d) => s + (d.amount || 0), 0);
+              return (
             <div style={S.card}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                 <div style={S.cardTitle}>💸 Pay out Profit</div>
                 {canRecordDistributions && <button style={S.btn('primary')} onClick={() => { setDistForm({ date: localISODate(), amount: '', method: '', note: '', receipt: '', stakeholderName: '', decisionIds: [] }); setShowAddDistribution(true); }}>+ Pay out Profit</button>}
               </div>
               <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
-                Record payments made to stakeholders from business profit. Payments should be linked to approved profit decisions above.
+                {canRecordDistributions ? 'Record payments made to stakeholders from business profit. Payments should be linked to approved profit decisions above.' : 'Your profit payouts from the business.'}
               </p>
               <table style={S.table}>
                 <thead>
                   <tr>
                     <th style={S.th}>Date</th>
-                    <th style={S.th}>Stakeholder</th>
+                    {canRecordDistributions && <th style={S.th}>Stakeholder</th>}
                     <th style={S.th}>Amount</th>
                     <th style={S.th}>Method</th>
                     <th style={S.th}>Note</th>
@@ -9206,10 +9220,10 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {distributions.map((d, i) => (
+                  {visibleDists.map((d, i) => (
                     <tr key={i}>
                       <td style={S.td}>{fmtDate(d.date)}</td>
-                      <td style={{ ...S.td, fontWeight: 600 }}>{d.stakeholder_name || '—'}</td>
+                      {canRecordDistributions && <td style={{ ...S.td, fontWeight: 600 }}>{d.stakeholder_name || '—'}</td>}
                       <td style={S.td}><strong style={{ color: COLORS.danger }}>{fmtMoney(d.amount)}</strong></td>
                       <td style={S.td}>{d.method}</td>
                       <td style={S.td}>{d.note || <span style={{ color: COLORS.textMuted }}>—</span>}</td>
@@ -9218,11 +9232,13 @@ export default function App() {
                       {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete this distribution record of ${fmtMoney(d.amount)}?`)) { const ok = await API.del(`distributions/${d.id}`); if (ok) setDistributions(prev => prev.filter(x => x.id !== d.id)); loadData(); } }}>Del</button></td>}
                     </tr>
                   ))}
-                  {distributions.length === 0 && <tr><td style={{ ...S.td, color: COLORS.textMuted }} colSpan={isAdmin ? 8 : 7}>No payouts recorded yet.</td></tr>}
+                  {visibleDists.length === 0 && <tr><td style={{ ...S.td, color: COLORS.textMuted }} colSpan={canRecordDistributions ? (isAdmin ? 8 : 7) : (isAdmin ? 7 : 6)}>No payouts recorded yet.</td></tr>}
                 </tbody>
               </table>
-              <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total distributed: {fmtMoney(totalDistributions)}</div>
+              <div style={{ marginTop: '12px', padding: '12px', background: COLORS.dangerLight, borderRadius: '8px', fontWeight: 700, color: COLORS.danger }}>Total paid out: {fmtMoney(visibleTotal)}</div>
             </div>
+              );
+            })()}
 
             {/* ── Capital Analysis ── */}
             {(() => {
