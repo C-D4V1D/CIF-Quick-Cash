@@ -7139,6 +7139,19 @@ export default function App() {
     .sort((a, b) => (b.originated + b.recovered + b.sold) - (a.originated + a.recovered + a.sold))
     .slice(0, 8);
   const userComparisonRow = staffComparison.find(row => isActorMatch(row.actor));
+  const teamAverage = staffComparison.length
+    ? {
+        originated: staffComparison.reduce((s, r) => s + r.originated, 0) / staffComparison.length,
+        recovered: staffComparison.reduce((s, r) => s + r.recovered, 0) / staffComparison.length,
+        sold: staffComparison.reduce((s, r) => s + r.sold, 0) / staffComparison.length,
+      }
+    : { originated: 0, recovered: 0, sold: 0 };
+  const yourVsTeamData = [
+    { metric: 'Loans Started', you: userOriginatedTx.length, teamAvg: Math.round(teamAverage.originated * 10) / 10 },
+    { metric: 'Repayments', you: userRecoveredTx.length, teamAvg: Math.round(teamAverage.recovered * 10) / 10 },
+    { metric: 'Sales', you: userSalesTx.length, teamAvg: Math.round(teamAverage.sold * 10) / 10 },
+  ];
+  const userCapitalPctOfTotal = totalCapital > 0 ? (userCapitalInvested / totalCapital) * 100 : 0;
 
   // Capital prediction (memoised — only recomputes when source data or settings change)
   const capitalPrediction = useMemo(
@@ -10633,7 +10646,8 @@ export default function App() {
             )}
           </div>
           {isStaffProfileUser && <div style={{ ...S.card, marginBottom: '16px' }}>
-            <div style={S.cardTitle}>Staff Performance (Your Work)</div>
+            <div style={S.cardTitle}>🚀 Your Staff Scoreboard</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>Simple view of your work stats, compared with the team average.</div>
             <div style={S.grid4}>
               {statCard('Loans You Originated', userOriginatedTx.length, `Total value: ${fmtMoney(userOriginatedValue)}`)}
               {statCard('Repayments You Collected', userRecoveredTx.length, `Interest recovered: ${fmtMoney(userRecoveredInterest)}`)}
@@ -10665,17 +10679,60 @@ export default function App() {
                 </div>
               )}
             </div>
+            <div style={{ marginTop: '16px', background: '#fff', border: `1px solid ${COLORS.border}`, borderRadius: '10px', padding: '12px' }}>
+              <div style={{ fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>You vs Team Average</div>
+              <div style={{ width: '100%', height: 250 }}>
+                <ResponsiveContainer>
+                  <BarChart data={yourVsTeamData} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="metric" tick={{ fontSize: 11 }} />
+                    <YAxis allowDecimals={false} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="you" name="You" fill="#f97316" />
+                    <Bar dataKey="teamAvg" name="Team Avg" fill="#64748b" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
             {userComparisonRow && <div style={{ ...S.alert('info'), marginTop: '12px' }}>You are currently represented in the team comparison as <strong>{userComparisonRow.actor}</strong>.</div>}
           </div>}
           <div style={S.card}>
-            <div style={S.cardTitle}>Personal Financial Position</div>
-            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Only figures tied to your account are shown here to keep the profile personal and easy to understand.</div>
+            <div style={S.cardTitle}>💰 Your Money Snapshot</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Everything here is about <strong>you</strong>. Numbers are explained in simple language.</div>
             <div style={S.grid2}>
               {statCard('Total Capital Invested (You)', fmtMoney(userCapitalInvested), userCapitalEntries.length ? `${userCapitalEntries.length} contribution record(s)` : 'No contribution record linked to your account yet')}
               {statCard('Your Ownership Share', userOwnershipPct ? `${userOwnershipPct.toFixed(2)}%` : 'Not set', userOwnershipPct ? `Estimated value based on current net profit: ${fmtMoney(userProfitShareAmount || 0)}` : 'Ask admin to configure stakeholder ownership')}
               {statCard('Distributed Profit Logged By You', fmtMoney(userDistributionReceived), 'Profit payouts recorded under your username')}
               {statCard('Your Estimated Retained Profit', fmtMoney((userProfitShareAmount || 0) - userDistributionReceived), 'Estimated share minus distributions recorded for you')}
               {statCard('Account Age', profileMeta.createdAt ? `${daysBetween(profileMeta.createdAt)} day(s)` : '—', profileMeta.createdAt ? `Since ${fmtDate(profileMeta.createdAt)}` : 'Profile creation date unavailable')}
+            </div>
+            <div style={{ marginTop: '16px', background: '#fff', border: `1px solid ${COLORS.border}`, borderRadius: '10px', padding: '12px' }}>
+              <div style={{ fontWeight: 700, marginBottom: '10px', color: COLORS.primaryDark }}>How You Relate to Total Capital</div>
+              <div style={{ width: '100%', height: 260 }}>
+                <ResponsiveContainer>
+                  <PieChart>
+                    <Pie
+                      data={[
+                        { name: 'Your Capital', value: Math.max(0, userCapitalInvested) },
+                        { name: 'Others', value: Math.max(0, totalCapital - userCapitalInvested) },
+                      ]}
+                      dataKey="value"
+                      nameKey="name"
+                      outerRadius={88}
+                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                    >
+                      <Cell fill="#0ea5e9" />
+                      <Cell fill="#cbd5e1" />
+                    </Pie>
+                    <Tooltip formatter={(v) => fmtMoney(v)} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ marginTop: '8px', fontSize: '13px', color: COLORS.textMuted }}>
+                You currently make up <strong>{userCapitalPctOfTotal.toFixed(1)}%</strong> of total invested capital.
+              </div>
             </div>
             {userOwnershipPct > 0 && (
               <div style={{ marginTop: '16px', background: '#fff', border: `1px solid ${COLORS.border}`, borderRadius: '10px', padding: '12px' }}>
@@ -10705,12 +10762,12 @@ export default function App() {
             )}
             {!isStaffProfileUser && (
               <div style={{ ...S.alert('info'), marginTop: '12px' }}>
-                Staff-performance analytics are hidden because your account is not a staff account.
+                Staff scoreboard is hidden because this account is not marked as staff.
               </div>
             )}
             {isStaffProfileUser && (
               <div style={{ ...S.alert('info'), marginTop: '12px' }}>
-                Staff charts above compare your activity against other recorded staff names from transaction history.
+                Your charts compare your numbers with team data from recorded transactions.
               </div>
             )}
           </div>
