@@ -384,12 +384,11 @@ const DEFAULT_SETTINGS = {
   shopWhatsApp: '2348165491908',
   shopHours: 'Monday – Saturday, 8am – 6pm',
   shopMapsUrl: '',
-  // Overdue & Penalty Rules
+  // Overdue & Follow-Up Rules
   autoForfeitDays: 0,
   overdueContactReminderDays: 2,
   dueDateFollowUpDays: [1, 0],
   ownershipFollowUpDays: [3, 0],
-  penaltyRateMultiplier: 1.5,
   distributionAuthorizedUserIds: [],
   // Distribution Decisions (Capital-Days)
   distributionDeadlineDays: 3,
@@ -10034,10 +10033,10 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 5. OVERDUE & PENALTY RULES ── */}
+          {/* ── 5. OVERDUE & FOLLOW-UP RULES ── */}
           <div style={S.card}>
-            <div style={S.cardTitle}>⚠ Overdue &amp; Penalty Rules</div>
-            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure what happens when a customer fails to return on time — penalties, reminders, and auto-forfeiture.</div>
+            <div style={S.cardTitle}>⚠ Overdue &amp; Follow-Up Rules</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure what happens when a customer fails to return on time — reminders and auto-forfeiture.</div>
             <div style={S.grid2}>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Due-Date Follow-Up Days<InfoIcon tip="Comma-separated day offsets for when the Daily Follow-ups page should show a loan before its customer due date. Example: 3, 1, 0" /></span>}>
                 <ReminderDaysInput style={S.input} value={es.dueDateFollowUpDays} fallback={DEFAULT_SETTINGS.dueDateFollowUpDays} onChange={v => updateSettings({ ...es, dueDateFollowUpDays: v })} placeholder="e.g. 3, 1, 0" />
