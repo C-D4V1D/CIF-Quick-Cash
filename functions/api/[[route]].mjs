@@ -2429,7 +2429,7 @@ export async function onRequest(context) {
         batch.push(insertStmt.bind(
           period, s.user_id, s.name, s.profitAmount, s.capitalDays, s.totalCapitalDays,
           s.reinvestAmount || 0, s.distributeAmount || s.profitAmount,
-          capitalSurplus ? 1 : 0, s.systemNote || null, deadline
+          s.capitalSurplus ? 1 : 0, s.systemNote || null, deadline
         ));
       }
       await db.batch(batch);
