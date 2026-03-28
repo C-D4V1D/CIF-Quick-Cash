@@ -627,8 +627,13 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSale - totalDistributionsAll;
   const totalBusinessMoney = totalCapital + Math.max(0, netProfit);
 
-  // Peak deployment buffer (user's method)
-  const peakDeployment = Math.max(...snapshots.map(s => s.loanOriginations + s.outrightSpend), 0);
+  // Peak deployment buffer — include current outstanding balance so the floor is never below reality
+  const currentlyDeployed = totalCapitalOut + totalCapitalInForSale;
+  const peakDeployment = Math.max(
+    snapshots.reduce((mx, s) => Math.max(mx, s.loanOriginations + s.outrightSpend), 0),
+    currentlyDeployed,
+    0
+  );
   const minimumCapitalRequired = Math.max(minAbsolute, peakDeployment * (1 + peakGraceFactor));
   const peakCushion = totalBusinessMoney - peakDeployment;
 
@@ -723,7 +728,6 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
     const projNetConsumedThisMonth = projOrig - projRecoveries + expWeighted * seasonIdx + distWeighted;
     cumulativeNetConsumed += projNetConsumedThisMonth;
 
-    const currentlyDeployed = totalCapitalOut + totalCapitalInForSale;
     const predictedRequired = Math.max(0,
       currentlyDeployed,
       currentlyDeployed + cumulativeNetConsumed + minimumCapitalRequired
@@ -737,7 +741,10 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
     const margin = residualStd * 0.75 * confidenceMultiplier;
     const rangeMin = Math.max(0, predictedRequired - margin);
     const rangeMax = predictedRequired + margin;
-    const confidencePct = Math.max(20, Math.min(99, Math.round(100 - (margin / (predictedRequired || 1)) * 100)));
+    // Confidence degrades with fewer data points and wider uncertainty bands.
+    // Each missing month below the 6-month minimum shaves 8 points off confidence.
+    const dataScarcityPenalty = Math.max(0, (6 - snapshots.length) * 8);
+    const confidencePct = Math.max(20, Math.min(99, Math.round(100 - (margin / (predictedRequired || 1)) * 100) - dataScarcityPenalty));
 
     forecasts.push({
       month: targetMk,
@@ -754,8 +761,8 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
       rangeMin: Math.round(rangeMin),
       rangeMax: Math.round(rangeMax),
       confidencePct,
-      isDeficit: totalCapital < predictedRequired,
-      gap: Math.round(Math.abs(totalCapital - predictedRequired)),
+      isDeficit: totalBusinessMoney < predictedRequired,
+      gap: Math.round(Math.abs(totalBusinessMoney - predictedRequired)),
     });
   }
 
@@ -778,8 +785,8 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   // Safe withdrawal — only recommend when surplus has been sustained
   let actualStreak = 0;
   for (let i = snapshots.length - 1; i >= 0; i--) {
-    // Surplus = net consumed was below half of peak deployment for that month
-    if (snapshots[i].netConsumed < peakDeployment * 0.5) actualStreak++;
+    // Surplus month = recoveries covered all new deployments + expenses (net cash flow is positive for the business)
+    if (snapshots[i].netConsumed <= 0) actualStreak++;
     else break;
   }
   const streakMet = actualStreak >= surplusStreakMonths;
@@ -7067,7 +7074,7 @@ export default function App() {
       // Add prediction for next month if not already recorded
       if (!stored.find(p => p.targetMonth === nextMk)) {
         const pfc = capitalPrediction.primaryForecast;
-        stored.push({ madeOn: localISODate(), targetMonth: nextMk, rangeMin: pfc.rangeMin, rangeMax: pfc.rangeMax, estimate: pfc.predictedRequired, actual: null });
+        stored.push({ madeOn: localISODate(), targetMonth: nextMk, rangeMin: pfc.rangeMin, rangeMax: pfc.rangeMax, estimate: pfc.projectedNetConsumed, actual: null });
         changed = true;
       }
       // Fill in actuals for past closed months
@@ -8936,7 +8943,7 @@ export default function App() {
               const avgAccuracy = accuracyRows.length > 0
                 ? Math.round(accuracyRows.reduce((s, p) => s + Math.max(0, 100 - Math.abs(p.actual - p.estimate) / Math.max(1, p.estimate) * 100), 0) / accuracyRows.length)
                 : null;
-              const accuracyChartData = accuracyRows.map(p => ({ month: fmtMo(p.targetMonth), Predicted: p.estimate, Actual: p.actual }));
+              const accuracyChartData = accuracyRows.map(p => ({ month: fmtMo(p.targetMonth), 'Projected Usage': p.estimate, 'Actual Usage': p.actual }));
 
               const CCOLS = ['#1a5f2a','#c8a84e','#0ea5e9','#e67e22','#8b5cf6','#ef4444','#10b981','#f59e0b'];
 
@@ -8971,10 +8978,10 @@ export default function App() {
 
               const histData = cp.snapshots.map(s => ({
                 month: fmtMo(s.month),
-                'Loans Out': s.loanOriginations + s.outrightSpend,
-                'Recovered': s.loanRecoveries + s.saleRecoveries,
-                'Exp + Dist': s.expenseTotal + s.distributionTotal,
-                'Net Consumed': s.netConsumed,
+                'New Loans Given': s.loanOriginations + s.outrightSpend,
+                'Money Returned': s.loanRecoveries + s.saleRecoveries,
+                'Expenses & Payouts': s.expenseTotal + s.distributionTotal,
+                'Net Cash Used': s.netConsumed,
               }));
 
               const fcastData = [
@@ -9002,8 +9009,8 @@ export default function App() {
                   {/* History Chart */}
                   <div style={{ marginBottom: '24px' }}>
                     <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>📈 {cp.dataPoints}-Month Capital Flow History<InfoIcon tip="Bars show how much capital went out as loans or purchases (red), how much was recovered (green), and expenses + distributions (amber). The purple line is net capital consumed each month — a rising trend means you are burning through capital faster." /></span>
-                      {cp.useSeasonalIndex && <span style={{ fontSize: '12px', color: COLORS.primary, fontWeight: 500 }}>· Seasonal adjustment active</span>}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>📈 {cp.dataPoints}-Month Capital Flow History<InfoIcon tip="Bars show how much money went out as new loans or purchases (red), how much was returned by customers (green), and expenses + payouts (amber). The purple line is net cash used each month — a rising trend means you are consuming capital faster." /></span>
+                      {cp.useSeasonalIndex && <span style={{ fontSize: '12px', color: COLORS.primary, fontWeight: 500 }}>· Pattern-based (seasonal) adjustment active</span>}
                     </div>
                     <ResponsiveContainer width="100%" height={240}>
                       <ComposedChart data={histData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
@@ -9012,10 +9019,10 @@ export default function App() {
                         <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
                         <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
                         <Legend wrapperStyle={{ fontSize: '12px' }} />
-                        <Bar dataKey="Loans Out" fill={COLORS.danger} opacity={0.75} />
-                        <Bar dataKey="Recovered" fill={COLORS.primary} opacity={0.75} />
-                        <Bar dataKey="Exp + Dist" fill={COLORS.warning} opacity={0.65} />
-                        <Line type="monotone" dataKey="Net Consumed" stroke="#6d28d9" strokeWidth={2} dot={{ r: 3 }} />
+                        <Bar dataKey="New Loans Given" fill={COLORS.danger} opacity={0.75} />
+                        <Bar dataKey="Money Returned" fill={COLORS.primary} opacity={0.75} />
+                        <Bar dataKey="Expenses & Payouts" fill={COLORS.warning} opacity={0.65} />
+                        <Line type="monotone" dataKey="Net Cash Used" stroke="#6d28d9" strokeWidth={2} dot={{ r: 3 }} />
                       </ComposedChart>
                     </ResponsiveContainer>
                   </div>
@@ -9023,7 +9030,7 @@ export default function App() {
                   {/* Forecast Chart */}
                   {pfc && (
                     <div style={{ marginBottom: '24px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🔮 Capital Requirement Forecast<InfoIcon tip="Projects how much total capital the business will need in 1, 2, and 3 months based on historical consumption patterns. The shaded band shows the uncertainty range. If the forecast line is above 'Current Capital' you are heading for a deficit." /></div>
+                      <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '10px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🔮 How Much Capital Will Be Needed<InfoIcon tip="Projects how much total capital the business will need in 1, 2, and 3 months based on historical patterns. The shaded band shows the uncertainty range. If the forecast line is above 'Current Capital' the business is heading for a shortfall." /></div>
                       <ResponsiveContainer width="100%" height={220}>
                         <AreaChart data={fcastData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
@@ -9261,10 +9268,10 @@ export default function App() {
                   {/* Capital Efficiency Stats */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginBottom: '20px' }}>
                     {[
-                      { label: 'Capital Deployed', value: `${cp.capitalEfficiency}%`, sub: 'of total in active use', color: cp.capitalEfficiency > 85 ? COLORS.primary : cp.capitalEfficiency > 50 ? COLORS.warning : COLORS.danger, tip: 'What percentage of the total invested capital is currently deployed in active loans or for-sale inventory. High is good — it means capital is working. Very high (near 100%) means little buffer for new loans.' },
-                      { label: 'Peak Month Deployment', value: fmtMoney(cp.peakDeployment), sub: 'highest single-month origination', color: COLORS.primaryDark, tip: 'The largest amount of capital lent out or spent in any single month on record. Used to set the minimum safe capital floor.' },
-                      { label: 'Peak Cushion', value: fmtMoney(cp.peakCushion), sub: 'above worst-ever deployment', color: cp.peakCushion >= 0 ? COLORS.primary : COLORS.danger, tip: 'How much extra capital you have above the historical worst-case deployment month. Negative means you currently have less capital than the worst month on record.' },
-                      { label: 'Min Safe Capital', value: fmtMoney(cp.minimumCapitalRequired), sub: `peak × ${(1 + (settings.capitalPeakGraceFactor ?? 0.10)).toFixed(2)}×`, color: COLORS.primaryDark, tip: 'The minimum capital level considered safe — peak deployment multiplied by the grace factor (set in Admin Settings). Forecasts use this as the floor.' },
+                      { label: 'Money Currently Out', value: `${cp.capitalEfficiency}%`, sub: 'of total in active use', color: cp.capitalEfficiency > 85 ? COLORS.primary : cp.capitalEfficiency > 50 ? COLORS.warning : COLORS.danger, tip: 'What percentage of the total invested capital is currently out in active loans or items for sale. High is good — it means money is working. Very high (near 100%) means very little left to give new loans.' },
+                      { label: 'Most Loaned in 1 Month', value: fmtMoney(cp.peakDeployment), sub: 'highest single-month total', color: COLORS.primaryDark, tip: 'The most money that went out in loans or purchases in any single month on record. Used to set the minimum safe capital floor.' },
+                      { label: 'Extra Buffer', value: fmtMoney(cp.peakCushion), sub: 'above worst-ever month', color: cp.peakCushion >= 0 ? COLORS.primary : COLORS.danger, tip: 'How much extra capital you have above the single worst month on record. Negative means you currently have less total capital than you once deployed in a single month — a warning sign.' },
+                      { label: 'Safety Reserve', value: fmtMoney(cp.minimumCapitalRequired), sub: `peak × ${(1 + (settings.capitalPeakGraceFactor ?? 0.10)).toFixed(2)}×`, color: COLORS.primaryDark, tip: 'The minimum amount of capital considered safe to operate — calculated from the peak busy month plus a safety margin. Forecasts use this as the floor.' },
                       {
                         label: 'Loan Default Rate', tip: 'Estimated rate at which loans are not recovered. Used in the forecast to account for capital that may never come back. Automatically computed from history or set manually in Admin Settings.',
                         value: `${Math.round(cp.defaultRateInfo.rate * 100)}%`,
@@ -9288,7 +9295,7 @@ export default function App() {
                   {accuracyChartData.length > 0 && (
                     <div style={{ marginBottom: '12px' }}>
                       <div style={{ fontSize: '14px', fontWeight: 700, color: COLORS.primaryDark, marginBottom: '6px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🎯 Prediction Accuracy<InfoIcon tip="Compares what the model predicted for past months against what actually happened. Closer bars mean a more accurate model. Accuracy improves automatically as more data is collected." /></span>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>🎯 Prediction Accuracy<InfoIcon tip="Compares what the model projected for monthly cash usage in past months against what actually happened. Closer bars mean a more accurate model. Accuracy improves automatically as more data is collected." /></span>
                         {avgAccuracy !== null && <span style={{ fontSize: '12px', fontWeight: 500, color: COLORS.textMuted }}>avg {avgAccuracy}% over {accuracyChartData.length} closed month{accuracyChartData.length !== 1 ? 's' : ''}</span>}
                       </div>
                       <ResponsiveContainer width="100%" height={160}>
@@ -9298,8 +9305,8 @@ export default function App() {
                           <YAxis tickFormatter={v => `₦${(v/1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={58} />
                           <Tooltip formatter={(v, n) => [fmtMoney(v), n]} contentStyle={{ fontSize: '12px' }} />
                           <Legend wrapperStyle={{ fontSize: '12px' }} />
-                          <Bar dataKey="Predicted" fill={COLORS.warning} opacity={0.85} />
-                          <Bar dataKey="Actual" fill={COLORS.primary} opacity={0.85} />
+                          <Bar dataKey="Projected Usage" fill={COLORS.warning} opacity={0.85} />
+                          <Bar dataKey="Actual Usage" fill={COLORS.primary} opacity={0.85} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -9308,8 +9315,8 @@ export default function App() {
                   {/* Engine meta */}
                   <div style={{ fontSize: '11px', color: COLORS.textMuted, borderTop: `1px solid ${COLORS.border}`, paddingTop: '10px' }}>
                     {cp.dataPoints} month{cp.dataPoints !== 1 ? 's' : ''} of data · Recency weight {Math.round((settings.capitalTrendWeight ?? 0.7) * 100)}%
-                    {cp.useSeasonalIndex ? ' · Seasonal adjustment on' : ' · Seasonal needs 13+ months'}
-                    {' · '}Std dev ±{fmtMoney(cp.residualStd)}/mo
+                    {cp.useSeasonalIndex ? ' · Pattern-based (seasonal) adjustment on' : ' · Seasonal pattern needs 13+ months'}
+                    {' · '}±{fmtMoney(cp.residualStd)}/mo
                     {' · '}Default rate {Math.round(cp.defaultRateInfo.rate * 100)}%{cp.defaultRateInfo.isOverridden ? ' (override)' : cp.defaultRateInfo.isFallback ? ' (fallback)' : ' (auto)'}
                   </div>
                 </div>
