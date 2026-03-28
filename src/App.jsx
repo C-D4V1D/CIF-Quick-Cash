@@ -94,12 +94,20 @@ const clearAuthCache = () => {
 
 const SHOP_CACHE_KEY = 'cfc_shop_items';
 const SHOP_CACHE_TTL_MS = 5 * 60 * 1000;
+const SECONDARY_CACHE_KEY = 'cfc_secondary';
+const SECONDARY_CACHE_TTL_MS = 10 * 60 * 1000;
 const readShopCache = () => {
   const cached = readCache(SHOP_CACHE_KEY);
   if (!cached?.savedAt || Date.now() - cached.savedAt > SHOP_CACHE_TTL_MS) return null;
   return cached;
 };
 const writeShopCache = (payload) => writeCache(SHOP_CACHE_KEY, { ...payload, savedAt: Date.now() });
+const readSecondaryCache = () => {
+  const cached = readCache(SECONDARY_CACHE_KEY);
+  if (!cached?.savedAt || Date.now() - cached.savedAt > SECONDARY_CACHE_TTL_MS) return null;
+  return cached;
+};
+const writeSecondaryCache = (payload) => writeCache(SECONDARY_CACHE_KEY, { ...payload, savedAt: Date.now() });
 
 const normalizeUser = (user) => {
   if (!user) return null;
@@ -6839,7 +6847,7 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
   const [currentUser, setCurrentUser] = useState(() => readCache('cfc_user'));
-  const initialSecondaryCache = readCache('cfc_secondary');
+  const initialSecondaryCache = readSecondaryCache();
   const canUseInitialSecondaryCache = !!(
     initialSecondaryCache &&
     currentUser?.id &&
@@ -6997,7 +7005,7 @@ export default function App() {
   const loadData = async () => {
     const criticalCache = readCache('cfc_critical');
     const listCache = readCache('cfc_transactions');
-    const secondaryCache = readCache('cfc_secondary');
+    const secondaryCache = readSecondaryCache();
     const canUseSecondaryCache = !!(
       secondaryCache &&
       currentUser?.id &&
@@ -7050,7 +7058,7 @@ export default function App() {
       if (secondary.decisions?.length) setDistDecisions(secondary.decisions);
       setDeclinedLog(secondary.declined || []);
       setUsers(secondary.users || []);
-      writeCache('cfc_secondary', {
+      writeSecondaryCache({
         userId: currentUser?.id || null,
         role: currentUser?.role || null,
         expenses: secondary.expenses || [],
