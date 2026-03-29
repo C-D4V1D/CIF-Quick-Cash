@@ -2429,14 +2429,14 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   // Stable price reference values (computed from props, not state)
   const isOutright = tx.type === 'outright';
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
-  const effectiveDays = effectiveElapsedDays(tx, settings);
+  const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const outrightMinMarkupPct = settings.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct;
   const minPrice = isOutright
     ? roundToNice(
         Math.floor((tx.cashAdvance || 0) * (1 + outrightMinMarkupPct / 100))
       )
     : roundToNice(
-        (tx.cashAdvance || 0) + effectiveDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100)
+        (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100)
       );
   const targetPrice = roundToNice(Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100));
   const listedPrice = Math.max(targetPrice, minPrice);
@@ -2767,7 +2767,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
             <span style={{ fontSize: '11px', color: COLORS.textMuted, marginLeft: '6px' }}>
               {isOutright
                 ? `(cost + ${outrightMinMarkupPct}% markup)`
-                : `(advance + ${effectiveDays}d fees + bonus)`}
+                : `(advance + ${maxHoldDays}d fees + bonus)`}
             </span>
           </span>
           {tx.estimatedValue > 0 && <span>Est. resale value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
@@ -5606,9 +5606,10 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const isOutright = tx.type === 'outright';
   const outrightMinMarkupPct = settings.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct;
   const dailyFee = Math.floor((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+  const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const minPrice = isOutright
     ? roundToNice(Math.floor((tx.cashAdvance || 0) * (1 + outrightMinMarkupPct / 100)))
-    : roundToNice((tx.cashAdvance || 0) + effectiveElapsedDays(tx, settings) * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100));
+    : roundToNice((tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100));
   const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
   const listedPrice = Math.max(targetPrice, minPrice);
   const [salePrice, setSalePrice] = useState(listedPrice);
