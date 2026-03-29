@@ -2436,9 +2436,9 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
         Math.floor((tx.cashAdvance || 0) * (1 + outrightMinMarkupPct / 100))
       )
     : roundToNice(
-        (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100)
+        (tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus ?? DEFAULT_SETTINGS.minSellBonus) / 100)
       );
-  const targetPrice = roundToNice(Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100));
+  const targetPrice = roundToNice(Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct ?? DEFAULT_SETTINGS.targetSellPct) / 100));
   const listedPrice = Math.max(targetPrice, minPrice);
   const targetDeadline = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
   const targetSaleDate = getTargetSaleDate(tx, settings);
@@ -5609,8 +5609,8 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const minPrice = isOutright
     ? roundToNice(Math.floor((tx.cashAdvance || 0) * (1 + outrightMinMarkupPct / 100)))
-    : roundToNice((tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus || 20) / 100));
-  const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct || 75) / 100);
+    : roundToNice((tx.cashAdvance || 0) + maxHoldDays * dailyFee + Math.floor((tx.cashAdvance || 0) * (settings.minSellBonus ?? DEFAULT_SETTINGS.minSellBonus) / 100));
+  const targetPrice = Math.floor((tx.estimatedValue || 0) * (settings.targetSellPct ?? DEFAULT_SETTINGS.targetSellPct) / 100);
   const listedPrice = Math.max(targetPrice, minPrice);
   const [salePrice, setSalePrice] = useState(listedPrice);
   const [saleDate, setSaleDate] = useState(localISODate());
@@ -8388,7 +8388,7 @@ export default function App() {
         // 4. Contact Logged   – logging a contact attempt on an overdue/at-risk loan (loggedBy)
         // 5. Sold at Target   – item sold at/above targetSellPct% of estimated value (completedBy of intake)
         // 6. Sold On Time     – item sold on or before the target sale date anchored to intake (completedBy of intake)
-        const targetSalePct = settings.targetSellPct || 75;
+        const targetSalePct = settings.targetSellPct ?? DEFAULT_SETTINGS.targetSellPct;
         const taskDefs = ['loan_intake', 'repayment', 'sale', 'contact', 'sold_at_target', 'sold_on_time'];
         const taskLabels = { loan_intake: 'Loan Intake', repayment: 'Repayment', sale: 'Sale', contact: 'Contact Logged', sold_at_target: 'Sold at Target Price', sold_on_time: 'Sold Within Deadline' };
         const scoreMap = {}; // { staffName: { loan_intake:N, repayment:N, ... } }
