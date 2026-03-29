@@ -2767,7 +2767,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
             <span style={{ fontSize: '11px', color: COLORS.textMuted, marginLeft: '6px' }}>
               {isOutright
                 ? `(cost + ${outrightMinMarkupPct}% markup)`
-                : `(advance + ${maxHoldDays}d fees + bonus)`}
+                : `(advance + ${effectiveDays}d fees + bonus)`}
             </span>
           </span>
           {tx.estimatedValue > 0 && <span>Est. resale value: <strong>{fmtMoney(tx.estimatedValue)}</strong></span>}
