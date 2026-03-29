@@ -220,7 +220,7 @@ const effectiveElapsedDaysSince = (txData, { maxLoanDays = 30, graceDays = 3 } =
   if (!txData?.dateGiven) return 0;
   const graceCap = maxLoanDays + graceDays;
   const raw = elapsedDaysSince(txData.dateGiven);
-  if (txData.status === 'ready_to_sell' && txData.surrenderDate) {
+  if ((txData.status === 'ready_to_sell' || txData.status === 'for_sale') && txData.surrenderDate) {
     return Math.max(0, raw - elapsedDaysSince(txData.surrenderDate));
   }
   return Math.min(raw, graceCap);

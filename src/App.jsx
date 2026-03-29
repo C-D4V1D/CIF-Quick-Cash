@@ -166,7 +166,7 @@ const effectiveElapsedDays = (tx, settings = {}) => {
   const graceDays   = Math.max(0, Number(settings.graceDays)   || 3);
   const graceCap    = maxLoanDays + graceDays;
   const raw         = daysBetween(tx.dateGiven);
-  if (tx.status === 'ready_to_sell' && tx.surrenderDate) {
+  if ((tx.status === 'ready_to_sell' || tx.status === 'for_sale') && tx.surrenderDate) {
     return Math.max(0, raw - daysBetween(tx.surrenderDate));
   }
   return Math.min(raw, graceCap);
