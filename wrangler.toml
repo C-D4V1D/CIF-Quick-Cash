@@ -4,6 +4,12 @@ pages_build_output_dir = "dist"
 compatibility_date  = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
+# VAPID public key for Web Push notifications.
+# Set VAPID_PRIVATE_KEY as a Cloudflare Pages Secret (dashboard → Settings → Environment variables).
+# Generate a fresh key pair with: node -e "const {subtle}=globalThis.crypto;(async()=>{const kp=await subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);const pub=await subtle.exportKey('raw',kp.publicKey);const priv=await subtle.exportKey('pkcs8',kp.privateKey);const b=b=>Buffer.from(b).toString('base64url');console.log('PUBLIC:',b(pub),'\nPRIVATE:',b(priv));})()"
+[vars]
+VAPID_PUBLIC_KEY = "BGAQLcotHViZGdWTmynAH6hTr8HEcQHhogLyd9ZhhZblLD3gYH4JRajMIV6jnZuiy5yldAiLxztXTizbdz4Qt8c"
+
 [[d1_databases]]
 binding       = "DB"
 database_name = "cifcash-db"

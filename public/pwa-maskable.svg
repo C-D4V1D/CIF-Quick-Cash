@@ -1,20 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">CIF Quick Cash Maskable App Icon</title>
-  <desc id="desc">Maskable green app icon for Christ-in-Fabian Quick Cash.</desc>
+  <desc id="desc">Maskable purple lightning bolt icon for Christ-in-Fabian Quick Cash.</desc>
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0f3d1a"/>
-      <stop offset="100%" stop-color="#1a5f2a"/>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a0535"/>
+      <stop offset="100%" stop-color="#2d0a5c"/>
     </linearGradient>
-    <radialGradient id="glow" cx="32%" cy="30%" r="48%">
-      <stop offset="0%" stop-color="#86efac" stop-opacity="0.95"/>
-      <stop offset="100%" stop-color="#4ade80" stop-opacity="0.75"/>
-    </radialGradient>
+    <linearGradient id="boltGrad" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
   </defs>
-  <rect width="512" height="512" fill="url(#bg)"/>
-  <circle cx="166" cy="172" r="104" fill="url(#glow)"/>
-  <path d="M166 104v138" stroke="#fff" stroke-width="28" stroke-linecap="round"/>
-  <path d="M120 132h90c31 0 46 15 46 37 0 22-17 37-50 43l-70 12c-25 4-38 18-38 38 0 24 18 41 49 41h96" fill="none" stroke="#fff" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="76" y="328" width="360" height="104" rx="52" fill="#000" fill-opacity="0.2"/>
-  <text x="256" y="394" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700" fill="#d1fae5">CIF</text>
+  <!-- Full-bleed background — no rounded corners for maskable icons -->
+  <rect width="512" height="512" fill="url(#bgGrad)"/>
+  <!-- Lightning bolt scaled 5.88× from 48×46 viewBox, centred within the maskable safe zone -->
+  <g transform="translate(115, 121) scale(5.88)">
+    <path fill="url(#boltGrad)" d="M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z"/>
+  </g>
 </svg>
