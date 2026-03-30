@@ -312,11 +312,10 @@ const pushNotifyUser = async (env, db, userId, notification) => {
     const { results: subs } = await db
       .prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?')
       .bind(userId).all();
-    for (const sub of subs) {
-      const result = await sendWebPush(env, sub, notification).catch(() => null);
-      if (result?.expired) {
-        await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
-      }
+    const results = await Promise.all(subs.map((sub) => sendWebPush(env, sub, notification).catch(() => null)));
+    const expired = subs.filter((_, i) => results[i]?.expired);
+    for (const sub of expired) {
+      await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
     }
   } catch (_) { /* push is non-critical — never let it fail the primary response */ }
 };
@@ -325,11 +324,10 @@ const pushNotifyUser = async (env, db, userId, notification) => {
 const pushNotifyAll = async (env, db, notification) => {
   try {
     const { results: subs } = await db.prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions').all();
-    for (const sub of subs) {
-      const result = await sendWebPush(env, sub, notification).catch(() => null);
-      if (result?.expired) {
-        await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
-      }
+    const results = await Promise.all(subs.map((sub) => sendWebPush(env, sub, notification).catch(() => null)));
+    const expired = subs.filter((_, i) => results[i]?.expired);
+    for (const sub of expired) {
+      await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
     }
   } catch (_) { /* non-critical */ }
 };

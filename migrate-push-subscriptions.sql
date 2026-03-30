@@ -13,3 +13,6 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_push_subs_user_id ON push_subscriptions(user_id);
+
+-- Speed up stakeholder-name → user_id lookups used when sending distribution notifications.
+CREATE INDEX IF NOT EXISTS idx_users_name_role ON users(name, role);

@@ -124,10 +124,9 @@ const normalizeUser = (user) => {
 };
 
 // --- PUSH NOTIFICATION HELPERS ---
-// The VAPID public key is safe to embed in client code; it is used only to
-// create a push subscription.  The matching private key must be stored as a
-// Cloudflare Pages Secret (VAPID_PRIVATE_KEY).
-const VAPID_PUBLIC_KEY = 'BGAQLcotHViZGdWTmynAH6hTr8HEcQHhogLyd9ZhhZblLD3gYH4JRajMIV6jnZuiy5yldAiLxztXTizbdz4Qt8c';
+// The VAPID public key is fetched from the server to stay in sync if keys are
+// ever rotated.  The matching private key must be stored as a Cloudflare Pages
+// Secret (VAPID_PRIVATE_KEY).
 
 const urlBase64ToUint8Array = (base64String) => {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -143,6 +142,8 @@ const subscribeToPush = async () => {
   if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
   if (Notification.permission === 'denied') return;
   try {
+    const keyData = await API.get('push/vapid-public-key');
+    if (!keyData?.publicKey) return; // push not configured on this server
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
     if (!subscription) {
@@ -152,7 +153,7 @@ const subscribeToPush = async () => {
       }
       subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        applicationServerKey: urlBase64ToUint8Array(keyData.publicKey),
       });
     }
     await API.post('push/subscribe', subscription.toJSON());
