@@ -39,8 +39,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      icon: '/pwa-icon.svg',
-      badge: '/pwa-icon.svg',
+      icon: '/pwa-icon-192.png',
+      badge: '/pwa-icon-192.png',
       tag: data.tag || 'cif-notification',
       data: { url: data.url || '/' },
     }),

@@ -282,8 +282,8 @@ const sendWebPush = async (env, subscription, notification) => {
   const payload = JSON.stringify({
     title: notification.title || 'CIF Quick Cash',
     body: notification.body || '',
-    icon: '/pwa-icon.svg',
-    badge: '/pwa-icon.svg',
+    icon: '/pwa-icon-192.png',
+    badge: '/pwa-icon-192.png',
     tag: notification.tag || 'cif-notification',
     url: notification.url || '/',
   });
@@ -3119,6 +3119,31 @@ export async function onRequest(context) {
       if (!endpoint) return error('Missing endpoint');
       await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?').bind(endpoint, auth.user.id).run();
       return json({ success: true });
+    }
+
+    if (path === 'push/test' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { results: subs } = await db
+        .prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?')
+        .bind(auth.user.id).all();
+      if (!subs.length) return json({ success: false, reason: 'no_subscription' });
+      const results = await Promise.all(subs.map((sub) =>
+        sendWebPush(env, sub, {
+          title: '🔔 Test Notification',
+          body: 'Push notifications are working correctly on this device.',
+          url: '/profile',
+          tag: 'push-test',
+        }).catch(() => ({ error: true })),
+      ));
+      const skipped = results.every(r => r.skipped);
+      if (skipped) return json({ success: false, reason: 'vapid_not_configured' });
+      const expired = subs.filter((_, i) => results[i]?.expired);
+      for (const sub of expired) {
+        await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
+      }
+      const sent = results.filter(r => r.sent).length;
+      return json({ success: sent > 0, sent, total: subs.length });
     }
 
     return error('Not found', 404);
