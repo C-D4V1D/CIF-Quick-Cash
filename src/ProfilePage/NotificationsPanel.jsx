@@ -41,7 +41,7 @@ function timeAgo(d) {
 // Build rich business notifications from all data sources.
 // Exported so App.jsx can compute the live unread badge count without mounting this panel.
 // eslint-disable-next-line react-refresh/only-export-components
-export function buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings }) {
+export function buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, stakeholderCapitalData }) {
   const isStaff = hasRole(currentUser, 'staff') || hasRole(currentUser, 'admin');
   const isStakeholder = hasRole(currentUser, 'stakeholder') || hasRole(currentUser, 'admin');
   const isAdmin = hasRole(currentUser, 'admin');
@@ -219,6 +219,92 @@ export function buildNotifications({ currentUser, capital, distributions, activi
     }
   }
 
+  // ── Capital Alert conditions — personalised view for stakeholders ──
+  // Mirrors the Capital Alert SMS templates from admin settings.
+  // Shown to stakeholders regardless of whether SMS sending is enabled.
+  if (isStakeholder && stakeholderCapitalData) {
+    const { myExpected, myWithdraw, streakMet, safeWithdrawal } = stakeholderCapitalData;
+    const totalCapital = capital.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const activeStatuses = ['active', 'overdue', 'ownership_transferred'];
+    const deployed = transactions
+      .filter(t => activeStatuses.includes(t.status) && t.type !== 'outright')
+      .reduce((s, t) => s + (Number(t.cashAdvance) || 0), 0);
+    const available = totalCapital - deployed;
+    const lowThreshold = Number(settings?.capitalLowThreshold ?? 50000);
+    const biz = settings?.businessName || 'CIF Cash';
+    const adminPhone = settings?.shopPhone1 || '';
+    const monthId = todayId.slice(0, 7); // YYYY-MM
+
+    // 1. Capital Deficit — mirrors smsCapitalDeficit
+    if (available < 0 && myExpected > 0) {
+      notifs.push({
+        id: `stake_cap_deficit_${todayId}`,
+        icon: '🚨',
+        title: 'Capital Deficit — Action Required',
+        short: `${biz} has a deficit of ${fmtMoney(Math.abs(available))} — your expected top-up: ${fmtMoney(myExpected)}`,
+        full: `${biz} currently has a capital deficit of ${fmtMoney(Math.abs(available))}.\n\nBased on your ownership share, your expected contribution to restore the business is ${fmtMoney(myExpected)}.\n\nPlease bring in funds urgently so that new loan transactions can continue.${adminPhone ? `\n\nAdmin phone: ${adminPhone}` : ''}`,
+        createdAt: new Date().toISOString(),
+        priority: 'urgent',
+        link: '/capital',
+        linkLabel: 'View Capital',
+      });
+    }
+    // 2. Capital Low — mirrors smsCapitalLow (only when not in deficit)
+    else if (available >= 0 && available < lowThreshold && myExpected > 0) {
+      notifs.push({
+        id: `stake_cap_low_${todayId}`,
+        icon: '⚠️',
+        title: 'Capital Running Low',
+        short: `Capital is low at ${fmtMoney(available)} — your suggested top-up: ${fmtMoney(myExpected)}`,
+        full: `Available lending capital at ${biz} has dropped below the alert threshold.\n\nAvailable: ${fmtMoney(available)}\nAlert threshold: ${fmtMoney(lowThreshold)}\n\nBased on your ownership share, your suggested contribution to restore healthy capital levels is ${fmtMoney(myExpected)}. Please arrange a top-up soon.${adminPhone ? `\n\nAdmin phone: ${adminPhone}` : ''}`,
+        createdAt: new Date().toISOString(),
+        priority: 'warning',
+        link: '/capital',
+        linkLabel: 'View Capital',
+      });
+    }
+
+    // 3. Withdrawal Opportunity — mirrors smsCapitalWithdrawal (monthly scope)
+    if (streakMet && safeWithdrawal > 0 && myWithdraw > 0) {
+      notifs.push({
+        id: `stake_cap_withdrawal_${monthId}`,
+        icon: '💸',
+        title: 'Withdrawal Opportunity',
+        short: `${biz} has a capital surplus — your recommended withdrawal: ${fmtMoney(myWithdraw)}`,
+        full: `${biz} has maintained a sustained capital surplus, and a withdrawal is now recommended.\n\nYour recommended withdrawal amount: ${fmtMoney(myWithdraw)}\n\nPlease contact the admin to arrange your withdrawal.${adminPhone ? `\n\nAdmin phone: ${adminPhone}` : ''}`,
+        createdAt: new Date().toISOString(),
+        priority: 'normal',
+        link: '/capital',
+        linkLabel: 'View Capital',
+      });
+    }
+  }
+
+  // ── Profit Decision Pending (stakeholder / admin) ──
+  // Shown when the stakeholder has an unresolved profit decision awaiting their choice.
+  if (isStakeholder && Array.isArray(distDecisions)) {
+    const myPending = distDecisions.filter(d =>
+      d.decision === 'pending' &&
+      (d.user_id === currentUser.id || d.stakeholder_name === currentUser.name)
+    );
+    myPending.forEach(d => {
+      const period = d.period || '';
+      const amount = fmtMoney(d.profit_amount ?? d.reinvest_amount ?? 0);
+      const deadline = d.deadline ? new Date(d.deadline).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Africa/Lagos' }) : null;
+      notifs.push({
+        id: `profit_decision_${d.id}`,
+        icon: '📋',
+        title: `Profit Decision Required — ${period}`,
+        short: `Your ${amount} profit for ${period} is awaiting your decision`,
+        full: `A profit distribution of ${amount} has been allocated to you for ${period}.\n\nYou need to choose what to do with your share:\n• Collect — receive the profit as a cash payout\n• Reinvest — add it back to your capital in the business\n\nPlease log in to the Capital page and make your decision before the deadline.${deadline ? `\n\nDecision deadline: ${deadline}` : ''}`,
+        createdAt: d.created_at || new Date().toISOString(),
+        priority: 'high',
+        link: '/capital',
+        linkLabel: 'Make Your Decision',
+      });
+    });
+  }
+
   // ── Low SMS credits (staff / admin) ──
   if (isStaff && smsCredits !== null && smsCredits !== undefined) {
     const threshold = Number(settings?.smsLowCreditThreshold ?? 20);
@@ -243,19 +329,24 @@ export function buildNotifications({ currentUser, capital, distributions, activi
     }
   }
 
-  // ── NIN/BVN verification active — Recharge Credits (staff / admin) ──
-  if (isStaff && settings?.ninApiKey) {
+  // ── NIN/BVN credit alert (staff / admin) — condition-based ──
+  // Only shown when credits are at or below the configured threshold.
+  if (isStaff && settings?.ninApiKey && ninCredits !== null && ninCredits !== undefined) {
     const ninThreshold = Number(settings?.ninLowCreditThreshold ?? 5);
-    if (ninThreshold > 0) {
+    if (ninCredits <= ninThreshold) {
+      const depleted = ninCredits === 0;
       notifs.push({
-        id: 'nin_info',
+        id: `nin_low_${todayId}`,
         icon: '🪪',
-        title: 'NIN/BVN Verification Active',
-        short: `ID verification enabled — alert threshold: ${ninThreshold} credits`,
-        full: `NIN/BVN identity verification is active. You will be alerted when credits fall below ${ninThreshold}.\n\nRecharge bank: ${settings.ninRechargeBank || 'Not configured'}\nAccount: ${settings.ninRechargeAccountNumber || '—'} (${settings.ninRechargeAccountName || '—'})\n\nUse the button below to view recharge instructions at any time.`,
-        createdAt: null,
-        priority: 'info',
-        // Opens the NIN Recharge Credits modal (not navigation)
+        title: depleted ? 'NIN/BVN Credits Depleted!' : 'NIN/BVN Credits Running Low',
+        short: depleted
+          ? 'You have 0 verification credits — NIN/BVN lookups are currently blocked'
+          : `Only ${ninCredits} NIN/BVN credit${ninCredits !== 1 ? 's' : ''} remaining (threshold: ${ninThreshold})`,
+        full: depleted
+          ? `Your NIN/BVN verification credits have run out. New identity lookups via the API are currently blocked — only previously cached records can be retrieved.\n\nRecharge bank: ${settings.ninRechargeBank || 'Not configured'}\nAccount: ${settings.ninRechargeAccountNumber || '—'} (${settings.ninRechargeAccountName || '—'})\n\nUse the button below to view recharge instructions.`
+          : `Your NIN/BVN verification credit balance is running low — only ${ninCredits} credit${ninCredits !== 1 ? 's' : ''} remaining.\n\nAt ₦${Number(settings.ninCreditCost ?? 150).toLocaleString()} per lookup, consider recharging soon to avoid disruptions.\n\nRecharge bank: ${settings.ninRechargeBank || 'Not configured'}\nAccount: ${settings.ninRechargeAccountNumber || '—'} (${settings.ninRechargeAccountName || '—'})\n\nAlert threshold: ${ninThreshold} credits`,
+        createdAt: new Date().toISOString(),
+        priority: depleted ? 'urgent' : 'warning',
         actionType: 'ninRecharge',
         linkLabel: 'Recharge Credits',
       });
@@ -308,6 +399,7 @@ const PRIORITY_BADGE = {
 export default function NotificationsPanel({
   activityLogs, capital, distributions, transactions, smsCredits, smsBalance,
   currentUser, settings, onUnreadChange, onOpenSmsRecharge, onOpenNinRecharge, isMobile,
+  distDecisions, ninCredits, stakeholderCapitalData,
 }) {
   const navigate = useNavigate();
   const [tab, setTab] = useState('all');
@@ -315,8 +407,8 @@ export default function NotificationsPanel({
   const [readIds, setReadIds] = useState(() => getReadIds(currentUser.id));
 
   const notifs = useMemo(() =>
-    buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings }),
-    [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings]
+    buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, stakeholderCapitalData }),
+    [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, stakeholderCapitalData]
   );
 
   // Keep the nav-bar badge in sync whenever the notification list changes (new data loaded,
