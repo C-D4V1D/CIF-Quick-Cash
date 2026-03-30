@@ -214,14 +214,38 @@ const hkdfSha256 = async (salt, ikm, info, length) => {
 };
 
 // Build a VAPID JWT signed with the P-256 ECDSA private key.
-const buildVapidJWT = async (privateKeyPkcs8B64url, audience, subject) => {
+const buildVapidJWT = async (privateKeyB64url, audience, subject) => {
   const header = { typ: 'JWT', alg: 'ES256' };
   const payload = { aud: audience, exp: Math.floor(Date.now() / 1000) + 43200, sub: subject };
   const headerB64 = b64urlEncode(textEncoder.encode(JSON.stringify(header)));
   const payloadB64 = b64urlEncode(textEncoder.encode(JSON.stringify(payload)));
   const signingInput = `${headerB64}.${payloadB64}`;
+
+  // VAPID key generators (e.g. the `web-push` npm package) output a raw 32-byte
+  // P-256 private key.  crypto.subtle.importKey() requires PKCS#8 DER format.
+  // Auto-detect by length: raw keys are exactly 32 bytes; PKCS#8-wrapped P-256
+  // keys are 67+ bytes.  Wrap raw keys in the standard PKCS#8 DER structure so
+  // both formats are accepted transparently.
+  const rawKeyBytes = b64urlDecode(privateKeyB64url);
+  let pkcs8Bytes;
+  if (rawKeyBytes.length === 32) {
+    // PKCS#8 DER wrapper for a bare P-256 private key (no embedded public key).
+    // Structure: SEQUENCE { version INTEGER 0, algorithm AlgorithmIdentifier,
+    //   privateKey OCTET STRING { ECPrivateKey { version 1, privateKey <32 bytes> } } }
+    const hdr = new Uint8Array([
+      0x30, 0x41, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06,
+      0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+      0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03,
+      0x01, 0x07, 0x04, 0x27, 0x30, 0x25, 0x02, 0x01,
+      0x01, 0x04, 0x20,
+    ]);
+    pkcs8Bytes = concatBufs(hdr, rawKeyBytes);
+  } else {
+    pkcs8Bytes = rawKeyBytes;
+  }
+
   const privateKey = await crypto.subtle.importKey(
-    'pkcs8', b64urlDecode(privateKeyPkcs8B64url),
+    'pkcs8', pkcs8Bytes,
     { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'],
   );
   const signature = new Uint8Array(
@@ -3134,16 +3158,19 @@ export async function onRequest(context) {
           body: 'Push notifications are working correctly on this device.',
           url: '/profile',
           tag: 'push-test',
-        }).catch(() => ({ error: true })),
+        }).catch((e) => ({ error: true, message: e?.message })),
       ));
-      const skipped = results.every(r => r.skipped);
-      if (skipped) return json({ success: false, reason: 'vapid_not_configured' });
+      const allSkipped = results.every(r => r.skipped);
+      if (allSkipped) return json({ success: false, reason: 'vapid_not_configured' });
+      const allErrored = results.every(r => r.error);
+      if (allErrored) return json({ success: false, reason: 'vapid_error' });
       const expired = subs.filter((_, i) => results[i]?.expired);
       for (const sub of expired) {
         await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
       }
       const sent = results.filter(r => r.sent).length;
-      return json({ success: sent > 0, sent, total: subs.length });
+      if (sent === 0) return json({ success: false, reason: 'push_rejected', sent, total: subs.length });
+      return json({ success: true, sent, total: subs.length });
     }
 
     return error('Not found', 404);

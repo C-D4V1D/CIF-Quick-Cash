@@ -44,7 +44,7 @@ export default function ContactInfo({ currentUser, onSaved, isMobile }) {
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [showPwModal, setShowPwModal] = useState(false);
-  const [testNotifState, setTestNotifState] = useState('idle'); // idle | sending | ok | error | no_sub | no_vapid
+  const [testNotifState, setTestNotifState] = useState('idle'); // idle | sending | ok | error | no_sub | no_vapid | vapid_error | push_rejected
 
   const sendTestNotification = async () => {
     setTestNotifState('sending');
@@ -75,13 +75,17 @@ export default function ContactInfo({ currentUser, onSaved, isMobile }) {
         }
       }
       const res = await apiFetch('push/test', { method: 'POST' });
-      const data = res.ok ? await res.json() : null;
+      const data = await res.json().catch(() => null);
       if (data?.success) {
         setTestNotifState('ok');
       } else if (data?.reason === 'no_subscription') {
         setTestNotifState('no_sub');
       } else if (data?.reason === 'vapid_not_configured') {
         setTestNotifState('no_vapid');
+      } else if (data?.reason === 'vapid_error') {
+        setTestNotifState('vapid_error');
+      } else if (data?.reason === 'push_rejected') {
+        setTestNotifState('push_rejected');
       } else {
         setTestNotifState('error');
       }
@@ -239,9 +243,19 @@ export default function ContactInfo({ currentUser, onSaved, isMobile }) {
               ⚠️ Push notifications are not configured on the server. Set the VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY environment variables in Cloudflare Pages.
             </div>
           )}
+          {testNotifState === 'vapid_error' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: '#fffbeb', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: 600 }}>
+              ⚠️ VAPID key error — the server could not sign the push request. Check that VAPID_PRIVATE_KEY is set correctly in Cloudflare Pages (it should be a base64url-encoded P-256 private key generated with a tool like <code style={{ fontFamily: 'monospace', fontWeight: 700 }}>npx web-push generate-vapid-keys</code>).
+            </div>
+          )}
+          {testNotifState === 'push_rejected' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: '#fffbeb', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: 600 }}>
+              ⚠️ The push service rejected the notification. Your subscription may be stale — reload the page and try again. If the problem persists, the VAPID key pair may have changed since you last subscribed.
+            </div>
+          )}
           {testNotifState === 'error' && (
             <div style={{ marginTop: '10px', padding: '10px 14px', background: COLORS.dangerLight, borderRadius: '8px', color: COLORS.danger, fontSize: '13px', fontWeight: 600 }}>
-              ❌ Failed to send test notification. Check that your browser has granted notification permission and try again.
+              ❌ Could not reach the notification service. Check your internet connection and that notification permission is granted, then try again.
             </div>
           )}
         </div>
