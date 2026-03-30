@@ -42,6 +42,9 @@ export default function ProfilePage({
   settings = {},
   smsCredits = null,
   smsBalance = null,
+  distDecisions = [],
+  ninCredits = null,
+  stakeholderCapitalData = null,
   isMobile,
   onUnreadChange,
   onContactSaved,
@@ -109,6 +112,9 @@ export default function ProfilePage({
         onOpenSmsRecharge={onOpenSmsRecharge}
         onOpenNinRecharge={onOpenNinRecharge}
         isMobile={isMobile}
+        distDecisions={distDecisions}
+        ninCredits={ninCredits}
+        stakeholderCapitalData={stakeholderCapitalData}
       />
 
       {isStaff && (
