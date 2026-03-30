@@ -1055,6 +1055,23 @@ export async function onRequest(context) {
       }
       await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
 
+      // ── Push notifications for new transactions ──
+      if (tx.type === 'outright' || tx.status === 'for_sale') {
+        await pushNotifyAll(env, db, {
+          title: '🏷️ Outright Purchase',
+          body: `${tx.ref}: ${tx.fullName} — ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtN(tx.cashAdvance)}`,
+          url: '/transactions',
+          tag: 'new-transaction',
+        });
+      } else {
+        await pushNotifyAll(env, db, {
+          title: '📋 New Loan',
+          body: `${tx.ref}: ${tx.fullName} — ₦${fmtN(tx.cashAdvance)} advance`,
+          url: '/transactions',
+          tag: 'new-transaction',
+        });
+      }
+
       // ── Immediate outright-purchase confirmation SMS ──
       // Sent right when the transaction is created, not via the nightly cron.
       if (tx.type === 'outright') {
@@ -1218,6 +1235,23 @@ export async function onRequest(context) {
         putAction = 'update'; putDesc = `🔄 Transaction updated — ${ref}`;
       }
       await logActivity({ user: auth.user, action: putAction, entityType: 'transaction', entityId: ref, description: putDesc });
+
+      // ── Push notifications for significant status changes ──
+      if (tx.status === 'closed' && existing?.status !== 'closed') {
+        await pushNotifyAll(env, db, {
+          title: '✅ Loan Redeemed',
+          body: `${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} over ${tx.daysCharged || 0} days`,
+          url: '/transactions',
+          tag: 'loan-redeemed',
+        });
+      } else if (tx.status === 'sold' && existing?.status !== 'sold') {
+        await pushNotifyAll(env, db, {
+          title: '💰 Item Sold',
+          body: `${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtNP(tx.salePrice)}`,
+          url: '/transactions',
+          tag: 'item-sold',
+        });
+      }
 
       // ── Redemption/full repayment confirmation SMS ──
       // Sent immediately when a customer repays in full and collects their item.
