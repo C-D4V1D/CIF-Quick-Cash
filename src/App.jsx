@@ -95,6 +95,67 @@ const clearAuthCache = () => {
   }
 };
 
+const NATIVE_NOTIFIED_KEY = (uid) => `cfc_native_notified_ids_${uid}`;
+const NATIVE_PROMPT_KEY = (uid) => `cfc_native_notif_prompted_${uid}`;
+
+const getNativeNotifiedIds = (uid) => {
+  if (!uid) return new Set();
+  try {
+    const raw = localStorage.getItem(NATIVE_NOTIFIED_KEY(uid));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const saveNativeNotifiedIds = (uid, ids) => {
+  if (!uid) return;
+  try {
+    localStorage.setItem(NATIVE_NOTIFIED_KEY(uid), JSON.stringify(Array.from(ids).slice(-500)));
+  } catch {
+    // Ignore storage errors — native notifications are an enhancement only.
+  }
+};
+
+const isStandalonePwa = () => {
+  if (typeof window === 'undefined') return false;
+  const iosStandalone = !!window.navigator?.standalone;
+  const displayModeStandalone = window.matchMedia?.('(display-mode: standalone)')?.matches;
+  return iosStandalone || !!displayModeStandalone;
+};
+
+const deliverNativeNotification = async (notif) => {
+  const title = notif?.title || 'New Notification';
+  const body = notif?.short || notif?.full || 'Open app to view details.';
+  const options = {
+    body,
+    icon: '/pwa-icon.svg',
+    badge: '/pwa-icon.svg',
+    tag: `cfc_notif_${notif?.id || Date.now()}`,
+    renotify: false,
+    data: { path: notif?.link || '/profile' },
+  };
+
+  try {
+    if ('serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.ready;
+      if (registration?.showNotification) {
+        await registration.showNotification(title, options);
+        return true;
+      }
+    }
+  } catch {
+    // Fall back to Notification API below.
+  }
+
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification(title, options);
+    return true;
+  }
+  return false;
+};
+
 const SHOP_CACHE_KEY = 'cfc_shop_items';
 const SHOP_CACHE_TTL_MS = 5 * 60 * 1000;
 const SECONDARY_CACHE_KEY = 'cfc_secondary';
@@ -7302,6 +7363,44 @@ export default function App() {
       const readIds = getReadIds(currentUser.id);
       setUnreadNotifCount(notifs.filter(n => !readIds.has(n.id)).length);
     } catch { /* buildNotifications is a pure derived computation; errors here must not crash the app — the badge simply retains its previous value */ }
+  }, [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, myCapitalAlertData]);
+
+  // Bridge internal in-app notifications to native device notifications when the PWA is installed.
+  // This is intentionally scoped to installed/standalone sessions so browser-tab usage remains unchanged.
+  useEffect(() => {
+    if (!currentUser || typeof window === 'undefined') return;
+    if (!isStandalonePwa()) return;
+    if (!('Notification' in window)) return;
+
+    const syncNativeNotifications = async () => {
+      const uid = currentUser.id;
+      const promptKey = NATIVE_PROMPT_KEY(uid);
+
+      if (Notification.permission === 'default' && localStorage.getItem(promptKey) !== '1') {
+        localStorage.setItem(promptKey, '1');
+        try { await Notification.requestPermission(); } catch { /* ignore */ }
+      }
+      if (Notification.permission !== 'granted') return;
+
+      const allNotifs = buildNotifications({
+        currentUser, capital, distributions, activityLogs,
+        transactions, smsCredits, smsBalance, settings,
+        distDecisions, ninCredits, stakeholderCapitalData: myCapitalAlertData,
+      });
+      const readIds = getReadIds(uid);
+      const alreadyNotified = getNativeNotifiedIds(uid);
+      const pending = allNotifs.filter(n => !readIds.has(n.id) && !alreadyNotified.has(n.id));
+      if (pending.length === 0) return;
+
+      // Limit per sync cycle to avoid notification floods when many unread items are present.
+      for (const notif of pending.slice(0, 3)) {
+        const shown = await deliverNativeNotification(notif);
+        if (shown) alreadyNotified.add(notif.id);
+      }
+      saveNativeNotifiedIds(uid, alreadyNotified);
+    };
+
+    syncNativeNotifications().catch(() => {});
   }, [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, myCapitalAlertData]);
 
   // Archive this month's prediction and fill in actuals for past months
