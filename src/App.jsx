@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
+import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
 import { buildNotifications, getReadIds } from './ProfilePage/NotificationsPanel.jsx';
 import {
@@ -4250,6 +4251,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   const [wizardNotifyStatus, setWizardNotifyStatus] = useState(null); // null | 'sending' | { sent, failed, total }
   const wizardAutoSentRef = useRef(false);
   const [wizardTopUpExtra, setWizardTopUpExtra] = useState(0);        // optional extra top-up above transaction shortfall
+  const [completedTxData, setCompletedTxData] = useState(null);       // set after wizard save — shows print-tag screen
 
   // Auto-send capital shortfall SMS when Offer step first shows a shortfall (once per wizard session)
   useEffect(() => {
@@ -4855,7 +4857,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
     const saved = await API.post('transactions', finalTx);
     if (!saved?.success) return;
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
-    onSave(finalTx);
+    setCompletedTxData(finalTx);
   };
 
   const handleRedFlagExit = async () => {
@@ -5343,7 +5345,32 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
 
   return (
     <div>
-      {redFlagModal && (
+      {completedTxData && (
+        <div style={{ textAlign: 'center', padding: '24px 16px' }}>
+          <div style={{ fontSize: '52px', marginBottom: '12px' }}>🎉</div>
+          <h3 style={{ fontSize: '18px', fontWeight: 800, color: COLORS.primary, marginBottom: '6px' }}>Transaction Complete!</h3>
+          <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '20px' }}>
+            Ref: <strong style={{ color: COLORS.text }}>{completedTxData.ref}</strong>
+            {' · '}
+            {completedTxData.fullName}
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '320px', margin: '0 auto' }}>
+            <button
+              style={{ ...S.btn('accent'), justifyContent: 'center', padding: '14px', fontSize: '15px' }}
+              onClick={() => printStorageTag(completedTxData, settings)}
+            >
+              🏷 Print Storage Tag
+            </button>
+            <button
+              style={{ ...S.btn('primary'), justifyContent: 'center', padding: '14px', fontSize: '15px' }}
+              onClick={() => onSave(completedTxData)}
+            >
+              ✓ Done — Go to Dashboard
+            </button>
+          </div>
+        </div>
+      )}
+      {!completedTxData && redFlagModal && (
         <Modal open={redFlagModal} onClose={() => { setRedFlagModal(false); onCancel(); }} title="Transaction Declined">
           <div style={{ textAlign: 'center', padding: '8px 0 16px' }}>
             <div style={{ fontSize: '48px', marginBottom: '12px' }}>🙏</div>
@@ -5370,25 +5397,27 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
       {showRechargeModal && (
         <NinRechargeModal onClose={() => setShowRechargeModal(false)} settings={settings} />
       )}
-      <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
-        {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
-      </div>
-      <div style={S.card}>{renderStep()}</div>
-      {tx.ref && <div style={{ textAlign: 'center', marginTop: '6px', fontSize: '11px', color: COLORS.textMuted }}>Ref: <strong>{tx.ref}</strong></div>}
-      <div style={{ marginTop: '12px' }}>
-        {step < WIZARD_STEPS.length - 1 && !canProceed() && blockReasons().length > 0 && (
-          <div style={{ ...S.alert('danger'), marginBottom: '8px' }}>
-            {blockReasons().map((r, i) => <div key={i}>⛔ {r}</div>)}
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
-            <button style={S.btn('muted')} onClick={async () => { await saveDraftNow(); onCancel(); }}>Save Draft & Exit</button>
-          </div>
-          {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={async () => { await saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
+      {!completedTxData && <>
+        <div style={{ display: 'flex', gap: '6px', flexWrap: isMobile ? 'nowrap' : 'wrap', overflowX: isMobile ? 'auto' : 'visible', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', marginBottom: '20px', padding: '12px', background: '#fff', borderRadius: '12px', border: `1px solid ${COLORS.border}` }}>
+          {WIZARD_STEPS.map((s, i) => (<div key={s.id} style={{ ...S.wizStep(i === step, i < step), flexShrink: 0 }} onClick={() => i < step && setStep(i)}>{s.icon} {isMobile ? '' : s.label.split('. ')[1] || s.label}</div>))}
         </div>
-      </div>
+        <div style={S.card}>{renderStep()}</div>
+        {tx.ref && <div style={{ textAlign: 'center', marginTop: '6px', fontSize: '11px', color: COLORS.textMuted }}>Ref: <strong>{tx.ref}</strong></div>}
+        <div style={{ marginTop: '12px' }}>
+          {step < WIZARD_STEPS.length - 1 && !canProceed() && blockReasons().length > 0 && (
+            <div style={{ ...S.alert('danger'), marginBottom: '8px' }}>
+              {blockReasons().map((r, i) => <div key={i}>⛔ {r}</div>)}
+            </div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
+              <button style={S.btn('muted')} onClick={async () => { await saveDraftNow(); onCancel(); }}>Save Draft & Exit</button>
+            </div>
+            {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={async () => { await saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
+          </div>
+        </div>
+      </>}
     </div>
   );
 }
@@ -6231,6 +6260,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
 
     <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '16px' }}>
       <button style={S.btn('outline')} onClick={() => navigate(-1)}>← Back</button>
+      <button style={S.btn('outline')} onClick={() => printStorageTag(tx, settings)}>🏷 Print Storage Tag</button>
       {tx.status === 'active' && isStaff && (
         <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
       )}
