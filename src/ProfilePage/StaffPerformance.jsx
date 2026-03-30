@@ -38,7 +38,7 @@ function getLast6Months() {
   return months;
 }
 
-export default function StaffPerformance({ currentUser, transactions, users, settings, isMobile }) {
+export default function StaffPerformance({ currentUser, transactions, settings, isMobile }) {
   const months = getLast6Months();
   const nowMonth = new Date().getMonth();
   const nowYear = new Date().getFullYear();
@@ -68,7 +68,6 @@ export default function StaffPerformance({ currentUser, transactions, users, set
   const activeLoans = myTxs.filter(tx => tx.status === 'active').length;
   const defaulted = myTxs.filter(tx => tx.status === 'for_sale' || tx.status === 'ready_to_sell' || tx.status === 'sold').length;
   const closed = myTxs.filter(tx => tx.status === 'closed').length;
-  const repaymentValue = myTxs.filter(tx => tx.status === 'closed').reduce((s, tx) => s + (tx.cashAdvance || 0) + (tx.totalDailyFee || 0), 0);
   const avgLoan = myTxs.length > 0 ? totalValue / myTxs.length : 0;
   const defaultRate = myTxs.length > 0 ? ((defaulted / myTxs.length) * 100).toFixed(1) : '0.0';
   const thisMonthChange = lastMonthTxs.length > 0
