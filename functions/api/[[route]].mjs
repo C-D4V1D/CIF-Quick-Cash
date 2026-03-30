@@ -1023,7 +1023,9 @@ export async function onRequest(context) {
 
       // ── Redemption/full repayment confirmation SMS ──
       // Sent immediately when a customer repays in full and collects their item.
-      if (tx.status === 'closed' && tx.type === 'advance') {
+      // Transition guard: only fire on the active→closed transition so that re-saving
+      // an already-closed transaction on a different day does not resend the SMS.
+      if (tx.status === 'closed' && tx.type === 'advance' && existing?.status !== 'closed') {
         try {
           const smsCfg = await loadSmsConfig();
           if (smsCfg.enabled && smsCfg.redemptionConfirmationEnabled) {
@@ -1111,7 +1113,9 @@ export async function onRequest(context) {
       // ── Sale confirmation SMS (receipt to the buyer) ──
       // Sent immediately when an item is marked as sold — goes to the new buyer's
       // phone (saleBuyerPhone) as a purchase receipt, not the original customer.
-      if (tx.status === 'sold') {
+      // Transition guard: only fire on the active/for_sale→sold transition so that
+      // re-saving an already-sold transaction does not resend the buyer receipt.
+      if (tx.status === 'sold' && existing?.status !== 'sold') {
         try {
           const smsCfg = await loadSmsConfig();
           if (smsCfg.enabled && smsCfg.saleConfirmationEnabled) {
@@ -2130,7 +2134,7 @@ export async function onRequest(context) {
 
       const today = todayNigeria();
       const { results: activeTxs } = await db.prepare(
-        "SELECT ref, data FROM transactions WHERE status = 'active'"
+        "SELECT ref, data FROM transactions WHERE status IN ('active', 'overdue')"
       ).all();
 
       const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');

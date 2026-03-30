@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { COLORS } from '../theme';
 
@@ -38,12 +38,18 @@ function timeAgo(d) {
   return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'Africa/Lagos' });
 }
 
-// Build rich business notifications from all data sources
-function buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings }) {
+// Build rich business notifications from all data sources.
+// Exported so App.jsx can compute the live unread badge count without mounting this panel.
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings }) {
   const isStaff = hasRole(currentUser, 'staff') || hasRole(currentUser, 'admin');
   const isStakeholder = hasRole(currentUser, 'stakeholder') || hasRole(currentUser, 'admin');
   const isAdmin = hasRole(currentUser, 'admin');
   const notifs = [];
+
+  // Date string (Nigeria timezone) used to scope condition-based notification IDs so that
+  // re-occurring conditions (e.g. capital still low tomorrow) show as unread each new day.
+  const todayId = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
 
   // ── Capital entries (stakeholder / admin) ──
   if (isStakeholder) {
@@ -150,7 +156,9 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
     if (available < 0) {
       const deficitAmt = Math.abs(available);
       notifs.push({
-        id: 'cap_deficit',
+        // Date-scoped ID: condition-based alerts get a new ID each day so they
+        // re-appear as unread whenever the condition persists into a new day.
+        id: `cap_deficit_${todayId}`,
         icon: '🚨',
         title: 'Capital Deficit',
         short: `Business is at a deficit of ${fmtMoney(deficitAmt)} — stakeholders need to top up`,
@@ -164,7 +172,7 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
     // 2. Capital Low — mirrors smsCapitalLow
     else if (available < lowThreshold) {
       notifs.push({
-        id: 'cap_low',
+        id: `cap_low_${todayId}`,
         icon: '⚠️',
         title: 'Capital Running Low',
         short: `Only ${fmtMoney(available)} available — threshold is ${fmtMoney(lowThreshold)}`,
@@ -183,7 +191,7 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
       // Already covered by cap_low above; only add shortfall if available is positive but can't fund even a small loan
     } else if (available >= 0 && available < minLoanCap) {
       notifs.push({
-        id: 'cap_shortfall',
+        id: `cap_shortfall_${todayId}`,
         icon: '🔴',
         title: 'Insufficient Capital for New Loans',
         short: `${fmtMoney(available)} available — not enough to fund a minimum loan (${fmtMoney(minLoanCap)})`,
@@ -198,7 +206,7 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
     // 4. Capital Surplus / Withdrawal — mirrors smsCapitalWithdrawal (admin only)
     if (isAdmin && available > lowThreshold * 2 && totalCapital > 0) {
       notifs.push({
-        id: 'cap_surplus',
+        id: `cap_surplus_${todayId}`,
         icon: '📈',
         title: 'Capital Surplus — Withdrawal Available',
         short: `${fmtMoney(available)} idle capital — stakeholders may be able to withdraw`,
@@ -217,7 +225,7 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
     if (smsCredits <= threshold) {
       const urgent = smsCredits === 0;
       notifs.push({
-        id: 'sms_low',
+        id: `sms_low_${todayId}`,
         icon: '📱',
         title: urgent ? 'SMS Credits Depleted!' : 'Low SMS Credits',
         short: urgent
@@ -268,7 +276,9 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
   });
 }
 
-function getReadIds(uid) {
+// Exported so App.jsx can seed the badge count from live data without mounting this panel.
+// eslint-disable-next-line react-refresh/only-export-components
+export function getReadIds(uid) {
   try { return new Set(JSON.parse(localStorage.getItem(READ_KEY(uid)) || '[]')); }
   catch { return new Set(); }
 }
@@ -308,6 +318,18 @@ export default function NotificationsPanel({
     buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings }),
     [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings]
   );
+
+  // Keep the nav-bar badge in sync whenever the notification list changes (new data loaded,
+  // new transactions, etc.) while this panel is mounted on the profile page.
+  useEffect(() => {
+    const count = notifs.filter(n => !readIds.has(n.id)).length;
+    persistCount(currentUser.id, count);
+    onUnreadChange?.(count);
+  // readIds intentionally omitted: markRead/markAllRead already call onUnreadChange directly
+  // and including readIds would cause a feedback loop with those handlers.
+  // currentUser.id is stable for the lifetime of a session (re-login remounts the component).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notifs]);
 
   const unreadCount = notifs.filter(n => !readIds.has(n.id)).length;
 
