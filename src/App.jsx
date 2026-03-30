@@ -7252,6 +7252,8 @@ export default function App() {
       myWithdraw: myWithdrawEntry?.withdrawAmount || 0,
       streakMet: !!capitalPrediction?.streakMet,
       safeWithdrawal: capitalPrediction?.safeWithdrawal || 0,
+      actualStreak: capitalPrediction?.actualStreak ?? 0,
+      surplusStreakMonths: capitalPrediction?.surplusStreakMonths ?? 3,
     };
   }, [currentUser, capitalPrediction, availableLendingCapital, totalCapital, settings]);
 

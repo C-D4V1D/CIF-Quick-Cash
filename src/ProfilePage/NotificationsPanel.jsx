@@ -204,17 +204,23 @@ export function buildNotifications({ currentUser, capital, distributions, activi
     }
 
     // 4. Capital Surplus / Withdrawal — mirrors smsCapitalWithdrawal (admin only)
-    if (isAdmin && available > lowThreshold * 2 && totalCapital > 0) {
+    // Uses the same withdrawal analysis trigger as the SMS auto-send and the Capital Analysis panel:
+    // the surplus streak must be confirmed (streakMet) and a safe withdrawal amount computed.
+    // A simple "available > threshold * 2" heuristic is NOT sufficient — only the analysis model
+    // determines whether a withdrawal is truly safe.
+    const capSurplusData = stakeholderCapitalData; // passed through for admin too
+    if (isAdmin && capSurplusData?.streakMet && capSurplusData.safeWithdrawal > 0) {
+      const monthId = todayId.slice(0, 7);
       notifs.push({
-        id: `cap_surplus_${todayId}`,
+        id: `cap_surplus_${monthId}`,
         icon: '📈',
-        title: 'Capital Surplus — Withdrawal Available',
-        short: `${fmtMoney(available)} idle capital — stakeholders may be able to withdraw`,
-        full: `The business has a capital surplus above operational needs.\n\nTotal capital: ${fmtMoney(totalCapital)}\nDeployed in loans: ${fmtMoney(deployed)}\nIdle / available: ${fmtMoney(available)}\nOperational threshold: ${fmtMoney(lowThreshold)}\n\nExcess capital may be returned to stakeholders as a withdrawal. An SMS alert${settings?.smsCapitalWithdrawalEnabled ? ' has been / will be' : ' can be'} sent to stakeholders from Admin › Settings › Capital Alert SMS.`,
+        title: 'Withdrawal Recommended by Capital Analysis',
+        short: `${fmtMoney(capSurplusData.safeWithdrawal)} safe to withdraw — surplus confirmed for ${capSurplusData.actualStreak} month${capSurplusData.actualStreak !== 1 ? 's' : ''}`,
+        full: `The Capital Analysis has confirmed a sustained surplus and recommends a withdrawal.\n\nSafe to withdraw: ${fmtMoney(capSurplusData.safeWithdrawal)}\nSurplus confirmed: ${capSurplusData.actualStreak} of ${capSurplusData.surplusStreakMonths} required consecutive months\n\nVisit the Capital Analysis section to see the per-stakeholder breakdown and send withdrawal notifications. An SMS alert${settings?.smsCapitalWithdrawalEnabled ? ' has been / will be' : ' can be'} sent to stakeholders from Admin › Settings › Capital Alert SMS.`,
         createdAt: new Date().toISOString(),
         priority: 'normal',
         link: '/capital',
-        linkLabel: 'View Capital',
+        linkLabel: 'View Capital Analysis',
       });
     }
   }
