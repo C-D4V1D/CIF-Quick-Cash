@@ -25,7 +25,7 @@ const buildReportHTML = ({
   rCapitalDeployed, rCapitalReturned,
   serviceFee,
   stakeholders, // [{ name, total, capitalDays, pct, share, totalCapitalDays }]
-  rStaffByTask, staffSharePct, totalTaskPoints, taskLabels, taskDefs,
+  rStaffByTask, staffSharePct, totalTaskPoints,
   expByCategory,
 }) => {
   const rows = (items, cols, numCols) => items.length === 0

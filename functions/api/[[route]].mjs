@@ -599,13 +599,26 @@ export async function onRequest(context) {
           ? { sql: 'NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref)', params: [] }
           : { sql: 'NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref) AND (d.created_by = ? OR d.created_by IS NULL)', params: [auth.user.id] };
 
-        const [transactionsRes, draftsRes, txCountRow, draftCountRow, settingsRow] = await Promise.all([
+        // Fetch transactions and settings unconditionally — these must never fail for staff.
+        // Drafts queries are run separately so that a schema error (e.g. missing created_by
+        // column on un-migrated databases) degrades gracefully to an empty drafts list
+        // rather than crashing the entire response and blanking the dashboard.
+        const [transactionsRes, txCountRow, settingsRow] = await Promise.all([
           db.prepare('SELECT ref, data, status, created_at, updated_at FROM transactions ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(limit, offset).all(),
-          db.prepare(`SELECT d.ref, d.data, d.updated_at FROM drafts d WHERE ${draftUserFilter.sql} ORDER BY d.updated_at DESC LIMIT ? OFFSET ?`).bind(...draftUserFilter.params, limit, offset).all(),
           db.prepare('SELECT COUNT(*) AS total FROM transactions').first(),
-          db.prepare(`SELECT COUNT(*) AS total FROM drafts d WHERE ${draftUserFilter.sql}`).bind(...draftUserFilter.params).first(),
           db.prepare("SELECT value FROM settings WHERE key = 'config'").first()
         ]);
+
+        let draftsResults = [];
+        let totalDrafts = 0;
+        try {
+          const [draftsRes, draftCountRow] = await Promise.all([
+            db.prepare(`SELECT d.ref, d.data, d.updated_at FROM drafts d WHERE ${draftUserFilter.sql} ORDER BY d.updated_at DESC LIMIT ? OFFSET ?`).bind(...draftUserFilter.params, limit, offset).all(),
+            db.prepare(`SELECT COUNT(*) AS total FROM drafts d WHERE ${draftUserFilter.sql}`).bind(...draftUserFilter.params).first(),
+          ]);
+          draftsResults = draftsRes.results;
+          totalDrafts = draftCountRow?.total || 0;
+        } catch (err) { console.warn('[bootstrap] drafts query failed (migration pending?):', err?.message); }
 
         const loanCfg = (() => {
           const cfg = settingsRow ? JSON.parse(settingsRow.value) : {};
@@ -613,12 +626,11 @@ export async function onRequest(context) {
         })();
 
         const totalTransactions = txCountRow?.total || 0;
-        const totalDrafts = draftCountRow?.total || 0;
         const hasMore = offset + limit < Math.max(totalTransactions, totalDrafts);
 
         return json({
           transactions: transactionsRes.results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status, created_at: r.created_at, updated_at: r.updated_at }, loanCfg)),
-          drafts: draftsRes.results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })),
+          drafts: draftsResults.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })),
           pagination: {
             limit,
             offset,

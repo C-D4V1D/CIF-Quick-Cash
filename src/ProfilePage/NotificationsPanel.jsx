@@ -178,7 +178,6 @@ function buildNotifications({ currentUser, capital, distributions, activityLogs,
 
     // 3. Capital Transaction Shortfall — mirrors smsCapitalTransactionShortfall
     // Show when available capital is under the service fee threshold (near-zero funding ability)
-    const serviceFee = Number(settings?.serviceFee ?? 1000);
     const minLoanCap = Number(settings?.loanCapNoReceipt ?? 40) * 1000;
     if (available >= 0 && available < minLoanCap && available >= 0 && available < lowThreshold) {
       // Already covered by cap_low above; only add shortfall if available is positive but can't fund even a small loan

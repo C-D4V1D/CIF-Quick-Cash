@@ -55,7 +55,7 @@ function timeAgo(d) {
   return fmtDateLong(d);
 }
 
-export default function ProfileHeader({ currentUser, lastActive, onEditClick, isMobile }) {
+export default function ProfileHeader({ currentUser, lastActive, isMobile }) {
   const initials = getInitials(currentUser.name);
   const avatarColor = nameToColor(currentUser.name);
   const allRoles = [currentUser.role, ...(currentUser.roles || [])].filter(Boolean);

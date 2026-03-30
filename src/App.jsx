@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate, useLocation, useParams, Routes, Route, Navigate } from "react-router-dom";
+import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { printAgreement } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
 import ProfilePage, { getUnreadCount } from './ProfilePage/index.jsx';
@@ -610,7 +610,7 @@ const computeHistoricalDefaultRate = (transactions, numMonths, trendWeight) => {
   if (monthRates.length === 0) return { rate: 0.15, loanCount: 0, isFallback: true };
 
   // Exponentially weighted average of per-month rates (same recency weight as rest of engine)
-  const w = Math.max(0.1, Math.min(0.95, Number(trendWeight) ?? 0.7));
+  const w = Math.max(0.1, Math.min(0.95, Number(trendWeight) || 0.7));
   const n = monthRates.length;
   let weightSum = 0, total = 0;
   for (let i = 0; i < n; i++) {
@@ -628,11 +628,11 @@ const computeHistoricalDefaultRate = (transactions, numMonths, trendWeight) => {
 
 const computeCapitalPrediction = (transactions, expenses, distributions, capitalEntries, settings) => {
   const numMonths = Math.max(2, Math.min(24, Number(settings.capitalHistoryMonths) || 6));
-  const trendWeight = Math.max(0.1, Math.min(0.95, Number(settings.capitalTrendWeight) ?? 0.7));
+  const trendWeight = Math.max(0.1, Math.min(0.95, Number(settings.capitalTrendWeight) || 0.7));
   const forecastHorizon = Math.max(1, Math.min(6, Number(settings.capitalForecastHorizon) || 3));
   const leadTimeDays = Number(settings.capitalLeadTimeDays) || 21;
   const surplusStreakMonths = Number(settings.capitalSurplusStreakMonths) || 3;
-  const peakGraceFactor = Number(settings.capitalPeakGraceFactor) ?? 0.10;
+  const peakGraceFactor = Number(settings.capitalPeakGraceFactor) || 0.10;
   const minAbsolute = Number(settings.capitalMinAbsolute) || 0;
   // Use admin override if set, otherwise auto-compute from history
   const overrideRaw = settings.capitalDefaultRate;
@@ -1038,7 +1038,7 @@ const getApiUsage = () => {
 };
 
 const saveApiUsage = (usage) => {
-  try { localStorage.setItem(API_USAGE_KEY, JSON.stringify(usage)); } catch {}
+  try { localStorage.setItem(API_USAGE_KEY, JSON.stringify(usage)); } catch { /* ignore write failures */ }
 };
 
 const getTodayKey = () => localISODate(); // Nigeria-local YYYY-MM-DD
@@ -1831,7 +1831,7 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
 // ============================================================
 // PUBLIC SALES PAGE
 // ============================================================
-function SalesPage({ onBack, settings, initialItemId: propItemId }) {
+function SalesPage({ onBack, settings }) {
   const cachedShopData = useMemo(() => readShopCache(), []);
   const [items, setItems] = useState(cachedShopData?.items || []);
   const [loading, setLoading] = useState(!cachedShopData);
@@ -1845,8 +1845,6 @@ function SalesPage({ onBack, settings, initialItemId: propItemId }) {
   const isMobile = useMobile();
   const shopNavigate = useNavigate();
   const shopLocation = useLocation();
-  const routeParams = useParams();
-  const initialItemId = routeParams.itemId || propItemId || null;
 
   const s = settings || {};
   const phone1 = s.shopPhone1 ?? '08165491908';
@@ -1922,16 +1920,6 @@ function SalesPage({ onBack, settings, initialItemId: propItemId }) {
     return '📦';
   };
 
-  const conditionBadge = (cond) => {
-    if (!cond) return null;
-    const c = cond.toLowerCase();
-    let color = '#6b7280';
-    if (c.includes('excellent') || c.includes('new') || c.includes('perfect')) color = '#10b981';
-    else if (c.includes('good') || c.includes('fair')) color = '#f59e0b';
-    else if (c.includes('poor') || c.includes('bad')) color = '#ef4444';
-    return { label: cond, color };
-  };
-
   // Sync selectedItem with URL when navigating (direct links / browser back-forward)
   useEffect(() => {
     const match = shopLocation.pathname.match(/^\/shop\/(.+)$/);
@@ -1944,6 +1932,7 @@ function SalesPage({ onBack, settings, initialItemId: propItemId }) {
     } else if (shopLocation.pathname === '/shop' && selectedItem) {
       setSelectedItem(null);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shopLocation.pathname, items]); // selectedItem intentionally omitted — including it would cause an infinite loop (effect selects item → state changes → effect runs again)
 
   const selectItem = (item) => {
@@ -3343,7 +3332,7 @@ function LoginScreen({ onLogin }) {
   // Warm up database while user enters credentials.
   useEffect(() => {
     warmupHealthCheck({ source: 'screen-load' });
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLogin = async () => {
     if (loading) return;
@@ -4285,7 +4274,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
       const sent = results.filter(Boolean).length;
       setWizardNotifyStatus({ sent, failed: results.length - sent, total: results.length });
     });
-  }, [step, tx.cashAdvance, availableLendingCapital]);
+  }, [step, tx.cashAdvance, availableLendingCapital]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch verification credits when the NIN step becomes active.
   // Only fetches if the NIN API key is configured.
@@ -5868,7 +5857,7 @@ function SmsTestPanel({ inputStyle }) {
   );
 }
 
-const hasSuccessfulContactToday = (tx) => (tx?.contactLog || []).some(entry => entry?.date === localISODate() && isSuccessfulContactEntry(entry));
+const hasSuccessfulContactToday = (tx) => (tx?.contactLog || []).some(entry => entry?.date === localISODate() && SUCCESSFUL_CONTACT_OUTCOMES.has(entry?.result));
 
 
 function ContactLogModal({ tx, onClose, onSave, currentUser }) {
@@ -7014,7 +7003,12 @@ export default function App() {
     }
     setActivityLoading(false);
   };
+  const loadDataInFlight = useRef(false);
+  const loadDataRef = useRef(null);
   const loadData = async () => {
+    if (loadDataInFlight.current) return;
+    loadDataInFlight.current = true;
+    try {
     const criticalCache = readCache('cfc_critical');
     const listCache = readCache('cfc_transactions');
     const secondaryCache = readSecondaryCache();
@@ -7083,19 +7077,29 @@ export default function App() {
     setSecondaryLoading(false);
 
     await loadActivityLogs();
+    } catch (err) {
+      console.error('[loadData] unexpected error:', err);
+    } finally {
+      loadDataInFlight.current = false;
+    }
   };
+  // Keep a stable ref to the latest loadData so interval/visibility callbacks avoid stale closures.
+  loadDataRef.current = loadData;
 
-  useEffect(() => { if (currentUser) loadData(); }, [currentUser]);
+  useEffect(() => { if (currentUser) loadDataRef.current?.(); }, [currentUser]);
 
   // Lightweight live updates: refresh data every 15s while tab is visible.
+  // Also refresh immediately when a hidden tab becomes visible again.
   useEffect(() => {
     if (!currentUser) return undefined;
     const timer = setInterval(() => {
       if (document.hidden) return;
-      loadData();
+      loadDataRef.current?.();
     }, LIVE_REFRESH_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [currentUser]);
+    const onVisible = () => { if (!document.hidden) loadDataRef.current?.(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, [currentUser]); // loadDataRef is a ref — changes to it do not require effect re-run
 
   // Fetch Termii SMS balance when user is authenticated
   const refreshSmsBalance = async () => {
@@ -7111,7 +7115,7 @@ export default function App() {
       setSmsCredits(null);
     }
   };
-  useEffect(() => { if (currentUser) refreshSmsBalance(); }, [currentUser]);
+  useEffect(() => { if (currentUser) refreshSmsBalance(); }, [currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-send scheduled SMS once per session (after transactions are loaded)
   useEffect(() => {
@@ -7123,7 +7127,8 @@ export default function App() {
         refreshSmsBalance(); // refresh balance after sending
       }
     }).catch(() => {});
-  }, [currentUser, listLoading, settings.smsEnabled, settings.termiiApiKey]); // smsAutoSendDone & refreshSmsBalance intentionally omitted — stable refs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, listLoading, settings.smsEnabled, settings.termiiApiKey]); // smsAutoSendDone & refreshSmsBalance intentionally omitted — stable refs within this session
 
   // Auto-generate profit decisions for the previous month (runs once per session for admins)
   useEffect(() => {
@@ -7142,9 +7147,10 @@ export default function App() {
         API.get(`distribution-decisions?period=${period}`).then(res => {
           if (res?.decisions) setDistDecisions(res.decisions);
         });
-        loadData(); // refresh capital if reinvestments happened
+        loadDataRef.current?.(); // refresh capital if reinvestments happened
       }
     }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser, listLoading, settings.autoGenerateDecisions]); // autoGenDone intentionally omitted — stable ref
 
   // Sync unread notification badge from localStorage (updated whenever the user visits their profile)
@@ -7162,7 +7168,8 @@ export default function App() {
     if (currentUser && location.pathname === PAGE_PATHS.newTransaction && editingTx === null) {
       setEditingTx('new');
     }
-  }, [currentUser, location.pathname]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, location.pathname]); // editingTx intentionally omitted — including it would re-trigger on every editingTx change
 
   // Save helpers
   const saveSettings = async (s) => { setSettings(s); await API.put('settings', s); };
@@ -7298,7 +7305,7 @@ export default function App() {
         }
       }
     }
-  }, [availableLendingCapital, totalCapital, capitalPrediction, settings.smsEnabled, settings.termiiApiKey, settings.smsCapitalDeficitEnabled, settings.smsCapitalLowEnabled, settings.smsCapitalWithdrawalEnabled, settings.capitalLowThreshold, currentUser]);
+  }, [availableLendingCapital, totalCapital, capitalPrediction, settings.smsEnabled, settings.termiiApiKey, settings.smsCapitalDeficitEnabled, settings.smsCapitalLowEnabled, settings.smsCapitalWithdrawalEnabled, settings.capitalLowThreshold, currentUser]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const filteredTxs = useMemo(() => {
     let result = [...transactions];
@@ -7700,15 +7707,6 @@ export default function App() {
       }
 
       case 'actionLoans': {
-        // --- Helper: compute total owed for a loan ---
-        const computeTotalOwed = (tx) => {
-          const elapsed = effectiveElapsedDays(tx, settings);
-          const dailyFee = Number(tx.dailyFee) || 0;
-          const cashAdvance = Number(tx.cashAdvance) || 0;
-          const totalFees = elapsed * dailyFee;
-          return { cashAdvance, totalFees, totalOwed: cashAdvance + totalFees };
-        };
-
         // --- Helper: build WhatsApp send link for a specific loan ---
         const getAlertWhatsAppLink = (tx, templateType) => {
           const phone = tx.phoneNumbers?.[0]?.replace(/\D/g, '') || '';
@@ -7767,7 +7765,6 @@ export default function App() {
         const dedupeByRef = (items) => Array.from(new Map(items.map(tx => [tx.ref, tx])).values());
         const allActionLoans = dedupeByRef([...forSaleTxs, ...readyToSell, ...graceLastDay, ...inGrace, ...lastDayOwnership, ...overdue, ...dueToday]);
         const totalAtRisk = allActionLoans.reduce((s, t) => s + (t.cashAdvance || 0), 0);
-        const customerFollowUps = overdue.length + dueToday.length + graceLastDay.length + lastDayOwnership.length;
 
         const AlertGroup = ({ title, items, color, icon, infoTip, templateType, defaultExpanded }) => {
           const [expanded, setExpanded] = useState(defaultExpanded !== false);
@@ -7797,7 +7794,6 @@ export default function App() {
                     ))}
                   </div>
                   {sorted.map(tx => {
-                    const owed = computeTotalOwed(tx);
                     const customerDaysLeft = getCustomerDaysLeft(tx);
                     const waLink = getAlertWhatsAppLink(tx, templateType || (customerDaysLeft > 0 ? 'reminder' : 'overdue'));
                     return (

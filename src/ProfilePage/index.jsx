@@ -12,6 +12,7 @@ const hasRole = (u, r) => u?.role === r || (u?.roles || []).includes(r);
 const COUNT_KEY = (uid) => `cfc_unread_notif_count_${uid}`;
 
 // Read the persisted unread count — called by App.jsx for the top-bar badge
+// eslint-disable-next-line react-refresh/only-export-components
 export function getUnreadCount(uid) {
   try { return parseInt(localStorage.getItem(COUNT_KEY(uid)) || '0', 10); }
   catch { return 0; }
@@ -41,7 +42,6 @@ export default function ProfilePage({
   settings = {},
   smsCredits = null,
   smsBalance = null,
-  loadData,
   isMobile,
   onUnreadChange,
   onContactSaved,
