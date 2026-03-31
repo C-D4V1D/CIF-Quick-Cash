@@ -1506,7 +1506,14 @@ export async function onRequest(context) {
         .bind(name, amount, date, capitalMethod, receipt || null, user_id || null)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `💎 Capital deposited — ${name} contributed ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}` });
-      // Notify the stakeholder whose capital was recorded (if different from the acting user)
+      // Notify all subscribed devices about the new capital entry
+      await pushNotifyAll(env, db, {
+        title: '💰 Capital Entry Recorded',
+        body: `${name} deposited ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}.`,
+        url: '/capital',
+        tag: 'capital-entry',
+      });
+      // Also notify the specific stakeholder if the entry was recorded by someone else
       if (user_id && user_id !== auth.user.id) {
         await pushNotifyUser(env, db, user_id, {
           title: '💰 Capital Entry Recorded',
