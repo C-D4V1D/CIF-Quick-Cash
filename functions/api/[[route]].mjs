@@ -165,6 +165,198 @@ const requireAuthActive = async (request, db) => {
 };
 
 // ============================================================
+// WEB PUSH HELPERS — VAPID (RFC 7519) + RFC 8291 (aes128gcm encryption)
+// Keys are provided via Cloudflare environment bindings:
+//   env.VAPID_PUBLIC_KEY  — base64url-encoded P-256 raw public key (safe to expose)
+//   env.VAPID_PRIVATE_KEY — base64url-encoded P-256 PKCS#8 private key (Pages Secret)
+// ============================================================
+
+const b64urlDecode = (str) => {
+  const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = b64.padEnd(b64.length + (4 - (b64.length % 4)) % 4, '=');
+  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+};
+
+const b64urlEncode = (buf) => {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let bin = '';
+  bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+};
+
+const concatBufs = (...bufs) => {
+  const total = bufs.reduce((s, b) => s + b.length, 0);
+  const r = new Uint8Array(total);
+  let offset = 0;
+  for (const b of bufs) { r.set(b, offset); offset += b.length; }
+  return r;
+};
+
+const hmacSha256 = async (key, data) => {
+  const k = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+};
+
+// HKDF-SHA256: Extract then Expand
+const hkdfSha256 = async (salt, ikm, info, length) => {
+  const prk = await hmacSha256(salt, ikm);
+  const infoBytes = typeof info === 'string' ? textEncoder.encode(info) : info;
+  let t = new Uint8Array(0);
+  const okm = new Uint8Array(length);
+  let pos = 0;
+  for (let i = 1; pos < length; i++) {
+    t = await hmacSha256(prk, concatBufs(t, infoBytes, new Uint8Array([i])));
+    const toCopy = Math.min(t.length, length - pos);
+    okm.set(t.slice(0, toCopy), pos);
+    pos += toCopy;
+  }
+  return okm;
+};
+
+// Build a VAPID JWT signed with the P-256 ECDSA private key.
+const buildVapidJWT = async (privateKeyB64url, audience, subject) => {
+  const header = { typ: 'JWT', alg: 'ES256' };
+  const payload = { aud: audience, exp: Math.floor(Date.now() / 1000) + 43200, sub: subject };
+  const headerB64 = b64urlEncode(textEncoder.encode(JSON.stringify(header)));
+  const payloadB64 = b64urlEncode(textEncoder.encode(JSON.stringify(payload)));
+  const signingInput = `${headerB64}.${payloadB64}`;
+
+  // VAPID key generators (e.g. the `web-push` npm package) output a raw 32-byte
+  // P-256 private key.  crypto.subtle.importKey() requires PKCS#8 DER format.
+  // Auto-detect by length: raw keys are exactly 32 bytes; PKCS#8-wrapped P-256
+  // keys are 67+ bytes.  Wrap raw keys in the standard PKCS#8 DER structure so
+  // both formats are accepted transparently.
+  const rawKeyBytes = b64urlDecode(privateKeyB64url);
+  let pkcs8Bytes;
+  if (rawKeyBytes.length === 32) {
+    // PKCS#8 DER wrapper for a bare P-256 private key (no embedded public key).
+    // Structure: SEQUENCE { version INTEGER 0, algorithm AlgorithmIdentifier,
+    //   privateKey OCTET STRING { ECPrivateKey { version 1, privateKey <32 bytes> } } }
+    const hdr = new Uint8Array([
+      0x30, 0x41, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06,
+      0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,
+      0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03,
+      0x01, 0x07, 0x04, 0x27, 0x30, 0x25, 0x02, 0x01,
+      0x01, 0x04, 0x20,
+    ]);
+    pkcs8Bytes = concatBufs(hdr, rawKeyBytes);
+  } else {
+    pkcs8Bytes = rawKeyBytes;
+  }
+
+  const privateKey = await crypto.subtle.importKey(
+    'pkcs8', pkcs8Bytes,
+    { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'],
+  );
+  const signature = new Uint8Array(
+    await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, privateKey, textEncoder.encode(signingInput)),
+  );
+  return `${signingInput}.${b64urlEncode(signature)}`;
+};
+
+// Encrypt a push notification payload according to RFC 8291 (aes128gcm).
+const encryptPushPayload = async (plaintext, p256dhB64url, authB64url) => {
+  const uaPublicRaw = b64urlDecode(p256dhB64url);
+  const authSecret = b64urlDecode(authB64url);
+
+  // Generate ephemeral ECDH key pair
+  const ephemeral = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  const asPublicRaw = new Uint8Array(await crypto.subtle.exportKey('raw', ephemeral.publicKey));
+
+  // ECDH shared secret
+  const uaKey = await crypto.subtle.importKey('raw', uaPublicRaw, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const sharedSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaKey }, ephemeral.privateKey, 256));
+
+  // IKM = HKDF(salt=auth, IKM=sharedSecret, info="WebPush: info\0"+uaPublic+asPublic, len=32)
+  const authInfo = concatBufs(textEncoder.encode('WebPush: info\x00'), uaPublicRaw, asPublicRaw);
+  const ikm = await hkdfSha256(authSecret, sharedSecret, authInfo, 32);
+
+  // Random salt for content encryption
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+
+  // Derive CEK and nonce from ikm
+  const cek = await hkdfSha256(salt, ikm, textEncoder.encode('Content-Encoding: aes128gcm\x00'), 16);
+  const nonce = await hkdfSha256(salt, ikm, textEncoder.encode('Content-Encoding: nonce\x00'), 12);
+
+  // AES-128-GCM encrypt (append record-type delimiter byte 0x02 for last record)
+  const plaintextBytes = typeof plaintext === 'string' ? textEncoder.encode(plaintext) : plaintext;
+  const aesKey = await crypto.subtle.importKey('raw', cek, { name: 'AES-GCM' }, false, ['encrypt']);
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, aesKey, concatBufs(plaintextBytes, new Uint8Array([2]))),
+  );
+
+  // RFC 8291 content header: salt(16) + rs(4 BE) + keyid_len(1) + as_public(65)
+  const rsBytes = new Uint8Array(4);
+  new DataView(rsBytes.buffer).setUint32(0, 4096, false); // record size = 4096
+  return concatBufs(salt, rsBytes, new Uint8Array([asPublicRaw.length]), asPublicRaw, ciphertext);
+};
+
+// Send a Web Push notification to a single subscription.
+// Returns { sent: true }, { expired: true } (endpoint gone), or { skipped: true } if keys missing.
+const sendWebPush = async (env, subscription, notification) => {
+  const privateKey = env.VAPID_PRIVATE_KEY;
+  const publicKey = env.VAPID_PUBLIC_KEY;
+  if (!privateKey || !publicKey) return { skipped: true };
+
+  const { endpoint, p256dh, auth } = subscription;
+  const audience = new URL(endpoint).origin;
+  const subject = 'mailto:admin@cifcash.com';
+
+  const jwt = await buildVapidJWT(privateKey, audience, subject);
+  const payload = JSON.stringify({
+    title: notification.title || 'CIF Quick Cash',
+    body: notification.body || '',
+    icon: '/pwa-icon-192.png',
+    badge: '/pwa-icon-192.png',
+    tag: notification.tag || 'cif-notification',
+    url: notification.url || '/',
+  });
+  const body = await encryptPushPayload(payload, p256dh, auth);
+
+  const resp = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `vapid t=${jwt},k=${publicKey}`,
+      'Content-Type': 'application/octet-stream',
+      'Content-Encoding': 'aes128gcm',
+      TTL: '86400',
+    },
+    body,
+  });
+
+  if (resp.status === 410 || resp.status === 404) return { expired: true };
+  return { sent: resp.ok };
+};
+
+// Deliver a push notification to every registered device of a given user.
+// Silently cleans up expired subscriptions.
+const pushNotifyUser = async (env, db, userId, notification) => {
+  if (!userId) return;
+  try {
+    const { results: subs } = await db
+      .prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?')
+      .bind(userId).all();
+    const results = await Promise.all(subs.map((sub) => sendWebPush(env, sub, notification).catch(() => null)));
+    const expired = subs.filter((_, i) => results[i]?.expired);
+    for (const sub of expired) {
+      await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
+    }
+  } catch (_) { /* push is non-critical — never let it fail the primary response */ }
+};
+
+// Deliver a push notification to every subscribed user (broadcast).
+const pushNotifyAll = async (env, db, notification) => {
+  try {
+    const { results: subs } = await db.prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions').all();
+    const results = await Promise.all(subs.map((sub) => sendWebPush(env, sub, notification).catch(() => null)));
+    const expired = subs.filter((_, i) => results[i]?.expired);
+    for (const sub of expired) {
+      await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
+    }
+  } catch (_) { /* non-critical */ }
+};
+
+// ============================================================
 // LOAN TIMELINE HELPERS
 // Rules (using admin-configured maxLoanDays and graceDays):
 //   internal_deadline  = dateGiven + maxLoanDays          (business takes ownership)
@@ -524,6 +716,12 @@ export async function onRequest(context) {
       const hashed = await hashPassword(newPassword);
       await db.prepare('UPDATE users SET password = ? WHERE id = ?').bind(hashed, auth.user.id).run();
       await logActivity({ user: auth.user, action: 'change_password', entityType: 'user', entityId: auth.user.id, description: `🔒 ${user.name} changed their password` });
+      await pushNotifyUser(env, db, auth.user.id, {
+        title: '🔒 Password Changed',
+        body: 'Your CIF Quick Cash password was just changed. If this wasn\'t you, contact admin immediately.',
+        url: '/profile',
+        tag: 'security-alert',
+      });
       return json({ success: true });
     }
 
@@ -857,6 +1055,23 @@ export async function onRequest(context) {
       }
       await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
 
+      // ── Push notifications for new transactions ──
+      if (tx.type === 'outright' || tx.status === 'for_sale') {
+        await pushNotifyAll(env, db, {
+          title: '🏷️ Outright Purchase',
+          body: `${tx.ref}: ${tx.fullName} — ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtN(tx.cashAdvance)}`,
+          url: '/transactions',
+          tag: 'new-transaction',
+        });
+      } else {
+        await pushNotifyAll(env, db, {
+          title: '📋 New Loan',
+          body: `${tx.ref}: ${tx.fullName} — ₦${fmtN(tx.cashAdvance)} advance`,
+          url: '/transactions',
+          tag: 'new-transaction',
+        });
+      }
+
       // ── Immediate outright-purchase confirmation SMS ──
       // Sent right when the transaction is created, not via the nightly cron.
       if (tx.type === 'outright') {
@@ -1020,6 +1235,23 @@ export async function onRequest(context) {
         putAction = 'update'; putDesc = `🔄 Transaction updated — ${ref}`;
       }
       await logActivity({ user: auth.user, action: putAction, entityType: 'transaction', entityId: ref, description: putDesc });
+
+      // ── Push notifications for significant status changes ──
+      if (tx.status === 'closed' && existing?.status !== 'closed') {
+        await pushNotifyAll(env, db, {
+          title: '✅ Loan Redeemed',
+          body: `${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} over ${tx.daysCharged || 0} days`,
+          url: '/transactions',
+          tag: 'loan-redeemed',
+        });
+      } else if (tx.status === 'sold' && existing?.status !== 'sold') {
+        await pushNotifyAll(env, db, {
+          title: '💰 Item Sold',
+          body: `${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtNP(tx.salePrice)}`,
+          url: '/transactions',
+          tag: 'item-sold',
+        });
+      }
 
       // ── Redemption/full repayment confirmation SMS ──
       // Sent immediately when a customer repays in full and collects their item.
@@ -1274,6 +1506,13 @@ export async function onRequest(context) {
         .bind(name, amount, date, capitalMethod, receipt || null, user_id || null)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `💎 Capital deposited — ${name} contributed ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}` });
+      // Broadcast to all subscribed devices — covers admins, staff and the stakeholder themselves.
+      await pushNotifyAll(env, db, {
+        title: '💰 Capital Entry Recorded',
+        body: `${name} deposited ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}.`,
+        url: '/capital',
+        tag: 'capital-entry',
+      });
       return json({ success: true });
     }
     if (path.startsWith('capital/') && method === 'DELETE') {
@@ -1323,6 +1562,20 @@ export async function onRequest(context) {
         } catch (_) { /* ignore parse errors */ }
       }
       await logActivity({ user: auth.user, action: 'entry', entityType: 'distribution', entityId: String(inserted.meta.last_row_id), description: `💸 Profit paid out — ₦${Number(amount).toLocaleString('en-NG')} to ${stakeholder_name || 'stakeholders'} via ${distMethod}${note ? ' (' + note + ')' : ''}` });
+      // Notify the stakeholder named in the distribution (look up by name → user id)
+      if (stakeholder_name) {
+        const stakeholder = await db
+          .prepare("SELECT id FROM users WHERE name = ? AND role = 'stakeholder' LIMIT 1")
+          .bind(stakeholder_name).first().catch(() => null);
+        if (stakeholder?.id) {
+          await pushNotifyUser(env, db, stakeholder.id, {
+            title: '💎 Profit Distribution Received',
+            body: `₦${Number(amount).toLocaleString('en-NG')} has been paid to you via ${distMethod}.`,
+            url: '/capital',
+            tag: 'distribution',
+          });
+        }
+      }
       return json({ success: true, id: inserted.meta.last_row_id });
     }
     if (path.startsWith('distributions/') && method === 'DELETE') {
@@ -2885,6 +3138,71 @@ export async function onRequest(context) {
       });
 
       return json({ ok: true, processed: pending.length, reinvested, distributed });
+    }
+
+    // ============================================================
+    // PUSH SUBSCRIPTIONS: GET /api/push/vapid-public-key
+    //                     POST /api/push/subscribe
+    //                     DELETE /api/push/unsubscribe
+    // ============================================================
+    if (path === 'push/vapid-public-key' && method === 'GET') {
+      return json({ publicKey: env.VAPID_PUBLIC_KEY || '' });
+    }
+
+    if (path === 'push/subscribe' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const body = await request.json();
+      const endpoint = body?.endpoint;
+      const p256dh = body?.keys?.p256dh;
+      const subAuth = body?.keys?.auth;
+      if (!endpoint || !p256dh || !subAuth) return error('Missing subscription fields (endpoint, keys.p256dh, keys.auth)');
+      await db
+        .prepare(
+          'INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?) ' +
+          'ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, created_at = datetime(\'now\')',
+        )
+        .bind(auth.user.id, endpoint, p256dh, subAuth)
+        .run();
+      return json({ success: true });
+    }
+
+    if (path === 'push/unsubscribe' && method === 'DELETE') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const body = await request.json();
+      const endpoint = body?.endpoint;
+      if (!endpoint) return error('Missing endpoint');
+      await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?').bind(endpoint, auth.user.id).run();
+      return json({ success: true });
+    }
+
+    if (path === 'push/test' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { results: subs } = await db
+        .prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?')
+        .bind(auth.user.id).all();
+      if (!subs.length) return json({ success: false, reason: 'no_subscription' });
+      const results = await Promise.all(subs.map((sub) =>
+        sendWebPush(env, sub, {
+          title: '🔔 Test Notification',
+          body: 'Push notifications are working correctly on this device.',
+          url: '/profile',
+          tag: 'push-test',
+        }).catch((e) => ({ error: true, message: e?.message })),
+      ));
+      const allSkipped = results.every(r => r.skipped);
+      if (allSkipped) return json({ success: false, reason: 'vapid_not_configured' });
+      const allErrored = results.every(r => r.error);
+      if (allErrored) return json({ success: false, reason: 'vapid_error' });
+      const expired = subs.filter((_, i) => results[i]?.expired);
+      for (const sub of expired) {
+        await db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').bind(sub.endpoint).run().catch(() => {});
+      }
+      const sent = results.filter(r => r.sent).length;
+      if (sent === 0) return json({ success: false, reason: 'push_rejected', sent, total: subs.length });
+      return json({ success: true, sent, total: subs.length });
     }
 
     return error('Not found', 404);

@@ -123,6 +123,43 @@ const normalizeUser = (user) => {
   return { ...user, roles };
 };
 
+// --- PUSH NOTIFICATION HELPERS ---
+// The VAPID public key is fetched from the server to stay in sync if keys are
+// ever rotated.  The matching private key must be stored as a Cloudflare Pages
+// Secret (VAPID_PRIVATE_KEY).
+
+const urlBase64ToUint8Array = (base64String) => {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
+};
+
+// Request push permission and subscribe the current browser to Web Push,
+// then persist the subscription on the server.  Runs silently — any failure
+// is non-fatal and does not affect the rest of the app.
+const subscribeToPush = async () => {
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (Notification.permission === 'denied') return;
+  try {
+    const keyData = await API.get('push/vapid-public-key');
+    if (!keyData?.publicKey) return; // push not configured on this server
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      if (Notification.permission !== 'granted') {
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') return;
+      }
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(keyData.publicKey),
+      });
+    }
+    await API.post('push/subscribe', subscription.toJSON());
+  } catch { /* non-critical */ }
+};
+
 // --- UTILITY FUNCTIONS ---
 // Nigeria's IANA timezone identifier (WAT = UTC+1).
 const NIGERIA_TZ = 'Africa/Lagos';
@@ -7159,6 +7196,13 @@ export default function App() {
     if (currentUser && settings.ninApiKey) refreshNinBalance();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser, settings.ninApiKey]);
+
+  // Subscribe the browser to Web Push once per session after the user logs in.
+  // The browser will prompt for notification permission if not yet granted.
+  useEffect(() => {
+    if (!currentUser) return;
+    subscribeToPush().catch(() => {});
+  }, [currentUser]);
 
   // Auto-send scheduled SMS once per session (after transactions are loaded)
   useEffect(() => {

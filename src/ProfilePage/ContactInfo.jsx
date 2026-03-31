@@ -2,6 +2,10 @@ import { useState } from 'react';
 import { COLORS } from '../theme';
 import ChangePasswordModal from './ChangePasswordModal';
 
+const API_BASE = '/api';
+const apiFetch = (path, opts = {}) =>
+  fetch(`${API_BASE}/${path}`, { credentials: 'include', ...opts });
+
 const inputStyle = {
   width: '100%', padding: '10px 12px', borderRadius: '8px',
   border: `1.5px solid ${COLORS.border}`, fontSize: '14px', outline: 'none',
@@ -40,6 +44,56 @@ export default function ContactInfo({ currentUser, onSaved, isMobile }) {
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [showPwModal, setShowPwModal] = useState(false);
+  const [testNotifState, setTestNotifState] = useState('idle'); // idle | sending | ok | error | no_sub | no_vapid | vapid_error | push_rejected
+
+  const sendTestNotification = async () => {
+    setTestNotifState('sending');
+    try {
+      // Ensure the browser is subscribed first
+      if ('serviceWorker' in navigator && 'PushManager' in window) {
+        const reg = await navigator.serviceWorker.ready;
+        const existing = await reg.pushManager.getSubscription();
+        if (!existing) {
+          // Try to subscribe
+          const keyRes = await apiFetch('push/vapid-public-key');
+          const keyData = keyRes.ok ? await keyRes.json() : null;
+          if (keyData?.publicKey) {
+            const padding = '='.repeat((4 - (keyData.publicKey.length % 4)) % 4);
+            const b64 = (keyData.publicKey + padding).replace(/-/g, '+').replace(/_/g, '/');
+            const applicationServerKey = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+            if (Notification.permission !== 'granted') {
+              const perm = await Notification.requestPermission();
+              if (perm !== 'granted') { setTestNotifState('error'); return; }
+            }
+            const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey });
+            await apiFetch('push/subscribe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(sub.toJSON()),
+            });
+          }
+        }
+      }
+      const res = await apiFetch('push/test', { method: 'POST' });
+      const data = await res.json().catch(() => null);
+      if (data?.success) {
+        setTestNotifState('ok');
+      } else if (data?.reason === 'no_subscription') {
+        setTestNotifState('no_sub');
+      } else if (data?.reason === 'vapid_not_configured') {
+        setTestNotifState('no_vapid');
+      } else if (data?.reason === 'vapid_error') {
+        setTestNotifState('vapid_error');
+      } else if (data?.reason === 'push_rejected') {
+        setTestNotifState('push_rejected');
+      } else {
+        setTestNotifState('error');
+      }
+    } catch {
+      setTestNotifState('error');
+    }
+    setTimeout(() => setTestNotifState('idle'), 6000);
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -157,6 +211,53 @@ export default function ContactInfo({ currentUser, onSaved, isMobile }) {
               Change Password
             </button>
           </div>
+        </div>
+
+        {/* Push notifications test */}
+        <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: `1px solid ${COLORS.border}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '14px', color: COLORS.text }}>🔔 Push Notifications</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>Receive alerts for password changes, capital entries and profit payouts</div>
+            </div>
+            <button
+              onClick={sendTestNotification}
+              disabled={testNotifState === 'sending'}
+              style={{ padding: '9px 18px', borderRadius: '8px', border: 'none', background: testNotifState === 'sending' ? COLORS.border : COLORS.primary, color: '#fff', fontWeight: 700, fontSize: '13px', cursor: testNotifState === 'sending' ? 'not-allowed' : 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', transition: 'background 0.2s' }}
+            >
+              {testNotifState === 'sending' ? '⏳ Sending…' : '🧪 Send Test Notification'}
+            </button>
+          </div>
+          {testNotifState === 'ok' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: '#f0fdf4', borderRadius: '8px', color: '#15803d', fontSize: '13px', fontWeight: 600 }}>
+              ✅ Test notification sent! You should see it appear on your device shortly.
+            </div>
+          )}
+          {testNotifState === 'no_sub' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: '#fffbeb', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: 600 }}>
+              ⚠️ This device is not subscribed to push notifications. Make sure you have granted notification permission in your browser settings, then reload the page and try again.
+            </div>
+          )}
+          {testNotifState === 'no_vapid' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: '#fffbeb', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: 600 }}>
+              ⚠️ Push notifications are not configured on the server. Set the VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY environment variables in Cloudflare Pages.
+            </div>
+          )}
+          {testNotifState === 'vapid_error' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: '#fffbeb', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: 600 }}>
+              ⚠️ VAPID key error — the server could not sign the push request. Check that VAPID_PRIVATE_KEY is set correctly in Cloudflare Pages (it should be a base64url-encoded P-256 private key generated with the Node.js command in wrangler.toml).
+            </div>
+          )}
+          {testNotifState === 'push_rejected' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: '#fffbeb', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: 600 }}>
+              ⚠️ The push service rejected the notification. Your subscription may be stale — reload the page and try again. If the problem persists, the VAPID key pair may have changed since you last subscribed.
+            </div>
+          )}
+          {testNotifState === 'error' && (
+            <div style={{ marginTop: '10px', padding: '10px 14px', background: COLORS.dangerLight, borderRadius: '8px', color: COLORS.danger, fontSize: '13px', fontWeight: 600 }}>
+              ❌ Could not reach the notification service. Check your internet connection and that notification permission is granted, then try again.
+            </div>
+          )}
         </div>
       </div>
 
