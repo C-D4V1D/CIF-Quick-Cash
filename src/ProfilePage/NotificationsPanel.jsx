@@ -359,17 +359,20 @@ export function buildNotifications({ currentUser, capital, distributions, activi
     }
   }
 
-  // Sort: urgent first, then by date descending
+  // Sort: newest first, then by priority within the same timestamp
   const priorityOrder = { urgent: 0, warning: 1, high: 2, normal: 3, info: 4 };
   return notifs.sort((a, b) => {
-    const pd = (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3);
-    if (pd !== 0) return pd;
     const ta = parseUTC(a.createdAt);
     const tb = parseUTC(b.createdAt);
-    if (!ta && !tb) return 0;
-    if (!ta) return 1;
-    if (!tb) return -1;
-    return tb - ta;
+    if (ta && tb) {
+      const dateDiff = tb - ta;
+      if (dateDiff !== 0) return dateDiff;
+    } else if (!ta && tb) {
+      return 1;
+    } else if (ta && !tb) {
+      return -1;
+    }
+    return (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3);
   });
 }
 

@@ -1506,22 +1506,13 @@ export async function onRequest(context) {
         .bind(name, amount, date, capitalMethod, receipt || null, user_id || null)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `💎 Capital deposited — ${name} contributed ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}` });
-      // Notify all subscribed devices about the new capital entry
+      // Broadcast to all subscribed devices — covers admins, staff and the stakeholder themselves.
       await pushNotifyAll(env, db, {
         title: '💰 Capital Entry Recorded',
         body: `${name} deposited ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}.`,
         url: '/capital',
         tag: 'capital-entry',
       });
-      // Also notify the specific stakeholder if the entry was recorded by someone else
-      if (user_id && user_id !== auth.user.id) {
-        await pushNotifyUser(env, db, user_id, {
-          title: '💰 Capital Entry Recorded',
-          body: `Your deposit of ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod} has been recorded.`,
-          url: '/capital',
-          tag: 'capital-entry',
-        });
-      }
       return json({ success: true });
     }
     if (path.startsWith('capital/') && method === 'DELETE') {

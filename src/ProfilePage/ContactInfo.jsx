@@ -245,7 +245,7 @@ export default function ContactInfo({ currentUser, onSaved, isMobile }) {
           )}
           {testNotifState === 'vapid_error' && (
             <div style={{ marginTop: '10px', padding: '10px 14px', background: '#fffbeb', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: 600 }}>
-              ⚠️ VAPID key error — the server could not sign the push request. Check that VAPID_PRIVATE_KEY is set correctly in Cloudflare Pages (it should be a base64url-encoded P-256 private key generated with a tool like <code style={{ fontFamily: 'monospace', fontWeight: 700 }}>npx web-push generate-vapid-keys</code>).
+              ⚠️ VAPID key error — the server could not sign the push request. Check that VAPID_PRIVATE_KEY is set correctly in Cloudflare Pages (it should be a base64url-encoded P-256 private key generated with the Node.js command in wrangler.toml).
             </div>
           )}
           {testNotifState === 'push_rejected' && (
