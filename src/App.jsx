@@ -7725,7 +7725,38 @@ export default function App() {
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Available Lending Capital<InfoIcon tip="The money we have available to give out as new loans right now. It's what's left after taking away everything that's already out or paid out." /></div><div style={S.statValue}>{secondaryLoading ? '—' : fmtMoney(availableLendingCapital)}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital Out<InfoIcon tip="The total cash that's currently with customers who haven't paid back yet." /></div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Active Loans<InfoIcon tip="How many customers still have active loans — they took money but haven't come back yet." /></div><div style={S.statValue}>{activeTxs.length}</div></div>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money the business has ever earned — from daily fees, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Gross Profit<InfoIcon tip="All-time profit earned: interest from repaid loans, margins from sold items (sale price minus cost), and service fees." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
+          {(() => {
+            const rate = settings.interestRate || 1;
+            const maxDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+            // Interest already accrued on active loans (what we'd collect if all repaid today)
+            const accruedInterest = activeTxs.reduce((s, tx) => {
+              const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * rate / 100);
+              return s + effectiveElapsedDays(tx, settings) * fee;
+            }, 0);
+            // Total interest if every active loan runs to its full agreed term
+            const fullTermFees = activeTxs.reduce((s, tx) => {
+              const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * rate / 100);
+              const days = Math.max(1, Number(tx.loanDays) || maxDays);
+              return s + days * fee;
+            }, 0);
+            // Margin if every listed-for-sale item sells at its asking price
+            const listedSaleMargins = forSaleTxs.reduce((s, tx) => s + Math.max(0, (tx.salePrice || 0) - (tx.cashAdvance || 0)), 0);
+            const totalProjected = fullTermFees + listedSaleMargins;
+            return (
+              <div style={{ ...S.stat, background: '#f0fdf4', border: `1px solid #86efac` }}>
+                <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>
+                  Projected Earnings
+                  <InfoIcon tip="Best-case income from active transactions: full interest if every active loan repays at its agreed term, plus the sale margin from every listed item sold at its asking price. Excludes loans not yet at term or items not yet listed." />
+                </div>
+                <div style={{ ...S.statValue, color: '#166534' }}>{fmtMoney(totalProjected)}</div>
+                <div style={{ fontSize: '11px', color: '#166534', marginTop: '4px', lineHeight: 1.5 }}>
+                  {fmtMoney(accruedInterest)} accrued so far
+                  {listedSaleMargins > 0 && <> · {fmtMoney(listedSaleMargins)} from {forSaleTxs.length} listing{forSaleTxs.length !== 1 ? 's' : ''}</>}
+                </div>
+              </div>
+            );
+          })()}
           <div style={{ ...S.stat, background: inGracePeriod.length > 0 ? '#f3e8ff' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>In Grace Period<InfoIcon tip="Customers who are overdue but we haven't listed their item for sale yet. We're giving them a little more time." /></div><div style={{ ...S.statValue, color: inGracePeriod.length > 0 ? '#7c3aed' : COLORS.primary }}>{inGracePeriod.length}</div></div>
           <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Ready to Sell<InfoIcon tip="Items where the customer ran out of time. We can now sell these to get our money back." /></div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
           <div style={{ ...S.stat, background: forSaleTxs.length > 0 ? '#ede9fe' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Listed for Sale<InfoIcon tip="Items already moved into listed inventory so the team can focus on selling them and recovering capital." /></div><div style={{ ...S.statValue, color: forSaleTxs.length > 0 ? '#6d28d9' : COLORS.primary }}>{forSaleTxs.length}</div></div>
@@ -8343,6 +8374,8 @@ export default function App() {
         // Stat calculations
         const totalAskingValue = forSaleTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
         const totalCapitalRisk = allSellable.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        // Potential margin = sale price minus what the business originally paid, for listed items only
+        const totalListedMargin = forSaleTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
         const listedDaysArr = forSaleTxs.map(t => getForSaleDaysListed(t) || 0).filter(d => d > 0);
         const avgDaysListed = listedDaysArr.length > 0 ? Math.round(listedDaysArr.reduce((a, b) => a + b, 0) / listedDaysArr.length) : 0;
         const targetDeadlineDays = Math.max(1, Number(settings.targetSaleDeadlineDays) || 14);
@@ -8381,6 +8414,11 @@ export default function App() {
                 <div style={SC.label}>Capital at Risk<InfoIcon tip="Total cash advanced across all items not yet sold (both listed and ready to sell)." /></div>
                 <div style={{ ...SC.value, color: '#92400e' }}>{fmtMoney(totalCapitalRisk)}</div>
                 <div style={SC.sub}>{allSellable.length} item{allSellable.length !== 1 ? 's' : ''}</div>
+                {totalListedMargin > 0 && (
+                  <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #fde68a', fontSize: '12px', fontWeight: 700, color: COLORS.primary }}>
+                    +{fmtMoney(totalListedMargin)} potential margin
+                  </div>
+                )}
               </div>
               <div style={{ ...SC.wrap, background: avgDaysListed > targetDeadlineDays ? '#fef2f2' : COLORS.bg }}>
                 <div style={SC.label}>Avg Days Listed<InfoIcon tip="Average number of days listed items have been in the shop. Target is below the sale deadline setting." /></div>
