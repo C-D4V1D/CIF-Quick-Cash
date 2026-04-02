@@ -7734,11 +7734,14 @@ export default function App() {
               const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * rate / 100);
               return s + effectiveElapsedDays(tx, settings) * fee;
             }, 0);
-            // Total interest if every active loan runs to its full agreed term
+            // Projected interest per loan = agreed term days, but never less than days already elapsed.
+            // Overdue/grace-period loans (elapsed > loanDays) use elapsed so the projection stays
+            // at or above the accrued amount — fees are already earned and won't shrink.
             const fullTermFees = activeTxs.reduce((s, tx) => {
               const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * rate / 100);
-              const days = Math.max(1, Number(tx.loanDays) || maxDays);
-              return s + days * fee;
+              const loanDays = Math.max(1, Number(tx.loanDays) || maxDays);
+              const elapsed = effectiveElapsedDays(tx, settings);
+              return s + Math.max(loanDays, elapsed) * fee;
             }, 0);
             // Margin if every listed-for-sale item sells at its asking price
             const listedSaleMargins = forSaleTxs.reduce((s, tx) => s + Math.max(0, (tx.salePrice || 0) - (tx.cashAdvance || 0)), 0);
@@ -7747,7 +7750,7 @@ export default function App() {
               <div style={{ ...S.stat, background: '#f0fdf4', border: `1px solid #86efac` }}>
                 <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>
                   Projected Earnings
-                  <InfoIcon tip="Best-case income from active transactions: full interest if every active loan repays at its agreed term, plus the sale margin from every listed item sold at its asking price. Excludes loans not yet at term or items not yet listed." />
+                  <InfoIcon tip="Best-case income from all active loans (including overdue and grace-period) plus listed items: interest at the agreed term length — or already-accrued fees for overdue loans, whichever is higher — plus sale margins for listed items at asking price." />
                 </div>
                 <div style={{ ...S.statValue, color: '#166534' }}>{fmtMoney(totalProjected)}</div>
                 <div style={{ fontSize: '11px', color: '#166534', marginTop: '4px', lineHeight: 1.5 }}>
