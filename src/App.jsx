@@ -694,7 +694,9 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalCapitalInForSale = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
-  const totalSalesRevenue = soldTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
+  // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
+  // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
+  const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
   const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpensesAll = expenses.reduce((s, e) => s + (e.amount || 0), 0);
@@ -3012,7 +3014,7 @@ function CustomerPortal({ onBack, settings }) {
     if (info.isSaleEligible) return { label: '📦 Ready to Sell', color: '#92400e' };
     if (info.isLastDayOfGrace) return { label: '🔴 Last Day of Grace', color: '#dc2626' };
     if (info.isInGracePeriod) return { label: `💜 Grace Period Ends ${info.graceEndDate ? formatDateLong(info.graceEndDate) : ''}`, color: '#8b5cf6' };
-    if (info.isOnMaxLoanDay) return { label: '🔴 Last Day of Ownership', color: '#dc2626' };
+    if (info.isOnMaxLoanDay) return { label: '🔴 Last Day to Collect Your Item', color: '#dc2626' };
     if (info.isAfterAgreedDue) return { label: `⚠️ ${info.daysOverdue} Day${info.daysOverdue !== 1 ? 's' : ''} Overdue`, color: '#f59e0b' };
     if (info.isOnAgreedDueDate) return { label: '🔴 Due Today', color: '#ef4444' };
     return { label: 'Active', color: '#10b981' };
@@ -5588,7 +5590,7 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
           <input style={S.input} type="date" value={entry.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => upd('date', e.target.value)} />
         </Field>
         <Field label="Ref #">
-          <input style={S.input} value={entry.ref} onChange={e => upd('ref', e.target.value)} placeholder="e.g. CFC-20240101-A1B2" />
+          <input style={S.input} value={entry.ref} onChange={e => upd('ref', e.target.value)} placeholder="e.g. CIF-020426-001" />
         </Field>
       </div>
       <div style={S.grid2}>
@@ -6781,7 +6783,7 @@ function DecModal({ showAddDeclined, setShowAddDeclined, decForm, setDecForm, se
           <input style={S.input} type="date" value={decForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDecForm({ ...decForm, date: e.target.value })} />
         </Field>
         <Field label="Ref # (optional)">
-          <input style={S.input} value={decForm.ref} onChange={e => setDecForm({ ...decForm, ref: e.target.value })} placeholder="e.g. CFC-20240101-A1B2" />
+          <input style={S.input} value={decForm.ref} onChange={e => setDecForm({ ...decForm, ref: e.target.value })} placeholder="e.g. CIF-020426-001" />
         </Field>
       </div>
       <div style={S.grid2}>
@@ -7282,7 +7284,9 @@ export default function App() {
   const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
-  const totalSalesRevenue = soldTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
+  // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
+  // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
+  const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
   const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
@@ -8457,7 +8461,8 @@ export default function App() {
         const rNewLoans = rNewTxs.filter(t => t.type !== 'outright');
         const rExpenses = expenses.filter(e => inPeriod(e.date));
         const rRepaymentFees = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0);
-        const rSalesRevenue = rSold.reduce((s, t) => s + (t.salePrice || 0), 0);
+        // Sales revenue = margin (salePrice − cashAdvance). The principal was deployed capital, not profit.
+        const rSalesRevenue = rSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
         const rServiceFees = rNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
         const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
@@ -8673,14 +8678,14 @@ export default function App() {
             <div style={S.card}>
               <div style={S.cardTitle}>💰 Financial Summary</div>
               <div style={S.grid3}>
-                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="All the money that came in during this period — from customers repaying, selling items, and service charges." /></div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
+                <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Revenue<InfoIcon tip="Income earned this period: repayment interest, sale margins (sale price minus cost), and service fees. Capital returned from loan repayments is not counted." /></div><div style={S.statValue}>{fmtMoney(rRevenue)}</div></div>
                 <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Expenses<InfoIcon tip="Money spent to keep the business running — things like printing, transport, airtime, and stationery." /></div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(rExpTotal)}</div></div>
                 <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Net Profit<InfoIcon tip="Income minus expenses. This is what the business actually made after paying for everything. Staff and investors split this." /></div><div style={{ ...S.statValue, color: rProfit >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(rProfit)}</div></div>
               </div>
               <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>Revenue Breakdown</div>
                 <div style={rowStyle}><span>Repayment fees ({rClosed.length} loan{rClosed.length !== 1 ? 's' : ''})<InfoIcon tip="The daily fees we collect when a customer comes back to pay and pick up their item." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rRepaymentFees)}</strong></div>
-                <div style={rowStyle}><span>Sales proceeds ({rSold.length} item{rSold.length !== 1 ? 's' : ''})<InfoIcon tip="Money from selling items that customers didn't come back to collect before their time ran out." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rSalesRevenue)}</strong></div>
+                <div style={rowStyle}><span>Sales margin ({rSold.length} item{rSold.length !== 1 ? 's' : ''})<InfoIcon tip="Profit from selling items — sale price minus what the business originally paid (cash advanced). The principal paid is returned capital, not profit." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rSalesRevenue)}</strong></div>
                 <div style={{ ...rowStyle, borderBottom: 'none' }}><span>Service fees ({rNewLoans.length} new loan{rNewLoans.length !== 1 ? 's' : ''})<InfoIcon tip="Flat fees actually collected on new advance loans during this period, using the fee saved on each transaction when available." /></span><strong style={{ color: COLORS.primary }}>{fmtMoney(rServiceFees)}</strong></div>
               </div>
               <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
@@ -8975,7 +8980,7 @@ export default function App() {
               <div style={{ fontSize: '28px', fontWeight: 800, color: availableLendingCapital >= 0 ? COLORS.primary : COLORS.danger, marginBottom: '16px' }}>{fmtMoney(availableLendingCapital)}</div>
               <div style={{ fontSize: '11px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>How this is calculated</div>
               <div style={capRowStyle}><span>Total capital invested<InfoIcon tip="The total amount all investors have put into the business so far." /></span><strong>+ {fmtMoney(totalCapital)}</strong></div>
-              <div style={capRowStyle}><span>All-time profit (revenue − expenses)<InfoIcon tip="All the profit the business has made since it started. This goes back into the money we can lend out." /></span><strong style={{ color: netProfit >= 0 ? COLORS.primary : COLORS.danger }}>+ {fmtMoney(netProfit)}</strong></div>
+              <div style={capRowStyle}><span>All-time profit (interest + sale margins + fees − expenses)<InfoIcon tip="All profit earned since the business started: interest on repaid loans, margins on sold items (sale price minus what was paid), and service fees, minus all operating expenses." /></span><strong style={{ color: netProfit >= 0 ? COLORS.primary : COLORS.danger }}>+ {fmtMoney(netProfit)}</strong></div>
               <div style={capRowStyle}><span>Money out on active loans<InfoIcon tip="Money that's currently with customers who haven't paid back yet. We can't lend it out again until they return it." /></span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalOut)}</strong></div>
               <div style={capRowStyle}><span>Capital in for-sale inventory<InfoIcon tip="Money stuck in items we're trying to sell. We get this back once the item is sold." /></span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalCapitalInForSaleInventory)}</strong></div>
               <div style={{ ...capRowStyle, borderBottom: 'none' }}><span>Profit already distributed to stakeholders<InfoIcon tip="Profit that was already shared out to investors and has left the business." /></span><strong style={{ color: COLORS.danger }}>− {fmtMoney(totalDistributions)}</strong></div>
@@ -9251,7 +9256,7 @@ export default function App() {
                     const periodSold = soldTxs.filter(t => { const ds = t.saleDate || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
                     const periodNewLoans = periodTxs.filter(t => t.type !== 'outright' && t.status !== 'declined');
                     const periodExp = expenses.filter(e => { if (!e.date) return false; const d = new Date(e.date.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
-                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + (t.salePrice || 0), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
                     const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
                     const profit = rev - expT;
                     const sPct = settings.staffSharePct ?? 10;

@@ -2914,8 +2914,11 @@ export async function onRequest(context) {
         const periodNewLoans = allTx.filter(t => t.type !== 'outright' && t.status !== 'declined' && inPeriod(t.created_at));
         const serviceFee = Number(cfg.serviceFee) || 1000;
 
+        // Revenue = interest fees + sale margins (not full sale price) + service fees.
+        // Using sale margin (salePrice − cashAdvance) keeps consistency with loan accounting
+        // where only interest is counted, not the principal return.
         const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0)
-          + periodSold.reduce((s, t) => s + (t.salePrice || 0), 0)
+          + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0)
           + periodNewLoans.reduce((s, t) => s + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? serviceFee : 0)), 0);
 
         const expRes = await db.prepare('SELECT amount, date FROM expenses').all();
@@ -2934,7 +2937,7 @@ export async function onRequest(context) {
         const totalOut = activeTx.reduce((s, t) => s + (t.cashAdvance || 0), 0);
         const totalInForSale = forSaleTx.reduce((s, t) => s + (t.cashAdvance || 0), 0);
         const totalRevAll = allTx.filter(t => t.status === 'closed').reduce((s, t) => s + (t.totalFees || 0), 0)
-          + allTx.filter(t => t.status === 'sold').reduce((s, t) => s + (t.salePrice || 0), 0)
+          + allTx.filter(t => t.status === 'sold').reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0)
           + allTx.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((s, t) => s + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? serviceFee : 0)), 0);
         const totalExpAll = (expRes.results || []).reduce((s, e) => s + (e.amount || 0), 0);
         const distRes = await db.prepare('SELECT amount FROM profit_distributions').all();
