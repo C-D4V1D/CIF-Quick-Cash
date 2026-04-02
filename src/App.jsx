@@ -6168,7 +6168,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Estimated Value<InfoIcon tip="What the AI estimates this item would sell for second-hand. The max we can give is a percentage of this number." /></div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
         <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Cash Advanced<InfoIcon tip="The cash we handed to the customer when they left the item with us." /></div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
         {tx.type === 'advance' && <>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div></div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div>{dailyInterest > 0 && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px', fontWeight: 600 }}>{fmtMoney(amountDueToday - (tx.cashAdvance || 0))} accrued</div>}</div>
           <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
             <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="The full amount the customer owes us today — the cash we gave them plus all the daily fees added up so far. It grows bigger every day." /></div>
             <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
@@ -6205,7 +6205,13 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         </div>
         {customerDaysLeft !== null && (
           <div style={{ padding: '10px 12px', background: customerDaysLeft < 0 ? COLORS.dangerLight : customerDaysLeft === 0 ? COLORS.dangerLight : customerDaysLeft <= 7 ? '#fef3c7' : COLORS.primaryLight, borderRadius: '8px', fontSize: '13px', color: customerDaysLeft <= 0 ? COLORS.danger : customerDaysLeft <= 7 ? '#92400e' : COLORS.primary, fontWeight: 600 }}>
-            {customerDaysLeft < 0 ? `⚠️ Customer is ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue on their agreed return date.` : customerDaysLeft === 0 ? '🔴 Customer return is due today.' : `⏰ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} remaining until customer's agreed return date.`}
+            {(() => {
+              const loanTerm = tx.loanDays || settings.maxLoanDays || 30;
+              const prefix = `${loanTerm}-day loan · `;
+              if (customerDaysLeft < 0) return `${prefix}⚠️ Customer is ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue on their agreed return date.`;
+              if (customerDaysLeft === 0) return `${prefix}🔴 Customer return is due today.`;
+              return `${prefix}⏰ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} remaining until customer's agreed return date.`;
+            })()}
           </div>
         )}
       </div>
