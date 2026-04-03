@@ -11180,19 +11180,19 @@ export default function App() {
           <button onClick={() => navigate('/landing')} style={{ background: 'none', border: 'none', color: 'inherit', fontWeight: 800, letterSpacing: '-0.3px', fontSize: isMobile ? '14px' : '16px', cursor: 'pointer', padding: 0 }}>CIF QUICK CASH</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? '8px' : '12px' }}>
-          {/* Bell icon with unread badge */}
-          <button
-            onClick={() => navigate(PAGE_PATHS.profile)}
-            title="Notifications"
-            style={{ position: 'relative', background: 'rgba(255,255,255,0.15)', border: '1.5px solid rgba(255,255,255,0.3)', borderRadius: '8px', color: '#fff', fontSize: '18px', cursor: 'pointer', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
-          >
-            🔔
-            {unreadNotifCount > 0 && (
+          {/* Bell icon with unread badge — only shown when there are unread notifications */}
+          {unreadNotifCount > 0 && (
+            <button
+              onClick={() => navigate(PAGE_PATHS.profile)}
+              title="Notifications"
+              style={{ position: 'relative', background: 'rgba(255,255,255,0.15)', border: '1.5px solid rgba(255,255,255,0.3)', borderRadius: '8px', color: '#fff', fontSize: '18px', cursor: 'pointer', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+            >
+              🔔
               <span style={{ position: 'absolute', top: '-5px', right: '-5px', background: '#ef4444', color: '#fff', borderRadius: '50%', fontSize: '9px', fontWeight: 800, width: '16px', height: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1.5px solid #1a5f2a', lineHeight: 1 }}>
                 {unreadNotifCount > 9 ? '9+' : unreadNotifCount}
               </span>
-            )}
-          </button>
+            </button>
+          )}
           {/* Clickable avatar → profile */}
           <button
             onClick={() => navigate(PAGE_PATHS.profile)}
