@@ -5,7 +5,7 @@ import { printAgreement } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
 import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
-import { buildNotifications, getReadIds } from './ProfilePage/NotificationsPanel.jsx';
+import { buildNotifications, getReadIds, seedReadIds } from './ProfilePage/NotificationsPanel.jsx';
 import {
   ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area,
@@ -7358,6 +7358,32 @@ export default function App() {
     } catch { /* buildNotifications is a pure derived computation; errors here must not crash the app — the badge simply retains its previous value */ }
   }, [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, myCapitalAlertData]);
 
+  // On login (or app reload in a new browser), seed the notification read-ID cache from the
+  // backend so the badge reflects the user's already-read state across devices/deployments.
+  useEffect(() => {
+    if (!currentUser) return;
+    let cancelled = false;
+    fetch('/api/user-prefs', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(prefs => {
+        if (cancelled || !prefs?.notifReadIds?.length) return;
+        seedReadIds(currentUser.id, prefs.notifReadIds);
+        // Recompute badge with the freshly-seeded read IDs.
+        try {
+          const notifs = buildNotifications({
+            currentUser, capital, distributions, activityLogs,
+            transactions, smsCredits, smsBalance, settings,
+            distDecisions, ninCredits, stakeholderCapitalData: myCapitalAlertData,
+          });
+          const readIds = getReadIds(currentUser.id);
+          setUnreadNotifCount(notifs.filter(n => !readIds.has(n.id)).length);
+        } catch { /**/ }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
   // Archive this month's prediction and fill in actuals for past months
   useEffect(() => {
     if (!capitalPrediction?.primaryForecast) return;
@@ -7703,7 +7729,24 @@ export default function App() {
 
     switch (page) {
       case 'dashboard': return (<div>{listLoadingNotice}
-        <h2 style={{ fontSize: '20px', fontWeight: 800, marginBottom: '20px', color: COLORS.primaryDark }}>📊 Dashboard</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 800, margin: 0, color: COLORS.primaryDark }}>📊 Dashboard</h2>
+          <button
+            title="Clear service-worker cache and reload the latest version"
+            style={{ fontSize: '12px', padding: '6px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', color: COLORS.textMuted, cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '5px' }}
+            onClick={async () => {
+              if ('serviceWorker' in navigator) {
+                const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
+                await Promise.all(regs.map(r => r.unregister()));
+              }
+              if ('caches' in window) {
+                const keys = await caches.keys().catch(() => []);
+                await Promise.all(keys.map(k => caches.delete(k)));
+              }
+              window.location.reload();
+            }}
+          >🔄 Hard Refresh</button>
+        </div>
         {(() => {
           const threshold = Number(settings.capitalLowThreshold) || DEFAULT_SETTINGS.capitalLowThreshold;
           if (secondaryLoading) return null;
