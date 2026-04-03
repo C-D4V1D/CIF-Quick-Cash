@@ -977,6 +977,29 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // USER PREFS: GET, PUT /api/user-prefs
+    // Persists per-user preferences (e.g. notification read IDs) in D1.
+    // ============================================================
+    if (path === 'user-prefs' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const key = `user_prefs_${auth.user.id}`;
+      const row = await db.prepare('SELECT value FROM settings WHERE key = ?').bind(key).first().catch(() => null);
+      return json(row ? JSON.parse(row.value) : {});
+    }
+    if (path === 'user-prefs' && method === 'PUT') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const data = await request.json();
+      const key = `user_prefs_${auth.user.id}`;
+      await db
+        .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')")
+        .bind(key, JSON.stringify(data))
+        .run();
+      return json({ success: true });
+    }
+
+    // ============================================================
     // TRANSACTIONS: GET, POST, PUT /api/transactions
     // ============================================================
     if (path === 'transactions' && method === 'GET') {

@@ -1,9 +1,19 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { COLORS } from '../theme';
 
 const READ_KEY = (uid) => `cfc_biz_notifs_read_${uid}`;
 const COUNT_KEY = (uid) => `cfc_unread_notif_count_${uid}`;
+const SYNC_DEBOUNCE_MS = 600;
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function seedReadIds(uid, ids) {
+  try {
+    const existing = new Set(JSON.parse(localStorage.getItem(READ_KEY(uid)) || '[]'));
+    const merged = new Set([...existing, ...ids]);
+    localStorage.setItem(READ_KEY(uid), JSON.stringify([...merged]));
+  } catch { /**/ }
+}
 
 const hasRole = (u, r) => u?.role === r || (u?.roles || []).includes(r);
 
@@ -414,6 +424,27 @@ export default function NotificationsPanel({
   const [tab, setTab] = useState('all');
   const [expandedId, setExpandedId] = useState(null);
   const [readIds, setReadIds] = useState(() => getReadIds(currentUser.id));
+  const syncTimerRef = useRef(null);
+
+  // On mount, fetch read IDs from backend and merge with any locally-stored ones so that
+  // "already-read" state is consistent across browsers and after new deployments.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/user-prefs', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(prefs => {
+        if (cancelled || !prefs?.notifReadIds?.length) return;
+        setReadIds(prev => {
+          const merged = new Set([...prev, ...prefs.notifReadIds]);
+          persistRead(currentUser.id, merged);
+          return merged;
+        });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  // Run once on mount; currentUser.id is stable for the lifetime of this component.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const notifs = useMemo(() =>
     buildNotifications({ currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, stakeholderCapitalData }),
@@ -440,6 +471,19 @@ export default function NotificationsPanel({
     return notifs;
   }, [notifs, tab, readIds]);
 
+  // Persist the current read-ID set to the backend (debounced to avoid per-keystroke writes).
+  const scheduleBackendSync = (ids) => {
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      fetch('/api/user-prefs', {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notifReadIds: [...ids] }),
+      }).catch(() => {});
+    }, SYNC_DEBOUNCE_MS);
+  };
+
   const markRead = (id) => {
     const next = new Set(readIds);
     next.add(id);
@@ -448,6 +492,7 @@ export default function NotificationsPanel({
     const newCount = notifs.filter(n => !next.has(n.id)).length;
     persistCount(currentUser.id, newCount);
     if (onUnreadChange) onUnreadChange(newCount);
+    scheduleBackendSync(next);
   };
 
   const markAllRead = () => {
@@ -456,6 +501,7 @@ export default function NotificationsPanel({
     persistRead(currentUser.id, all);
     persistCount(currentUser.id, 0);
     if (onUnreadChange) onUnreadChange(0);
+    scheduleBackendSync(all);
   };
 
   const handleClick = (n) => {
