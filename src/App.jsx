@@ -7381,6 +7381,8 @@ export default function App() {
       })
       .catch(() => {});
     return () => { cancelled = true; };
+  // Intentionally keyed on currentUser?.id only: this runs once per login to seed localStorage
+  // from the backend.  The badge-update effect (above) handles live data changes separately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
 
@@ -7732,7 +7734,7 @@ export default function App() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <h2 style={{ fontSize: '20px', fontWeight: 800, margin: 0, color: COLORS.primaryDark }}>📊 Dashboard</h2>
           <button
-            title="Clear service-worker cache and reload the latest version"
+            title="Clear service worker cache and reload the latest version"
             style={{ fontSize: '12px', padding: '6px 12px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, background: '#fff', color: COLORS.textMuted, cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '5px' }}
             onClick={async () => {
               if ('serviceWorker' in navigator) {

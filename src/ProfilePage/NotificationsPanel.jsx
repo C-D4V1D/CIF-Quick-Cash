@@ -4,6 +4,7 @@ import { COLORS } from '../theme';
 
 const READ_KEY = (uid) => `cfc_biz_notifs_read_${uid}`;
 const COUNT_KEY = (uid) => `cfc_unread_notif_count_${uid}`;
+const SYNC_DEBOUNCE_MS = 600;
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function seedReadIds(uid, ids) {
@@ -480,7 +481,7 @@ export default function NotificationsPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notifReadIds: [...ids] }),
       }).catch(() => {});
-    }, 600);
+    }, SYNC_DEBOUNCE_MS);
   };
 
   const markRead = (id) => {
