@@ -31,7 +31,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const serialImei = [tx.imei && `IMEI: ${tx.imei}`, tx.serialNumber && `S/N: ${tx.serialNumber}`]
     .filter(Boolean).join('     ');
   const interestRate = settings.interestRate ?? 1;
-  const dailyFee = tx.dailyFee ?? Math.floor((tx.cashAdvance || 0) * Number(interestRate) / 100);
+  const dailyFee = tx.dailyFee ?? Math.round((tx.cashAdvance || 0) * Number(interestRate) / 100);
   const loanDays = tx.loanDays || 30;
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const internalDeadlineDate = (() => {
@@ -225,7 +225,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div class="fee-box">
       <div style="margin-bottom:3px"><b>Daily Holding &amp; Service Fee Rate: &nbsp;${interestRate}% of the advance amount, per day</b></div>
       <div>Every new day that begins counts as a full day's fee.</div>
-      <div class="muted-italic">Example: Advance of ₦10,000 = ₦${Math.floor(10000 * interestRate / 100).toLocaleString()} fee per day.</div>
+      <div class="muted-italic">Example: Advance of ₦10,000 = ₦${Math.round(10000 * interestRate / 100).toLocaleString()} fee per day.</div>
       <div class="muted-italic">Your exact total will be calculated on the day you come to collect.</div>
     </div>
 
@@ -288,7 +288,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 // Build HTML for one outright purchase receipt copy (Business or Customer)
 // 2 pages per copy (4 total): page 1 = seller + item, page 2 = purchase + terms + signatures
 // ---------------------------------------------------------------------------
-const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffset) => {
+const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const idTypeDisplay = tx.idType === 'bvn' ? 'BVN' : 'NIN';
   const phones = (tx.phoneNumbers || []).filter(Boolean).join('     /     ');
   const familyLine = [tx.familyName, tx.familyRelation ? `(${tx.familyRelation})` : '', tx.familyPhone]
@@ -410,12 +410,8 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
     </div>
     ` : ''}
 
-    <div class="page-footer">Page <b>${pageOffset}</b> of <b>4</b></div>
-  </div>`;
+    <div class="hr-gold"></div>
 
-  // ── PAGE 2 (purchase details + terms + signatures + official use) ──
-  const page2 = `
-  <div class="page">
     <!-- PART C -->
     <div class="section-hdr">PART C — PURCHASE DETAILS</div>
 
@@ -434,7 +430,13 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
       <b>Outright permanent sale.</b> The seller receives the full amount above in cash today. No repayment is required. Ownership transfers immediately and permanently to Christ-in-Fabian Quick Cash.
     </div>
 
-    <div class="hr-gold"></div>
+    <div class="page-footer">${copyLabel} — Page <b>1</b> of <b>2</b></div>
+  </div>`;
+
+  // ── PAGE 2 (terms + signatures + official use) ──
+  const page2 = `
+  <div class="page">
+    <div style="font-size:9pt;color:#555;margin-bottom:10px"><b>${copyLabel}</b> &nbsp;·&nbsp; Ref: <b>${tx.ref || ''}</b> &nbsp;·&nbsp; Outright Purchase Receipt (continued)</div>
 
     <!-- PART D -->
     <div class="section-hdr">PART D — TERMS &nbsp;&nbsp;<span style="font-weight:400;font-size:10pt">(Read every clause aloud to the seller before signing)</span></div>
@@ -514,7 +516,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
     </table>
     ` : ''}
 
-    <div class="page-footer">Page <b>${pageOffset + 1}</b> of <b>4</b></div>
+    <div class="page-footer">${copyLabel} — Page <b>2</b> of <b>2</b></div>
   </div>`;
 
   return [page1, page2];
@@ -821,8 +823,8 @@ export async function generateAgreementPDF(tx, settings = {}) {
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
     const allPages = [
-      ...buildOutrightCopyHTML(tx, settings, 'BUSINESS COPY', true,  1),
-      ...buildOutrightCopyHTML(tx, settings, 'SELLER COPY',   false, 3),
+      ...buildOutrightCopyHTML(tx, settings, 'BUSINESS COPY', true),
+      ...buildOutrightCopyHTML(tx, settings, 'SELLER COPY',   false),
     ];
 
     for (let i = 0; i < allPages.length; i++) {
