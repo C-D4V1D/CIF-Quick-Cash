@@ -1,7 +1,8 @@
 // PrintAgreement.jsx
-// Generates a fully filled-in agreement form that precisely matches
-// Aguleri_Loan_Agreement_Form_v6.docx visual design.
-// Called from the Agreement step in App.jsx via: printAgreement(tx, settings)
+// Generates A4 PDFs for Outright Purchase Receipt and Cash Advance Agreement.
+// Uses jsPDF + html2canvas to produce a proper PDF (no browser print dialog).
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 
 const fmtDateLong = (d) => {
   if (!d) return '';
@@ -280,7 +281,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div class="panel panel-right">${page3Content}</div>
   </div>`;
 
-  return face1 + face2;
+  return [face1, face2];
 };
 
 // ---------------------------------------------------------------------------
@@ -516,26 +517,13 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy, pageOffs
     <div class="page-footer">Page <b>${pageOffset + 1}</b> of <b>4</b></div>
   </div>`;
 
-  return page1 + page2;
+  return [page1, page2];
 };
 
 // ---------------------------------------------------------------------------
-// Main export: open print window with the complete filled-in agreement
+// CSS for document rendering
 // ---------------------------------------------------------------------------
-export const printAgreement = (tx, settings = {}) => {
-  const isOutright = tx.type === 'outright';
-  const buildFn = isOutright ? buildOutrightCopyHTML : buildCopyHTML;
-  // Outright: 2 pages/copy → customer copy starts at page 3 (pageOffset used by outright only)
-  const customerPageOffset = isOutright ? 3 : 4;
-  const businessHTML = buildFn(tx, settings, 'BUSINESS COPY', true, 1);
-  const customerHTML = buildFn(tx, settings, isOutright ? 'SELLER COPY' : 'CUSTOMER COPY', false, customerPageOffset);
-
-  const fullHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<title>${isOutright ? 'Purchase Receipt' : 'Agreement'} — ${tx.ref || ''}</title>
-<style>
+const getDocumentCSS = (isOutright) => `
 /* === RESET === */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
@@ -547,29 +535,24 @@ body{
   line-height: 1.35;
 }
 
-/* === PAGE (outright portrait layout) === */
+/* === PAGE (outright portrait — A4 at 96dpi) === */
 .page{
-  width: 8.5in;
-  min-height: 11in;
+  width: 794px;
+  min-height: 1123px;
   padding: 0.6in 0.7in 0.55in 0.7in;
-  page-break-after: always;
   position: relative;
   background: #fff;
 }
-.page:last-child{ page-break-after: auto; }
 
-/* === FOLDED A4 BOOKLET (advance agreement) === */
+/* === FOLDED A4 BOOKLET (advance agreement — A4 landscape at 96dpi) === */
 .sheet-face{
   display: flex;
-  width: 297mm;
-  height: 210mm;
-  margin: 0 auto 24px auto;
-  page-break-after: always;
+  width: 1123px;
+  height: 794px;
+  margin: 0;
   overflow: hidden;
   background: #fff;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.15);
 }
-.sheet-face:last-child{ page-break-after: auto; }
 .panel{
   width: 50%;
   height: 100%;
@@ -617,15 +600,6 @@ body{ font-size:8pt; line-height:1.25; }
 .photo-note{ font-size:7pt; padding:2px 7px; margin-top:4px; }
 .official-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
 ` : ''}
-
-@media print{
-  ${isOutright ? `@page{ size: letter; margin: 0; }` : `@page{ size: A4 landscape; margin: 0; }`}
-  .no-print{ display:none!important; }
-  ${isOutright
-    ? `.page{ width:100%; min-height:100vh; padding: 0.6in 0.7in 0.55in 0.7in; }`
-    : `.sheet-face{ width:100%; height:100vh; margin:0; box-shadow:none; }`
-  }
-}
 
 /* === HEADER === */
 .hdr-tbl{ width:100%; border-collapse:collapse; margin-bottom:16px; }
@@ -789,72 +763,104 @@ body{ font-size:8pt; line-height:1.25; }
   position: absolute; bottom: 0.45in; right: 0.7in;
   font-size: 10pt; color: #333; text-align: right;
 }
+`;
 
-/* === PRINT CONTROLS (screen only) === */
-.print-controls{
-  position: sticky; top: 0; z-index: 9999;
-  background: #f8f9fa; border-bottom: 2px solid #ddd;
-  padding: 10px 20px;
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-}
-.print-btn{
-  background: #1a5f2a; color: #fff; border: none;
-  padding: 14px 24px; font-size: 15px; font-weight: 700;
-  border-radius: 8px; cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-}
-.print-btn:hover{ background: #0d3518; }
-.close-btn{
-  background: #666; color: #fff; border: none;
-  padding: 10px 24px; font-size: 13px; font-weight: 600;
-  border-radius: 8px; cursor: pointer;
-}
-.close-btn:hover{ background: #444; }
-.form-divider{
-  border-top: 4px dashed #bbb; margin: 0;
-  text-align: center; font-size: 10pt; color: #888;
-  padding: 8px 0; background: #f0f0f0;
-}
-@media print{
-  .print-controls{ display: none; }
-  .form-divider{ display: none; }
-}
-</style>
-</head>
-<body>
+// ---------------------------------------------------------------------------
+// Render one page's HTML off-screen and capture it as a JPEG data URL
+// widthPx / heightPx are the A4 dimensions in CSS pixels at 96dpi
+// ---------------------------------------------------------------------------
+async function capturePageHTML(contentHTML, css, widthPx, heightPx) {
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = [
+    'position:fixed',
+    `left:${-(widthPx + 20)}px`,
+    'top:0',
+    `width:${widthPx}px`,
+    `height:${heightPx}px`,
+    'overflow:hidden',
+    'background:#fff',
+  ].join(';');
 
-<!-- Screen-only controls -->
-<div class="print-controls no-print">
-  <button class="print-btn" onclick="window.print()">🖨 Print ${isOutright ? 'Receipt' : 'Agreement'}</button>
-  ${!isOutright ? `
-  <span style="font-size:11px;color:#555;line-height:1.5">
-    <b>How to print &amp; fold:</b>
-    &nbsp;1. Set <b>Landscape</b> + <b>two-sided / duplex</b> (<i>flip on short edge</i>) — or print page 1, re-insert, print page 2.
-    &nbsp;2. <b>Fold each sheet</b> right over left.
-    &nbsp;3. Two booklets: <b>Business Copy</b> + <b>Customer Copy</b>.
-  </span>` : ''}
-  <button class="close-btn" onclick="window.close()">✕ Close</button>
-</div>
+  const styleEl = document.createElement('style');
+  styleEl.textContent = css;
+  wrapper.appendChild(styleEl);
 
-<!-- BUSINESS COPY (pages 1–3) -->
-${businessHTML}
+  const contentEl = document.createElement('div');
+  contentEl.innerHTML = contentHTML;
+  wrapper.appendChild(contentEl);
 
-<div class="form-divider no-print">✂ — — — BUSINESS COPY booklet above / ${isOutright ? 'SELLER' : 'CUSTOMER'} COPY booklet below — — — ✂</div>
-
-<!-- CUSTOMER COPY -->
-${customerHTML}
-
-</body>
-</html>`;
-
-  const win = window.open('', '_blank', 'width=960,height=900');
-  if (!win) {
-    alert('Please allow pop-ups for this site to print the agreement.');
-    return;
+  document.body.appendChild(wrapper);
+  try {
+    const canvas = await html2canvas(wrapper, {
+      width: widthPx,
+      height: heightPx,
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+      windowWidth: widthPx,
+      windowHeight: heightPx,
+    });
+    return canvas.toDataURL('image/jpeg', 0.93);
+  } finally {
+    document.body.removeChild(wrapper);
   }
-  win.document.write(fullHTML);
-  win.document.close();
-  setTimeout(() => { win.focus(); }, 400);
-};
+}
 
-export default printAgreement;
+// ---------------------------------------------------------------------------
+// Build a jsPDF document for the given transaction
+// Returns a jsPDF instance (caller can view or download it)
+// ---------------------------------------------------------------------------
+export async function generateAgreementPDF(tx, settings = {}) {
+  const isOutright = tx.type === 'outright';
+  const css = getDocumentCSS(isOutright);
+
+  if (isOutright) {
+    // A4 portrait: 210mm × 297mm  →  794px × 1123px at 96dpi
+    const W = 794, H = 1123;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+
+    const allPages = [
+      ...buildOutrightCopyHTML(tx, settings, 'BUSINESS COPY', true,  1),
+      ...buildOutrightCopyHTML(tx, settings, 'SELLER COPY',   false, 3),
+    ];
+
+    for (let i = 0; i < allPages.length; i++) {
+      if (i > 0) pdf.addPage();
+      const imgData = await capturePageHTML(allPages[i], css, W, H);
+      pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+    }
+    return pdf;
+
+  } else {
+    // A4 landscape: 297mm × 210mm  →  1123px × 794px at 96dpi
+    const W = 1123, H = 794;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+
+    const allFaces = [
+      ...buildCopyHTML(tx, settings, 'BUSINESS COPY',  true),
+      ...buildCopyHTML(tx, settings, 'CUSTOMER COPY',  false),
+    ];
+
+    for (let i = 0; i < allFaces.length; i++) {
+      if (i > 0) pdf.addPage();
+      const imgData = await capturePageHTML(allFaces[i], css, W, H);
+      pdf.addImage(imgData, 'JPEG', 0, 0, 297, 210);
+    }
+    return pdf;
+  }
+}
+
+// Open the generated PDF in a new browser tab
+export async function viewAgreementPDF(tx, settings = {}) {
+  const pdf = await generateAgreementPDF(tx, settings);
+  const url = pdf.output('bloburl');
+  window.open(url, '_blank');
+}
+
+// Trigger a file download for the generated PDF
+export async function downloadAgreementPDF(tx, settings = {}) {
+  const pdf = await generateAgreementPDF(tx, settings);
+  const isOutright = tx.type === 'outright';
+  pdf.save(`${isOutright ? 'Receipt' : 'Agreement'}_${tx.ref || 'doc'}.pdf`);
+}

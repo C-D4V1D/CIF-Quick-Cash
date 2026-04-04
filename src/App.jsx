@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
-import { printAgreement } from './PrintAgreement.jsx';
+import { viewAgreementPDF, downloadAgreementPDF } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
 import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
@@ -4255,6 +4255,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   // can review / edit the pre-populated entry before it is saved to the declined log.
   // Shape: { date, item, reason, notes, onAfter } | null
   const [wizDeclineModal, setWizDeclineModal] = useState(null);
+  const [pdfLoading, setPdfLoading] = useState(false);
   const saveTimer = useRef(null);
 
   const isMobile = useMobile();
@@ -5345,7 +5346,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         })()}
         <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect. <InfoIcon tip="Collect this flat fee from the customer today, on top of the cash you're giving them. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
-      case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>{tx.type === 'outright' ? 'Print Receipt' : 'Print Agreement'}</strong> — a filled-in form will open in a new window ready to print. Load plain paper in your printer, click the Print button in that window, and it prints both the Business Copy and {tx.type === 'outright' ? 'Seller Copy' : 'Customer Copy'} with all the transaction data already filled in. Read every clause aloud to the {tx.type === 'outright' ? 'seller' : 'customer'}. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
+      case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>{tx.type === 'outright' ? 'View / Download Receipt PDF' : 'View / Download Agreement PDF'}</strong> to generate a properly formatted A4 PDF — both the Business Copy and {tx.type === 'outright' ? 'Seller Copy' : 'Customer Copy'} are included. Open it, then print from your PDF viewer (set paper to <strong>A4</strong>). Read every clause aloud to the {tx.type === 'outright' ? 'seller' : 'customer'}. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
       <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
         <div style={{ textAlign: 'center', marginBottom: '16px' }}>
           <div style={{ fontSize: '16px', fontWeight: 800 }}>CHRIST-IN-FABIAN QUICK CASH</div>
@@ -5365,12 +5366,22 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           {tx.type === 'advance' && <><strong>Date Given:</strong><span>{fmtDate(tx.dateGiven)}</span><strong>Deadline:</strong><span>{fmtDate(tx.deadlineDate)}</span><strong>Daily Fee:</strong><span>{fmtMoney(dailyFeeCalc)}/day</span></>}
         </div>
       </div>
-      <button
-        style={{ ...S.btn('accent'), marginTop: '16px', padding: '12px 24px', fontSize: '15px' }}
-        onClick={() => printAgreement(tx, settings)}
-      >
-        🖨 {tx.type === 'outright' ? 'Print Receipt (Both Copies)' : 'Print Agreement (Both Copies)'}
-      </button>
+      <div style={{ display: 'flex', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
+        <button
+          style={{ ...S.btn('accent'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
+          disabled={pdfLoading}
+          onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
+        >
+          {pdfLoading ? '⏳ Generating PDF…' : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
+        </button>
+        <button
+          style={{ ...S.btn('outline'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
+          disabled={pdfLoading}
+          onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
+        >
+          ⬇ Download PDF
+        </button>
+      </div>
       <div style={{ marginTop: '16px' }}>
         <PhotoUpload label="Photo of Signing / Thumbprint" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} />
       </div>
