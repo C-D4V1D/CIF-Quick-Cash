@@ -2154,7 +2154,7 @@ function ItemValuationPage({ onBack, settings }) {
               <div style={{ background: '#064e3b', border: '2px solid #10b981', borderRadius: '14px', padding: '24px', textAlign: 'center', marginBottom: '16px' }}>
                 <div style={{ fontSize: '32px', marginBottom: '8px' }}>🎉</div>
                 {result.itemSummary && (
-                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#fff', marginBottom: '6px', lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#e5e7eb', marginBottom: '6px', lineHeight: 1.5 }}>
                     {result.itemSummary}
                   </div>
                 )}
@@ -2164,7 +2164,7 @@ function ItemValuationPage({ onBack, settings }) {
                   </div>
                 )}
 
-                <div style={{ fontWeight: 700, fontSize: '14px', color: '#fff', marginBottom: '8px' }}>
+                <div style={{ fontWeight: 700, fontSize: '14px', color: '#d1d5db', marginBottom: '8px' }}>
                   If you come to our shop, you could get:
                 </div>
 
