@@ -4841,7 +4841,7 @@ CRITICAL INSTRUCTION: Reply ONLY in this exact format (no numbered prefixes, no 
 
 AI_ITEM_TYPE: [what the item is]
 BRAND: [brand name]
-MODEL: [exact model name and number as it appears on the device, e.g. iPhone 14 Pro Max or Galaxy S23 Ultra]
+MODEL: [exact model name and number — do NOT include the brand name, e.g. Charge 5, iPhone 14 Pro Max, Galaxy S23 Ultra]
 KEY_SPECS: [start with the most important spec that makes this item unique, then add value/grade indicators like storage, RAM, screen size, generation, capacity — use up to 15 words]
 COLOUR: [colour(s)]
 CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
@@ -4941,7 +4941,7 @@ Reply in this exact format (no markdown, no extra text):
 
 AI_ITEM_TYPE: ${identItemType}
 BRAND: [confirmed or corrected brand]
-MODEL: [the VERIFIED real model name/number]
+MODEL: [the VERIFIED real model name/number — do NOT include the brand name]
 KEY_SPECS: [confirmed or corrected specs — start with the most important differentiating spec, then value/grade indicators — use up to 15 words]
 COLOUR: [colour]
 CONFIDENCE: [your confidence now, as percentage]
@@ -5498,7 +5498,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
             </button>
             {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
             {tx.aiSpecsUnreadable && <div style={{ ...S.alert('warning'), marginTop: '8px' }}>⚠️ <strong>Specs unreadable:</strong> {tx.aiSpecsUnreadable}</div>}
-            {tx.aiVisionUsed && <div style={{ ...S.alert('info'), marginTop: '8px' }}>🔍 <strong>Google Lens used</strong> — shopping-first reverse image search helped refine identification.{tx.aiVisionLabels && <span style={{ display: 'block', fontSize: '11px', marginTop: '4px', color: COLORS.textMuted }}>Top matches: {tx.aiVisionLabels}</span>}</div>}
+            {tx.aiVisionUsed && <div style={{ ...S.alert('info'), marginTop: '8px' }}>🔍 <strong>Google Lens used</strong> — reverse image search helped refine identification.</div>}
 
             {/* Editable fields — always visible */}
             <div style={{ ...S.grid2, marginTop: '12px' }}>
