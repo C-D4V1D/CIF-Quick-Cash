@@ -2051,7 +2051,6 @@ function EstimatePage({ onBack, settings }) {
                           ref={fileInputRefs[idx]}
                           type="file"
                           accept="image/*"
-                          capture="environment"
                           style={{ display: 'none' }}
                           onChange={e => handlePhotoChange(idx, e)}
                         />
@@ -6050,7 +6049,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
           <button type="button" style={{ ...S.btnSm('secondary'), display: 'flex', alignItems: 'center', gap: '4px' }} onClick={() => salePhotoFileRef.current?.click()} disabled={salePhotoUploading}>
             {salePhotoUploading ? 'Uploading…' : '+ Add Photo'}
           </button>
-          <input ref={salePhotoFileRef} type="file" accept="image/*" capture="environment" onChange={handleAddSalePhoto} style={{ display: 'none' }} />
+          <input ref={salePhotoFileRef} type="file" accept="image/*" onChange={handleAddSalePhoto} style={{ display: 'none' }} />
         </div>
         <Field label="Note" style={{ marginTop: '10px' }}>
           <textarea style={{ ...S.input, minHeight: '64px', resize: 'vertical' }} value={salePhotoNote} onChange={e => setSalePhotoNote(e.target.value)} placeholder="e.g. Battery cover missing since intake. New scratch on left edge from storage." />
