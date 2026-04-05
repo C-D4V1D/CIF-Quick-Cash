@@ -2154,8 +2154,8 @@ function ItemValuationPage({ onBack, settings }) {
               <div style={{ background: '#064e3b', border: '2px solid #10b981', borderRadius: '14px', padding: '24px', textAlign: 'center', marginBottom: '16px' }}>
                 <div style={{ fontSize: '32px', marginBottom: '8px' }}>🎉</div>
                 {result.itemSummary && (
-                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#e5e7eb', marginBottom: '6px', lineHeight: 1.5 }}>
-                    {result.itemSummary}
+                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#fff', marginBottom: '6px', lineHeight: 1.5 }}>
+                    {result.itemSummary.length > 120 ? result.itemSummary.slice(0, 117) + '…' : result.itemSummary}
                   </div>
                 )}
                 {result.conditionNotes && (
@@ -2172,31 +2172,26 @@ function ItemValuationPage({ onBack, settings }) {
                   {result.advanceLow > 0 ? `${fmt(result.advanceLow)} – ${fmt(result.advanceHigh)}` : '—'}
                 </div>
 
-                {result.priceLow > 0 && (
-                  <div style={{ fontSize: '13px', color: '#a7f3d0', opacity: 0.85 }}>
-                    (Estimated resale value: {fmt(result.priceLow)} – {fmt(result.priceHigh)})
+                {result.newMarketPrice > 0 && (
+                  <div style={{ fontSize: '13px', color: '#a7f3d0', opacity: 0.9 }}>
+                    Current New Price: {fmt(result.newMarketPrice)}
                   </div>
                 )}
               </div>
 
-              {/* Confidence + new price badges */}
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                {result.confidence && (
+              {/* Confidence badge */}
+              {result.confidence && (
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
                   <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
                     🎯 Confidence: {result.confidence}
                   </span>
-                )}
-                {result.newMarketPrice > 0 && (
-                  <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
-                    🏷 New price: {fmt(result.newMarketPrice)}
-                  </span>
-                )}
-              </div>
+                </div>
+              )}
 
               {/* How we got this number */}
               {result.priceBasis && (
                 <div style={{ background: '#1e2433', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px', fontSize: '13px', color: '#b0b8c4', lineHeight: 1.5 }}>
-                  <span style={{ fontWeight: 600, color: '#9ca3af' }}>📊 How we got this number: </span>{result.priceBasis}
+                  <span style={{ fontWeight: 700, color: '#fff' }}>📊 How we got this number: </span>{(result.priceBasis.split('.')[0] + '.').replace(/\.\.$/, '.')}
                 </div>
               )}
 
