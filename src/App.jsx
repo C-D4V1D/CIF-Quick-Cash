@@ -2012,8 +2012,8 @@ function ItemValuationPage({ onBack, settings }) {
           <button onClick={onBack} style={{ background: 'none', border: 'none', color: '#a7f3d0', fontSize: '15px', cursor: 'pointer', padding: '0 0 12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
             ← Back
           </button>
-          <h1 style={{ fontSize: 'clamp(20px,5vw,26px)', fontWeight: 800, margin: '0 0 6px' }}>How much can I get?</h1>
-          <p style={{ margin: 0, fontSize: '15px', opacity: 0.88 }}>Tell us about your item and we will give you a price range — for free, no login needed.</p>
+          <h1 style={{ fontSize: 'clamp(20px,5vw,26px)', fontWeight: 800, margin: '0 0 6px' }}>How Much Can You Get?</h1>
+          <p style={{ margin: 0, fontSize: '15px', opacity: 0.88 }}>Tell us about your item and add some photos — we will show you a close estimate of what you can get when you come to our shop.</p>
         </div>
 
         <div style={{ padding: '24px 16px 48px' }}>
@@ -2118,15 +2118,22 @@ function ItemValuationPage({ onBack, settings }) {
                 cursor: canSubmit ? 'pointer' : 'not-allowed', minHeight: '56px', transition: 'background 0.2s',
               }}
             >
-              {loading ? '⏳ Checking prices…' : '💰 Find Out How Much I Can Get →'}
+              {loading ? '⏳ Checking your item…' : '💰 Show Me How Much I Can Get'}
             </button>
           )}
 
-          {/* Loading message */}
+          {/* Loading state */}
           {loading && (
-            <div style={{ textAlign: 'center', marginTop: '20px', color: '#9ca3af', fontSize: '15px' }}>
-              <div style={{ marginBottom: '8px', fontSize: '24px' }}>🔍</div>
-              {loadingMsg}
+            <div style={{ marginTop: '24px' }}>
+              <div style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '16px', padding: '40px 24px', textAlign: 'center' }}>
+                <div style={{ fontSize: '44px', marginBottom: '16px' }}>⏳</div>
+                <div style={{ fontWeight: 800, fontSize: '20px', color: '#fff', lineHeight: 1.4 }}>
+                  Checking your item, please wait…
+                </div>
+              </div>
+              <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '14px', marginTop: '16px' }}>
+                This check is free. No registration needed.
+              </div>
             </div>
           )}
 
@@ -2149,39 +2156,52 @@ function ItemValuationPage({ onBack, settings }) {
           {/* RESULT */}
           {result && !loading && (
             <div ref={resultRef} style={{ marginTop: '28px' }}>
-              <div style={{ fontWeight: 800, fontSize: '19px', marginBottom: '6px', color: '#4ade80' }}>✅ Here is your estimate!</div>
-              <div style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '20px' }}>Based on what people are currently paying for this type of item in Nigeria.</div>
 
-              {/* Two cards */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-                {/* Cash Advance card */}
-                <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '14px', padding: '18px 14px' }}>
-                  <div style={{ fontWeight: 800, color: '#4ade80', fontSize: '13px', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Cash Advance</div>
-                  <div style={{ fontWeight: 800, fontSize: 'clamp(16px,4vw,22px)', color: '#fff', lineHeight: 1.2, marginBottom: '10px' }}>
-                    {result.advanceLow > 0 ? `${fmt(result.advanceLow)} – ${fmt(result.advanceHigh)}` : '—'}
+              {/* Main green result card */}
+              <div style={{ background: '#1a3d22', border: '2px solid #4ade80', borderRadius: '16px', padding: '24px 20px', marginBottom: '16px', textAlign: 'center' }}>
+                {/* Item + condition */}
+                {result.itemSummary && (
+                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#e5e7eb', marginBottom: '8px', lineHeight: 1.5 }}>
+                    {result.itemSummary}
                   </div>
-                  <div style={{ fontSize: '12px', color: '#a7f3d0', lineHeight: 1.5 }}>Leave your item with us, collect cash today. Come back within 30 days, pay us back, and take your item home.</div>
+                )}
+                {result.conditionNotes && (
+                  <div style={{ fontSize: '13px', color: '#a7f3d0', marginBottom: '20px', lineHeight: 1.6 }}>
+                    {result.conditionNotes}
+                  </div>
+                )}
+
+                <div style={{ fontWeight: 700, fontSize: '15px', color: '#fff', marginBottom: '10px' }}>
+                  If you come to our shop, you could get:
                 </div>
 
-                {/* Outright Sale card */}
-                <div style={{ background: '#3d2e00', border: `1.5px solid ${GOLD}`, borderRadius: '14px', padding: '18px 14px' }}>
-                  <div style={{ fontWeight: 800, color: '#fbbf24', fontSize: '13px', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Outright Sale</div>
-                  <div style={{ fontWeight: 800, fontSize: 'clamp(16px,4vw,22px)', color: '#fff', lineHeight: 1.2, marginBottom: '10px' }}>
-                    {result.priceLow > 0 ? `${fmt(result.priceLow)} – ${fmt(result.priceHigh)}` : '—'}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#fde68a', lineHeight: 1.5 }}>Sell your item to us on the spot. We pay you and keep the item — no need to return.</div>
+                {/* Big advance range */}
+                <div style={{ fontWeight: 900, fontSize: 'clamp(28px,8vw,42px)', color: '#4ade80', lineHeight: 1.1, marginBottom: '10px' }}>
+                  {result.advanceLow > 0 ? `${fmt(result.advanceLow)} – ${fmt(result.advanceHigh)}` : '—'}
                 </div>
+
+                {/* Resale value subtext */}
+                {result.priceLow > 0 && (
+                  <div style={{ fontSize: '13px', color: '#a7f3d0' }}>
+                    (Estimated resale value of your item: {fmt(result.priceLow)} – {fmt(result.priceHigh)})
+                  </div>
+                )}
               </div>
 
-              {/* Price basis */}
+              {/* How we got this number */}
               {result.priceBasis && (
-                <div style={{ background: '#111827', border: '1px solid #2a3447', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '13px', color: '#d1d5db', lineHeight: 1.6 }}>
-                  <span style={{ fontWeight: 700, color: '#9ca3af' }}>How we calculated this: </span>{result.priceBasis}
+                <div style={{ background: '#111827', border: '1px solid #2a3447', borderRadius: '10px', padding: '14px', marginBottom: '12px', fontSize: '13px', color: '#d1d5db', lineHeight: 1.6 }}>
+                  <span style={{ fontWeight: 700, color: '#9ca3af' }}>📊 How we got this number: </span>{result.priceBasis}
                 </div>
               )}
 
-              {/* Confidence + new price */}
-              <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
+              {/* Disclaimer */}
+              <div style={{ background: '#1c0a00', border: '1px solid #78350f', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px', fontSize: '13px', color: '#fde68a', lineHeight: 1.6 }}>
+                ⚠️ <strong style={{ color: '#fbbf24' }}>Please note:</strong> This is only an estimate — not a final offer. The actual amount depends on the real condition of your item when our staff check it in person. Bring your item and a valid ID to our shop for the exact amount.
+              </div>
+
+              {/* Confidence + new price badges */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>
                 {result.confidence && (
                   <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
                     🎯 Confidence: {result.confidence}
@@ -2194,32 +2214,59 @@ function ItemValuationPage({ onBack, settings }) {
                 )}
               </div>
 
-              {/* Disclaimer */}
-              <div style={{ background: '#0f1724', border: '1px solid #1e2b40', borderRadius: '10px', padding: '12px 14px', marginBottom: '24px', fontSize: '13px', color: '#6b7280', lineHeight: 1.6 }}>
-                ⚠️ <strong style={{ color: '#9ca3af' }}>These are estimates only.</strong> The actual amount you get depends on the real condition of your item when our staff inspects it in person. Items with damage or missing parts may get less.
-              </div>
-
-              {/* CTA */}
-              <div style={{ background: '#111827', borderRadius: '12px', padding: '20px', textAlign: 'center' }}>
-                <div style={{ fontWeight: 800, fontSize: '16px', marginBottom: '6px' }}>Ready to come in?</div>
-                <div style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '16px' }}>Bring your item to our shop and we will check it for you — no appointment needed.</div>
-                <div style={{ color: '#e5e7eb', fontSize: '14px', marginBottom: '16px', lineHeight: 1.7 }}>
-                  📍 {address}<br />
-                  📞 <a href={`tel:${phone1}`} style={{ color: '#4ade80' }}>{phone1}</a>
-                  {phone2 && <> / <a href={`tel:${phone2}`} style={{ color: '#4ade80' }}>{phone2}</a></>}
+              {/* CTA section */}
+              <div style={{ background: '#111827', border: '1px solid #2a3447', borderRadius: '16px', padding: '24px 20px' }}>
+                <div style={{ fontWeight: 800, fontSize: '18px', marginBottom: '6px', textAlign: 'center' }}>
+                  Ready? Come to our shop today! 🏃
                 </div>
+                <div style={{ fontSize: '14px', color: '#d1d5db', marginBottom: '20px', textAlign: 'center', lineHeight: 1.6 }}>
+                  Bring your item + your NIN number <strong style={{ color: '#fff' }}>(dial *346# to get it)</strong>
+                </div>
+
+                {/* Address */}
+                <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '16px', textAlign: 'center', lineHeight: 1.5 }}>
+                  📍 {address}
+                </div>
+
+                {/* WhatsApp */}
                 <a
                   href={`https://wa.me/${whatsApp}?text=${encodeURIComponent(`Hello, I just checked the estimate for my ${selectedType} on your website. I'd like to come in.`)}`}
                   target="_blank" rel="noopener noreferrer"
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25d366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: '10px' }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25d366', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 800, fontSize: '16px', marginBottom: '10px' }}
                 >
-                  💬 Chat with us on WhatsApp
+                  💬 Chat with Us on WhatsApp
                 </a>
+
+                {/* Phone buttons */}
+                <a
+                  href={`tel:${phone1}`}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: phone2 ? '8px' : '16px' }}
+                >
+                  📞 Call Us: {phone1}
+                </a>
+                {phone2 && (
+                  <a
+                    href={`tel:${phone2}`}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: '16px' }}
+                  >
+                    📞 Call Us: {phone2}
+                  </a>
+                )}
+
+                {/* Check another item */}
                 <button
                   onClick={() => { setResult(null); setSelectedType(''); setDescription(''); setPhotos([null,null,null]); setErrorMsg(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  style={{ background: 'none', border: '1px solid #2a3447', borderRadius: '10px', color: '#9ca3af', padding: '12px 20px', fontSize: '14px', cursor: 'pointer', width: '100%' }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'none', border: '1.5px solid #2a3447', borderRadius: '12px', color: '#9ca3af', padding: '14px', fontSize: '15px', cursor: 'pointer', width: '100%', marginBottom: '12px', fontWeight: 600 }}
                 >
-                  Check another item
+                  ← Check Another Item
+                </button>
+
+                {/* Back to home */}
+                <button
+                  onClick={onBack}
+                  style={{ display: 'block', background: 'none', border: 'none', color: '#4b5563', fontSize: '14px', cursor: 'pointer', textDecoration: 'underline', padding: '4px', width: '100%', textAlign: 'center' }}
+                >
+                  ← Back to Home
                 </button>
               </div>
             </div>

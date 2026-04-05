@@ -3294,42 +3294,51 @@ export async function onRequest(context) {
           }
         }
 
-        // Build Gemini prompt
-        const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria.
-A customer wants to know how much they can get for their item before visiting our shop.
-We need the fair resale price so we can sell this item within 14 days.
+        // Build Gemini prompt — mirrors handleAIRun3 in TransactionWizard as closely as possible
+        const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 14 days.
 
-CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency.
+CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices in other currencies, convert them to Naira at the current exchange rate.
 
 Item details:
 * Type: ${itemType.trim()}
-* Description from customer: ${description.trim()}
+* Customer description: ${description.trim()}
 
 Instructions:
-1. Search Jumia.com.ng and Konga.com for the BRAND NEW retail price of this exact item (or the closest match) in Nigeria TODAY.
+1. Identify the exact brand and model from the description and photos. If unrecognisable, use your best estimate.
 
-2. Search Jiji.ng and Facebook Marketplace Nigeria for the current used/second-hand selling price of this item.
-   CRITICAL ANTI-SCAM RULE:
-   - Sort listings by price from lowest to highest
-   - Throw away the cheapest 20% of listings — these are usually scam bait
-   - From the remaining 80%, use the MEDIAN price (middle value, not the average)
+2. Search Jumia.com.ng and Konga.com or similar Nigerian online stores for the BRAND NEW retail price of this exact model in Nigeria TODAY. (If this is a generic/unbranded Chinese item, search for equivalent items with similar specs).
 
-3. Adjust for the condition the customer described.
+3. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities.
 
-4. Give the realistic price range we can sell this item for in Aguleri within 14 days.
-   - Good condition: 50–75% of brand new price
-   - Fair condition: 35–55% of brand new price
-   - Do NOT lowball. Give the best realistic price a buyer will pay within 2 weeks.
-   - Prices in Aguleri/Anambra are comparable to Onitsha and Lagos.
+CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
+- Sort all listings for this item by price from lowest to highest
+- Throw away the cheapest 20% of listings — these are usually scam bait
+- From the remaining 80%, find the MEDIAN price (the middle value, not the average)
+- Use this median as your base for the used price
 
-5. If the customer description is too vague to identify the exact item, give a wider price range.
+4. Use those prices as your base. Then adjust for:
+   - The item condition based on the customer's description and photos
+   - Current supply/demand — if this item is very common in resale markets, price competitively; if rare, price slightly higher
+   - Age of the model — older models lose value faster
 
-Reply in this exact format only (no markdown, no numbered prefixes, no extra text):
+IMPORTANT PRICING CONTEXT:
+- Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
+- We need to sell this item within 14 days, so price it to move — but do NOT undervalue it. We want the best realistic price a buyer will pay within 2 weeks, not a desperate clearance price.
+- Second-hand items in good working condition typically sell for 50-75% of brand new price. Items in fair condition sell for 35-55% of brand new price.
+- Do NOT lowball. If the brand new price is ₦50,000 and the item is in good condition, the used price should be around ₦25,000-₦37,500 — not ₦10,000.
+
+5. Give me the realistic price we can sell this item for in Aguleri within 14 days. This should be a fair market price — not inflated, not deflated.
+
+6. Use simple everyday English. No big words.
+
+Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
+ITEM_SUMMARY: [1-2 sentence plain-English description of what this item is — brand, model, and key specs]
+CONDITION_NOTES: [1-2 sentences on the item's condition based on the description and photos]
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
-PRICE_BASIS: [2 to 3 short sentences — what new price and used prices you found, and how you calculated your estimate]
-NEW_MARKET_PRICE: [number only — brand new price in Nigeria, or 0 if not found]
-PRICE_RANGE: [lowest realistic price – highest realistic price, e.g. 45000-60000]
-VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 75% — higher if you found real price data, lower if you had to estimate]`;
+PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
+NEW_MARKET_PRICE: [number only — the brand new price in Nigeria, or 0 if not found]
+PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
+VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if you found real price data, lower if you had to estimate]`;
 
         // Build Gemini request parts (prompt + photos)
         const parts = [{ text: prompt }];
@@ -3406,6 +3415,8 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 75% — higher if y
         }
 
         // Parse AI response
+        const itemSummary = parseField(responseText, 'ITEM_SUMMARY');
+        const conditionNotes = parseField(responseText, 'CONDITION_NOTES');
         const estimatedValueStr = parseField(responseText, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
         const newMarketPriceStr = parseField(responseText, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
         const priceBasis = parseField(responseText, 'PRICE_BASIS');
@@ -3435,6 +3446,8 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 75% — higher if y
           newMarketPrice,
           confidence,
           priceBasis,
+          itemSummary,
+          conditionNotes,
         });
       } catch (e) {
         console.error('Public valuation error:', e);
