@@ -1701,7 +1701,7 @@ function PartnershipFootnote({ dark = false }) {
 // ============================================================
 // LANDING PAGE
 // ============================================================
-function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
+function LandingPage({ onCheckLoan, onStaffLogin, onShop, onEstimate, settings }) {
   const s = settings || {};
   const phone1 = s.shopPhone1 ?? '08165491908';
   const phone2 = s.shopPhone2 ?? '09023540646';
@@ -1764,6 +1764,12 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
               style={{ background: '#c8a84e', color: '#fff', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%' }}
             >
               🛍 Browse Items for Sale
+            </button>
+            <button
+              onClick={onEstimate}
+              style={{ background: 'rgba(255,255,255,0.15)', color: '#fff', border: '2px solid rgba(255,255,255,0.5)', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', width: '100%' }}
+            >
+              💰 Find Out What Your Item Is Worth
             </button>
           </div>
         </div>
@@ -1863,6 +1869,298 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
           >
             Staff / Admin Login
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PUBLIC PRICE ESTIMATE PAGE
+// ============================================================
+const ESTIMATE_ITEM_TYPES = [
+  'Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank',
+  'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Motorcycle', 'Other',
+];
+
+function EstimatePage({ onBack, settings }) {
+  const s = settings || {};
+  const phone1 = s.shopPhone1 ?? '08165491908';
+  const whatsApp = s.shopWhatsApp ?? '2348165491908';
+  const businessName = s.businessName || 'CIF Quick Cash';
+
+  const [itemType, setItemType] = useState('');
+  const [description, setDescription] = useState('');
+  const [photos, setPhotos] = useState([null, null, null]); // up to 3 slots
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const fileInputRefs = [useRef(null), useRef(null), useRef(null)];
+
+  const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+
+  const handlePhotoChange = (idx, e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) { setErrorMsg('That photo is too big. Please use a photo under 10 MB.'); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target.result || '';
+      const [meta, data] = dataUrl.split(',');
+      const mime = meta?.match(/^data:([^;]+)/i)?.[1] || 'image/jpeg';
+      const newPhotos = [...photos];
+      newPhotos[idx] = { mime_type: mime, data };
+      setPhotos(newPhotos);
+      setErrorMsg('');
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemovePhoto = (idx) => {
+    const newPhotos = [...photos];
+    newPhotos[idx] = null;
+    setPhotos(newPhotos);
+    if (fileInputRefs[idx].current) fileInputRefs[idx].current.value = '';
+  };
+
+  const handleSubmit = async () => {
+    setErrorMsg('');
+    setResult(null);
+    if (!itemType) { setErrorMsg('Please choose the type of item first.'); return; }
+    const filledPhotos = photos.filter(Boolean);
+    if (filledPhotos.length === 0) { setErrorMsg('Please add at least one clear photo of your item.'); return; }
+    setLoading(true);
+    try {
+      const resp = await fetch('/api/public-estimate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemType, description, photos: filledPhotos }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setErrorMsg(data?.error || 'Something went wrong. Please try again or call us.');
+        setLoading(false);
+        return;
+      }
+      setResult(data);
+    } catch (e) {
+      setErrorMsg('Could not connect right now. Please check your internet and try again.');
+    }
+    setLoading(false);
+  };
+
+  const cardStyle = { background: '#1e2433', borderRadius: '14px', padding: '20px', border: '1px solid #2a3447', marginBottom: '16px' };
+  const labelStyle = { fontSize: '14px', fontWeight: 700, color: '#e2e8f0', display: 'block', marginBottom: '8px' };
+  const selectStyle = { width: '100%', padding: '14px 12px', borderRadius: '10px', border: '1.5px solid #374151', background: '#111827', color: '#f9fafb', fontSize: '16px', outline: 'none', fontFamily: 'inherit', appearance: 'none', WebkitAppearance: 'none' };
+  const textareaStyle = { width: '100%', padding: '12px', borderRadius: '10px', border: '1.5px solid #374151', background: '#111827', color: '#f9fafb', fontSize: '15px', outline: 'none', fontFamily: 'inherit', resize: 'vertical', minHeight: '90px', boxSizing: 'border-box' };
+
+  return (
+    <div style={{ fontFamily: "'DM Sans', 'Nunito', sans-serif", background: '#1a1a2e', minHeight: '100vh', color: '#fff', fontSize: '16px', lineHeight: 1.6 }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+      <div style={{ maxWidth: '520px', margin: '0 auto' }}>
+        {/* Header */}
+        <div style={{ background: '#1a5f2a', padding: '28px 20px 24px', textAlign: 'center', position: 'relative' }}>
+          <button
+            onClick={onBack}
+            style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', background: 'rgba(255,255,255,0.15)', border: 'none', color: '#fff', borderRadius: '8px', padding: '8px 12px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
+          >
+            ← Back
+          </button>
+          <div style={{ fontSize: '36px', marginBottom: '8px' }}>💰</div>
+          <h1 style={{ fontSize: '22px', fontWeight: 800, margin: '0 0 8px' }}>How Much Can You Get?</h1>
+          <p style={{ fontSize: '14px', opacity: 0.9, margin: 0, maxWidth: '340px', marginLeft: 'auto', marginRight: 'auto' }}>
+            Tell us about your item and add some photos — we will show you a close estimate of what you can get when you come to our shop.
+          </p>
+        </div>
+
+        <div style={{ padding: '20px' }}>
+
+          {!result ? (
+            <>
+              {/* Step 1: Item Type */}
+              <div style={cardStyle}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                  <div style={{ background: '#1a5f2a', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 800, flexShrink: 0 }}>1</div>
+                  <span style={{ fontWeight: 700, fontSize: '15px' }}>What type of item is it?</span>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <select value={itemType} onChange={e => setItemType(e.target.value)} style={selectStyle}>
+                    <option value="">-- Choose item type --</option>
+                    {ESTIMATE_ITEM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <div style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: '#9ca3af', fontSize: '14px' }}>▼</div>
+                </div>
+              </div>
+
+              {/* Step 2: Description */}
+              <div style={cardStyle}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                  <div style={{ background: '#1a5f2a', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 800, flexShrink: 0 }}>2</div>
+                  <span style={{ fontWeight: 700, fontSize: '15px' }}>Tell us a little about the item <span style={{ fontWeight: 400, color: '#9ca3af' }}>(optional)</span></span>
+                </div>
+                <textarea
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                  maxLength={500}
+                  placeholder={'Example: Samsung Galaxy A54, 128GB storage, black colour, screen has a small crack at the corner\n\nOr simply: iPhone 12, 64GB, works fine, no damage'}
+                  style={textareaStyle}
+                />
+                <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px', textAlign: 'right' }}>{description.length}/500</div>
+              </div>
+
+              {/* Step 3: Photos */}
+              <div style={cardStyle}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                  <div style={{ background: '#1a5f2a', borderRadius: '50%', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 800, flexShrink: 0 }}>3</div>
+                  <span style={{ fontWeight: 700, fontSize: '15px' }}>Add up to 3 clear photos of the item</span>
+                </div>
+                <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '16px', paddingLeft: '36px' }}>
+                  📸 <strong style={{ color: '#d1d5db' }}>Photo tips:</strong> Take photos in a bright place. Show the front, back, and any damage. Make sure the photos are not blurry.
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                  {[0, 1, 2].map((idx) => {
+                    const labels = ['Front of item', 'Back of item', 'Any damage or issue'];
+                    return (
+                      <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ fontSize: '11px', color: '#9ca3af', fontWeight: 600, textAlign: 'center' }}>
+                          {idx === 0 ? '📱 ' : idx === 1 ? '🔄 ' : '🔍 '}{labels[idx]}
+                        </div>
+                        {photos[idx] ? (
+                          <div style={{ position: 'relative' }}>
+                            <img
+                              src={`data:${photos[idx].mime_type};base64,${photos[idx].data}`}
+                              alt={`Photo ${idx + 1}`}
+                              style={{ width: '100%', aspectRatio: '1', objectFit: 'cover', borderRadius: '8px', border: '2px solid #1a5f2a' }}
+                            />
+                            <button
+                              onClick={() => handleRemovePhoto(idx)}
+                              style={{ position: 'absolute', top: '-6px', right: '-6px', background: '#dc2626', color: '#fff', border: 'none', borderRadius: '50%', width: '20px', height: '20px', fontSize: '11px', cursor: 'pointer', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0 }}
+                            >✕</button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => fileInputRefs[idx].current?.click()}
+                            style={{ width: '100%', aspectRatio: '1', background: '#111827', border: '2px dashed #374151', borderRadius: '8px', color: '#6b7280', fontSize: '22px', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px' }}
+                          >
+                            <span>📷</span>
+                            <span style={{ fontSize: '10px', fontWeight: 600 }}>Add Photo</span>
+                          </button>
+                        )}
+                        <input
+                          ref={fileInputRefs[idx]}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          style={{ display: 'none' }}
+                          onChange={e => handlePhotoChange(idx, e)}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Error */}
+              {errorMsg && (
+                <div style={{ background: '#7f1d1d', border: '1px solid #dc2626', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '14px', color: '#fca5a5' }}>
+                  ⚠️ {errorMsg}
+                </div>
+              )}
+
+              {/* Submit Button */}
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                style={{ width: '100%', padding: '18px', background: loading ? '#374151' : '#1a5f2a', color: loading ? '#9ca3af' : '#fff', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 800, cursor: loading ? 'not-allowed' : 'pointer', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}
+              >
+                {loading ? (
+                  <>
+                    <span style={{ display: 'inline-block', animation: 'spin 1s linear infinite', fontSize: '20px' }}>⏳</span>
+                    Checking your item, please wait…
+                  </>
+                ) : (
+                  <>💰 Show Me How Much I Can Get</>
+                )}
+              </button>
+              <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+
+              <p style={{ textAlign: 'center', fontSize: '12px', color: '#6b7280', margin: '0 0 24px' }}>
+                This check is free. No registration needed.
+              </p>
+            </>
+          ) : (
+            /* Result */
+            <>
+              <div style={{ background: '#064e3b', border: '2px solid #10b981', borderRadius: '14px', padding: '24px', textAlign: 'center', marginBottom: '16px' }}>
+                <div style={{ fontSize: '32px', marginBottom: '8px' }}>🎉</div>
+                <div style={{ fontSize: '15px', color: '#a7f3d0', marginBottom: '4px', fontWeight: 600 }}>
+                  {result.itemDesc || `${itemType}`}
+                </div>
+                {result.condition && (
+                  <div style={{ fontSize: '13px', color: '#6ee7b7', marginBottom: '16px' }}>{result.condition}</div>
+                )}
+                <div style={{ fontSize: '14px', color: '#a7f3d0', marginBottom: '6px', fontWeight: 600 }}>
+                  If you come to our shop, you could get:
+                </div>
+                <div style={{ fontSize: '36px', fontWeight: 800, color: '#4ade80', marginBottom: '4px', lineHeight: 1.1 }}>
+                  {fmtN(result.cashLow)} – {fmtN(result.cashHigh)}
+                </div>
+                <div style={{ fontSize: '13px', color: '#6ee7b7' }}>
+                  (Estimated resale value of your item: {fmtN(result.rangeLow)} – {fmtN(result.rangeHigh)})
+                </div>
+              </div>
+
+              {result.priceNote && (
+                <div style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '13px', color: '#9ca3af', lineHeight: 1.6 }}>
+                  📊 <strong style={{ color: '#d1d5db' }}>How we got this number:</strong> {result.priceNote}
+                </div>
+              )}
+
+              <div style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '13px', color: '#9ca3af', lineHeight: 1.6 }}>
+                <strong style={{ color: '#fbbf24' }}>⚠️ Please note:</strong> This is only an estimate — not a final offer. The actual amount depends on the real condition of your item when our staff check it in person. Bring your item and a valid ID to our shop for the exact amount.
+              </div>
+
+              {/* Call to action */}
+              <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '12px', padding: '18px', marginBottom: '16px', textAlign: 'center' }}>
+                <div style={{ fontSize: '15px', fontWeight: 700, color: '#4ade80', marginBottom: '12px' }}>Ready? Come to our shop today! 🏃</div>
+                <div style={{ fontSize: '13px', color: '#a7f3d0', marginBottom: '14px' }}>
+                  Bring your item + your NIN number (dial <strong>*346#</strong> to get it)
+                </div>
+                <a
+                  href={`https://wa.me/${whatsApp}?text=${encodeURIComponent(`Hello, I used the price estimator on your website. My item: ${result.itemDesc || itemType}. Estimated cash: ${fmtN(result.cashLow)}–${fmtN(result.cashHigh)}. I would like to come in.`)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ display: 'block', background: '#25d366', color: '#fff', borderRadius: '10px', padding: '14px', fontSize: '16px', fontWeight: 700, textDecoration: 'none', marginBottom: '8px' }}
+                >
+                  💬 Chat with Us on WhatsApp
+                </a>
+                <a
+                  href={`tel:${phone1}`}
+                  style={{ display: 'block', background: '#1a5f2a', color: '#fff', borderRadius: '10px', padding: '14px', fontSize: '16px', fontWeight: 700, textDecoration: 'none' }}
+                >
+                  📞 Call Us: {phone1}
+                </a>
+              </div>
+
+              <button
+                onClick={() => { setResult(null); setErrorMsg(''); }}
+                style={{ width: '100%', padding: '14px', background: 'transparent', color: '#9ca3af', border: '1.5px solid #374151', borderRadius: '10px', fontSize: '15px', fontWeight: 600, cursor: 'pointer', marginBottom: '24px' }}
+              >
+                ← Check Another Item
+              </button>
+            </>
+          )}
+
+          {/* Footer */}
+          <div style={{ textAlign: 'center', paddingBottom: '32px' }}>
+            <button
+              onClick={onBack}
+              style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: '13px', cursor: 'pointer', textDecoration: 'underline' }}
+            >
+              ← Back to Home
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -7560,13 +7858,14 @@ export default function App() {
         <Route path="/checkloanstatus" element={<Navigate to="/check-loan-status" replace />} />
         <Route path="/shop" element={<SalesPage settings={settings} onBack={() => navigate('/')} />} />
         <Route path="/shop/:itemId" element={<SalesPage settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="/estimate" element={<EstimatePage settings={settings} onBack={() => navigate('/')} />} />
         <Route path="/login" element={<LoginScreen onLogin={(u) => {
           const normalizedUser = normalizeUser(u);
           writeCache('cfc_user', normalizedUser);
           setCurrentUser(normalizedUser);
           navigate('/dashboard');
         }} />} />
-        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} onShop={() => navigate('/shop')} />} />
+        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} onShop={() => navigate('/shop')} onEstimate={() => navigate('/estimate')} />} />
       </Routes>
     );
   }
@@ -7578,9 +7877,14 @@ export default function App() {
     return <SalesPage settings={settings} onBack={() => navigate('/dashboard')} initialItemId={itemId} />;
   }
 
+  // Allow authenticated users to view the estimate page
+  if (location.pathname === '/estimate') {
+    return <EstimatePage settings={settings} onBack={() => navigate('/dashboard')} />;
+  }
+
   // Allow authenticated users to view the landing page
   if (location.pathname === '/landing') {
-    return <LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/dashboard')} onShop={() => navigate('/shop')} />;
+    return <LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/dashboard')} onShop={() => navigate('/shop')} onEstimate={() => navigate('/estimate')} />;
   }
 
   // Redirect authenticated users away from public paths (including root)

@@ -3231,6 +3231,186 @@ export async function onRequest(context) {
       return json({ success: true, sent, total: subs.length });
     }
 
+    // ============================================================
+    // PUBLIC PRICE ESTIMATE: POST /api/public-estimate
+    // No authentication required. Accepts item type, description,
+    // and up to 3 photos as base64. Uses Gemini to estimate the
+    // cash range a customer can expect from the shop.
+    // Rate-limited: max 5 requests per IP per day (stored in D1).
+    // ============================================================
+    if (path === 'public-estimate' && method === 'POST') {
+      // IP-based rate limiting
+      const clientIp = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
+      const todayStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      const rateLimitKey = 'public_estimate_rate';
+      const MAX_PER_IP_PER_DAY = 5;
+
+      const rlRow = await db.prepare("SELECT value FROM settings WHERE key = ?").bind(rateLimitKey).first();
+      const rlData = rlRow ? JSON.parse(rlRow.value) : {};
+      // Clean up old dates (keep only today)
+      const rlToday = rlData[todayStr] || {};
+      const ipCount = rlToday[clientIp] || 0;
+      if (ipCount >= MAX_PER_IP_PER_DAY) {
+        return json({ error: 'You have reached the daily limit for free estimates. Please come to our shop or call us directly for an immediate valuation.' }, 429);
+      }
+
+      // Load settings (Gemini key + loan caps)
+      const settingsRow = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      const cfg = settingsRow ? JSON.parse(settingsRow.value) : {};
+      const geminiKey = cfg.geminiApiKey || '';
+      const geminiModel = (cfg.geminiModel || 'gemini-2.5-flash').trim();
+      if (!geminiKey) {
+        return json({ error: 'This feature is not available right now. Please call or visit us directly.' }, 503);
+      }
+      const loanCapLow = Number(cfg.loanCapNoReceipt) || 40;
+      const loanCapHigh = Number(cfg.loanCapWithReceipt) || 50;
+
+      // Parse and validate request body
+      let body;
+      try { body = await request.json(); } catch (_) { return error('Invalid request body', 400); }
+      const { itemType = '', description = '', photos = [] } = body || {};
+      if (!itemType) return error('Item type is required', 400);
+      if (!Array.isArray(photos) || photos.length === 0) return error('At least one photo is required', 400);
+      if (photos.length > 3) return error('Maximum 3 photos allowed', 400);
+
+      // Validate each photo object { mime_type, data }
+      const ALLOWED_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/avif']);
+      const MAX_B64_LEN = 10 * 1024 * 1024 * 4 / 3; // ~13.3 MB base64 for 10 MB binary
+      for (const p of photos) {
+        if (!p || typeof p !== 'object' || !p.mime_type || !p.data) return error('Each photo must have mime_type and data fields', 400);
+        if (!ALLOWED_MIMES.has(String(p.mime_type).toLowerCase())) return error('Unsupported image format', 400);
+        if (typeof p.data !== 'string' || p.data.length > MAX_B64_LEN) return error('Photo too large (max 10 MB per photo)', 400);
+      }
+
+      // Build Gemini prompt — single-pass combining identification + valuation
+      const descText = (description || '').trim().slice(0, 500);
+      const prompt = `You are a fair and experienced appraiser for a second-hand shop in Aguleri, Anambra State, Nigeria. A customer wants to know how much cash they can get for their item.
+
+Item type selected by customer: ${itemType}
+${descText ? `Customer description: "${descText}"` : ''}
+
+Look carefully at ALL the photos provided. Then do the following:
+
+STEP 1 — IDENTIFY the item:
+- Brand, model, key specs (storage, RAM, capacity, etc.)
+- Colour and visible condition (from photos)
+
+STEP 2 — ESTIMATE the current Nigerian resale price:
+- Search your knowledge for current Nigerian market prices (Jiji.ng, Jumia Nigeria, Konga, Facebook Marketplace Nigeria)
+- All prices MUST be in Nigerian Naira (NGN)
+- For the resale/used price: use the middle-range price you'd expect from Jiji.ng listings (not the cheapest scam listings, not the most expensive)
+- Second-hand items in good condition typically sell for 50–70% of brand new retail price in Nigeria
+
+STEP 3 — BE HONEST:
+- If the item appears damaged, broken, or heavily worn, reflect that in the price
+- Do not overestimate — give a realistic market value
+
+Reply ONLY in this exact format (no markdown, no extra text):
+ITEM: [brief description — brand, model or type, key specs in plain language]
+CONDITION: [1 to 2 short sentences about the visible condition from photos]
+ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma, e.g. 45000]
+PRICE_RANGE: [low-high, e.g. 40000-55000]
+CONFIDENCE: [percentage, e.g. 80%]
+PRICE_NOTE: [1 short sentence — what you based this on, very simple words]`;
+
+      // Build Gemini request parts
+      const parts = [{ text: prompt }];
+      for (const photo of photos) {
+        parts.push({ inline_data: { mime_type: photo.mime_type, data: photo.data } });
+      }
+
+      // Try primary model then fallback models
+      const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+      const modelCandidates = [geminiModel, ...FALLBACK_MODELS].filter(Boolean).filter((m, i, a) => a.indexOf(m) === i);
+
+      let responseText = null;
+      for (const modelName of modelCandidates) {
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+        const geminiBody = { contents: [{ parts }] };
+        let gresp = await fetch(geminiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(geminiBody) });
+        if (!gresp.ok && [429, 500, 502, 503].includes(gresp.status)) {
+          await new Promise(r => setTimeout(r, 2000));
+          gresp = await fetch(geminiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(geminiBody) });
+        }
+        const gdata = await gresp.json().catch(() => null);
+        // Extract text (skip thinking parts)
+        const gParts = gdata?.candidates?.[0]?.content?.parts;
+        if (gParts && Array.isArray(gParts)) {
+          for (const p of gParts) { if (p.text && !p.thought) { responseText = p.text; break; } }
+          if (!responseText) { for (let i = gParts.length - 1; i >= 0; i--) { if (gParts[i].text) { responseText = gParts[i].text; break; } } }
+        }
+        if (responseText) break;
+        const errMsg = (gdata?.error?.message || '').toLowerCase();
+        const canFallback = [429, 500, 502, 503].includes(gresp.status) || errMsg.includes('not found') || errMsg.includes('no longer available') || errMsg.includes('unsupported');
+        if (!canFallback) break;
+      }
+
+      if (!responseText) {
+        return json({ error: 'Could not get an estimate right now. Please try again or call us directly.' }, 503);
+      }
+
+      // Parse the structured response
+      const parseField = (text, field) => {
+        const re = new RegExp(`^${field}:\\s*(.+)$`, 'm');
+        return (text.match(re)?.[1] || '').trim();
+      };
+
+      const itemDesc = parseField(responseText, 'ITEM');
+      const condition = parseField(responseText, 'CONDITION');
+      const resaleRaw = parseField(responseText, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
+      const rangeRaw = parseField(responseText, 'PRICE_RANGE');
+      const confidence = parseField(responseText, 'CONFIDENCE');
+      const priceNote = parseField(responseText, 'PRICE_NOTE');
+
+      const resaleValue = Number(resaleRaw) || 0;
+      const rangeCleaned = rangeRaw.replace(/[₦NGN,\s]/gi, '');
+      const rangeMatch = rangeCleaned.match(/(\d+)\s*[-–—]\s*(\d+)/);
+      const rangeLow = rangeMatch ? Math.min(Number(rangeMatch[1]), Number(rangeMatch[2])) : Math.floor(resaleValue * 0.85);
+      const rangeHigh = rangeMatch ? Math.max(Number(rangeMatch[1]), Number(rangeMatch[2])) : Math.ceil(resaleValue * 1.15);
+
+      // Cash amount the shop would offer (based on configured loan cap %)
+      const cashLow = resaleValue > 0 ? Math.floor(rangeLow * loanCapLow / 100) : 0;
+      const cashHigh = resaleValue > 0 ? Math.floor(rangeHigh * loanCapHigh / 100) : 0;
+
+      // Increment rate limit counter
+      rlToday[clientIp] = ipCount + 1;
+      const newRlData = { [todayStr]: rlToday };
+      if (rlRow) {
+        await db.prepare("UPDATE settings SET value = ? WHERE key = ?").bind(JSON.stringify(newRlData), rateLimitKey).run();
+      } else {
+        await db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").bind(rateLimitKey, JSON.stringify(newRlData)).run();
+      }
+
+      // Track Gemini usage
+      try {
+        const usageRow = await db.prepare("SELECT value FROM settings WHERE key = 'api_usage'").first();
+        const usage = usageRow ? JSON.parse(usageRow.value) : {};
+        if (!usage.gemini) usage.gemini = {};
+        usage.gemini[todayStr] = (usage.gemini[todayStr] || 0) + 1;
+        const usageKeys = Object.keys(usage.gemini).sort();
+        if (usageKeys.length > 7) { for (const k of usageKeys.slice(0, -7)) delete usage.gemini[k]; }
+        if (usageRow) {
+          await db.prepare("UPDATE settings SET value = ? WHERE key = 'api_usage'").bind(JSON.stringify(usage)).run();
+        } else {
+          await db.prepare("INSERT INTO settings (key, value) VALUES ('api_usage', ?)").bind(JSON.stringify(usage)).run();
+        }
+      } catch (_) { /* non-fatal */ }
+
+      return json({
+        itemDesc,
+        condition,
+        resaleValue,
+        rangeLow,
+        rangeHigh,
+        cashLow,
+        cashHigh,
+        confidence,
+        priceNote,
+        loanCapLow,
+        loanCapHigh,
+      });
+    }
+
     return error('Not found', 404);
 
   } catch (e) {
