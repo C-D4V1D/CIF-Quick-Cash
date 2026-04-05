@@ -2175,19 +2175,26 @@ function ItemValuationPage({ onBack, settings }) {
               </div>
 
               {/* Confidence badge */}
-              {result.confidence && (
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                  <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
-                    🎯 Confidence: {result.confidence}
-                  </span>
-                </div>
-              )}
+              {result.confidence && (() => {
+                const pct = parseInt(result.confidence) || 0;
+                const label = pct >= 85 ? 'We are very confident about this price'
+                  : pct >= 70 ? 'We are fairly confident about this price'
+                  : pct >= 50 ? 'This is our best estimate'
+                  : 'This is a rough estimate — actual price may vary';
+                return (
+                  <div style={{ marginBottom: '12px' }}>
+                    <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
+                      🎯 {label}
+                    </span>
+                  </div>
+                );
+              })()}
 
               {/* How we got this number */}
               <div style={{ background: '#1e2433', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px', fontSize: '13px', color: '#b0b8c4', lineHeight: 1.5 }}>
                 <span style={{ fontWeight: 700, color: '#fff' }}>📊 How we got this number: </span>
                 {`This price is based on the average cost of similar used/second-hand ${selectedType.toLowerCase()} in the market.`}
-                {result.newMarketPrice > 0 && ` The current market price of a new one is ${fmt(result.newMarketPrice)}.`}
+                {result.newMarketPrice > 0 && ` The current market price of a new ${result.itemColorModel || selectedType} is ${fmt(result.newMarketPrice)}.`}
               </div>
 
               {/* Disclaimer */}

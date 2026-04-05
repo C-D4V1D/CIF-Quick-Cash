@@ -3332,7 +3332,8 @@ IMPORTANT PRICING CONTEXT:
 6. Use simple everyday English. No big words.
 
 Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
-ITEM_SUMMARY: [item name only — brand, model, and up to 2 key features, max 12 words total, NO full sentences, do NOT start with "This is" or "This item"]
+ITEM_SUMMARY: [item name — include colour (if mentioned), brand, model, and key features, aim for 10-12 words, NO full sentences, do NOT start with "This is" or "This item"]
+ITEM_COLOR_MODEL: [colour (if mentioned in description) + brand + model only, max 5 words, e.g. "black JBL Charge 5" or "Samsung Galaxy A54" if no colour mentioned]
 CONDITION_NOTES: [1-2 sentences on the item's condition based on the description and photos]
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
 PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
@@ -3416,6 +3417,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
 
         // Parse AI response
         const itemSummary = parseField(responseText, 'ITEM_SUMMARY');
+        const itemColorModel = parseField(responseText, 'ITEM_COLOR_MODEL');
         const conditionNotes = parseField(responseText, 'CONDITION_NOTES');
         const estimatedValueStr = parseField(responseText, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
         const newMarketPriceStr = parseField(responseText, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
@@ -3447,6 +3449,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           confidence,
           priceBasis,
           itemSummary,
+          itemColorModel,
           conditionNotes,
         });
       } catch (e) {
