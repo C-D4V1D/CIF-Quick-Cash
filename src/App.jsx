@@ -1902,18 +1902,18 @@ function ItemValuationPage({ onBack, settings }) {
     { label: 'Other Item', value: 'Other', emoji: '📦' },
   ];
 
-  const [selectedType, setSelectedType] = React.useState('');
-  const [description, setDescription] = React.useState('');
-  const [photos, setPhotos] = React.useState([null, null, null]);
-  const [loading, setLoading] = React.useState(false);
-  const [loadingMsg, setLoadingMsg] = React.useState('');
-  const [result, setResult] = React.useState(null);
-  const [errorMsg, setErrorMsg] = React.useState('');
-  const [rateLimited, setRateLimited] = React.useState(false);
+  const [selectedType, setSelectedType] = useState('');
+  const [description, setDescription] = useState('');
+  const [photos, setPhotos] = useState([null, null, null]);
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [rateLimited, setRateLimited] = useState(false);
 
-  const descriptionRef = React.useRef(null);
-  const resultRef = React.useRef(null);
-  const loadingMsgInterval = React.useRef(null);
+  const descriptionRef = useRef(null);
+  const resultRef = useRef(null);
+  const loadingMsgInterval = useRef(null);
 
   const descReady = description.trim().length >= 10;
   const canSubmit = selectedType && descReady && !loading;
