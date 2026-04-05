@@ -3308,7 +3308,7 @@ Instructions:
 
 2. Search Jumia.com.ng and Konga.com or similar Nigerian online stores for the BRAND NEW retail price of this exact model in Nigeria TODAY. (If this is a generic/unbranded Chinese item, search for equivalent items with similar specs).
 
-3. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities.
+3. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities. If the customer mentioned a specific colour, search for that colour specifically — prices can vary significantly by colour.
 
 CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
 - Sort all listings for this item by price from lowest to highest
@@ -3332,7 +3332,7 @@ IMPORTANT PRICING CONTEXT:
 6. Use simple everyday English. No big words.
 
 Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
-ITEM_SUMMARY: [item name only — brand, model, and up to 2 key features, max 10 words total, NO full sentences, do NOT start with "This is" or "This item"]
+ITEM_SUMMARY: [item name only — brand, model, and up to 2 key features, max 12 words total, NO full sentences, do NOT start with "This is" or "This item"]
 CONDITION_NOTES: [1-2 sentences on the item's condition based on the description and photos]
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
 PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]

@@ -2172,11 +2172,6 @@ function ItemValuationPage({ onBack, settings }) {
                   {result.advanceLow > 0 ? `${fmt(result.advanceLow)} – ${fmt(result.advanceHigh)}` : '—'}
                 </div>
 
-                {result.newMarketPrice > 0 && (
-                  <div style={{ fontSize: '13px', color: '#a7f3d0', opacity: 0.9 }}>
-                    Current New Price: {fmt(result.newMarketPrice)}
-                  </div>
-                )}
               </div>
 
               {/* Confidence badge */}
@@ -2189,11 +2184,11 @@ function ItemValuationPage({ onBack, settings }) {
               )}
 
               {/* How we got this number */}
-              {result.priceBasis && (
-                <div style={{ background: '#1e2433', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px', fontSize: '13px', color: '#b0b8c4', lineHeight: 1.5 }}>
-                  <span style={{ fontWeight: 700, color: '#fff' }}>📊 How we got this number: </span>{(result.priceBasis.split('.')[0] + '.').replace(/\.\.$/, '.')}
-                </div>
-              )}
+              <div style={{ background: '#1e2433', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px', fontSize: '13px', color: '#b0b8c4', lineHeight: 1.5 }}>
+                <span style={{ fontWeight: 700, color: '#fff' }}>📊 How we got this number: </span>
+                {`This price is based on the average cost of similar used/second-hand ${selectedType.toLowerCase()} in the market.`}
+                {result.newMarketPrice > 0 && ` The current market price of a new one is ${fmt(result.newMarketPrice)}.`}
+              </div>
 
               {/* Disclaimer */}
               <div style={{ background: '#1c0a00', border: '1px solid #78350f', borderRadius: '10px', padding: '12px 14px', marginBottom: '20px', fontSize: '13px', color: '#fde68a', lineHeight: 1.6 }}>
@@ -2209,9 +2204,13 @@ function ItemValuationPage({ onBack, settings }) {
                   Bring your item + your NIN number <strong style={{ color: '#fff' }}>(dial *346# to get it)</strong>
                 </div>
 
-                <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '16px', lineHeight: 1.5 }}>
+                <a
+                  href={`https://maps.google.com/?q=${encodeURIComponent(address)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ display: 'block', fontSize: '13px', color: '#9ca3af', marginBottom: '16px', lineHeight: 1.5, textDecoration: 'underline', textDecorationColor: '#4b5563' }}
+                >
                   📍 {address}
-                </div>
+                </a>
 
                 <a
                   href={`tel:${phone1}`}
