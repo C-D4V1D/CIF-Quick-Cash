@@ -3304,11 +3304,18 @@ Item details:
 * Customer description: ${description.trim()}
 
 Instructions:
-1. Identify the exact brand and model from the description and photos. If unrecognisable, use your best estimate.
+1. Identify the exact brand, model, and colour from the description and photos. If unrecognisable, use your best estimate.
 
-2. Search Jumia.com.ng and Konga.com or similar Nigerian online stores for the BRAND NEW retail price of this exact model in Nigeria TODAY. (If this is a generic/unbranded Chinese item, search for equivalent items with similar specs).
+2. Search for the BRAND NEW retail price of this exact model in Nigeria TODAY.
+   - Include the colour in your search if known (e.g. search "black JBL Charge 5 price Nigeria 2024")
+   - Check at least 3 Nigerian stores: Jumia.com.ng, Konga.com, Slot.ng, and others
+   - Pick the MOST COMMON price across listings (modal price — the price that comes up most often)
+   - Do NOT average the prices — use the price that appears most frequently across stores
+   - If the colour affects price (e.g. some iPhone colours cost more), use the price for that specific colour
+   - Only use current listed prices — do NOT use old or outdated prices
+   - If this is a generic/unbranded Chinese item, search for equivalent items with similar specs
 
-3. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities. If the customer mentioned a specific colour, search for that colour specifically — prices can vary significantly by colour.
+3. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities. Search with the specific colour mentioned to find the most accurate used price.
 
 CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
 - Sort all listings for this item by price from lowest to highest
