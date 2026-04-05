@@ -246,31 +246,31 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div class="clause-hdr c1">1. &nbsp;YOUR ITEM IS SAFE WITH US</div>
     <div class="clause-body cb1">Your item stays in our shop and remains your property while this agreement is active. We will keep it safely. We are not responsible for any pre-existing hidden faults or internal damage not visible during testing today. We are also not responsible for loss of data on any phone or laptop. When you come to collect, you can only raise a complaint about a specific feature or function if you clearly demonstrated it was working at the time you brought the item — we are not responsible for anything you did not show us.</div>
 
-    <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
-    <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
+    <div class="clause-hdr c2">2. &nbsp;DATA CONSENT</div>
+    <div class="clause-body cb2">The customer consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction.</div>
   `;
 
   // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 3–6) ──
   const page3Content = `
     <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 3 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
 
-    <div class="clause-hdr c3">3. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
-    <div class="clause-body cb3">
+    <div class="clause-hdr c3">3. &nbsp;HOW TO COLLECT YOUR ITEM</div>
+    <div class="clause-body cb3">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
+
+    <div class="clause-hdr c4">4. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
+    <div class="clause-body cb4">
       You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/>
       <div style="margin-top:3px"><b>If the ${maxLoanDays}th day (${fmtDateLong(internalDeadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.</div>
     </div>
 
-    <div class="clause-hdr c4">4. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
-    <div class="clause-body cb4">
+    <div class="clause-hdr c5">5. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
+    <div class="clause-body cb5">
       <b>It is strictly YOUR responsibility to remember your return date (${fmtDateLong(tx.deadlineDate)}) and come back on time.</b><br/>
       As a courtesy, we may try to send an SMS or call your phone numbers before Day ${maxLoanDays}. However, whether we reach you or not, the ${maxLoanDays}-Day Purchase Rule will apply automatically on <b>${fmtDateLong(internalDeadlineDate)}</b>. Failure to receive a reminder call is not a reason to dispute the purchase.
     </div>
 
-    <div class="clause-hdr c5">5. &nbsp;DECLARATION OF OWNERSHIP</div>
-    <div class="clause-body cb5">I swear that I am the true and legal owner of this item. It is NOT stolen property. If the Nigerian Police or any authority claims this item is stolen or linked to any crime, I take full legal and financial responsibility. I will protect Christ-in-Fabian Quick Cash from any arrest, seizure, or liability that arises from my false claim of ownership.</div>
-
-    <div class="clause-hdr c6">6. &nbsp;DATA CONSENT</div>
-    <div class="clause-body cb6">The customer consents to the collection and storage of personal data (NIN, photographs, contact details) for the purpose of this transaction.</div>
+    <div class="clause-hdr c6">6. &nbsp;DECLARATION OF OWNERSHIP</div>
+    <div class="clause-body cb6">I swear that I am the true and legal owner of this item. It is NOT stolen property. If the Nigerian Police or any authority claims this item is stolen or linked to any crime, I take full legal and financial responsibility. I will protect Christ-in-Fabian Quick Cash from any arrest, seizure, or liability that arises from my false claim of ownership.</div>
   `;
 
   // ── Assemble: 2 sheet faces ──
