@@ -2155,7 +2155,7 @@ function ItemValuationPage({ onBack, settings }) {
                 <div style={{ fontSize: '32px', marginBottom: '8px' }}>🎉</div>
                 {result.itemSummary && (
                   <div style={{ fontWeight: 700, fontSize: '15px', color: '#fff', marginBottom: '6px', lineHeight: 1.5 }}>
-                    {result.itemSummary.length > 120 ? result.itemSummary.slice(0, 117) + '…' : result.itemSummary}
+                    {result.itemSummary}
                   </div>
                 )}
                 {result.conditionNotes && (
@@ -2164,7 +2164,7 @@ function ItemValuationPage({ onBack, settings }) {
                   </div>
                 )}
 
-                <div style={{ fontWeight: 600, fontSize: '14px', color: '#d1d5db', marginBottom: '8px' }}>
+                <div style={{ fontWeight: 700, fontSize: '14px', color: '#fff', marginBottom: '8px' }}>
                   If you come to our shop, you could get:
                 </div>
 

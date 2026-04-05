@@ -3332,7 +3332,7 @@ IMPORTANT PRICING CONTEXT:
 6. Use simple everyday English. No big words.
 
 Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
-ITEM_SUMMARY: [1-2 sentence plain-English description of what this item is — brand, model, and key specs]
+ITEM_SUMMARY: [item name only — brand, model, and up to 2 key features, max 10 words total, NO full sentences, do NOT start with "This is" or "This item"]
 CONDITION_NOTES: [1-2 sentences on the item's condition based on the description and photos]
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
 PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
