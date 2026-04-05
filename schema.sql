@@ -208,3 +208,19 @@ CREATE INDEX IF NOT EXISTS idx_distribution_decisions_user   ON distribution_dec
 -- ALTER TABLE distribution_decisions ADD COLUMN paid_by TEXT;
 -- ALTER TABLE profit_distributions ADD COLUMN decision_ids TEXT;
 -- ALTER TABLE profit_distributions ADD COLUMN stakeholder_name TEXT;
+
+-- ============================================================
+-- Public item valuation rate-limiting table
+-- Tracks how many free valuations each IP has used per day.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS public_valuation_requests (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip         TEXT    NOT NULL,
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_pvr_ip ON public_valuation_requests (ip, created_at DESC);
+
+-- Migration for existing databases (run once against live D1):
+-- CREATE TABLE IF NOT EXISTS public_valuation_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+-- CREATE INDEX IF NOT EXISTS idx_pvr_ip ON public_valuation_requests (ip, created_at DESC);

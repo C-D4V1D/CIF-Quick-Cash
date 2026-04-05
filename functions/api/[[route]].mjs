@@ -3231,6 +3231,217 @@ export async function onRequest(context) {
       return json({ success: true, sent, total: subs.length });
     }
 
+    // ============================================================
+    // PUBLIC ITEM VALUATION: POST /api/public-valuation
+    // No auth required. Rate-limited by IP address.
+    // Calls Gemini with Google Search server-side (API key never
+    // exposed to the public browser).
+    // ============================================================
+    if (path === 'public-valuation' && method === 'POST') {
+      try {
+        // Load settings
+        const cfgRow = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first().catch(() => null);
+        const cfg = cfgRow ? JSON.parse(cfgRow.value || '{}') : {};
+
+        // Feature toggle
+        const enabled = cfg.publicValuationEnabled !== false; // default true
+        if (!enabled) {
+          return json({ error: 'This feature is currently unavailable. Please call us directly.' }, 503);
+        }
+
+        // Gemini API key required
+        const apiKey = cfg.geminiApiKey || '';
+        if (!apiKey) {
+          return json({ error: 'Price checking is not available right now. Please call us directly.' }, 503);
+        }
+
+        // IP rate limiting
+        const ip = request.headers.get('CF-Connecting-IP')
+          || request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim()
+          || 'unknown';
+        const dailyLimit = Math.max(1, Number(cfg.publicValuationDailyLimitPerIp) || 3);
+        const usedToday = await db
+          .prepare("SELECT COUNT(*) AS n FROM public_valuation_requests WHERE ip = ? AND created_at > datetime('now', '-1 day')")
+          .bind(ip)
+          .first()
+          .catch(() => ({ n: 0 }));
+        if ((usedToday?.n || 0) >= dailyLimit) {
+          return json({
+            error: `You have already checked ${dailyLimit} time${dailyLimit !== 1 ? 's' : ''} today. Please come back tomorrow, or call us directly to speak with someone.`,
+            rateLimited: true,
+          }, 429);
+        }
+
+        // Parse and validate request body
+        const body = await request.json().catch(() => null);
+        if (!body) return json({ error: 'Invalid request.' }, 400);
+
+        const { itemType, description, photos } = body;
+        if (!itemType || typeof itemType !== 'string' || itemType.trim().length === 0 || itemType.length > 50) {
+          return json({ error: 'Please select an item type.' }, 400);
+        }
+        if (!description || typeof description !== 'string' || description.trim().length < 5 || description.length > 600) {
+          return json({ error: 'Please describe your item (at least 5 characters).' }, 400);
+        }
+        if (photos !== undefined && !Array.isArray(photos)) {
+          return json({ error: 'Invalid photos format.' }, 400);
+        }
+        const photoList = Array.isArray(photos) ? photos.slice(0, 3) : [];
+        // Validate each photo is a string and not too large (~5MB base64 ≈ 6.7MB string)
+        for (const p of photoList) {
+          if (typeof p !== 'string' || p.length > 7 * 1024 * 1024) {
+            return json({ error: 'One or more photos are too large. Please use smaller photos.' }, 400);
+          }
+        }
+
+        // Build Gemini prompt
+        const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria.
+A customer wants to know how much they can get for their item before visiting our shop.
+We need the fair resale price so we can sell this item within 14 days.
+
+CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency.
+
+Item details:
+* Type: ${itemType.trim()}
+* Description from customer: ${description.trim()}
+
+Instructions:
+1. Search Jumia.com.ng and Konga.com for the BRAND NEW retail price of this exact item (or the closest match) in Nigeria TODAY.
+
+2. Search Jiji.ng and Facebook Marketplace Nigeria for the current used/second-hand selling price of this item.
+   CRITICAL ANTI-SCAM RULE:
+   - Sort listings by price from lowest to highest
+   - Throw away the cheapest 20% of listings — these are usually scam bait
+   - From the remaining 80%, use the MEDIAN price (middle value, not the average)
+
+3. Adjust for the condition the customer described.
+
+4. Give the realistic price range we can sell this item for in Aguleri within 14 days.
+   - Good condition: 50–75% of brand new price
+   - Fair condition: 35–55% of brand new price
+   - Do NOT lowball. Give the best realistic price a buyer will pay within 2 weeks.
+   - Prices in Aguleri/Anambra are comparable to Onitsha and Lagos.
+
+5. If the customer description is too vague to identify the exact item, give a wider price range.
+
+Reply in this exact format only (no markdown, no numbered prefixes, no extra text):
+ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
+PRICE_BASIS: [2 to 3 short sentences — what new price and used prices you found, and how you calculated your estimate]
+NEW_MARKET_PRICE: [number only — brand new price in Nigeria, or 0 if not found]
+PRICE_RANGE: [lowest realistic price – highest realistic price, e.g. 45000-60000]
+VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 75% — higher if you found real price data, lower if you had to estimate]`;
+
+        // Build Gemini request parts (prompt + photos)
+        const parts = [{ text: prompt }];
+        for (const photo of photoList) {
+          // Photos arrive as data URIs or raw base64
+          let mimeType = 'image/jpeg';
+          let base64Data = photo;
+          if (photo.startsWith('data:')) {
+            const semiIdx = photo.indexOf(';');
+            const commaIdx = photo.indexOf(',');
+            if (semiIdx > 5 && commaIdx > semiIdx) {
+              mimeType = photo.slice(5, semiIdx);
+              base64Data = photo.slice(commaIdx + 1);
+            }
+          }
+          if (base64Data) parts.push({ inline_data: { mime_type: mimeType, data: base64Data } });
+        }
+
+        // Helper: extract text from Gemini response (skip thinking parts)
+        const extractText = (data) => {
+          const ps = data?.candidates?.[0]?.content?.parts;
+          if (!Array.isArray(ps)) return null;
+          for (const p of ps) { if (p.text && !p.thought) return p.text; }
+          for (let i = ps.length - 1; i >= 0; i--) { if (ps[i].text) return ps[i].text; }
+          return null;
+        };
+
+        // Helper: parse a named field from AI response
+        const parseField = (text, field) => {
+          const re = new RegExp(`^${field}:\\s*(.+)$`, 'mi');
+          return (text.match(re)?.[1] || '').trim();
+        };
+
+        // Call Gemini with Google Search grounding, with model fallback
+        const primaryModel = (cfg.geminiModel || 'gemini-2.5-flash').trim();
+        const modelCandidates = [primaryModel, 'gemini-2.5-flash', 'gemini-2.5-flash-lite']
+          .filter(Boolean)
+          .filter((m, i, a) => a.indexOf(m) === i);
+
+        let responseText = null;
+        let geminiError = null;
+        for (const modelName of modelCandidates) {
+          const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+          const geminiBody = { contents: [{ parts }], tools: [{ google_search: {} }] };
+          let resp = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(geminiBody),
+          });
+          // Retry once on transient errors
+          if (!resp.ok && [429, 500, 502, 503].includes(resp.status)) {
+            await new Promise(r => setTimeout(r, 2000));
+            resp = await fetch(geminiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(geminiBody),
+            });
+          }
+          const data = await resp.json().catch(() => null);
+          const text = extractText(data);
+          if (text) { responseText = text; break; }
+          const errMsg = (data?.error?.message || '').toLowerCase();
+          const canFallback = [429, 500, 502, 503].includes(resp.status)
+            || errMsg.includes('not found') || errMsg.includes('no longer available') || errMsg.includes('unsupported');
+          if (!canFallback || modelName === modelCandidates[modelCandidates.length - 1]) {
+            geminiError = data?.error?.message || `Gemini request failed (${resp.status})`;
+            break;
+          }
+        }
+
+        if (!responseText) {
+          console.error('Public valuation Gemini error:', geminiError);
+          return json({ error: 'We could not check prices right now. Please try again later or call us directly.' }, 503);
+        }
+
+        // Parse AI response
+        const estimatedValueStr = parseField(responseText, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
+        const newMarketPriceStr = parseField(responseText, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
+        const priceBasis = parseField(responseText, 'PRICE_BASIS');
+        const confidence = parseField(responseText, 'VALUATION_CONFIDENCE');
+        const rangeRaw = parseField(responseText, 'PRICE_RANGE').replace(/[₦NGN,\s]/gi, '');
+        const rangeMatch = rangeRaw.match(/(\d+)\s*(?:[-–—]|to)\s*(\d+)/i);
+
+        const estimatedValue = Number(estimatedValueStr) || 0;
+        const newMarketPrice = Number(newMarketPriceStr) || 0;
+        const priceLow = rangeMatch ? Math.min(Number(rangeMatch[1]), Number(rangeMatch[2])) : Math.round(estimatedValue * 0.85);
+        const priceHigh = rangeMatch ? Math.max(Number(rangeMatch[1]), Number(rangeMatch[2])) : Math.round(estimatedValue * 1.15);
+
+        // Calculate cash advance range using lending capacity percentage
+        const capPct = Number(cfg.lendingCapacityPercentage) || Number(cfg.loanCapNoReceipt) || 40;
+        const advanceLow = Math.floor(priceLow * capPct / 100);
+        const advanceHigh = Math.floor(priceHigh * capPct / 100);
+
+        // Log the request for rate limiting
+        await db.prepare('INSERT INTO public_valuation_requests (ip) VALUES (?)').bind(ip).run().catch(() => {});
+
+        return json({
+          estimatedValue,
+          priceLow,
+          priceHigh,
+          advanceLow,
+          advanceHigh,
+          newMarketPrice,
+          confidence,
+          priceBasis,
+        });
+      } catch (e) {
+        console.error('Public valuation error:', e);
+        return json({ error: 'Something went wrong. Please try again later or call us directly.' }, 500);
+      }
+    }
+
     return error('Not found', 404);
 
   } catch (e) {

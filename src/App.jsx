@@ -523,6 +523,9 @@ const DEFAULT_SETTINGS = {
   stakeholderOwnership: {},
   // Staff Performance
   staffMonthlyTarget: 20, // monthly loan/transaction target per staff member
+  // Public Item Valuation Page (/get-estimate)
+  publicValuationEnabled: true,
+  publicValuationDailyLimitPerIp: 3,
 };
 
 // ============================================================
@@ -1701,7 +1704,7 @@ function PartnershipFootnote({ dark = false }) {
 // ============================================================
 // LANDING PAGE
 // ============================================================
-function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
+function LandingPage({ onCheckLoan, onStaffLogin, onShop, onGetEstimate, settings }) {
   const s = settings || {};
   const phone1 = s.shopPhone1 ?? '08165491908';
   const phone2 = s.shopPhone2 ?? '09023540646';
@@ -1753,6 +1756,12 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
           <h1 style={{ fontSize: 'clamp(22px, 6vw, 32px)', fontWeight: 800, margin: '0 0 10px', lineHeight: 1.2 }}>Christ-in-Fabian Quick Cash</h1>
           <p style={{ fontSize: '17px', margin: '0 0 28px', opacity: 0.9, maxWidth: '420px', marginLeft: 'auto', marginRight: 'auto' }}>Need money fast? Bring your item and walk away with cash.</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxWidth: '420px', margin: '0 auto' }}>
+            <button
+              onClick={onGetEstimate}
+              style={{ background: '#4ade80', color: '#14532d', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 800, cursor: 'pointer', minHeight: '52px' }}
+            >
+              💰 Check How Much I Can Get
+            </button>
             <button
               onClick={onCheckLoan}
               style={{ background: '#fff', color: '#1a5f2a', border: 'none', borderRadius: '10px', padding: '16px', fontSize: '17px', fontWeight: 700, cursor: 'pointer', minHeight: '52px' }}
@@ -1863,6 +1872,358 @@ function LandingPage({ onCheckLoan, onStaffLogin, onShop, settings }) {
           >
             Staff / Admin Login
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PUBLIC ITEM VALUATION PAGE  (/get-estimate)
+// ============================================================
+function ItemValuationPage({ onBack, settings }) {
+  const s = settings || {};
+  const phone1 = s.shopPhone1 ?? '08165491908';
+  const phone2 = s.shopPhone2 ?? '';
+  const address = s.shopAddress ?? 'Current Filling Station, off Tourist Garden Hotel, Enugwu-Aguleri, Anambra East LGA, Anambra State';
+  const whatsApp = s.shopWhatsApp ?? '2348165491908';
+
+  const ITEM_TYPES = [
+    { label: 'Phone', value: 'Smartphone', emoji: '📱' },
+    { label: 'Laptop', value: 'Laptop', emoji: '💻' },
+    { label: 'Tablet', value: 'Tablet', emoji: '📟' },
+    { label: 'Speaker', value: 'Bluetooth Speaker', emoji: '🔊' },
+    { label: 'Power Bank', value: 'Power Bank', emoji: '🔋' },
+    { label: 'Fan', value: 'Electric Fan', emoji: '🌀' },
+    { label: 'TV', value: 'Flat-Screen TV', emoji: '📺' },
+    { label: 'Generator', value: 'Generator', emoji: '⚙️' },
+    { label: 'Gas Cylinder', value: 'Gas Cylinder', emoji: '🛢' },
+    { label: 'Motorcycle', value: 'Motorcycle', emoji: '🏍' },
+    { label: 'Other Item', value: 'Other', emoji: '📦' },
+  ];
+
+  const [selectedType, setSelectedType] = React.useState('');
+  const [description, setDescription] = React.useState('');
+  const [photos, setPhotos] = React.useState([null, null, null]);
+  const [loading, setLoading] = React.useState(false);
+  const [loadingMsg, setLoadingMsg] = React.useState('');
+  const [result, setResult] = React.useState(null);
+  const [errorMsg, setErrorMsg] = React.useState('');
+  const [rateLimited, setRateLimited] = React.useState(false);
+
+  const descriptionRef = React.useRef(null);
+  const resultRef = React.useRef(null);
+  const loadingMsgInterval = React.useRef(null);
+
+  const descReady = description.trim().length >= 10;
+  const canSubmit = selectedType && descReady && !loading;
+
+  const LOADING_MESSAGES = [
+    'Checking current market prices…',
+    'Looking up what people are paying for this item…',
+    'Searching online stores for price information…',
+    'Calculating a fair estimate for you…',
+    'Almost done…',
+  ];
+
+  const startLoadingMessages = () => {
+    let i = 0;
+    setLoadingMsg(LOADING_MESSAGES[0]);
+    loadingMsgInterval.current = setInterval(() => {
+      i = (i + 1) % LOADING_MESSAGES.length;
+      setLoadingMsg(LOADING_MESSAGES[i]);
+    }, 3500);
+  };
+  const stopLoadingMessages = () => {
+    if (loadingMsgInterval.current) { clearInterval(loadingMsgInterval.current); loadingMsgInterval.current = null; }
+  };
+
+  // Resize image to max 1200px wide, JPEG 0.85 quality — keeps request size small
+  const resizePhoto = (dataUri) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 1200;
+      let { width, height } = img;
+      if (width > MAX) { height = Math.round(height * MAX / width); width = MAX; }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => resolve(dataUri); // fallback: use original
+    img.src = dataUri;
+  });
+
+  const handlePhotoChange = async (idx, file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const resized = await resizePhoto(reader.result);
+      setPhotos(prev => { const next = [...prev]; next[idx] = resized; return next; });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setLoading(true);
+    setErrorMsg('');
+    setResult(null);
+    setRateLimited(false);
+    startLoadingMessages();
+
+    try {
+      const photoData = photos.filter(Boolean);
+      const resp = await fetch('/api/public-valuation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itemType: selectedType, description: description.trim(), photos: photoData }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        if (data.rateLimited) { setRateLimited(true); setErrorMsg(data.error || 'Daily limit reached.'); }
+        else { setErrorMsg(data.error || 'We could not check prices right now. Please try again later or call us directly.'); }
+        return;
+      }
+      setResult(data);
+      setTimeout(() => { resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
+    } catch {
+      setErrorMsg('We could not connect right now. Please check your internet and try again, or call us directly.');
+    } finally {
+      setLoading(false);
+      stopLoadingMessages();
+    }
+  };
+
+  const fmt = (n) => n > 0 ? `₦${Number(n).toLocaleString('en-NG')}` : '—';
+
+  const BG = '#1a1a2e';
+  const GREEN = '#1a5f2a';
+  const GOLD = '#c8a84e';
+
+  return (
+    <div style={{ fontFamily: "'DM Sans','Nunito',sans-serif", background: BG, minHeight: '100vh', color: '#fff', fontSize: '16px', lineHeight: 1.6 }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+      <div style={{ width: '100%', maxWidth: '640px', margin: '0 auto', borderInline: '1px solid rgba(229,228,231,0.15)', minHeight: '100vh' }}>
+
+        {/* Header */}
+        <div style={{ background: GREEN, padding: '20px 20px 24px', position: 'sticky', top: 0, zIndex: 10 }}>
+          <button onClick={onBack} style={{ background: 'none', border: 'none', color: '#a7f3d0', fontSize: '15px', cursor: 'pointer', padding: '0 0 12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            ← Back
+          </button>
+          <h1 style={{ fontSize: 'clamp(20px,5vw,26px)', fontWeight: 800, margin: '0 0 6px' }}>How much can I get?</h1>
+          <p style={{ margin: 0, fontSize: '15px', opacity: 0.88 }}>Tell us about your item and we will give you a price range — for free, no login needed.</p>
+        </div>
+
+        <div style={{ padding: '24px 16px 48px' }}>
+
+          {/* STEP 1 — Item type */}
+          <div style={{ marginBottom: '28px' }}>
+            <div style={{ fontWeight: 700, fontSize: '17px', marginBottom: '4px' }}>Step 1 — What kind of item do you have?</div>
+            <div style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '14px' }}>Tap the one that matches your item.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+              {ITEM_TYPES.map(({ label, value, emoji }) => {
+                const selected = selectedType === value;
+                return (
+                  <button key={value} onClick={() => {
+                    setSelectedType(value);
+                    setResult(null);
+                    setErrorMsg('');
+                    setTimeout(() => descriptionRef.current?.focus(), 100);
+                  }} style={{
+                    background: selected ? '#1a3d22' : '#111827',
+                    border: `2px solid ${selected ? '#4ade80' : '#2a3447'}`,
+                    borderRadius: '12px',
+                    padding: '14px 8px',
+                    cursor: 'pointer',
+                    color: selected ? '#4ade80' : '#d1d5db',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
+                    fontSize: '13px', fontWeight: selected ? 700 : 500,
+                    transition: 'all 0.15s',
+                  }}>
+                    <span style={{ fontSize: '26px' }}>{emoji}</span>
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* STEP 2 — Description */}
+          {selectedType && (
+            <div style={{ marginBottom: '28px' }}>
+              <div style={{ fontWeight: 700, fontSize: '17px', marginBottom: '4px' }}>Step 2 — Tell us about your item</div>
+              <div style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '10px' }}>Include the brand name, model, size, colour, and any damage or problems.</div>
+              <textarea
+                ref={descriptionRef}
+                value={description}
+                onChange={e => { if (e.target.value.length <= 600) setDescription(e.target.value); }}
+                placeholder={`Example: iPhone 13, 128GB, black colour. The screen has a small crack at the top corner. Battery life is still good. Comes with the original charger.`}
+                rows={5}
+                style={{ width: '100%', background: '#111827', border: '1.5px solid #2a3447', borderRadius: '10px', color: '#fff', fontSize: '15px', padding: '12px', resize: 'vertical', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box', lineHeight: 1.6 }}
+              />
+              <div style={{ textAlign: 'right', fontSize: '13px', color: description.length > 550 ? '#f59e0b' : '#6b7280', marginTop: '4px' }}>
+                {description.length}/600
+              </div>
+              {description.trim().length > 0 && description.trim().length < 10 && (
+                <div style={{ color: '#f87171', fontSize: '13px', marginTop: '4px' }}>Please add a little more detail about your item.</div>
+              )}
+            </div>
+          )}
+
+          {/* STEP 3 — Photos */}
+          {selectedType && descReady && (
+            <div style={{ marginBottom: '28px' }}>
+              <div style={{ fontWeight: 700, fontSize: '17px', marginBottom: '4px' }}>Step 3 — Add photos <span style={{ fontWeight: 400, color: '#6b7280', fontSize: '14px' }}>(optional but helps)</span></div>
+              <div style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '14px' }}>Take clear photos in good light. One photo of the front, one of the back, and one showing any damage or the brand label. Up to 3 photos total.</div>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                {[0, 1, 2].map(idx => {
+                  const labels = ['Front', 'Back', 'Label / Damage'];
+                  return (
+                    <label key={idx} style={{ flex: 1, cursor: 'pointer' }}>
+                      <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handlePhotoChange(idx, e.target.files?.[0])} />
+                      <div style={{
+                        background: photos[idx] ? 'transparent' : '#111827',
+                        border: `2px dashed ${photos[idx] ? '#4ade80' : '#2a3447'}`,
+                        borderRadius: '10px',
+                        aspectRatio: '1',
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                        overflow: 'hidden', position: 'relative',
+                      }}>
+                        {photos[idx]
+                          ? <img src={photos[idx]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          : <>
+                              <span style={{ fontSize: '28px' }}>📷</span>
+                              <span style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', textAlign: 'center', padding: '0 4px' }}>{labels[idx]}</span>
+                            </>
+                        }
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <div style={{ color: '#6b7280', fontSize: '12px', marginTop: '8px' }}>Tap any box above to take a photo or choose from your gallery.</div>
+            </div>
+          )}
+
+          {/* Submit button */}
+          {selectedType && descReady && (
+            <button
+              onClick={handleSubmit}
+              disabled={!canSubmit}
+              style={{
+                width: '100%', background: canSubmit ? GREEN : '#374151', color: '#fff',
+                border: 'none', borderRadius: '12px', padding: '18px', fontSize: '18px', fontWeight: 800,
+                cursor: canSubmit ? 'pointer' : 'not-allowed', minHeight: '56px', transition: 'background 0.2s',
+              }}
+            >
+              {loading ? '⏳ Checking prices…' : '💰 Find Out How Much I Can Get →'}
+            </button>
+          )}
+
+          {/* Loading message */}
+          {loading && (
+            <div style={{ textAlign: 'center', marginTop: '20px', color: '#9ca3af', fontSize: '15px' }}>
+              <div style={{ marginBottom: '8px', fontSize: '24px' }}>🔍</div>
+              {loadingMsg}
+            </div>
+          )}
+
+          {/* Error / rate limit message */}
+          {errorMsg && !loading && (
+            <div style={{ marginTop: '20px', background: rateLimited ? '#1c1400' : '#1c0f0f', border: `1.5px solid ${rateLimited ? '#92400e' : '#7f1d1d'}`, borderRadius: '12px', padding: '16px' }}>
+              <div style={{ fontWeight: 700, color: rateLimited ? '#fbbf24' : '#f87171', marginBottom: '6px' }}>
+                {rateLimited ? '⏰ Daily limit reached' : '❌ Something went wrong'}
+              </div>
+              <div style={{ fontSize: '14px', color: '#e5e7eb' }}>{errorMsg}</div>
+              {(rateLimited || errorMsg) && (
+                <div style={{ marginTop: '12px', fontSize: '14px', color: '#9ca3af' }}>
+                  You can call us directly: <a href={`tel:${phone1}`} style={{ color: '#4ade80' }}>{phone1}</a>
+                  {phone2 && <> / <a href={`tel:${phone2}`} style={{ color: '#4ade80' }}>{phone2}</a></>}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* RESULT */}
+          {result && !loading && (
+            <div ref={resultRef} style={{ marginTop: '28px' }}>
+              <div style={{ fontWeight: 800, fontSize: '19px', marginBottom: '6px', color: '#4ade80' }}>✅ Here is your estimate!</div>
+              <div style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '20px' }}>Based on what people are currently paying for this type of item in Nigeria.</div>
+
+              {/* Two cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                {/* Cash Advance card */}
+                <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '14px', padding: '18px 14px' }}>
+                  <div style={{ fontWeight: 800, color: '#4ade80', fontSize: '13px', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Cash Advance</div>
+                  <div style={{ fontWeight: 800, fontSize: 'clamp(16px,4vw,22px)', color: '#fff', lineHeight: 1.2, marginBottom: '10px' }}>
+                    {result.advanceLow > 0 ? `${fmt(result.advanceLow)} – ${fmt(result.advanceHigh)}` : '—'}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#a7f3d0', lineHeight: 1.5 }}>Leave your item with us, collect cash today. Come back within 30 days, pay us back, and take your item home.</div>
+                </div>
+
+                {/* Outright Sale card */}
+                <div style={{ background: '#3d2e00', border: `1.5px solid ${GOLD}`, borderRadius: '14px', padding: '18px 14px' }}>
+                  <div style={{ fontWeight: 800, color: '#fbbf24', fontSize: '13px', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Outright Sale</div>
+                  <div style={{ fontWeight: 800, fontSize: 'clamp(16px,4vw,22px)', color: '#fff', lineHeight: 1.2, marginBottom: '10px' }}>
+                    {result.priceLow > 0 ? `${fmt(result.priceLow)} – ${fmt(result.priceHigh)}` : '—'}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#fde68a', lineHeight: 1.5 }}>Sell your item to us on the spot. We pay you and keep the item — no need to return.</div>
+                </div>
+              </div>
+
+              {/* Price basis */}
+              {result.priceBasis && (
+                <div style={{ background: '#111827', border: '1px solid #2a3447', borderRadius: '10px', padding: '14px', marginBottom: '16px', fontSize: '13px', color: '#d1d5db', lineHeight: 1.6 }}>
+                  <span style={{ fontWeight: 700, color: '#9ca3af' }}>How we calculated this: </span>{result.priceBasis}
+                </div>
+              )}
+
+              {/* Confidence + new price */}
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
+                {result.confidence && (
+                  <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
+                    🎯 Confidence: {result.confidence}
+                  </span>
+                )}
+                {result.newMarketPrice > 0 && (
+                  <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
+                    🏷 New price: {fmt(result.newMarketPrice)}
+                  </span>
+                )}
+              </div>
+
+              {/* Disclaimer */}
+              <div style={{ background: '#0f1724', border: '1px solid #1e2b40', borderRadius: '10px', padding: '12px 14px', marginBottom: '24px', fontSize: '13px', color: '#6b7280', lineHeight: 1.6 }}>
+                ⚠️ <strong style={{ color: '#9ca3af' }}>These are estimates only.</strong> The actual amount you get depends on the real condition of your item when our staff inspects it in person. Items with damage or missing parts may get less.
+              </div>
+
+              {/* CTA */}
+              <div style={{ background: '#111827', borderRadius: '12px', padding: '20px', textAlign: 'center' }}>
+                <div style={{ fontWeight: 800, fontSize: '16px', marginBottom: '6px' }}>Ready to come in?</div>
+                <div style={{ color: '#9ca3af', fontSize: '14px', marginBottom: '16px' }}>Bring your item to our shop and we will check it for you — no appointment needed.</div>
+                <div style={{ color: '#e5e7eb', fontSize: '14px', marginBottom: '16px', lineHeight: 1.7 }}>
+                  📍 {address}<br />
+                  📞 <a href={`tel:${phone1}`} style={{ color: '#4ade80' }}>{phone1}</a>
+                  {phone2 && <> / <a href={`tel:${phone2}`} style={{ color: '#4ade80' }}>{phone2}</a></>}
+                </div>
+                <a
+                  href={`https://wa.me/${whatsApp}?text=${encodeURIComponent(`Hello, I just checked the estimate for my ${selectedType} on your website. I'd like to come in.`)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25d366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: '10px' }}
+                >
+                  💬 Chat with us on WhatsApp
+                </a>
+                <button
+                  onClick={() => { setResult(null); setSelectedType(''); setDescription(''); setPhotos([null,null,null]); setErrorMsg(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                  style={{ background: 'none', border: '1px solid #2a3447', borderRadius: '10px', color: '#9ca3af', padding: '12px 20px', fontSize: '14px', cursor: 'pointer', width: '100%' }}
+                >
+                  Check another item
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -7566,7 +7927,8 @@ export default function App() {
           setCurrentUser(normalizedUser);
           navigate('/dashboard');
         }} />} />
-        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} onShop={() => navigate('/shop')} />} />
+        <Route path="/get-estimate" element={<ItemValuationPage settings={settings} onBack={() => navigate('/')} />} />
+        <Route path="*" element={<LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/login')} onShop={() => navigate('/shop')} onGetEstimate={() => navigate('/get-estimate')} />} />
       </Routes>
     );
   }
@@ -7578,9 +7940,14 @@ export default function App() {
     return <SalesPage settings={settings} onBack={() => navigate('/dashboard')} initialItemId={itemId} />;
   }
 
+  // Allow authenticated users to use the public valuation page
+  if (location.pathname === '/get-estimate') {
+    return <ItemValuationPage settings={settings} onBack={() => navigate('/dashboard')} />;
+  }
+
   // Allow authenticated users to view the landing page
   if (location.pathname === '/landing') {
-    return <LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/dashboard')} onShop={() => navigate('/shop')} />;
+    return <LandingPage settings={settings} onCheckLoan={() => navigate('/check-loan-status')} onStaffLogin={() => navigate('/dashboard')} onShop={() => navigate('/shop')} onGetEstimate={() => navigate('/get-estimate')} />;
   }
 
   // Redirect authenticated users away from public paths (including root)
@@ -10706,6 +11073,25 @@ export default function App() {
                   }
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* ── PUBLIC VALUATION PAGE ── */}
+          <div style={S.card}>
+            <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '4px' }}>Public Item Valuation Page</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>
+              The <strong>/get-estimate</strong> page lets customers check how much they can get for their item before visiting the shop — no login needed. It uses the Gemini AI to look up current market prices and calculates a cash advance range based on your lending percentage.
+            </div>
+            <div style={S.grid2}>
+              <Field label="Enable public valuation page">
+                <select style={S.input} value={es.publicValuationEnabled !== false ? 'true' : 'false'} onChange={e => updateSettings({ ...es, publicValuationEnabled: e.target.value === 'true' })}>
+                  <option value="true">Enabled — customers can use it</option>
+                  <option value="false">Disabled — page is turned off</option>
+                </select>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Checks per visitor per day<InfoIcon tip="How many times the same person (IP address) can use the free estimate page in one day. Default is 3. Increase if you trust your audience, decrease if the page is being misused." /></span>}>
+                <input style={S.input} type="number" min="1" max="20" value={es.publicValuationDailyLimitPerIp ?? DEFAULT_SETTINGS.publicValuationDailyLimitPerIp} onChange={e => updateSettings({ ...es, publicValuationDailyLimitPerIp: Math.max(1, Number(e.target.value) || DEFAULT_SETTINGS.publicValuationDailyLimitPerIp) })} />
+              </Field>
             </div>
           </div>
 
