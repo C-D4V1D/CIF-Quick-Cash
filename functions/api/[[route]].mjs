@@ -3322,8 +3322,6 @@ Instructions:
 IMPORTANT PRICING CONTEXT:
 - Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
 - We need to sell this item within 7 days, so price it to sell quickly — but do NOT undervalue it. We want the best realistic price a buyer will pay within 1 week, not a desperate clearance price.
-- Do NOT lowball. If the brand new price is ₦50,000 and the item is in good condition, the used price should be around ₦25,000-₦37,500 — not ₦10,000.
-
 4. Give me the realistic price we can sell this item for in Aguleri within 7 days. This should be a fair market price — not inflated, not deflated.
 
 5. Use simple everyday English. No big words.
