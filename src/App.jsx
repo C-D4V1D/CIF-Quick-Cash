@@ -4842,7 +4842,7 @@ CRITICAL INSTRUCTION: Reply ONLY in this exact format (no numbered prefixes, no 
 AI_ITEM_TYPE: [what the item is]
 BRAND: [brand name]
 MODEL: [exact model name and number as it appears on the device, e.g. iPhone 14 Pro Max or Galaxy S23 Ultra]
-KEY_SPECS: [Storage, RAM, capacity, etc. — keep it under 12 words]
+KEY_SPECS: [start with the most important spec that makes this item unique, then add value/grade indicators like storage, RAM, screen size, generation, capacity — use up to 15 words]
 COLOUR: [colour(s)]
 CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
 
@@ -4942,7 +4942,7 @@ Reply in this exact format (no markdown, no extra text):
 AI_ITEM_TYPE: ${identItemType}
 BRAND: [confirmed or corrected brand]
 MODEL: [the VERIFIED real model name/number]
-KEY_SPECS: [confirmed or corrected specs — under 12 words]
+KEY_SPECS: [confirmed or corrected specs — start with the most important differentiating spec, then value/grade indicators — use up to 15 words]
 COLOUR: [colour]
 CONFIDENCE: [your confidence now, as percentage]
 MODEL_VERIFIED: [YES if you confirmed it exists with matching type and specs, CORRECTED if you found a different model, UNVERIFIED if you could not confirm]`;
