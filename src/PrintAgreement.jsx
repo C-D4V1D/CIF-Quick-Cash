@@ -248,17 +248,17 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
     <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
+  `;
+
+  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 3–6) ──
+  const page3Content = `
+    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 3 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
 
     <div class="clause-hdr c3">3. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
     <div class="clause-body cb3">
       You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/>
       <div style="margin-top:3px"><b>If the ${maxLoanDays}th day (${fmtDateLong(internalDeadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.</div>
     </div>
-  `;
-
-  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 4–6) ──
-  const page3Content = `
-    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 3 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
 
     <div class="clause-hdr c4">4. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
     <div class="clause-body cb4">
