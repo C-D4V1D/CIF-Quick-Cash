@@ -1900,21 +1900,21 @@ function EstimatePage({ onBack, settings }) {
 
   const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
 
-  const handlePhotoChange = (idx, e) => {
+  const handlePhotoChange = async (idx, e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) { setErrorMsg('That photo is too big. Please use a photo no more than 10 MB.'); return; }
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target.result || '';
+    try {
+      const dataUrl = await compressImageFile(file, { maxDimension: 1200, quality: 0.8 });
       const [meta, data] = dataUrl.split(',');
       const mime = meta?.match(/^data:([^;]+)/i)?.[1] || 'image/jpeg';
       const newPhotos = [...photos];
       newPhotos[idx] = { mime_type: mime, data };
       setPhotos(newPhotos);
       setErrorMsg('');
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      setErrorMsg('Could not read this image. Please try a different photo.');
+    }
   };
 
   const handleRemovePhoto = (idx) => {
