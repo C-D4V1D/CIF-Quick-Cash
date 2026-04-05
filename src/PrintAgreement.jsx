@@ -118,14 +118,15 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   // Customer: title + tagline + Part E signatures
   const backCoverHTML = isBusinessCopy ? `
     <div>
+      <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 4 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
       <div class="biz-name" style="font-size:11pt">CHRIST-IN-FABIAN QUICK CASH</div>
       <div class="biz-sub">Cash Advance &amp; Buy-Back Agreement</div>
-      <div style="margin-top:2mm;font-size:7.5pt"><b>${copyLabel}</b> &nbsp;·&nbsp; Ref: <b>${tx.ref || ''}</b></div>
     </div>
     ${officialUseHTML}
     ${partEContent}
   ` : `
-    <div style="text-align:center;padding-top:5mm;">
+    <div style="text-align:center;padding-top:2mm;">
+      <div class="sheet-label" style="text-align:left">${copyLabel} &nbsp;·&nbsp; Page 4 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
       <div class="biz-name" style="font-size:13pt;line-height:1.2">CHRIST-IN-FABIAN QUICK CASH</div>
       <div class="biz-sub" style="margin-top:2mm">Cash Advance &amp; Buy-Back Agreement</div>
       <div style="margin-top:4mm;font-size:7.5pt;color:#555;font-style:italic;line-height:1.5">
@@ -147,6 +148,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
         <td class="hdr-right">
           <div class="copy-label">${copyLabel}</div>
           <div class="ref-line">Ref: <span class="ref-val">${tx.ref || ''}</span></div>
+          <div style="font-size:6.5pt;color:#999;margin-top:3px">Page 1 of 4</div>
         </td>
       </tr>
     </table>
@@ -193,7 +195,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
   // ── FACE 2 LEFT PANEL — PAGE 2 content (PART C + PART D terms) ──
   const page2Content = `
-    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Sheet 2 of 2 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
+    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 2 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
     <table class="photos-tbl">
       <tr><td class="photos-hdr" colspan="3">Photos Taken — tick each when done:</td></tr>
       <tr>
@@ -239,7 +241,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <div class="hr-gold"></div>
 
-    <div class="section-hdr">PART D — TERMS &nbsp;<span style="font-weight:400">(Read every clause aloud to the customer before signing)</span></div>
+    <div class="section-hdr">PART D — TERMS &nbsp;<span style="font-weight:400">(Please read every clause carefully before you sign)</span></div>
 
     <div class="clause-hdr c1">1. &nbsp;YOUR ITEM IS SAFE WITH US</div>
     <div class="clause-body cb1">Your item stays in our shop and remains your property while this agreement is active. We will keep it safely. We are not responsible for any pre-existing hidden faults or internal damage not visible during testing today. We are also not responsible for loss of data on any phone or laptop. When you come to collect, you can only raise a complaint about a specific feature or function if you clearly demonstrated it was working at the time you brought the item — we are not responsible for anything you did not show us.</div>
@@ -247,7 +249,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
   // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 2–6) ──
   const page3Content = `
-    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Sheet 2 of 2 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
+    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 3 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
 
     <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
     <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
@@ -442,7 +444,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div style="font-size:9pt;color:#555;margin-bottom:10px"><b>${copyLabel}</b> &nbsp;·&nbsp; Ref: <b>${tx.ref || ''}</b> &nbsp;·&nbsp; Outright Purchase Receipt (continued)</div>
 
     <!-- PART D -->
-    <div class="section-hdr">PART D — TERMS &nbsp;&nbsp;<span style="font-weight:400;font-size:10pt">(Read every clause aloud to the seller before signing)</span></div>
+    <div class="section-hdr">PART D — TERMS &nbsp;&nbsp;<span style="font-weight:400;font-size:10pt">(Please read every clause carefully before you sign)</span></div>
 
     <div class="clause-hdr c2">1. &nbsp;OWNERSHIP TRANSFER</div>
     <div class="clause-body cb2" style="font-size:10pt; padding:6px 12px;">As of the Purchase Date above, full and permanent ownership of the item in Part B passes to Christ-in-Fabian Quick Cash. We may sell, use, or dispose of it as we choose. The seller has no further claim to the item.</div>
@@ -561,7 +563,7 @@ body{
 .panel{
   width: 50%;
   height: 100%;
-  padding: 3mm 4mm 2mm 4mm;
+  padding: 3mm 4mm 3mm 4mm;
   box-sizing: border-box;
   overflow: hidden;
   position: relative;
