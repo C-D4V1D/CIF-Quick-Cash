@@ -5044,13 +5044,18 @@ Instructions:
 1. Search for the BRAND NEW retail price of this exact model in Nigeria TODAY.
    - Include the colour in your search if known (e.g. search "black JBL Charge 5 price Nigeria")
    - Search across Nigerian e-commerce and online stores — find at least 3 sources
-   - Calculate the modal price from all prices found (the price that comes up most often, or the price range most prices cluster around)
+   - Pick the MOST COMMON price across listings (modal price — the price that comes up most often). If no single price appears more than once, use the MEDIAN of all prices found.
    - Do NOT average the prices
    - If the colour affects price (e.g. some iPhone colours cost more), use the price for that specific colour
    - Only use current listed prices — do NOT use old or outdated prices
    - If this is a generic/unbranded item, search for equivalent items with similar specs
 
-2. Based on the brand new price, estimate the fair resale price using your expert judgement. Consider the item's condition (from the description and photos), age of the model, supply/demand in Nigerian resale markets, and any visible damage or wear.
+2. Based on the brand new price and the item's condition (from the description and photos), estimate the fair resale price:
+   - Good/excellent condition: typically 50-75% of brand new price
+   - Fair/moderate condition: typically 35-55% of brand new price
+   - Poor/heavily used condition: typically 20-35% of brand new price
+   - For Parts (not fully functional): typically 10-20% of brand new price
+   - Adjust further for: age of the model (older models lose value faster), supply/demand in Nigerian resale markets, and any visible damage or wear in the photos
 
 IMPORTANT PRICING CONTEXT:
 - Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
