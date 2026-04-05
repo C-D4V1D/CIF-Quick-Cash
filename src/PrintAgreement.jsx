@@ -762,25 +762,27 @@ body{ font-size:8pt; line-height:1.25; }
 
 /* === PAGE FOOTER === */
 .page-footer{
-  position: absolute; bottom: 0.45in; right: 0.7in;
   font-size: 10pt; color: #333; text-align: right;
+  margin-top: 18px; padding-top: 6px;
+  border-top: 1px solid #DDD;
 }
 `;
 
 // ---------------------------------------------------------------------------
-// Render one page's HTML off-screen and capture it as a JPEG data URL
-// widthPx / heightPx are the A4 dimensions in CSS pixels at 96dpi
+// Render one page's HTML off-screen and capture it as a JPEG data URL.
+// No height constraint — content renders at its natural height.
+// The caller is responsible for scaling the image to fit the PDF page.
 // ---------------------------------------------------------------------------
-async function capturePageHTML(contentHTML, css, widthPx, heightPx) {
+async function capturePageHTML(contentHTML, css, widthPx) {
   const wrapper = document.createElement('div');
+  // position:fixed at a far-left offset keeps it off-screen without clipping
   wrapper.style.cssText = [
     'position:fixed',
     `left:${-(widthPx + 20)}px`,
     'top:0',
     `width:${widthPx}px`,
-    `height:${heightPx}px`,
-    'overflow:hidden',
     'background:#fff',
+    // No height / overflow — content can expand to its full natural height
   ].join(';');
 
   const styleEl = document.createElement('style');
@@ -795,17 +797,37 @@ async function capturePageHTML(contentHTML, css, widthPx, heightPx) {
   try {
     const canvas = await html2canvas(wrapper, {
       width: widthPx,
-      height: heightPx,
+      // No height option — html2canvas uses the element's natural scrollHeight
       scale: 2,
       useCORS: true,
       logging: false,
       backgroundColor: '#ffffff',
       windowWidth: widthPx,
-      windowHeight: heightPx,
+      scrollX: 0,
+      scrollY: 0,
     });
     return canvas.toDataURL('image/jpeg', 0.93);
   } finally {
     document.body.removeChild(wrapper);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Add a captured image to the current PDF page, scaled to fill the page
+// width. If the content is taller than the page, it scales down to fit the
+// page height (keeping the aspect ratio, centred horizontally).
+// ---------------------------------------------------------------------------
+function addImageToPage(pdf, imgData, pageMmW, pageMmH) {
+  const props = pdf.getImageProperties(imgData);
+  const naturalMmH = pageMmW * props.height / props.width;
+  if (naturalMmH <= pageMmH) {
+    // Content fits: fill width, natural height (small gap at bottom is fine)
+    pdf.addImage(imgData, 'JPEG', 0, 0, pageMmW, naturalMmH);
+  } else {
+    // Content overflows: scale down uniformly to fit page height
+    const scale = pageMmH / naturalMmH;
+    const scaledW = pageMmW * scale;
+    pdf.addImage(imgData, 'JPEG', (pageMmW - scaledW) / 2, 0, scaledW, pageMmH);
   }
 }
 
@@ -818,8 +840,8 @@ export async function generateAgreementPDF(tx, settings = {}) {
   const css = getDocumentCSS(isOutright);
 
   if (isOutright) {
-    // A4 portrait: 210mm × 297mm  →  794px × 1123px at 96dpi
-    const W = 794, H = 1123;
+    // Render at A4 portrait width (794px at 96dpi); height is unconstrained
+    const W = 794;
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
 
     const allPages = [
@@ -829,14 +851,14 @@ export async function generateAgreementPDF(tx, settings = {}) {
 
     for (let i = 0; i < allPages.length; i++) {
       if (i > 0) pdf.addPage();
-      const imgData = await capturePageHTML(allPages[i], css, W, H);
-      pdf.addImage(imgData, 'JPEG', 0, 0, 210, 297);
+      const imgData = await capturePageHTML(allPages[i], css, W);
+      addImageToPage(pdf, imgData, 210, 297);
     }
     return pdf;
 
   } else {
-    // A4 landscape: 297mm × 210mm  →  1123px × 794px at 96dpi
-    const W = 1123, H = 794;
+    // Render at A4 landscape width (1123px at 96dpi); height is unconstrained
+    const W = 1123;
     const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
     const allFaces = [
@@ -846,8 +868,8 @@ export async function generateAgreementPDF(tx, settings = {}) {
 
     for (let i = 0; i < allFaces.length; i++) {
       if (i > 0) pdf.addPage();
-      const imgData = await capturePageHTML(allFaces[i], css, W, H);
-      pdf.addImage(imgData, 'JPEG', 0, 0, 297, 210);
+      const imgData = await capturePageHTML(allFaces[i], css, W);
+      addImageToPage(pdf, imgData, 297, 210);
     }
     return pdf;
   }
