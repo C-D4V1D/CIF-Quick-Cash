@@ -3275,7 +3275,9 @@ export async function onRequest(context) {
 
       // Validate each photo object { mime_type, data }
       const ALLOWED_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/avif']);
-      const MAX_B64_LEN = 10 * 1024 * 1024 * 4 / 3; // ~13.3 MB base64 for 10 MB binary
+      // base64 encodes binary as 4 chars per 3 bytes, so a 10 MB image is at most ~13.3 MB as a base64 string
+      const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+      const MAX_B64_LEN = Math.ceil(MAX_IMAGE_BYTES * 4 / 3);
       for (const p of photos) {
         if (!p || typeof p !== 'object' || !p.mime_type || !p.data) return error('Each photo must have mime_type and data fields', 400);
         if (!ALLOWED_MIMES.has(String(p.mime_type).toLowerCase())) return error('Unsupported image format', 400);

@@ -1903,7 +1903,7 @@ function EstimatePage({ onBack, settings }) {
   const handlePhotoChange = (idx, e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 10 * 1024 * 1024) { setErrorMsg('That photo is too big. Please use a photo under 10 MB.'); return; }
+    if (file.size > 10 * 1024 * 1024) { setErrorMsg('That photo is too big. Please use a photo no more than 10 MB.'); return; }
     const reader = new FileReader();
     reader.onload = (ev) => {
       const dataUrl = ev.target.result || '';
