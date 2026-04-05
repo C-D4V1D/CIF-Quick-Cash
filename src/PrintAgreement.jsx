@@ -245,11 +245,6 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <div class="clause-hdr c1">1. &nbsp;YOUR ITEM IS SAFE WITH US</div>
     <div class="clause-body cb1">Your item stays in our shop and remains your property while this agreement is active. We will keep it safely. We are not responsible for any pre-existing hidden faults or internal damage not visible during testing today. We are also not responsible for loss of data on any phone or laptop. When you come to collect, you can only raise a complaint about a specific feature or function if you clearly demonstrated it was working at the time you brought the item — we are not responsible for anything you did not show us.</div>
-  `;
-
-  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 2–6) ──
-  const page3Content = `
-    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 3 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
 
     <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
     <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
@@ -259,6 +254,11 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
       You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/>
       <div style="margin-top:3px"><b>If the ${maxLoanDays}th day (${fmtDateLong(internalDeadlineDate)}) arrives and you have not paid in full, your item is considered SOLD BY YOU and PURCHASED BY US</b> at the advance amount of <b>₦${(tx.cashAdvance || 0).toLocaleString()}</b> given to you — we may sell it, keep it, or use it as we choose. From that point, this is final and permanent — you cannot claim the item back and no refund will be given.</div>
     </div>
+  `;
+
+  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 4–6) ──
+  const page3Content = `
+    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Page 3 of 4 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
 
     <div class="clause-hdr c4">4. &nbsp;YOUR RESPONSIBILITY TO REMEMBER</div>
     <div class="clause-body cb4">
