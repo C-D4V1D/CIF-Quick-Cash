@@ -193,6 +193,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
   // ── FACE 2 LEFT PANEL — PAGE 2 content (PART C + PART D terms) ──
   const page2Content = `
+    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Sheet 2 of 2 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
     <table class="photos-tbl">
       <tr><td class="photos-hdr" colspan="3">Photos Taken — tick each when done:</td></tr>
       <tr>
@@ -242,13 +243,15 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <div class="clause-hdr c1">1. &nbsp;YOUR ITEM IS SAFE WITH US</div>
     <div class="clause-body cb1">Your item stays in our shop and remains your property while this agreement is active. We will keep it safely. We are not responsible for any pre-existing hidden faults or internal damage not visible during testing today. We are also not responsible for loss of data on any phone or laptop. When you come to collect, you can only raise a complaint about a specific feature or function if you clearly demonstrated it was working at the time you brought the item — we are not responsible for anything you did not show us.</div>
+  `;
+
+  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 2–6) ──
+  const page3Content = `
+    <div class="sheet-label">${copyLabel} &nbsp;·&nbsp; Sheet 2 of 2 &nbsp;·&nbsp; Ref: ${tx.ref || ''}</div>
 
     <div class="clause-hdr c2">2. &nbsp;HOW TO COLLECT YOUR ITEM</div>
     <div class="clause-body cb2">Pay back the advance amount plus the Daily Holding &amp; Service Fee for each day the advance has been running. Every new day that begins counts as a full day's fee. We will calculate your exact total on the day you arrive. Pay in full and your item will be returned to you immediately.</div>
-  `;
 
-  // ── FACE 2 RIGHT PANEL — PAGE 3 content (Clauses 3–6) ──
-  const page3Content = `
     <div class="clause-hdr c3">3. &nbsp;THE ${maxLoanDays}-DAY PURCHASE RULE — READ CAREFULLY</div>
     <div class="clause-body cb3">
       You have <b>${loanDays} days</b> from the Date Given above to pay back in full and collect your item. Your agreed return date is <b>${fmtDateLong(tx.deadlineDate)}</b>. If you have not paid by then, your account will be marked overdue.<br/>
@@ -558,7 +561,7 @@ body{
 .panel{
   width: 50%;
   height: 100%;
-  padding: 5mm 5mm 4mm 5mm;
+  padding: 3mm 4mm 2mm 4mm;
   box-sizing: border-box;
   overflow: hidden;
   position: relative;
@@ -566,41 +569,42 @@ body{
 .panel-left{ border-right: 1px dashed #bbb; }
 
 ${!isOutright ? `
-/* Advance booklet: compact sizing for A5 panels */
-body{ font-size:8pt; line-height:1.25; }
-.hdr-tbl{ margin-bottom:4px; }
-.hdr-right{ padding:5px 8px; }
-.biz-name{ font-size:11pt; }
-.biz-sub{ font-size:7.5pt; margin-top:1px; }
-.copy-label{ font-size:8pt; margin-bottom:4px; }
-.ref-line{ font-size:8pt; padding-top:4px; margin-top:2px; }
-.ref-val{ font-size:9pt; min-width:80px; }
-.section-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
-.sub-hdr{ font-size:8pt; padding:2px 8px; margin:3px 0 2px 0; }
-.staff-note{ font-size:7.5pt; padding:2px 7px; margin-bottom:3px; }
+/* Advance booklet: very compact sizing for narrow A5 panels */
+body{ font-size:7.5pt; line-height:1.2; }
+.hdr-tbl{ margin-bottom:3px; }
+.hdr-right{ padding:4px 6px; }
+.biz-name{ font-size:10.5pt; }
+.biz-sub{ font-size:7pt; margin-top:1px; }
+.copy-label{ font-size:7.5pt; margin-bottom:3px; }
+.ref-line{ font-size:7.5pt; padding-top:3px; margin-top:2px; }
+.ref-val{ font-size:8.5pt; min-width:70px; }
+.section-hdr{ font-size:7.5pt; padding:2px 6px; margin:4px 0 2px 0; }
+.sub-hdr{ font-size:7.5pt; padding:2px 6px; margin:3px 0 2px 0; }
+.staff-note{ font-size:7pt; padding:2px 6px; margin-bottom:2px; }
 .field-tbl{ margin-bottom:1px; }
-.fl{ font-size:8pt; padding:1px 4px 1px 0; }
-.fv{ font-size:8pt; padding:1px 3px; }
-.big-val{ font-size:9pt; }
-.check-row{ font-size:7.5pt; padding:1px 7px; margin:2px 0; }
-.value-row{ font-size:7.5pt; padding:2px 7px; margin:3px 0; }
-.underline-val{ min-width:90px; }
-.muted-italic{ font-size:7pt; }
-.photos-tbl td{ font-size:7.5pt; padding:2px 6px; }
-.hr-gold{ margin:3px 0; border-top-width:2px; }
-.fee-box{ font-size:7.5pt; padding:4px 9px; margin:4px 0; line-height:1.3; }
-.daily-fee-row{ font-size:7.5pt; padding:2px 7px; margin-bottom:5px; }
-.clause-hdr{ font-size:7.5pt; padding:2px 7px; margin:4px 0 0 0; }
-.clause-body{ font-size:7.5pt; padding:3px 7px; margin-bottom:2px; line-height:1.35; }
-.consent{ font-size:7.5pt; margin:3px 0; }
-.sig-tbl{ margin-top:4px; }
-.sig-space{ height:30px; }
+.fl{ font-size:7.5pt; padding:1px 3px 1px 0; }
+.fv{ font-size:7.5pt; padding:1px 2px; }
+.big-val{ font-size:8.5pt; }
+.check-row{ font-size:7pt; padding:1px 6px; margin:2px 0; }
+.value-row{ font-size:7pt; padding:2px 6px; margin:2px 0; }
+.underline-val{ min-width:80px; }
+.muted-italic{ font-size:6.5pt; }
+.photos-tbl td{ font-size:7pt; padding:2px 5px; }
+.hr-gold{ margin:2px 0; border-top-width:2px; }
+.fee-box{ font-size:7pt; padding:3px 7px; margin:3px 0; line-height:1.25; }
+.daily-fee-row{ font-size:7pt; padding:2px 6px; margin-bottom:4px; }
+.clause-hdr{ font-size:7pt; padding:2px 6px; margin:3px 0 0 0; }
+.clause-body{ font-size:7pt; padding:2px 6px; margin-bottom:2px; line-height:1.3; }
+.consent{ font-size:7pt; margin:2px 0; }
+.sig-tbl{ margin-top:3px; }
+.sig-space{ height:26px; }
 .sig-line{ width:80%; margin-top:2px; }
-.sig-sub{ font-size:7pt; }
-.thumb-box{ height:55px; width:80%; padding:3px; margin-top:2px; }
-.thumb-text{ font-size:6.5pt; }
-.photo-note{ font-size:7pt; padding:2px 7px; margin-top:4px; }
-.official-hdr{ font-size:8pt; padding:2px 8px; margin:5px 0 3px 0; }
+.sig-sub{ font-size:6.5pt; }
+.thumb-box{ height:50px; width:80%; padding:3px; margin-top:2px; }
+.thumb-text{ font-size:6pt; }
+.photo-note{ font-size:6.5pt; padding:2px 6px; margin-top:3px; }
+.official-hdr{ font-size:7.5pt; padding:2px 6px; margin:4px 0 2px 0; }
+.sheet-label{ font-size:6.5pt; color:#999; border-bottom:1px solid #eee; padding-bottom:2px; margin-bottom:3px; }
 ` : ''}
 
 /* === HEADER === */
