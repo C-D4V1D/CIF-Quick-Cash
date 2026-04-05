@@ -2109,32 +2109,25 @@ function ItemValuationPage({ onBack, settings }) {
 
           {/* Submit button */}
           {selectedType && descReady && (
-            <button
-              onClick={handleSubmit}
-              disabled={!canSubmit}
-              style={{
-                width: '100%', background: canSubmit ? GREEN : '#374151', color: '#fff',
-                border: 'none', borderRadius: '12px', padding: '18px', fontSize: '18px', fontWeight: 800,
-                cursor: canSubmit ? 'pointer' : 'not-allowed', minHeight: '56px', transition: 'background 0.2s',
-              }}
-            >
-              {loading ? '⏳ Checking your item…' : '💰 Show Me How Much I Can Get'}
-            </button>
-          )}
-
-          {/* Loading state */}
-          {loading && (
-            <div style={{ marginTop: '24px' }}>
-              <div style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '16px', padding: '40px 24px', textAlign: 'center' }}>
-                <div style={{ fontSize: '44px', marginBottom: '16px' }}>⏳</div>
-                <div style={{ fontWeight: 800, fontSize: '20px', color: '#fff', lineHeight: 1.4 }}>
-                  Checking your item, please wait…
-                </div>
-              </div>
-              <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '14px', marginTop: '16px' }}>
+            <>
+              <button
+                onClick={handleSubmit}
+                disabled={loading || !canSubmit}
+                style={{
+                  width: '100%', background: loading ? '#374151' : GREEN, color: '#fff',
+                  border: 'none', borderRadius: '12px', padding: '18px', fontSize: '18px', fontWeight: 800,
+                  cursor: loading ? 'not-allowed' : (canSubmit ? 'pointer' : 'not-allowed'), minHeight: '56px', transition: 'background 0.2s',
+                }}
+              >
+                {loading ? (
+                  <><span style={{ display: 'inline-block', animation: 'spin 1s linear infinite', fontSize: '20px' }}>⏳</span> Checking your item, please wait…</>
+                ) : '💰 Show Me How Much I Can Get'}
+              </button>
+              <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+              <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '13px', marginTop: '10px' }}>
                 This check is free. No registration needed.
               </div>
-            </div>
+            </>
           )}
 
           {/* Error / rate limit message */}
@@ -2158,50 +2151,36 @@ function ItemValuationPage({ onBack, settings }) {
             <div ref={resultRef} style={{ marginTop: '28px' }}>
 
               {/* Main green result card */}
-              <div style={{ background: '#1a3d22', border: '2px solid #4ade80', borderRadius: '16px', padding: '24px 20px', marginBottom: '16px', textAlign: 'center' }}>
-                {/* Item + condition */}
+              <div style={{ background: '#064e3b', border: '2px solid #10b981', borderRadius: '14px', padding: '24px', textAlign: 'center', marginBottom: '16px' }}>
+                <div style={{ fontSize: '32px', marginBottom: '8px' }}>🎉</div>
                 {result.itemSummary && (
-                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#e5e7eb', marginBottom: '8px', lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 700, fontSize: '15px', color: '#e5e7eb', marginBottom: '6px', lineHeight: 1.5 }}>
                     {result.itemSummary}
                   </div>
                 )}
                 {result.conditionNotes && (
-                  <div style={{ fontSize: '13px', color: '#a7f3d0', marginBottom: '20px', lineHeight: 1.6 }}>
+                  <div style={{ fontSize: '13px', color: '#a7f3d0', marginBottom: '16px', lineHeight: 1.5 }}>
                     {result.conditionNotes}
                   </div>
                 )}
 
-                <div style={{ fontWeight: 700, fontSize: '15px', color: '#fff', marginBottom: '10px' }}>
+                <div style={{ fontWeight: 600, fontSize: '14px', color: '#d1d5db', marginBottom: '8px' }}>
                   If you come to our shop, you could get:
                 </div>
 
-                {/* Big advance range */}
-                <div style={{ fontWeight: 900, fontSize: 'clamp(28px,8vw,42px)', color: '#4ade80', lineHeight: 1.1, marginBottom: '10px' }}>
+                <div style={{ fontWeight: 900, fontSize: 'clamp(28px,8vw,40px)', color: '#4ade80', lineHeight: 1.1, marginBottom: '8px' }}>
                   {result.advanceLow > 0 ? `${fmt(result.advanceLow)} – ${fmt(result.advanceHigh)}` : '—'}
                 </div>
 
-                {/* Resale value subtext */}
                 {result.priceLow > 0 && (
-                  <div style={{ fontSize: '13px', color: '#a7f3d0' }}>
-                    (Estimated resale value of your item: {fmt(result.priceLow)} – {fmt(result.priceHigh)})
+                  <div style={{ fontSize: '13px', color: '#a7f3d0', opacity: 0.85 }}>
+                    (Estimated resale value: {fmt(result.priceLow)} – {fmt(result.priceHigh)})
                   </div>
                 )}
               </div>
 
-              {/* How we got this number */}
-              {result.priceBasis && (
-                <div style={{ background: '#111827', border: '1px solid #2a3447', borderRadius: '10px', padding: '14px', marginBottom: '12px', fontSize: '13px', color: '#d1d5db', lineHeight: 1.6 }}>
-                  <span style={{ fontWeight: 700, color: '#9ca3af' }}>📊 How we got this number: </span>{result.priceBasis}
-                </div>
-              )}
-
-              {/* Disclaimer */}
-              <div style={{ background: '#1c0a00', border: '1px solid #78350f', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px', fontSize: '13px', color: '#fde68a', lineHeight: 1.6 }}>
-                ⚠️ <strong style={{ color: '#fbbf24' }}>Please note:</strong> This is only an estimate — not a final offer. The actual amount depends on the real condition of your item when our staff check it in person. Bring your item and a valid ID to our shop for the exact amount.
-              </div>
-
               {/* Confidence + new price badges */}
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
                 {result.confidence && (
                   <span style={{ background: '#1e2433', border: '1px solid #2a3447', borderRadius: '20px', padding: '6px 14px', fontSize: '13px', color: '#9ca3af' }}>
                     🎯 Confidence: {result.confidence}
@@ -2214,61 +2193,70 @@ function ItemValuationPage({ onBack, settings }) {
                 )}
               </div>
 
+              {/* How we got this number */}
+              {result.priceBasis && (
+                <div style={{ background: '#1e2433', borderRadius: '10px', padding: '12px 14px', marginBottom: '12px', fontSize: '13px', color: '#b0b8c4', lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 600, color: '#9ca3af' }}>📊 How we got this number: </span>{result.priceBasis}
+                </div>
+              )}
+
+              {/* Disclaimer */}
+              <div style={{ background: '#1c0a00', border: '1px solid #78350f', borderRadius: '10px', padding: '12px 14px', marginBottom: '20px', fontSize: '13px', color: '#fde68a', lineHeight: 1.6 }}>
+                ⚠️ <strong style={{ color: '#fbbf24' }}>Please note:</strong> This is only an estimate — not a final offer. The actual amount depends on the real condition of your item when our staff check it in person. Bring your item and a valid ID to our shop for the exact amount.
+              </div>
+
               {/* CTA section */}
-              <div style={{ background: '#111827', border: '1px solid #2a3447', borderRadius: '16px', padding: '24px 20px' }}>
-                <div style={{ fontWeight: 800, fontSize: '18px', marginBottom: '6px', textAlign: 'center' }}>
+              <div style={{ background: '#1a3d22', border: '1.5px solid #1a5f2a', borderRadius: '12px', padding: '18px', marginBottom: '16px', textAlign: 'center' }}>
+                <div style={{ fontWeight: 800, fontSize: '18px', marginBottom: '6px' }}>
                   Ready? Come to our shop today! 🏃
                 </div>
-                <div style={{ fontSize: '14px', color: '#d1d5db', marginBottom: '20px', textAlign: 'center', lineHeight: 1.6 }}>
+                <div style={{ fontSize: '14px', color: '#d1d5db', marginBottom: '16px', lineHeight: 1.6 }}>
                   Bring your item + your NIN number <strong style={{ color: '#fff' }}>(dial *346# to get it)</strong>
                 </div>
 
-                {/* Address */}
-                <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '16px', textAlign: 'center', lineHeight: 1.5 }}>
+                <div style={{ fontSize: '13px', color: '#9ca3af', marginBottom: '16px', lineHeight: 1.5 }}>
                   📍 {address}
                 </div>
 
-                {/* WhatsApp */}
-                <a
-                  href={`https://wa.me/${whatsApp}?text=${encodeURIComponent(`Hello, I just checked the estimate for my ${selectedType} on your website. I'd like to come in.`)}`}
-                  target="_blank" rel="noopener noreferrer"
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25d366', color: '#fff', padding: '16px', borderRadius: '12px', textDecoration: 'none', fontWeight: 800, fontSize: '16px', marginBottom: '10px' }}
-                >
-                  💬 Chat with Us on WhatsApp
-                </a>
-
-                {/* Phone buttons */}
                 <a
                   href={`tel:${phone1}`}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: phone2 ? '8px' : '16px' }}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: phone2 ? '8px' : '10px' }}
                 >
                   📞 Call Us: {phone1}
                 </a>
                 {phone2 && (
                   <a
                     href={`tel:${phone2}`}
-                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '12px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: '16px' }}
+                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#1a5f2a', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: '10px' }}
                   >
                     📞 Call Us: {phone2}
                   </a>
                 )}
 
-                {/* Check another item */}
-                <button
-                  onClick={() => { setResult(null); setSelectedType(''); setDescription(''); setPhotos([null,null,null]); setErrorMsg(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'none', border: '1.5px solid #2a3447', borderRadius: '12px', color: '#9ca3af', padding: '14px', fontSize: '15px', cursor: 'pointer', width: '100%', marginBottom: '12px', fontWeight: 600 }}
+                <a
+                  href={`https://wa.me/${whatsApp}?text=${encodeURIComponent(`Hello, I just checked the estimate for my ${selectedType} on your website. I'd like to come in.`)}`}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', background: '#25d366', color: '#fff', padding: '14px', borderRadius: '10px', textDecoration: 'none', fontWeight: 700, fontSize: '15px', marginBottom: '0' }}
                 >
-                  ← Check Another Item
-                </button>
-
-                {/* Back to home */}
-                <button
-                  onClick={onBack}
-                  style={{ display: 'block', background: 'none', border: 'none', color: '#4b5563', fontSize: '14px', cursor: 'pointer', textDecoration: 'underline', padding: '4px', width: '100%', textAlign: 'center' }}
-                >
-                  ← Back to Home
-                </button>
+                  💬 Chat with Us on WhatsApp
+                </a>
               </div>
+
+              {/* Check another item */}
+              <button
+                onClick={() => { setResult(null); setSelectedType(''); setDescription(''); setPhotos([null,null,null]); setErrorMsg(''); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', background: 'none', border: '1.5px solid #2a3447', borderRadius: '10px', color: '#9ca3af', padding: '14px', fontSize: '15px', cursor: 'pointer', width: '100%', marginBottom: '12px', fontWeight: 600 }}
+              >
+                ← Check Another Item
+              </button>
+
+              {/* Back to home */}
+              <button
+                onClick={onBack}
+                style={{ display: 'block', background: 'none', border: 'none', color: '#4b5563', fontSize: '14px', cursor: 'pointer', textDecoration: 'underline', padding: '4px', width: '100%', textAlign: 'center' }}
+              >
+                ← Back to Home
+              </button>
             </div>
           )}
         </div>
