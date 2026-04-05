@@ -4835,15 +4835,31 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
     const itemTypeHint = tx.captureItemType && tx.captureItemType !== 'Other' ? tx.captureItemType : '';
     const basePrompt = (lensContext) => `You are an expert appraiser for a second-hand shop in Aguleri, Anambra State, Nigeria. Look carefully at ALL the photos uploaded.${itemTypeHint ? ` The staff selected item type: "${itemTypeHint}".` : ' Identify what the item actually is.'}
 ${lensContext ? `\nTo guarantee accuracy, we ran a Google Lens search on this item. ${lensContext}\n\nCross-reference the Google Lens matches with what you see in the photos to deduce the exact details. Google Lens is very precise — treat its top matches as strong evidence of the real model.\n` : ''}
-IMPORTANT: Look carefully at ALL text visible on the item — labels, stickers, printed text on the body, capacity markings (e.g. mAh for power banks), serial number plates, About screens, spec sheets. The model name/number is often printed directly on the device.
+PHOTO READING PRIORITY:
+- Photo 1 (About Page / Settings / Spec Label): This is your PRIMARY source for model name, storage, RAM, and exact specs. Read every word carefully.
+- Photo 2 (Front view): Use for screen condition, colour, and branding.
+- Photo 3 (Back panel): Use for model number printed on the back, brand logo, colour.
+- Any other photos: Use for condition and additional details.
+If information conflicts between photos, TRUST the printed text on the device body or About screen over visual judgement.
+
+IMPORTANT: Read ALL visible text — labels, stickers, printed text on the body, capacity markings (e.g. mAh for power banks), serial plates, About screens, spec sheets. The model name/number is often printed directly on the device or shown on the settings screen.
+
+For KEY_SPECS, use this guide based on item type:
+- Smartphone / Tablet: storage capacity + RAM (e.g. "128GB storage, 8GB RAM")
+- Laptop: CPU name + RAM + storage type+size (e.g. "Intel i5-12th Gen, 8GB RAM, 256GB SSD")
+- Smart TV / Monitor: screen size + resolution (e.g. "55 inch, 4K UHD")
+- Power Bank: capacity in mAh + output wattage if shown (e.g. "20000mAh, 65W")
+- Bluetooth Speaker: wattage + key feature (e.g. "30W, waterproof, powerbank feature")
+- Generator: wattage/KVA rating (e.g. "2.5KVA, key start")
+- Other: the 1-2 specs that most affect resale value
 
 CRITICAL INSTRUCTION: Reply ONLY in this exact format (no numbered prefixes, no markdown, no extra text):
 
 AI_ITEM_TYPE: [what the item is]
 BRAND: [brand name]
 MODEL: [exact model name and number as it appears on the device, e.g. iPhone 14 Pro Max or Galaxy S23 Ultra]
-KEY_SPECS: [Storage, RAM, capacity, etc. — keep it under 12 words]
-COLOUR: [colour(s)]
+KEY_SPECS: [follow the guide above — under 12 words]
+COLOUR: [use the manufacturer's official colour name if you can identify it, e.g. "Space Grey" not just "grey", "Midnight Black" not just "black", "Champagne Gold" not just "gold". If unsure, describe exactly what colour you see.]
 CONFIDENCE: [your confidence score as a percentage, e.g. 92%]
 
 If text on the device is blurry, unreadable, or missing, you MUST ALSO include this line BEFORE the other fields:
@@ -4927,25 +4943,31 @@ The AI identified this item from photos:
 - Model: ${identModel}
 - Key specs: ${identKeySpecs}
 ${lensContext ? `\nGoogle Lens grounding context:\n${lensContext}\n` : ''}
-YOUR TASK: Search the internet for "${identBrand} ${identModel}" and verify ALL of these:
+YOUR TASK: Search the internet and verify ALL of these:
 1. Does "${identBrand} ${identModel}" exist as a real product?
 2. Is it a ${identItemType}? (Not a different type of product from the same brand)
 3. Do the specs match? (${identKeySpecs})
 
-If ALL 3 checks pass: confirm the identification and return the same details.
-If ANY check fails (model doesn't exist, OR it exists but is a different product type, OR the specs don't match): search for the correct ${identBrand} ${identItemType} model that matches these specs: ${identKeySpecs}. Look at product databases, review sites, and retailer listings. Compare search results with the photos.
+If ALL 3 checks pass: confirm the identification and return the same details with MODEL_VERIFIED: YES.
 
-CRITICAL: The model name/number must be a REAL product that exists AND must match the item type and specs. Do not guess or make up model numbers.
+If ANY check fails:
+- FIRST: Try searching "${identBrand} ${identItemType} ${identKeySpecs}" to find the correct model
+- SECOND: Try searching just the specs without the model name: "${identBrand} ${identItemType} ${identKeySpecs} Nigeria"
+- THIRD: Check product databases, GSMArena, retailer listings, and review sites
+- Return the CORRECTED model you found and set MODEL_VERIFIED: CORRECTED
+- Only set MODEL_VERIFIED: UNVERIFIED if you truly cannot find any matching product after all searches
+
+CRITICAL: The model name/number must be a REAL product that exists AND matches the item type and specs. Do not guess or make up model numbers. It is BETTER to return UNVERIFIED than to return a wrong model.
 
 Reply in this exact format (no markdown, no extra text):
 
 AI_ITEM_TYPE: ${identItemType}
 BRAND: [confirmed or corrected brand]
-MODEL: [the VERIFIED real model name/number]
-KEY_SPECS: [confirmed or corrected specs — under 12 words]
-COLOUR: [colour]
+MODEL: [the VERIFIED real model name/number — or best match found]
+KEY_SPECS: [confirmed or corrected specs — under 12 words, use the type-specific format: phones=storage+RAM, laptops=CPU+RAM+storage, TVs=size+resolution, power banks=mAh+watts]
+COLOUR: [use official manufacturer colour name where possible, e.g. "Space Grey" not "grey"]
 CONFIDENCE: [your confidence now, as percentage]
-MODEL_VERIFIED: [YES if you confirmed it exists with matching type and specs, CORRECTED if you found a different model, UNVERIFIED if you could not confirm]`;
+MODEL_VERIFIED: [YES / CORRECTED / UNVERIFIED]`;
 
       const geminiCheck2 = checkGeminiLimit(settings);
       if (!geminiCheck2.blocked) {
