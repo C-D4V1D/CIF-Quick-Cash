@@ -3295,7 +3295,7 @@ export async function onRequest(context) {
         }
 
         // Build Gemini prompt — mirrors handleAIRun3 in TransactionWizard as closely as possible
-        const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 14 days.
+        const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 7 days.
 
 CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices in other currencies, convert them to Naira at the current exchange rate.
 
@@ -3303,47 +3303,42 @@ Item details:
 * Type: ${itemType.trim()}
 * Customer description: ${description.trim()}
 
+We accept these item types: Smartphones, Laptops, Tablets, Bluetooth Speakers, Power Banks, Electric Fans (Standing & Table/Desk), Flat-Screen TVs, Generators, Gas Cylinders, and Motorcycles.
+
 Instructions:
 1. Identify the exact brand, model, and colour from the description and photos. If unrecognisable, use your best estimate.
 
 2. Search for the BRAND NEW retail price of this exact model in Nigeria TODAY.
-   - Include the colour in your search if known (e.g. search "black JBL Charge 5 price Nigeria 2024")
-   - Check at least 3 Nigerian stores: Jumia.com.ng, Konga.com, Slot.ng, and others
-   - Pick the MOST COMMON price across listings (modal price — the price that comes up most often)
-   - Do NOT average the prices — use the price that appears most frequently across stores
+   - Include the colour in your search if known (e.g. search "black JBL Charge 5 price Nigeria")
+   - Search across Nigerian e-commerce and online stores — find at least 3 sources
+   - Pick the MOST COMMON price across listings (modal price — the price that comes up most often). If no single price appears more than once, use the MEDIAN of all prices found.
+   - Do NOT average the prices
    - If the colour affects price (e.g. some iPhone colours cost more), use the price for that specific colour
    - Only use current listed prices — do NOT use old or outdated prices
-   - If this is a generic/unbranded Chinese item, search for equivalent items with similar specs
+   - If this is a generic/unbranded item, search for equivalent items with similar specs
 
-3. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities. Search with the specific colour mentioned to find the most accurate used price.
-
-CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
-- Sort all listings for this item by price from lowest to highest
-- Throw away the cheapest 20% of listings — these are usually scam bait
-- From the remaining 80%, find the MEDIAN price (the middle value, not the average)
-- Use this median as your base for the used price
-
-4. Use those prices as your base. Then adjust for:
-   - The item condition based on the customer's description and photos
-   - Current supply/demand — if this item is very common in resale markets, price competitively; if rare, price slightly higher
-   - Age of the model — older models lose value faster
+3. Based on the brand new price and the item's condition (from the description and photos), estimate the fair resale price:
+   - Good/excellent condition: typically 50-75% of brand new price
+   - Fair/moderate condition: typically 35-55% of brand new price
+   - Poor/heavily used condition: typically 20-35% of brand new price
+   - For Parts (not fully functional): typically 10-20% of brand new price
+   - Adjust further for: age of the model (older models lose value faster), supply/demand in Nigerian resale markets, and any visible damage or wear in the photos
 
 IMPORTANT PRICING CONTEXT:
 - Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
-- We need to sell this item within 14 days, so price it to move — but do NOT undervalue it. We want the best realistic price a buyer will pay within 2 weeks, not a desperate clearance price.
-- Second-hand items in good working condition typically sell for 50-75% of brand new price. Items in fair condition sell for 35-55% of brand new price.
+- We need to sell this item within 7 days, so price it to sell quickly — but do NOT undervalue it. We want the best realistic price a buyer will pay within 1 week, not a desperate clearance price.
 - Do NOT lowball. If the brand new price is ₦50,000 and the item is in good condition, the used price should be around ₦25,000-₦37,500 — not ₦10,000.
 
-5. Give me the realistic price we can sell this item for in Aguleri within 14 days. This should be a fair market price — not inflated, not deflated.
+4. Give me the realistic price we can sell this item for in Aguleri within 7 days. This should be a fair market price — not inflated, not deflated.
 
-6. Use simple everyday English. No big words.
+5. Use simple everyday English. No big words.
 
 Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
 ITEM_SUMMARY: [item name — include colour (if mentioned), brand, model, and key features, aim for 10-12 words, NO full sentences, do NOT start with "This is" or "This item"]
 ITEM_COLOR_MODEL: [colour (if mentioned in description) + brand + model only, max 5 words, e.g. "black JBL Charge 5" or "Samsung Galaxy A54" if no colour mentioned]
 CONDITION_NOTES: [1-2 sentences on the item's condition based on the description and photos]
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
-PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
+PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices you found and how you calculated the resale estimate based on condition]
 NEW_MARKET_PRICE: [number only — the brand new price in Nigeria, or 0 if not found]
 PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
 VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if you found real price data, lower if you had to estimate]`;
