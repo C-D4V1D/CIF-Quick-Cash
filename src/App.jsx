@@ -1645,6 +1645,45 @@ function InfoIcon({ tip }) {
   );
 }
 
+function DetectModelsButton({ apiKey, currentModel, onSelect }) {
+  const [detecting, setDetecting] = useState(false);
+  const [models, setModels] = useState(null);
+  const [error, setError] = useState('');
+  const detect = async () => {
+    if (!apiKey) { setError('Enter your Gemini API key first.'); return; }
+    setDetecting(true); setModels(null); setError('');
+    try {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+      const data = await resp.json();
+      if (data.error) { setError(data.error.message); setDetecting(false); return; }
+      const list = (data.models || [])
+        .map(m => m.name?.replace('models/', ''))
+        .filter(n => n && (n.includes('flash') || n.includes('pro')))
+        .sort();
+      setModels(list);
+    } catch (e) { setError(e.message); }
+    setDetecting(false);
+  };
+  return (
+    <div style={{ marginTop: '6px' }}>
+      <button style={{ ...S.btnSm('secondary') }} onClick={detect} disabled={detecting}>
+        {detecting ? '⏳ Detecting...' : '🔍 Detect available models'}
+      </button>
+      {error && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>{error}</div>}
+      {models && (
+        <div style={{ marginTop: '8px', padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '12px' }}>
+          <div style={{ fontWeight: 700, marginBottom: '4px' }}>Models on your API key — tap to select:</div>
+          {models.map(m => (
+            <div key={m} onClick={() => onSelect(m)} style={{ padding: '4px 6px', marginTop: '2px', borderRadius: '4px', cursor: 'pointer', background: currentModel === m ? COLORS.primaryLight : '#fff', border: `1px solid ${COLORS.border}` }}>
+              {m}{currentModel === m ? ' ✓' : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Modal({ open, onClose, title, children, wide }) {
   const isMobile = useMobile();
   if (!open) return null;
@@ -11078,43 +11117,7 @@ export default function App() {
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Use 'Detect Models' to see exactly which models your API key can access." /></span>}>
               <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
-              {(() => {
-                const [detecting, setDetecting] = React.useState(false);
-                const [detectedModels, setDetectedModels] = React.useState(null);
-                const [detectError, setDetectError] = React.useState('');
-                const detect = async () => {
-                  if (!es.geminiApiKey) { setDetectError('Enter your Gemini API key first.'); return; }
-                  setDetecting(true); setDetectedModels(null); setDetectError('');
-                  try {
-                    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${es.geminiApiKey}`);
-                    const data = await resp.json();
-                    if (data.error) { setDetectError(data.error.message); setDetecting(false); return; }
-                    const models = (data.models || [])
-                      .map(m => m.name?.replace('models/', ''))
-                      .filter(n => n && (n.includes('flash') || n.includes('pro')))
-                      .sort();
-                    setDetectedModels(models);
-                  } catch (e) { setDetectError(e.message); }
-                  setDetecting(false);
-                };
-                return (<>
-                  <button style={{ ...S.btnSm('secondary'), marginTop: '6px' }} onClick={detect} disabled={detecting}>
-                    {detecting ? '⏳ Detecting...' : '🔍 Detect available models'}
-                  </button>
-                  {detectError && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>{detectError}</div>}
-                  {detectedModels && (
-                    <div style={{ marginTop: '8px', padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '12px' }}>
-                      <div style={{ fontWeight: 700, marginBottom: '4px' }}>Models available on your API key — tap to use:</div>
-                      {detectedModels.map(m => (
-                        <div key={m} style={{ padding: '4px 6px', marginTop: '2px', borderRadius: '4px', cursor: 'pointer', background: (es.geminiModel || DEFAULT_SETTINGS.geminiModel) === m ? COLORS.primaryLight : '#fff', border: `1px solid ${COLORS.border}` }}
-                          onClick={() => updateSettings({ ...es, geminiModel: m })}>
-                          {m} {(es.geminiModel || DEFAULT_SETTINGS.geminiModel) === m ? '✓' : ''}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>);
-              })()}
+              <DetectModelsButton apiKey={es.geminiApiKey} currentModel={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onSelect={m => updateSettings({ ...es, geminiModel: m })} />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Key (Google Lens)<InfoIcon tip="Recommended. Used for Google Lens reverse image search — identifies exact device models by matching against real product listings. Much more accurate than generic image analysis. Get a free key at serpapi.com." /></span>}>
               <input style={S.input} type="password" value={es.serpApiKey || ''} onChange={e => updateSettings({ ...es, serpApiKey: e.target.value })} placeholder="From serpapi.com (recommended)" />
