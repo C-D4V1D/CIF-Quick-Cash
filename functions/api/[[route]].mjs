@@ -2775,10 +2775,10 @@ export async function onRequest(context) {
     }
 
     // ============================================================
-    // SERPAPI GOOGLE AI SEARCH PROXY: POST /api/serpapi-ai
-    // Accepts { query, apiKey } and proxies to SerpApi Google search
-    // (with gl=ng for Nigeria). Returns ai_overview, answer_box,
-    // knowledge_graph and top organic results for price analysis.
+    // SERPAPI GOOGLE AI MODE PROXY: POST /api/serpapi-ai
+    // Accepts { query, apiKey } and proxies to SerpApi using the
+    // google_ai_mode engine (Google's AI Mode / conversational AI).
+    // Returns text_blocks (AI answer) and references for analysis.
     // ============================================================
     if (path === 'serpapi-ai' && method === 'POST') {
       const auth = requireAuth(request);
@@ -2787,7 +2787,7 @@ export async function onRequest(context) {
       if (!apiKey) return error('No SerpApi AI key provided');
       if (!query) return error('No query provided');
       const serpUrl = new URL('https://serpapi.com/search.json');
-      serpUrl.searchParams.set('engine', 'google');
+      serpUrl.searchParams.set('engine', 'google_ai_mode');
       serpUrl.searchParams.set('q', query);
       serpUrl.searchParams.set('gl', 'ng');
       serpUrl.searchParams.set('hl', 'en');
@@ -2796,10 +2796,8 @@ export async function onRequest(context) {
       const data2 = await resp2.json().catch(() => null);
       if (!resp2.ok) return error(data2?.error || data2?.message || `SerpApi request failed with status ${resp2.status}`, resp2.status);
       return json({
-        ai_overview: data2.ai_overview || null,
-        answer_box: data2.answer_box || null,
-        organic_results: (data2.organic_results || []).slice(0, 5).map(r => ({ title: r.title || '', snippet: r.snippet || '', link: r.link || '' })),
-        knowledge_graph: data2.knowledge_graph || null,
+        text_blocks: data2.text_blocks || [],
+        references: (data2.references || []).slice(0, 5).map(r => ({ title: r.title || '', link: r.link || '' })),
       });
     }
 

@@ -1398,9 +1398,9 @@ const callSerpApiLens = async (apiKey, photo) => {
   } catch (e) { return { error: e.message }; }
 };
 
-// SerpApi Google AI Search — fetches live Google search results (including AI overview)
-// for a text query. Used in Run 3a to get real-time price data for the item.
-// Returns { summary } with extracted price context, or { error }.
+// SerpApi Google AI Mode — queries Google's AI Mode engine for a conversational
+// AI answer about the item's price in Nigeria. Returns { summary } with the
+// full AI-generated text and source references, or { error }.
 const callSerpApiGoogleAI = async (apiKey, query) => {
   if (!apiKey) return { error: 'No SerpApi AI key set.' };
   if (!query) return { error: 'No query provided.' };
@@ -1409,27 +1409,24 @@ const callSerpApiGoogleAI = async (apiKey, query) => {
     const resp = await API.post('serpapi-ai', { query, apiKey });
     if (resp?.error) return { error: resp.error };
 
-    const parts = [];
-    // AI overview (Google AI Mode)
-    if (resp.ai_overview) {
-      const ov = resp.ai_overview;
-      const aiText = Array.isArray(ov.blocks)
-        ? ov.blocks.map(b => b.content || b.snippet || '').filter(Boolean).join(' ')
-        : (ov.snippet || ov.answer || '');
-      if (aiText) parts.push(`Google AI Overview: ${aiText.substring(0, 1000)}`);
-    }
-    // Direct answer box
-    if (resp.answer_box?.answer) parts.push(`Direct Answer: ${resp.answer_box.answer}`);
-    else if (resp.answer_box?.snippet) parts.push(`Answer Box: ${resp.answer_box.snippet}`);
-    // Knowledge graph price
-    if (resp.knowledge_graph?.price) parts.push(`Knowledge Graph Price: ${resp.knowledge_graph.price}`);
-    // Top organic results
-    const organicSnippets = (resp.organic_results || []).slice(0, 3)
-      .map((r, i) => `[${i + 1}] ${r.title}: ${r.snippet}`)
+    // google_ai_mode returns text_blocks: array of { snippet/content } objects
+    const blocks = (resp.text_blocks || [])
+      .map(b => b.snippet || b.content || b.text || '')
       .filter(Boolean);
-    if (organicSnippets.length) parts.push(`Top Search Results:\n${organicSnippets.join('\n')}`);
+    const aiText = blocks.join('\n').substring(0, 2000);
 
-    return { summary: parts.join('\n\n') || 'No price information found in search results.' };
+    // Append source references for context
+    const refs = (resp.references || [])
+      .map((r, i) => `[${i + 1}] ${r.title}`)
+      .filter(Boolean)
+      .join(', ');
+
+    const summary = [
+      aiText ? `Google AI Mode Answer:\n${aiText}` : '',
+      refs ? `Sources: ${refs}` : '',
+    ].filter(Boolean).join('\n\n') || 'No price information found in Google AI Mode response.';
+
+    return { summary };
   } catch (e) { return { error: e.message }; }
 };
 
