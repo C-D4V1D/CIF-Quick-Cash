@@ -5204,14 +5204,16 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     let newMarketPrice = 0;
     try {
       let result1;
+      let serpSummaryForDisplay = null;
       if (settings.serpApiAiKey) {
-        // Two-step: SerpAPI Google AI search → Gemini analysis
+        // Two-step: SerpAPI Google AI search → Gemini price extraction
         const serpAiCheck = checkSerpApiAiLimit(settings);
         if (serpAiCheck.blocked) { switchToManualMode(serpAiCheck.reason); return; }
-        const searchQuery = `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? If you cannot find the median price of the item in Nigeria, what would your estimate be?`;
+        const searchQuery = `Current price of brand new ${itemType} ${brand} ${model} ${colour}${keySpecs ? ` ${keySpecs}` : ''} in Nigeria`;
         const serpResult = await callWithTimeout(() => callSerpApiGoogleAI(settings.serpApiAiKey, searchQuery), AI_TIMEOUT);
         if (serpResult.error) { switchToManualMode(`SerpApi AI search failed: ${serpResult.error}`); return; }
-        const prompt1 = `Based on the following Google search results about the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria:\n\n${serpResult.summary}\n\nAnalyze this data and determine the most accurate current market price in Nigerian Naira. Return ONLY the final determined new price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]`;
+        serpSummaryForDisplay = serpResult.summary;
+        const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the midpoint. If multiple prices are mentioned, use the median.\n\n${serpResult.summary}`;
         result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
       } else {
         // Fallback: Gemini with built-in Google Search grounding
@@ -5219,7 +5221,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
       }
       if (result1.error) { switchToManualMode(result1.error); return; }
-      upd('aiRawResponse3a', `[Model used: ${result1.model}]\n${result1.text}`);
+      // When SerpAPI was used, store its result for display; otherwise store Gemini's response
+      upd('aiRawResponse3a', serpSummaryForDisplay || `[Model used: ${result1.model}]\n${result1.text}`);
       const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
       newMarketPrice = Number(parsedPrice) || 0;
       upd('aiNewMarketPrice', String(newMarketPrice));
@@ -5663,7 +5666,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
 
             {/* Market price search result — read-only transparency for staff */}
-            {tx.aiRawResponse3a && <details style={{ marginTop: '8px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View market price search result</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3a}</div></details>}
+            {tx.aiRawResponse3a && <details style={{ marginTop: '8px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View market price search result</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3a}</div></details>}
 
             {/* Price range display */}
             {tx.aiRun3Done && tx.aiPriceRangeLow && tx.aiPriceRangeHigh && (
