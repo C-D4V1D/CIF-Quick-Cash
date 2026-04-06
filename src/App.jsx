@@ -1263,9 +1263,9 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
       const isProModel = !isGemini3 && modelName.includes('pro');
       const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }] };
-      if (isGemini3) body.generationConfig = { thinking_level: 'high' };
-      else if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
-      else if (!isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
+      // Gemini 3: thinking is ON by default at high level — no config needed
+      if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      else if (!isGemini3 && !isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
@@ -1279,8 +1279,8 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
       if (responseText) return { text: responseText, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
-      const isTransient = [429, 500, 502, 503].includes(resp.status);
-      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const isTransient = [400, 429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported') || errorMsg.includes('invalid');
       const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
       if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
     }
@@ -1325,8 +1325,8 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
       if (responseText) return { text: responseText, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
-      const isTransient = [429, 500, 502, 503].includes(resp.status);
-      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const isTransient = [400, 429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported') || errorMsg.includes('invalid');
       const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
       if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
     }
