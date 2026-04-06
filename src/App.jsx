@@ -1259,9 +1259,9 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       // For thinking models (2.5-pro), set a low thinking budget to reduce latency
-      const isThinkingModel = modelName.includes('pro') || modelName.includes('thinking');
+      const isProModel = modelName.includes('pro') && !modelName.includes('thinking');
       const body = { contents: [{ parts }] };
-      if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
