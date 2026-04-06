@@ -5020,73 +5020,56 @@ Reply with the condition description only. Nothing else.`;
     setAiLoading(false); setAiLoadingPhase('');
   };
 
-  // RUN 3: Resale Valuation (with Google Search grounding)
+  // RUN 3: Resale Valuation — two-step sequential AI workflow
+  // Step 3a: market price search (Google Search grounding, no photos)
+  // Step 3b: photo-based valuation using the price found in 3a
   const handleAIRun3 = async () => {
-    setAiLoading(true); setAiLoadingPhase('run3'); setAiError('');
+    setAiLoading(true); setAiLoadingPhase('run3a'); setAiError('');
     const geminiCheck = checkGeminiLimit(settings);
     if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
-    const photos = getPhotos();
-    const conditionText = tx.conditionDescription || tx.aiCondition || '';
-    const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 14 days.
 
-CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices in other currencies, convert them to Naira at the current exchange rate.
+    const itemType = tx.aiItemType || tx.captureItemType || 'Unknown';
+    const brand = tx.aiBrand || 'Unknown';
+    const model = tx.aiModel || 'Unknown';
+    const colour = tx.aiColour || 'Unknown';
 
-Item details:
-* Type: ${tx.aiItemType || tx.captureItemType || 'Unknown'}
-* Brand and model: ${tx.aiBrand || 'Unknown'} ${tx.aiModel || 'Unknown'}
-* Colour: ${tx.aiColour || 'Unknown'}
-* Specs: ${tx.aiKeySpecs || 'Not available'}
-* Condition: ${conditionText || '(assess from the photos)'}
+    // ── STEP 3a: Find current brand-new market price via Google Search ──
+    const prompt1 = `Act as a Nigerian market analyst. Find the current modal price for a brand new ${itemType}, ${brand}, ${model}, ${colour} in Nigeria today. Ignore prices of items that are out of stock, and convert any price not in Naira to Naira. Return ONLY this format: NEW_MARKET_PRICE: [number only — no naira sign, no comma]`;
 
-Instructions:
-1. Search for the BRAND NEW retail price of this exact model in Nigeria TODAY.
-   - Include the colour in your search if known (e.g. search "black JBL Charge 5 price Nigeria 2024")
-   - Check at least 3 Nigerian stores: Jumia.com.ng, Konga.com, Slot.ng, and others
-   - Pick the MOST COMMON price across listings (modal price — the price that comes up most often)
-   - Do NOT average the prices — use the price that appears most frequently across stores
-   - If the colour affects price (e.g. some iPhone colours cost more), use the price for that specific colour
-   - Only use current listed prices — do NOT use old or outdated prices
-   - If this is a generic/unbranded Chinese item, search for equivalent items with similar specs
-
-2. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities.
-
-CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
-- Sort all listings for this item by price from lowest to highest
-- Throw away the cheapest 20% of listings — these are usually scam bait
-- From the remaining 80%, find the MEDIAN price (the middle value, not the average)
-- Use this median as your base for the used price
-
-3. Use those prices as your base. Then adjust for:
-   - The item condition described above${conditionText ? '' : ' (also look at the photos)'}
-   - Current supply/demand — if this item is very common in resale markets, price competitively; if rare, price slightly higher
-   - Age of the model — older models lose value faster
-
-IMPORTANT PRICING CONTEXT:
-- Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
-- We need to sell this item within 14 days, so price it to move — but do NOT undervalue it. We want the best realistic price a buyer will pay within 2 weeks, not a desperate clearance price.
-- Second-hand items in good working condition typically sell for 50-75% of brand new price. Items in fair condition sell for 35-55% of brand new price.
-- Do NOT lowball. If the brand new price is ₦50,000 and the item is in good condition, the used price should be around ₦25,000-₦37,500 — not ₦10,000.
-
-4. Give me the realistic price we can sell this item for in Aguleri within 14 days. This should be a fair market price — not inflated, not deflated.
-
-5. Use simple everyday English. No big words.
-
-Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
-ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
-PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
-NEW_MARKET_PRICE: [number only — the brand new price in Nigeria, or 0 if not found]
-PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
-VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if you found real price data, lower if you had to estimate]`;
+    let newMarketPrice = 0;
     try {
-      const result = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
-      if (result.error) { switchToManualMode(result.error); return; }
-      const text = result.text;
-      upd('aiRawResponse3', text);
+      const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1), AI_TIMEOUT);
+      if (result1.error) { switchToManualMode(result1.error); return; }
+      upd('aiRawResponse3a', result1.text);
+      const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
+      newMarketPrice = Number(parsedPrice) || 0;
+      upd('aiNewMarketPrice', String(newMarketPrice));
+    } catch (e) {
+      switchToManualMode(e.message);
+      return;
+    }
+
+    // ── STEP 3b: Photo-based resale valuation using the market price from 3a ──
+    setAiLoadingPhase('run3b');
+    const photos = getPhotos();
+    const prompt2 = `Act as an expert second-hand appraiser in Aguleri, Anambra State. Based on the uploaded photos of this ${itemType}, ${brand}, ${model}, ${colour}, which current brand new price is ${newMarketPrice > 0 ? newMarketPrice : 'unknown'}, provide a valuation for a 7-day sale. Strictly follow this output format:
+ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma] |
+PRICE_BASIS: [2 to 3 short sentences explaining how you calculated your estimate based on the photos and local market] |
+PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CONFIDENCE: [your confidence as a percentage]`;
+
+    try {
+      const result2 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt2), AI_TIMEOUT);
+      if (result2.error) { switchToManualMode(result2.error); return; }
+      const rawText = result2.text;
+      upd('aiRawResponse3', rawText);
+
+      // Normalise pipe separators to newlines so aiParseField can find each field reliably
+      const text = rawText.replace(/\s*\|\s*/g, '\n');
+
       const estimatedVal = aiParseField(text, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
       upd('aiEstimatedValue', estimatedVal);
       upd('estimatedValue', Number(estimatedVal) || 0);
       upd('aiPriceBasis', aiParseField(text, 'PRICE_BASIS'));
-      upd('aiNewMarketPrice', aiParseField(text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, ''));
       // Parse PRICE_RANGE: handles "45000-60000", "₦45,000 to ₦60,000", "45000 – 60000"
       const rangeRaw = aiParseField(text, 'PRICE_RANGE');
       const rangeCleaned = rangeRaw.replace(/[₦NGN,\s]/gi, '');
@@ -5548,7 +5531,9 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               {tx.aiRun3Done && !tx.aiValuationConfidence && <span style={{ marginLeft: 'auto', fontSize: '11px', color: COLORS.textMuted }}>Powered by Google Search</span>}
             </div>
             <button style={{ ...S.btn('primary'), background: '#e67e22' }} onClick={handleAIRun3} disabled={aiLoading || (!tx.aiRun2Done && !tx.aiManualMode && !tx.aiItemType)}>
-              {aiLoading && aiLoadingPhase === 'run3' ? '⏳ Searching Market Prices...' : tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Market Price'}
+              {aiLoading && aiLoadingPhase === 'run3a' ? '⏳ Finding Market Price...' :
+               aiLoading && aiLoadingPhase === 'run3b' ? '⏳ Calculating Valuation...' :
+               tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Valuation'}
             </button>
             {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
 
