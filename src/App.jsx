@@ -5079,7 +5079,7 @@ Reply with the condition description only. Nothing else.`;
     const brand = tx.aiBrand || 'Unknown';
     const model = tx.aiModel || 'Unknown';
     const colour = tx.aiColour || 'Unknown';
-    const prompt2 = `Act as an expert second-hand appraiser in Aguleri, Anambra State. Based on the uploaded photos of this ${itemType}, ${brand}, ${model}, ${colour}, which current brand new price is ${newMarketPrice > 0 ? newMarketPrice : 'unknown'}, provide a valuation for a 7-day sale. Strictly follow this output format:
+    const prompt2 = `Act as an expert second-hand appraiser in Aguleri, Anambra State. Based on the uploaded photos of this ${itemType}, ${brand}, ${model}, ${colour}, which current brand new price is ${newMarketPrice > 0 ? newMarketPrice : 'unknown'}, provide a valuation for a 7-day sale.${newMarketPrice > 0 ? ` Important: the highest value in the PRICE_RANGE must not exceed 60% of the brand new price (i.e. ${Math.round(newMarketPrice * 0.6).toLocaleString()}).` : ''} Strictly follow this output format:
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma] |
 PRICE_BASIS: [2 to 3 short sentences explaining how you calculated your estimate based on the photos and local market] |
 PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CONFIDENCE: [your confidence as a percentage]`;
@@ -5131,9 +5131,10 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     const brand = tx.aiBrand || 'Unknown';
     const model = tx.aiModel || 'Unknown';
     const colour = tx.aiColour || 'Unknown';
+    const keySpecs = tx.aiKeySpecs || '';
 
     // ── STEP 3a: Find current brand-new market price via Google Search ──
-    const prompt1 = `Act as a Nigerian market analyst. Find the current modal price for a brand new ${itemType}, ${brand}, ${model}, ${colour} in Nigeria today. Ignore prices of items that are out of stock, and convert any price not in Naira to Naira. Return ONLY this format: NEW_MARKET_PRICE: [number only — no naira sign, no comma]`;
+    const prompt1 = `Act as a Nigerian market analyst. Find the current modal price for a brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria today. Ignore prices of items that are out of stock, and convert any price not in Naira to Naira. Return ONLY this format: NEW_MARKET_PRICE: [number only — no naira sign, no comma]`;
     let newMarketPrice = 0;
     try {
       const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
