@@ -413,7 +413,7 @@ const DEFAULT_SETTINGS = {
   priceDropEnabled: false, priceDropIntervalDays: 3,
   shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', serpApiKey: '', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-2.5-flash-thinking-exp-01-21', serpApiKey: '', ninApiKey: '',
   // API Free Tier Limits (adjustable in case Google changes them)
   geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
   geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
@@ -1259,7 +1259,7 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       // For thinking models (2.5-pro), set a low thinking budget to reduce latency
-      const isThinkingModel = modelName.includes('pro');
+      const isThinkingModel = modelName.includes('pro') || modelName.includes('thinking');
       const body = { contents: [{ parts }] };
       if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
@@ -1301,7 +1301,7 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
 
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      const isThinkingModel = modelName.includes('pro');
+      const isThinkingModel = modelName.includes('pro') || modelName.includes('thinking');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
       if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
@@ -5103,14 +5103,6 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     setAiLoading(false); setAiLoadingPhase('');
   };
 
-  // Re-run Step 3b only — used when staff corrects the market price manually
-  const handleAIRun3bOnly = async () => {
-    setAiLoading(true); setAiLoadingPhase('run3b'); setAiError('');
-    const geminiCheck = checkGeminiLimit(settings);
-    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
-    await execRun3b(Number(tx.aiNewMarketPrice) || 0);
-    setAiLoading(false); setAiLoadingPhase('');
-  };
 
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
   const maxAdvance = tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100);
@@ -5543,34 +5535,15 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             </button>
             {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
 
-            {/* ── Brand-new market price (Step 3a result) — editable by staff ── */}
-            {(tx.aiNewMarketPrice !== undefined && tx.aiNewMarketPrice !== '') && (
-              <div style={{ marginTop: '10px', padding: '10px 12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#92400e' }}>Brand-new market price (found by AI search)</span>
-                  <span style={{ fontSize: '11px', color: '#78716c' }}>Correct if wrong, then tap below to re-run</span>
-                </div>
-                <input
-                  style={{ ...S.input, fontWeight: 700 }}
-                  type="number"
-                  value={tx.aiNewMarketPrice || ''}
-                  onChange={e => upd('aiNewMarketPrice', e.target.value.replace(/[^0-9]/g, ''))}
-                  placeholder="e.g. 209000"
-                />
-                {tx.aiRun3Done && (
-                  <button style={{ ...S.btnSm('secondary'), marginTop: '8px' }} onClick={handleAIRun3bOnly} disabled={aiLoading}>
-                    {aiLoading && aiLoadingPhase === 'run3b' ? '⏳ Recalculating...' : '↩ Re-run valuation with this price'}
-                  </button>
-                )}
-                {tx.aiRawResponse3a && <details style={{ marginTop: '6px' }}><summary style={{ fontSize: '11px', color: '#78716c', cursor: 'pointer' }}>View market price search result</summary><div style={{ padding: '6px 8px', background: '#fff', borderRadius: '4px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '80px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3a}</div></details>}
-              </div>
-            )}
+            {/* Market price search result — read-only transparency for staff */}
+            {tx.aiRawResponse3a && <details style={{ marginTop: '8px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View market price search result</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3a}</div></details>}
 
             {/* Price range display */}
             {tx.aiRun3Done && tx.aiPriceRangeLow && tx.aiPriceRangeHigh && (
               <div style={{ marginTop: '12px', padding: '12px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <span style={{ fontSize: '12px', color: COLORS.textMuted }}>Price Range</span>
+                  {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && <span style={{ fontSize: '11px', color: COLORS.textMuted }}>New price: {fmtMoney(Number(tx.aiNewMarketPrice))}</span>}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span style={{ fontSize: '13px', fontWeight: 600 }}>{fmtMoney(Number(tx.aiPriceRangeLow))}</span>
