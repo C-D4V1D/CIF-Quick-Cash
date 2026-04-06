@@ -5209,7 +5209,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         // Two-step: SerpAPI Google AI search → Gemini price extraction
         const serpAiCheck = checkSerpApiAiLimit(settings);
         if (serpAiCheck.blocked) { switchToManualMode(serpAiCheck.reason); return; }
-        const searchQuery = `Current price of brand new ${itemType} ${brand} ${model} ${colour}${keySpecs ? ` ${keySpecs}` : ''} in Nigeria`;
+        const searchQuery = `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? If you cannot find the median price of the item in Nigeria, what would your estimate be?`;
         const serpResult = await callWithTimeout(() => callSerpApiGoogleAI(settings.serpApiAiKey, searchQuery), AI_TIMEOUT);
         if (serpResult.error) { switchToManualMode(`SerpApi AI search failed: ${serpResult.error}`); return; }
         serpSummaryForDisplay = serpResult.summary;
