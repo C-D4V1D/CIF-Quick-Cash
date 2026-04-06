@@ -413,12 +413,13 @@ const DEFAULT_SETTINGS = {
   priceDropEnabled: false, priceDropIntervalDays: 3,
   shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-3-flash-preview', geminiThinkingBudget: -1, geminiTemperature: null, serpApiKey: '', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-3-flash-preview', geminiThinkingBudget: -1, geminiTemperature: null, serpApiKey: '', serpApiAiKey: '', ninApiKey: '',
   // API Free Tier Limits (adjustable in case Google changes them)
   geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
   geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
   visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
   serpApiMonthlyLimit: 250, // SerpApi free Developer plan: 250 searches/month
+  serpApiAiMonthlyLimit: 250, // SerpApi AI (Google AI search) monthly limit
   // Identity Verification
   requireNinVerification: false,
   ninCreditCost: 150,
@@ -1147,6 +1148,15 @@ const syncApiUsageFromDb = async () => {
         }
       }
     }
+    if (dbUsage.serpApiAi) {
+      if (!local.serpApiAi) local.serpApiAi = {};
+      for (const [month, dbCount] of Object.entries(dbUsage.serpApiAi)) {
+        if (dbCount > (local.serpApiAi[month] || 0)) {
+          local.serpApiAi[month] = dbCount;
+          changed = true;
+        }
+      }
+    }
     if (changed) saveApiUsage(local);
   } catch (e) { console.error('Failed to sync API usage from DB:', e); }
 };
@@ -1189,6 +1199,31 @@ const checkSerpApiLimit = (settings, liveAccount = null) => {
   const monthlyLimit = settings.serpApiMonthlyLimit || 250;
   const usedThisMonth = getSerpApiUsageThisMonth();
   if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
+  return { blocked: false, remaining: monthlyLimit - usedThisMonth };
+};
+
+const trackSerpApiAiCall = (count = 1) => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  if (!usage.serpApiAi) usage.serpApiAi = {};
+  if (!usage.serpApiAi[month]) usage.serpApiAi[month] = 0;
+  usage.serpApiAi[month] += count;
+  const keys = Object.keys(usage.serpApiAi).sort();
+  if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.serpApiAi[k]; }
+  saveApiUsage(usage);
+  API.post('usage/track', { service: 'serpApiAi', month, count }).catch(() => {});
+};
+
+const getSerpApiAiUsageThisMonth = () => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  return (usage.serpApiAi?.[month]) || 0;
+};
+
+const checkSerpApiAiLimit = (settings) => {
+  const monthlyLimit = settings.serpApiAiMonthlyLimit || 250;
+  const usedThisMonth = getSerpApiAiUsageThisMonth();
+  if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi AI monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
   return { blocked: false, remaining: monthlyLimit - usedThisMonth };
 };
 
@@ -1360,6 +1395,41 @@ const callSerpApiLens = async (apiKey, photo) => {
     ].filter(Boolean).join('\n');
 
     return { visualMatches, textResults, summary };
+  } catch (e) { return { error: e.message }; }
+};
+
+// SerpApi Google AI Search — fetches live Google search results (including AI overview)
+// for a text query. Used in Run 3a to get real-time price data for the item.
+// Returns { summary } with extracted price context, or { error }.
+const callSerpApiGoogleAI = async (apiKey, query) => {
+  if (!apiKey) return { error: 'No SerpApi AI key set.' };
+  if (!query) return { error: 'No query provided.' };
+  try {
+    trackSerpApiAiCall(1);
+    const resp = await API.post('serpapi-ai', { query, apiKey });
+    if (resp?.error) return { error: resp.error };
+
+    const parts = [];
+    // AI overview (Google AI Mode)
+    if (resp.ai_overview) {
+      const ov = resp.ai_overview;
+      const aiText = Array.isArray(ov.blocks)
+        ? ov.blocks.map(b => b.content || b.snippet || '').filter(Boolean).join(' ')
+        : (ov.snippet || ov.answer || '');
+      if (aiText) parts.push(`Google AI Overview: ${aiText.substring(0, 1000)}`);
+    }
+    // Direct answer box
+    if (resp.answer_box?.answer) parts.push(`Direct Answer: ${resp.answer_box.answer}`);
+    else if (resp.answer_box?.snippet) parts.push(`Answer Box: ${resp.answer_box.snippet}`);
+    // Knowledge graph price
+    if (resp.knowledge_graph?.price) parts.push(`Knowledge Graph Price: ${resp.knowledge_graph.price}`);
+    // Top organic results
+    const organicSnippets = (resp.organic_results || []).slice(0, 3)
+      .map((r, i) => `[${i + 1}] ${r.title}: ${r.snippet}`)
+      .filter(Boolean);
+    if (organicSnippets.length) parts.push(`Top Search Results:\n${organicSnippets.join('\n')}`);
+
+    return { summary: parts.join('\n\n') || 'No price information found in search results.' };
   } catch (e) { return { error: e.message }; }
 };
 
@@ -5133,11 +5203,24 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     const colour = tx.aiColour || 'Unknown';
     const keySpecs = tx.aiKeySpecs || '';
 
-    // ── STEP 3a: Find current brand-new market price via Google Search ──
-    const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
+    // ── STEP 3a: Find current brand-new market price ──
     let newMarketPrice = 0;
     try {
-      const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+      let result1;
+      if (settings.serpApiAiKey) {
+        // Two-step: SerpAPI Google AI search → Gemini analysis
+        const serpAiCheck = checkSerpApiAiLimit(settings);
+        if (serpAiCheck.blocked) { switchToManualMode(serpAiCheck.reason); return; }
+        const searchQuery = `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? If you cannot find the median price of the item in Nigeria, what would your estimate be?`;
+        const serpResult = await callWithTimeout(() => callSerpApiGoogleAI(settings.serpApiAiKey, searchQuery), AI_TIMEOUT);
+        if (serpResult.error) { switchToManualMode(`SerpApi AI search failed: ${serpResult.error}`); return; }
+        const prompt1 = `Based on the following Google search results about the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria:\n\n${serpResult.summary}\n\nAnalyze this data and determine the most accurate current market price in Nigerian Naira. Return ONLY the final determined new price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]`;
+        result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+      } else {
+        // Fallback: Gemini with built-in Google Search grounding
+        const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
+        result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+      }
       if (result1.error) { switchToManualMode(result1.error); return; }
       upd('aiRawResponse3a', `[Model used: ${result1.model}]\n${result1.text}`);
       const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
@@ -11142,6 +11225,9 @@ export default function App() {
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Key (Google Lens)<InfoIcon tip="Recommended. Used for Google Lens reverse image search — identifies exact device models by matching against real product listings. Much more accurate than generic image analysis. Get a free key at serpapi.com." /></span>}>
               <input style={S.input} type="password" value={es.serpApiKey || ''} onChange={e => updateSettings({ ...es, serpApiKey: e.target.value })} placeholder="From serpapi.com (recommended)" />
             </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi AI Key (Google AI Search)<InfoIcon tip="Used for Run 3a market price lookup. When set, Run 3a performs a live Google AI search via SerpApi to find the current brand-new price in Nigeria, then passes the result to Gemini for analysis. More accurate than Gemini's built-in search grounding. Get a key at serpapi.com (can be the same or a different account)." /></span>}>
+              <input style={S.input} type="password" value={es.serpApiAiKey || ''} onChange={e => updateSettings({ ...es, serpApiAiKey: e.target.value })} placeholder="From serpapi.com (for price search)" />
+            </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
               <input style={S.input} type="password" value={es.ninApiKey} onChange={e => updateSettings({ ...es, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
             </Field>
@@ -11158,6 +11244,9 @@ export default function App() {
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Monthly Limit<InfoIcon tip="Maximum Google Lens (SerpApi) searches per month. Free Developer plan: 250/month. Upgrade your SerpApi plan and increase this if you need more." /></span>}>
                   <input style={S.input} type="number" min="1" value={es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit} onChange={e => updateSettings({ ...es, serpApiMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.serpApiMonthlyLimit })} />
                 </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi AI Monthly Limit<InfoIcon tip="Maximum SerpApi AI (Google AI Search) calls per month used for Run 3a price lookup. Free Developer plan: 250/month." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.serpApiAiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiAiMonthlyLimit} onChange={e => updateSettings({ ...es, serpApiAiMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.serpApiAiMonthlyLimit })} />
+                </Field>
               </div>
               <div style={{ ...S.card, background: COLORS.bg, padding: '12px', marginTop: '10px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px' }}>Current Usage</div>
@@ -11168,6 +11257,7 @@ export default function App() {
                     ? <div>Google Lens this month: <strong>{serpApiAccount.this_month_usage}</strong> / {serpApiAccount.searches_per_month} <span style={{ color: COLORS.textMuted }}>(live from SerpApi{serpApiAccount.plan_name ? ` · ${serpApiAccount.plan_name}` : ''})</span></div>
                     : <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong> / {es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit}</div>
                   }
+                  {es.serpApiAiKey && <div>SerpApi AI this month: <strong>{getSerpApiAiUsageThisMonth()}</strong> / {es.serpApiAiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiAiMonthlyLimit}</div>}
                 </div>
               </div>
             </div>
