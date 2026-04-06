@@ -11076,8 +11076,45 @@ export default function App() {
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini AI API Key<InfoIcon tip="The key that turns on the AI valuation feature. You can get one for free at aistudio.google.com." /></span>}>
               <input style={S.input} type="password" value={es.geminiApiKey} onChange={e => updateSettings({ ...es, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" />
             </Field>
-            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Leave it as default — the system will switch to a backup automatically if needed." /></span>}>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Use 'Detect Models' to see exactly which models your API key can access." /></span>}>
               <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
+              {(() => {
+                const [detecting, setDetecting] = React.useState(false);
+                const [detectedModels, setDetectedModels] = React.useState(null);
+                const [detectError, setDetectError] = React.useState('');
+                const detect = async () => {
+                  if (!es.geminiApiKey) { setDetectError('Enter your Gemini API key first.'); return; }
+                  setDetecting(true); setDetectedModels(null); setDetectError('');
+                  try {
+                    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${es.geminiApiKey}`);
+                    const data = await resp.json();
+                    if (data.error) { setDetectError(data.error.message); setDetecting(false); return; }
+                    const models = (data.models || [])
+                      .map(m => m.name?.replace('models/', ''))
+                      .filter(n => n && (n.includes('flash') || n.includes('pro')))
+                      .sort();
+                    setDetectedModels(models);
+                  } catch (e) { setDetectError(e.message); }
+                  setDetecting(false);
+                };
+                return (<>
+                  <button style={{ ...S.btnSm('secondary'), marginTop: '6px' }} onClick={detect} disabled={detecting}>
+                    {detecting ? '⏳ Detecting...' : '🔍 Detect available models'}
+                  </button>
+                  {detectError && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>{detectError}</div>}
+                  {detectedModels && (
+                    <div style={{ marginTop: '8px', padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '12px' }}>
+                      <div style={{ fontWeight: 700, marginBottom: '4px' }}>Models available on your API key — tap to use:</div>
+                      {detectedModels.map(m => (
+                        <div key={m} style={{ padding: '4px 6px', marginTop: '2px', borderRadius: '4px', cursor: 'pointer', background: (es.geminiModel || DEFAULT_SETTINGS.geminiModel) === m ? COLORS.primaryLight : '#fff', border: `1px solid ${COLORS.border}` }}
+                          onClick={() => updateSettings({ ...es, geminiModel: m })}>
+                          {m} {(es.geminiModel || DEFAULT_SETTINGS.geminiModel) === m ? '✓' : ''}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>);
+              })()}
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Key (Google Lens)<InfoIcon tip="Recommended. Used for Google Lens reverse image search — identifies exact device models by matching against real product listings. Much more accurate than generic image analysis. Get a free key at serpapi.com." /></span>}>
               <input style={S.input} type="password" value={es.serpApiKey || ''} onChange={e => updateSettings({ ...es, serpApiKey: e.target.value })} placeholder="From serpapi.com (recommended)" />
