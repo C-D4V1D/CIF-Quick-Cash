@@ -5022,50 +5022,28 @@ Reply with the condition description only. Nothing else.`;
 
   // RUN 3: Resale Valuation — two-step sequential AI workflow
   // Step 3a: market price search (Google Search grounding, no photos)
-  // Step 3b: photo-based valuation using the price found in 3a
-  const handleAIRun3 = async () => {
-    setAiLoading(true); setAiLoadingPhase('run3a'); setAiError('');
-    const geminiCheck = checkGeminiLimit(settings);
-    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+  // Step 3b: photo-based valuation using the price found in 3a (or a staff-corrected price)
 
+  // Shared Step 3b logic — accepts the market price to use so it can be called
+  // both from the full handleAIRun3 flow and from handleAIRun3bOnly (re-run with corrected price).
+  const execRun3b = async (newMarketPrice) => {
+    setAiLoadingPhase('run3b');
+    const photos = getPhotos();
     const itemType = tx.aiItemType || tx.captureItemType || 'Unknown';
     const brand = tx.aiBrand || 'Unknown';
     const model = tx.aiModel || 'Unknown';
     const colour = tx.aiColour || 'Unknown';
-
-    // ── STEP 3a: Find current brand-new market price via Google Search ──
-    const prompt1 = `Act as a Nigerian market analyst. Find the current modal price for a brand new ${itemType}, ${brand}, ${model}, ${colour} in Nigeria today. Ignore prices of items that are out of stock, and convert any price not in Naira to Naira. Return ONLY this format: NEW_MARKET_PRICE: [number only — no naira sign, no comma]`;
-
-    let newMarketPrice = 0;
-    try {
-      const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1), AI_TIMEOUT);
-      if (result1.error) { switchToManualMode(result1.error); return; }
-      upd('aiRawResponse3a', result1.text);
-      const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
-      newMarketPrice = Number(parsedPrice) || 0;
-      upd('aiNewMarketPrice', String(newMarketPrice));
-    } catch (e) {
-      switchToManualMode(e.message);
-      return;
-    }
-
-    // ── STEP 3b: Photo-based resale valuation using the market price from 3a ──
-    setAiLoadingPhase('run3b');
-    const photos = getPhotos();
     const prompt2 = `Act as an expert second-hand appraiser in Aguleri, Anambra State. Based on the uploaded photos of this ${itemType}, ${brand}, ${model}, ${colour}, which current brand new price is ${newMarketPrice > 0 ? newMarketPrice : 'unknown'}, provide a valuation for a 7-day sale. Strictly follow this output format:
 ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma] |
 PRICE_BASIS: [2 to 3 short sentences explaining how you calculated your estimate based on the photos and local market] |
 PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CONFIDENCE: [your confidence as a percentage]`;
-
     try {
       const result2 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt2), AI_TIMEOUT);
-      if (result2.error) { switchToManualMode(result2.error); return; }
+      if (result2.error) { switchToManualMode(result2.error); return false; }
       const rawText = result2.text;
       upd('aiRawResponse3', rawText);
-
       // Normalise pipe separators to newlines so aiParseField can find each field reliably
       const text = rawText.replace(/\s*\|\s*/g, '\n');
-
       const estimatedVal = aiParseField(text, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
       upd('aiEstimatedValue', estimatedVal);
       upd('estimatedValue', Number(estimatedVal) || 0);
@@ -5081,28 +5059,56 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         upd('aiPriceRangeHigh', String(Math.max(low, high)));
       }
       upd('aiValuationConfidence', aiParseField(text, 'VALUATION_CONFIDENCE'));
-
       // Post-parse sanity checks — warning only, staff can still proceed
       const val = Number(estimatedVal) || 0;
       const parsedLow = Number(rangeMatch?.[1]) || 0;
       const parsedHigh = Number(rangeMatch?.[2]) || 0;
       const warnings = [];
-      if (val > 0 && (val < 1000 || val > 5000000)) {
-        warnings.push(`AI estimated ₦${val.toLocaleString()} — this seems unusual. Please verify manually.`);
-      }
-      if (parsedLow > 0 && parsedHigh > 0 && parsedHigh > parsedLow * 5) {
-        warnings.push('Price range spread is very wide — estimate may be unreliable.');
-      }
+      if (val > 0 && (val < 1000 || val > 5000000)) warnings.push(`AI estimated ₦${val.toLocaleString()} — this seems unusual. Please verify manually.`);
+      if (parsedLow > 0 && parsedHigh > 0 && parsedHigh > parsedLow * 5) warnings.push('Price range spread is very wide — estimate may be unreliable.');
       if (warnings.length > 0) setAiError('Warning: ' + warnings.join(' '));
       // Clamp estimated value within price range
       if (val > 0 && parsedHigh > 0 && val > parsedHigh) upd('estimatedValue', parsedHigh);
       if (val > 0 && parsedLow > 0 && val < parsedLow) upd('estimatedValue', parsedLow);
-
       upd('aiRun3Done', true);
-    } catch (e) {
-      switchToManualMode(e.message);
-      return;
-    }
+      return true;
+    } catch (e) { switchToManualMode(e.message); return false; }
+  };
+
+  // Full two-step flow: 3a (market price search) → 3b (photo valuation)
+  const handleAIRun3 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run3a'); setAiError('');
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+
+    const itemType = tx.aiItemType || tx.captureItemType || 'Unknown';
+    const brand = tx.aiBrand || 'Unknown';
+    const model = tx.aiModel || 'Unknown';
+    const colour = tx.aiColour || 'Unknown';
+
+    // ── STEP 3a: Find current brand-new market price via Google Search ──
+    const prompt1 = `Act as a Nigerian market analyst. Find the current modal price for a brand new ${itemType}, ${brand}, ${model}, ${colour} in Nigeria today. Ignore prices of items that are out of stock, and convert any price not in Naira to Naira. Return ONLY this format: NEW_MARKET_PRICE: [number only — no naira sign, no comma]`;
+    let newMarketPrice = 0;
+    try {
+      const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1), AI_TIMEOUT);
+      if (result1.error) { switchToManualMode(result1.error); return; }
+      upd('aiRawResponse3a', result1.text);
+      const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
+      newMarketPrice = Number(parsedPrice) || 0;
+      upd('aiNewMarketPrice', String(newMarketPrice));
+    } catch (e) { switchToManualMode(e.message); return; }
+
+    // ── STEP 3b: Photo-based resale valuation ──
+    await execRun3b(newMarketPrice);
+    setAiLoading(false); setAiLoadingPhase('');
+  };
+
+  // Re-run Step 3b only — used when staff corrects the market price manually
+  const handleAIRun3bOnly = async () => {
+    setAiLoading(true); setAiLoadingPhase('run3b'); setAiError('');
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+    await execRun3b(Number(tx.aiNewMarketPrice) || 0);
     setAiLoading(false); setAiLoadingPhase('');
   };
 
@@ -5537,12 +5543,34 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             </button>
             {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
 
+            {/* ── Brand-new market price (Step 3a result) — editable by staff ── */}
+            {(tx.aiNewMarketPrice !== undefined && tx.aiNewMarketPrice !== '') && (
+              <div style={{ marginTop: '10px', padding: '10px 12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: '#92400e' }}>Brand-new market price (found by AI search)</span>
+                  <span style={{ fontSize: '11px', color: '#78716c' }}>Correct if wrong, then tap below to re-run</span>
+                </div>
+                <input
+                  style={{ ...S.input, fontWeight: 700 }}
+                  type="number"
+                  value={tx.aiNewMarketPrice || ''}
+                  onChange={e => upd('aiNewMarketPrice', e.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder="e.g. 209000"
+                />
+                {tx.aiRun3Done && (
+                  <button style={{ ...S.btnSm('secondary'), marginTop: '8px' }} onClick={handleAIRun3bOnly} disabled={aiLoading}>
+                    {aiLoading && aiLoadingPhase === 'run3b' ? '⏳ Recalculating...' : '↩ Re-run valuation with this price'}
+                  </button>
+                )}
+                {tx.aiRawResponse3a && <details style={{ marginTop: '6px' }}><summary style={{ fontSize: '11px', color: '#78716c', cursor: 'pointer' }}>View market price search result</summary><div style={{ padding: '6px 8px', background: '#fff', borderRadius: '4px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '80px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3a}</div></details>}
+              </div>
+            )}
+
             {/* Price range display */}
             {tx.aiRun3Done && tx.aiPriceRangeLow && tx.aiPriceRangeHigh && (
               <div style={{ marginTop: '12px', padding: '12px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                   <span style={{ fontSize: '12px', color: COLORS.textMuted }}>Price Range</span>
-                  {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && <span style={{ fontSize: '11px', color: COLORS.textMuted }}>New price: {fmtMoney(Number(tx.aiNewMarketPrice))}</span>}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <span style={{ fontSize: '13px', fontWeight: 600 }}>{fmtMoney(Number(tx.aiPriceRangeLow))}</span>
@@ -5576,7 +5604,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               }} placeholder="e.g. 85000" />
               {Number(tx.aiPriceRangeHigh) > 0 && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>Maximum allowed: {fmtMoney(Number(tx.aiPriceRangeHigh))}</div>}
             </Field>
-            {tx.aiRawResponse3 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3}</div></details>}
+            {tx.aiRawResponse3 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View valuation AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3}</div></details>}
           </div>
         </>)}
 
