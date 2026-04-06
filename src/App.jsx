@@ -413,7 +413,7 @@ const DEFAULT_SETTINGS = {
   priceDropEnabled: false, priceDropIntervalDays: 3,
   shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', serpApiKey: '', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-3-flash-preview', serpApiKey: '', ninApiKey: '',
   // API Free Tier Limits (adjustable in case Google changes them)
   geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
   geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
@@ -1259,10 +1259,12 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
       // For thinking models (2.5-pro), set a low thinking budget to reduce latency
-      const isProModel = modelName.includes('pro') && !modelName.includes('thinking');
+      const isGemini3 = /^gemini-[3-9]/.test(modelName);
+      const isProModel = !isGemini3 && modelName.includes('pro');
       const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }] };
-      if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      if (isGemini3) body.generationConfig = { thinking_level: 'high' };
+      else if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       else if (!isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
@@ -1303,10 +1305,12 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
 
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      const isProModel = modelName.includes('pro') && !modelName.includes('thinking');
+      const isGemini3 = /^gemini-[3-9]/.test(modelName);
+      const isProModel = !isGemini3 && modelName.includes('pro');
       const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
-      if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      if (isGemini3) body.generationConfig = { thinking_level: 'high' };
+      else if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
       else if (!isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
