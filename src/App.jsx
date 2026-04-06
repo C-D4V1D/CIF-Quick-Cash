@@ -413,7 +413,7 @@ const DEFAULT_SETTINGS = {
   priceDropEnabled: false, priceDropIntervalDays: 3,
   shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-3-flash-preview', serpApiKey: '', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-3-flash-preview', geminiThinkingBudget: -1, serpApiKey: '', ninApiKey: '',
   // API Free Tier Limits (adjustable in case Google changes them)
   geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
   geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
@@ -1243,7 +1243,7 @@ const extractGeminiText = (data) => {
   return null;
 };
 
-const callGeminiAI = async (apiKey, model, images, promptText) => {
+const callGeminiAI = async (apiKey, model, images, promptText, thinkingBudget = -1) => {
   if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
   try {
     const preferredModel = (model || '').trim() || DEFAULT_SETTINGS.geminiModel;
@@ -1258,14 +1258,9 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
 
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      // For thinking models (2.5-pro), set a low thinking budget to reduce latency
-      const isGemini3 = /^gemini-[3-9]/.test(modelName);
-      const isProModel = !isGemini3 && modelName.includes('pro');
       const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }] };
-      // Gemini 3: thinking is ON by default at high level — no config needed
-      if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
-      else if (!isGemini3 && !isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
+      if (!isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: Number(thinkingBudget) } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
@@ -1290,7 +1285,7 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
 };
 
 // Gemini AI call with Google Search grounding (for real-time price lookups)
-const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
+const callGeminiWithSearch = async (apiKey, model, images, promptText, thinkingBudget = -1) => {
   if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
   try {
     const preferredModel = (model || '').trim() || DEFAULT_SETTINGS.geminiModel;
@@ -1305,14 +1300,10 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
 
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      const isGemini3 = /^gemini-[3-9]/.test(modelName);
-      const isProModel = !isGemini3 && modelName.includes('pro');
       const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
-      // temperature: 0 ensures deterministic, reproducible price lookups across repeated calls
-      if (isProModel) body.generationConfig = { temperature: 0, thinkingConfig: { thinkingBudget: 2048 } };
-      else if (!isGemini3 && !isLiteModel) body.generationConfig = { temperature: 0, thinkingConfig: { thinkingBudget: -1 } };
-      else body.generationConfig = { temperature: 0 };
+      if (isLiteModel) body.generationConfig = { temperature: 1 };
+      else body.generationConfig = { temperature: 1, thinkingConfig: { thinkingBudget: Number(thinkingBudget) } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
@@ -3021,7 +3012,7 @@ Current description: "${shopNote}"${inspRef}
 Condition grade: "${conditionGrade}"
 ${toneMap[tone]}
 Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten text, nothing else.`;
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt);
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt, settings.geminiThinkingBudget);
     if (result?.text) setShopNote(result.text.trim());
     else alert(result?.error || 'AI generation failed. Check your Gemini API key in Settings.');
     setAiToneLoading(null);
@@ -4296,7 +4287,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
   const handleExtractIMEI = async () => {
     setImeiAiLoading(true); setImeiAiError('');
     if (!tx.imeiPhoto) { setImeiAiError('Upload a photo of the IMEI screen first.'); setImeiAiLoading(false); return; }
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.imeiPhoto], AI_PROMPT_IMEI);
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.imeiPhoto], AI_PROMPT_IMEI, settings.geminiThinkingBudget);
     if (result.error) { setImeiAiError(result.error); }
     else {
       const extracted = (parseAiField(result.text, 'IMEI') || result.text || '').trim().replace(/\D/g, '');
@@ -4316,7 +4307,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
   const handleExtractSerial = async () => {
     setSerialAiLoading(true); setSerialAiError('');
     if (!tx.serialNumberPhoto) { setSerialAiError('Upload a photo of the serial label first.'); setSerialAiLoading(false); return; }
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.serialNumberPhoto], AI_PROMPT_SERIAL);
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.serialNumberPhoto], AI_PROMPT_SERIAL, settings.geminiThinkingBudget);
     if (result.error) { setSerialAiError(result.error); }
     else {
       const extracted = (parseAiField(result.text, 'SERIAL_NUMBER') || result.text || '').trim();
@@ -4955,7 +4946,7 @@ Then still reply with ALL 6 fields above with your best guess. Your CONFIDENCE s
 
       // Step 2: Gemini synthesises all uploaded photos + Lens grounding context
       setAiLoadingPhase('run1');
-      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(lensContext)), AI_TIMEOUT);
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(lensContext), settings.geminiThinkingBudget), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
       upd('aiRawResponse', result.text);
       parseGeminiResult(result.text);
@@ -4999,7 +4990,7 @@ MODEL_VERIFIED: [YES if you confirmed it exists with matching type and specs, CO
 
       const geminiCheck2 = checkGeminiLimit(settings);
       if (!geminiCheck2.blocked) {
-        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, verifyPrompt), AI_TIMEOUT);
+        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, verifyPrompt, settings.geminiThinkingBudget), AI_TIMEOUT);
         if (!result2.error && result2.text) {
           const verifyStatus = aiParseField(result2.text, 'MODEL_VERIFIED');
           if (verifyStatus) {
@@ -5054,7 +5045,7 @@ Staff notes: ${staffNotes}
 
 Reply with the condition description only. Nothing else.`;
     try {
-      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt, settings.geminiThinkingBudget), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
       // Post-process: sanitize newlines, collapse spaces, enforce 400 char limit
       let text = (result.text || '').trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ');
@@ -5088,7 +5079,7 @@ ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma] |
 PRICE_BASIS: [2 to 3 short sentences explaining how you calculated your estimate based on the photos and local market] |
 PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CONFIDENCE: [your confidence as a percentage]`;
     try {
-      const result2 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt2), AI_TIMEOUT);
+      const result2 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt2, settings.geminiThinkingBudget), AI_TIMEOUT);
       if (result2.error) { switchToManualMode(result2.error); return false; }
       const rawText = result2.text;
       upd('aiRawResponse3', rawText);
@@ -5140,7 +5131,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     const prompt1 = `Act as a Nigerian market analyst. Find the current modal price for a brand new ${itemType}, ${brand}, ${model}, ${colour} in Nigeria today. Ignore prices of items that are out of stock, and convert any price not in Naira to Naira. Return ONLY this format: NEW_MARKET_PRICE: [number only — no naira sign, no comma]`;
     let newMarketPrice = 0;
     try {
-      const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1), AI_TIMEOUT);
+      const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget), AI_TIMEOUT);
       if (result1.error) { switchToManualMode(result1.error); return; }
       upd('aiRawResponse3a', `[Model used: ${result1.model}]\n${result1.text}`);
       const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
@@ -11121,6 +11112,16 @@ export default function App() {
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Use 'Detect Models' to see exactly which models your API key can access." /></span>}>
               <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
               <DetectModelsButton apiKey={es.geminiApiKey} currentModel={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onSelect={m => updateSettings({ ...es, geminiModel: m })} />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Thinking Level<InfoIcon tip="Controls how much the AI 'thinks' before answering. Higher levels give more thorough results but are slower and consume more tokens. Dynamic lets the model decide automatically. Use Off for fastest responses on simple tasks." /></span>}>
+              <select style={S.input} value={es.geminiThinkingBudget ?? DEFAULT_SETTINGS.geminiThinkingBudget} onChange={e => updateSettings({ ...es, geminiThinkingBudget: Number(e.target.value) })}>
+                <option value={-1}>Dynamic – model decides (default)</option>
+                <option value={0}>Off – no thinking (fastest)</option>
+                <option value={512}>Low – 512 tokens</option>
+                <option value={2048}>Medium – 2,048 tokens</option>
+                <option value={8192}>High – 8,192 tokens</option>
+                <option value={24576}>Maximum – 24,576 tokens</option>
+              </select>
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Key (Google Lens)<InfoIcon tip="Recommended. Used for Google Lens reverse image search — identifies exact device models by matching against real product listings. Much more accurate than generic image analysis. Get a free key at serpapi.com." /></span>}>
               <input style={S.input} type="password" value={es.serpApiKey || ''} onChange={e => updateSettings({ ...es, serpApiKey: e.target.value })} placeholder="From serpapi.com (recommended)" />
