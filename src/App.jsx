@@ -1309,9 +1309,10 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
       const isProModel = !isGemini3 && modelName.includes('pro');
       const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
-      // Gemini 3: thinking is ON by default at high level — no config needed
-      if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
-      else if (!isGemini3 && !isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
+      // temperature: 0 ensures deterministic, reproducible price lookups across repeated calls
+      if (isProModel) body.generationConfig = { temperature: 0, thinkingConfig: { thinkingBudget: 2048 } };
+      else if (!isGemini3 && !isLiteModel) body.generationConfig = { temperature: 0, thinkingConfig: { thinkingBudget: -1 } };
+      else body.generationConfig = { temperature: 0 };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
@@ -1556,6 +1557,8 @@ function Field({ label, required, children, style: st }) {
   return (<div style={{ marginBottom: '14px', ...st }}><label style={S.label}>{label} {required && <span style={{ color: COLORS.danger }}>*</span>}</label>{children}</div>);
 }
 
+const Spinner = () => <span className="spin-icon">⏳</span>;
+
 // ============================================================
 // INFO ICON — contextual help tooltip (hover on desktop, tap on mobile)
 // Tooltip uses position:fixed so it is never clipped by overflow:hidden parents.
@@ -1667,7 +1670,7 @@ function DetectModelsButton({ apiKey, currentModel, onSelect }) {
   return (
     <div style={{ marginTop: '6px' }}>
       <button style={{ ...S.btnSm('secondary') }} onClick={detect} disabled={detecting}>
-        {detecting ? '⏳ Detecting...' : '🔍 Detect available models'}
+        {detecting ? <><Spinner /> Detecting...</> : '🔍 Detect available models'}
       </button>
       {error && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>{error}</div>}
       {models && (
@@ -2167,10 +2170,10 @@ function ItemValuationPage({ onBack, settings }) {
                 }}
               >
                 {loading ? (
-                  <><span style={{ display: 'inline-block', animation: 'spin 1s linear infinite', fontSize: '20px' }}>⏳</span> Checking your item, please wait…</>
+                  <><Spinner /> Checking your item, please wait…</>
                 ) : '💰 Show Me How Much I Can Get'}
               </button>
-              <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+              
               <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '13px', marginTop: '10px' }}>
                 This check is free. No registration needed.
               </div>
@@ -3220,7 +3223,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
             { key: 'short', label: '💬 Short & Punchy' },
           ].map(({ key, label }) => (
             <button key={key} disabled={!settings.geminiApiKey || !!aiToneLoading} onClick={() => handleAiTone(key)} style={S_AI_BTN(aiToneLoading === key)}>
-              {aiToneLoading === key ? '⏳ Rewriting...' : label}
+              {aiToneLoading === key ? <><Spinner /> Rewriting...</> : label}
             </button>
           ))}
           {!settings.geminiApiKey && <span style={{ fontSize: '11px', color: '#9ca3af' }}>Gemini key required (Settings)</span>}
@@ -3331,7 +3334,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
       {/* ── Action buttons ── */}
       <div style={{ display: 'flex', gap: '10px', paddingTop: '4px' }}>
         <button onClick={handleSave} disabled={!canSave} style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: canSave ? '#1a5f2a' : '#d1d5db', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: canSave ? 'pointer' : 'not-allowed', transition: 'background 0.2s' }}>
-          {saving ? '⏳ Saving...' : isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
+          {saving ? <><Spinner /> Saving...</> : isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
         </button>
         <button onClick={onClose} disabled={saving} style={{ padding: '14px 20px', borderRadius: '10px', border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer' }}>Cancel</button>
       </div>
@@ -3873,7 +3876,7 @@ function LoginScreen({ onLogin }) {
           </div>
         </div>
         <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center', marginTop: '8px', padding: '12px', opacity: loading ? 0.6 : 1 }} onClick={handleLogin} disabled={loading}>
-          {loading ? '⏳ Signing in...' : 'Sign In →'}
+          {loading ? <><Spinner /> Signing in...</> : 'Sign In →'}
         </button>
       </div>
     </div>
@@ -4426,7 +4429,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 {tx.imeiPhoto && (
                   <div style={{ marginTop: '10px' }}>
                     <button style={S.btn('primary')} onClick={handleExtractIMEI} disabled={imeiAiLoading}>
-                      {imeiAiLoading ? '⏳ Extracting...' : '🤖 Extract IMEI with AI'}
+                      {imeiAiLoading ? <><Spinner /> Extracting...</> : '🤖 Extract IMEI with AI'}
                     </button>
                   </div>
                 )}
@@ -4494,7 +4497,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 {tx.serialNumberPhoto && (
                   <div style={{ marginTop: '10px' }}>
                     <button style={S.btn('primary')} onClick={handleExtractSerial} disabled={serialAiLoading}>
-                      {serialAiLoading ? '⏳ Extracting...' : '🤖 Extract Serial Number with AI'}
+                      {serialAiLoading ? <><Spinner /> Extracting...</> : '🤖 Extract Serial Number with AI'}
                     </button>
                   </div>
                 )}
@@ -5442,7 +5445,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               </Field>
             </div>
             {tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}
-            <button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>
+            <button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? <><Spinner /> Verifying...</> : `Verify ${tx.idType.toUpperCase()}`}</button>
             {!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}
             {tx.ninVerificationAttempted && !ninLoading && (
               <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}>
@@ -5519,9 +5522,9 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               {tx.aiModelVerified && <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', marginLeft: '4px', background: tx.aiModelVerified === 'YES' ? '#dcfce7' : tx.aiModelVerified === 'CORRECTED' ? '#fef3c7' : '#fde8e6', color: tx.aiModelVerified === 'YES' ? '#166534' : tx.aiModelVerified === 'CORRECTED' ? '#92400e' : COLORS.danger }}>{tx.aiModelVerified === 'YES' ? '✓ Model verified' : tx.aiModelVerified === 'CORRECTED' ? '⚠ Model corrected' : '? Unverified'}</span>}
             </div>
             <button style={S.btn('primary')} onClick={handleAIRun1} disabled={aiLoading}>
-              {aiLoading && aiLoadingPhase === 'run1' ? '⏳ Identifying Item...' :
-               aiLoading && aiLoadingPhase === 'run1_vision' ? '⏳ Running reverse image search...' :
-               aiLoading && aiLoadingPhase === 'run1_verify' ? '⏳ Verifying model online...' :
+              {aiLoading && aiLoadingPhase === 'run1' ? <><Spinner /> Identifying Item...</> :
+               aiLoading && aiLoadingPhase === 'run1_vision' ? <><Spinner /> Running reverse image search...</> :
+               aiLoading && aiLoadingPhase === 'run1_verify' ? <><Spinner /> Verifying model online...</> :
                tx.aiRun1Done ? '🔄 Re-run Identification' : '🤖 Identify Item with AI'}
             </button>
             {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
@@ -5556,7 +5559,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               <span style={{ fontWeight: 700, fontSize: '14px' }}>Condition Description</span>
             </div>
             <button style={S.btn('primary')} onClick={handleAIRun2} disabled={aiLoading || (!tx.aiRun1Done && !tx.aiManualMode && !tx.aiItemType)}>
-              {aiLoading && aiLoadingPhase === 'run2' ? '⏳ Generating Description...' : tx.aiRun2Done ? '🔄 Re-generate Description' : '📝 Generate Condition Description'}
+              {aiLoading && aiLoadingPhase === 'run2' ? <><Spinner /> Generating Description...</> : tx.aiRun2Done ? '🔄 Re-generate Description' : '📝 Generate Condition Description'}
             </button>
             {aiError && !aiLoading && tx.aiRun1Done && !tx.aiRun2Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
 
@@ -5576,8 +5579,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               {tx.aiRun3Done && !tx.aiValuationConfidence && <span style={{ marginLeft: 'auto', fontSize: '11px', color: COLORS.textMuted }}>Powered by Google Search</span>}
             </div>
             <button style={{ ...S.btn('primary'), background: '#e67e22' }} onClick={handleAIRun3} disabled={aiLoading || (!tx.aiRun2Done && !tx.aiManualMode && !tx.aiItemType)}>
-              {aiLoading && aiLoadingPhase === 'run3a' ? '⏳ Finding Market Price...' :
-               aiLoading && aiLoadingPhase === 'run3b' ? '⏳ Calculating Valuation...' :
+              {aiLoading && aiLoadingPhase === 'run3a' ? <><Spinner /> Finding Market Price...</> :
+               aiLoading && aiLoadingPhase === 'run3b' ? <><Spinner /> Calculating Valuation...</> :
                tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Valuation'}
             </button>
             {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
@@ -5758,7 +5761,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
                             onClick={smsAllWizard}
                           >
                             {wizardNotifyStatus === 'sending'
-                              ? '⏳ Sending…'
+                              ? <><Spinner /> Sending…</>
                               : wizardNotifyStatus?.sent != null
                                 ? `✅ SMS sent to ${wizardNotifyStatus.sent}${wizardNotifyStatus.failed > 0 ? ` (${wizardNotifyStatus.failed} failed)` : ''} — Send Again`
                                 : '📱 SMS All Stakeholders'}
@@ -5809,7 +5812,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
           disabled={pdfLoading}
           onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
         >
-          {pdfLoading ? '⏳ Generating PDF…' : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
+          {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
         </button>
         <button
           style={{ ...S.btn('outline'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
@@ -6305,7 +6308,7 @@ function SenderIdPicker({ value, onChange, termiiApiKey, inputStyle }) {
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
         <button style={S.btnSm('secondary')} onClick={doFetch} disabled={fetching}>
-          {fetching ? '⏳ Fetching…' : '🔄 Fetch from Termii'}
+          {fetching ? <><Spinner /> Fetching…</> : '🔄 Fetch from Termii'}
         </button>
         {sids !== null && sids.length === 0 && !err && (
           <span style={{ fontSize: '12px', color: COLORS.textMuted }}>No approved Sender IDs found on this account.</span>
@@ -6336,7 +6339,7 @@ function SmsTestPanel({ inputStyle }) {
         <input style={{ ...inputStyle, flex: 1, minWidth: '160px' }} value={phone} onChange={e => setPhone(e.target.value)}
           placeholder="Phone number (e.g. 08012345678)" inputMode="tel" />
         <button style={S.btnSm('primary')} onClick={send} disabled={loading || !phone.trim()}>
-          {loading ? '⏳ Sending…' : '📤 Send Test SMS'}
+          {loading ? <><Spinner /> Sending…</> : '📤 Send Test SMS'}
         </button>
       </div>
       {result && (
@@ -6801,7 +6804,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
           <span>📱 SMS Log</span>
           <button style={S.btnSm('secondary')} onClick={refreshSmsLogs} disabled={smsLogsLoading}>
-            {smsLogsLoading ? '⏳' : '🔄'} Refresh
+            {smsLogsLoading ? <Spinner /> : '🔄'} Refresh
           </button>
         </div>
         {smsLogsLoading ? (
@@ -9682,7 +9685,7 @@ export default function App() {
                             onClick={smsSendAll}
                           >
                             {capitalSmsSendState === 'sending'
-                              ? '⏳ Sending SMS…'
+                              ? <><Spinner /> Sending SMS…</>
                               : capitalSmsSendState?.sent != null
                                 ? `✅ SMS sent to ${capitalSmsSendState.sent}${capitalSmsSendState.failed > 0 ? ` (${capitalSmsSendState.failed} failed)` : ''} — Send Again`
                                 : '📱 SMS All Stakeholders'}
@@ -10293,7 +10296,7 @@ export default function App() {
                                       onClick={withdrawSmsAll}
                                     >
                                       {withdrawalSmsSendState === 'sending'
-                                        ? '⏳ Sending SMS…'
+                                        ? <><Spinner /> Sending SMS…</>
                                         : withdrawalSmsSendState?.sent != null
                                           ? `✅ SMS sent to ${withdrawalSmsSendState.sent}${withdrawalSmsSendState.failed > 0 ? ` (${withdrawalSmsSendState.failed} failed)` : ''} — Send Again`
                                           : '📱 SMS All Stakeholders'}
