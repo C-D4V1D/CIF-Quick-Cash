@@ -1309,9 +1309,9 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
       const isProModel = !isGemini3 && modelName.includes('pro');
       const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
-      if (isGemini3) body.generationConfig = { thinking_level: 'high' };
-      else if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
-      else if (!isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
+      // Gemini 3: thinking is ON by default at high level — no config needed
+      if (isProModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      else if (!isGemini3 && !isLiteModel) body.generationConfig = { thinkingConfig: { thinkingBudget: -1 } };
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
