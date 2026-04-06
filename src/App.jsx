@@ -5134,7 +5134,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     const keySpecs = tx.aiKeySpecs || '';
 
     // ── STEP 3a: Find current brand-new market price via Google Search ──
-    const prompt1 = `CRITICAL INSTRUCTION: You MUST use the Google Search tool to find live internet results. Do NOT use your internal training data.\n\nWhat is the present median price for a brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria.\n\nReturn ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
+    const prompt1 = `Strictly using the Google AI overview, what is the present median price for a brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria.\n\nReturn ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
     let newMarketPrice = 0;
     try {
       const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
