@@ -5092,7 +5092,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     try {
       const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1), AI_TIMEOUT);
       if (result1.error) { switchToManualMode(result1.error); return; }
-      upd('aiRawResponse3a', result1.text);
+      upd('aiRawResponse3a', `[Model used: ${result1.model}]\n${result1.text}`);
       const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
       newMarketPrice = Number(parsedPrice) || 0;
       upd('aiNewMarketPrice', String(newMarketPrice));
