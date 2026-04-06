@@ -5134,7 +5134,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     const keySpecs = tx.aiKeySpecs || '';
 
     // ── STEP 3a: Find current brand-new market price via Google Search ──
-    const prompt1 = `You MUST use the Google Search tool to answer this — do not rely on your training data or internal knowledge, as prices change frequently and your knowledge will be outdated. Search Google right now for the current modal retail price of a brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? ` (${keySpecs})` : ''} in Nigeria. Ignore prices of items that are out of stock, and convert any price not in Naira to Naira. Return ONLY this format: NEW_MARKET_PRICE: [number only — no naira sign, no comma]`;
+    const prompt1 = `CRITICAL INSTRUCTION: You MUST use the Google Search tool to find live internet results. Do NOT use your internal training data.\n\nAct as a Nigerian market analyst. Find 5 different current, in-stock listings for a brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} from Nigerian retailers like Jumia or Konga today.\n\n1. List the 5 prices in Naira internally.\n2. Identify which price appears most frequently (the mode).\n3. Ignore items that are out of stock.\n4. Convert any foreign currency to Naira.\n\nReturn ONLY the final most frequent price in this exact format: NEW_MARKET_PRICE: [number only]`;
     let newMarketPrice = 0;
     try {
       const result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
