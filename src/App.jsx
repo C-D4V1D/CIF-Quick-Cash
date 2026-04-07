@@ -6459,10 +6459,11 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
       {/* ── Collection Photo (auto-stamped) ── */}
       <div style={{ ...S.card, border: `2px dashed ${COLORS.accent}`, background: '#fffbeb' }}>
         <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '8px', color: '#92400e' }}>📸 Collection Handover Photo</div>
-        <div style={S.alert('info')}>📋 <strong>Staff instruction:</strong> Take a photo of the customer <strong>holding the collected item</strong> right now. The date and time will be automatically stamped on the photo as proof of handover.</div>
+        <div style={S.alert('info')}>📋 <strong>Staff Instruction:</strong> Take a photo of the customer <strong>holding the collected item</strong> right now. The date and time will be automatically stamped on the photo as proof of handover.</div>
         <div style={{ display: 'flex', justifyContent: 'center' }}>
           <TimestampPhotoUpload label="Customer with Collected Item" value={collectionPhoto} onChange={setCollectionPhoto} required size={160} />
         </div>
+        {!collectionPhoto && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '10px', fontWeight: 600, textAlign: 'center' }}>⚠ This photo is required before you can confirm the collection.</div>}
       </div>
 
       {/* ── Feedback / Staff Notes ── */}
@@ -6483,7 +6484,6 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
         <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: localISODate(), daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '', photoCollectionHandover: collectionPhoto, collectionNotes: collectionNotes.trim() })}>✅ Confirm</button>
         <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
       </div>
-      {!collectionPhoto && confirmed && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '8px', fontWeight: 600 }}>⚠ Please take the collection handover photo before confirming.</div>}
     </div>
   );
 }
