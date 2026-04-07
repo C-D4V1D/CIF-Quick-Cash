@@ -1662,8 +1662,8 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
         {displaySrc && !uploading && (
           <button type="button" onClick={e => { e.stopPropagation(); if (value && value.startsWith('/api/photos/')) { API.del(value.slice(5)).catch(() => {}); } onChange(null); setPreview(null); }} style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '11px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>✕</button>
         )}
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
-        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} onClick={e => e.stopPropagation()} style={{ display: 'none' }} />
+        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} onClick={e => e.stopPropagation()} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
         <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) cameraRef.current?.click(); }} disabled={uploading}>📷 Camera</button>
@@ -1732,8 +1732,8 @@ function TimestampPhotoUpload({ label, value, onChange, required, size = 120 }) 
         {displaySrc && !uploading && (
           <button type="button" onClick={e => { e.stopPropagation(); if (value && value.startsWith('/api/photos/')) { API.del(value.slice(5)).catch(() => {}); } onChange(null); setPreview(null); }} style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '11px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>✕</button>
         )}
-        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
-        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} onClick={e => e.stopPropagation()} style={{ display: 'none' }} />
+        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} onClick={e => e.stopPropagation()} style={{ display: 'none' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
         <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) cameraRef.current?.click(); }} disabled={uploading}>📷 Camera</button>
