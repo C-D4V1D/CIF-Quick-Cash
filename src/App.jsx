@@ -5251,7 +5251,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             switchToManualMode('Both SerpApi AI and Gemini are unavailable. Please enter the price manually.'); return;
           }
         }
-      } else if (hasSerpAiKey && serpAiCheck.blocked) {
+      } else if (serpAiCheck.blocked) {
         // SerpAPI AI key is set but monthly limit is exhausted — fall back to Gemini with search grounding
         if (!geminiCheck.blocked) {
           const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
@@ -5270,8 +5270,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       let parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
       // Regex fallback for when SerpAPI AI response is used directly (no Gemini extraction)
       if (!parsedPrice) {
-        const priceMatch = result1.text.match(/(?:₦|NGN)\s*([0-9][0-9,\.]+)/i) ||
-                           result1.text.match(/([0-9][0-9,]+)\s*(?:naira|NGN)/i);
+        const priceMatch = result1.text.match(/(?:₦|NGN)\s*([0-9][0-9,\.]*)/i) ||
+                           result1.text.match(/([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:naira|NGN)/i);
         if (priceMatch) parsedPrice = priceMatch[1].replace(/[^0-9]/g, '');
       }
       newMarketPrice = Number(parsedPrice) || 0;
