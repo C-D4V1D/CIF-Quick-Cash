@@ -1421,10 +1421,18 @@ const callSerpApiGoogleAI = async (apiKey, query) => {
       .filter(Boolean)
       .join(', ');
 
+    // Detect known failure phrases from Google AI Mode
+    const isFailure = !aiText ||
+      aiText.toLowerCase().includes("something went wrong") ||
+      aiText.toLowerCase().includes("ai response wasn't generated") ||
+      aiText.toLowerCase().includes("couldn't generate") ||
+      aiText.toLowerCase().includes("unable to generate");
+    if (isFailure) return { error: 'Google AI Mode could not generate a response for this query.' };
+
     const summary = [
-      aiText ? `Google AI Mode Answer:\n${aiText}` : '',
+      `Google AI Mode Answer:\n${aiText}`,
       refs ? `Sources: ${refs}` : '',
-    ].filter(Boolean).join('\n\n') || 'No price information found in Google AI Mode response.';
+    ].filter(Boolean).join('\n\n');
 
     return { summary };
   } catch (e) { return { error: e.message }; }
@@ -5211,10 +5219,15 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         if (serpAiCheck.blocked) { switchToManualMode(serpAiCheck.reason); return; }
         const searchQuery = `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? If you cannot find the median price of the item in Nigeria, what would your estimate be?`;
         const serpResult = await callWithTimeout(() => callSerpApiGoogleAI(settings.serpApiAiKey, searchQuery), AI_TIMEOUT);
-        if (serpResult.error) { switchToManualMode(`SerpApi AI search failed: ${serpResult.error}`); return; }
-        serpSummaryForDisplay = serpResult.summary;
-        const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the midpoint. If multiple prices are mentioned, use the median.\n\n${serpResult.summary}`;
-        result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+        if (!serpResult.error) {
+          serpSummaryForDisplay = serpResult.summary;
+          const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the midpoint. If multiple prices are mentioned, use the median.\n\n${serpResult.summary}`;
+          result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+        } else {
+          // SerpAPI failed — fall back to Gemini with built-in Google Search grounding
+          const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
+          result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+        }
       } else {
         // Fallback: Gemini with built-in Google Search grounding
         const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
