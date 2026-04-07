@@ -7046,7 +7046,6 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           </div>
         )}
       </div>
-    </div>
   </div>);
 }
 
