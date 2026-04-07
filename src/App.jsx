@@ -1231,6 +1231,16 @@ const checkSerpApiAiLimit = (settings, liveAccount = null) => {
   return { blocked: false, remaining: monthlyLimit - usedThisMonth };
 };
 
+// Returns true when the given key string is set AND the corresponding quota check says it is not blocked.
+// Used by both Run 1 (Lens) and Run 3a (AI Mode) to pick between the two SerpApi keys.
+const isSerpKeyAvailable = (key, checkFn, settings, account) =>
+  !!(key || '').trim() && !checkFn(settings, account).blocked;
+
+// Regex patterns used to extract a Naira price from a free-form SerpAPI AI response
+// when Gemini is unavailable to do the extraction step.
+const PRICE_FROM_NAIRA_SYMBOL_RE = /(?:₦|NGN)\s*([0-9][0-9,\.]*)/i;
+const PRICE_BEFORE_NAIRA_WORD_RE = /([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:naira|NGN)/i;
+
 
 // ============================================================
 // GEMINI AI INTEGRATION
@@ -4995,8 +5005,8 @@ Then still reply with ALL 6 fields above with your best guess. Your CONFIDENCE s
       // Track usage against whichever key is actually consumed.
       let lensApiKey = null;
       let lensTrackFn = trackSerpApiCall;
-      const lensKeyAvail = !!(settings.serpApiKey || '').trim() && !checkSerpApiLimit(settings, serpApiAccount).blocked;
-      const aiKeyForLensAvail = !!(settings.serpApiAiKey || '').trim() && !checkSerpApiAiLimit(settings, serpApiAiAccount).blocked;
+      const lensKeyAvail = isSerpKeyAvailable(settings.serpApiKey, checkSerpApiLimit, settings, serpApiAccount);
+      const aiKeyForLensAvail = isSerpKeyAvailable(settings.serpApiAiKey, checkSerpApiAiLimit, settings, serpApiAiAccount);
       if (lensKeyAvail) {
         lensApiKey = settings.serpApiKey;
         lensTrackFn = trackSerpApiCall;
@@ -5218,8 +5228,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     // Track usage against whichever key is actually consumed.
     let serpAiApiKey = null;
     let serpAiTrackFn = trackSerpApiAiCall;
-    const aiKeyAvail = !!(settings.serpApiAiKey || '').trim() && !checkSerpApiAiLimit(settings, serpApiAiAccount).blocked;
-    const lensKeyForAiAvail = !!(settings.serpApiKey || '').trim() && !checkSerpApiLimit(settings, serpApiAccount).blocked;
+    const aiKeyAvail = isSerpKeyAvailable(settings.serpApiAiKey, checkSerpApiAiLimit, settings, serpApiAiAccount);
+    const lensKeyForAiAvail = isSerpKeyAvailable(settings.serpApiKey, checkSerpApiLimit, settings, serpApiAccount);
     if (aiKeyAvail) {
       serpAiApiKey = settings.serpApiAiKey;
       serpAiTrackFn = trackSerpApiAiCall;
@@ -5283,8 +5293,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       let parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
       // Regex fallback for when SerpAPI AI response is used directly (no Gemini extraction)
       if (!parsedPrice) {
-        const priceMatch = result1.text.match(/(?:₦|NGN)\s*([0-9][0-9,\.]*)/i) ||
-                           result1.text.match(/([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:naira|NGN)/i);
+        const priceMatch = result1.text.match(PRICE_FROM_NAIRA_SYMBOL_RE) ||
+                           result1.text.match(PRICE_BEFORE_NAIRA_WORD_RE);
         if (priceMatch) parsedPrice = priceMatch[1].replace(/[^0-9]/g, '');
       }
       newMarketPrice = Number(parsedPrice) || 0;
