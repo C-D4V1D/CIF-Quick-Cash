@@ -516,11 +516,13 @@ export async function onRequest(context) {
     const status = String(rawStatus).toLowerCase().trim();
 
     // Map various Termii status formats to standardized internal statuses
+    // NOTE: 'undeliver' must be checked BEFORE 'deliver' because 'undeliverable'
+    // contains the substring 'deliver' and would otherwise match the wrong branch.
+    if (status.includes('undeliver')) return 'Undeliverable';
     if (status.includes('deliver')) return 'DeliveredToTerminal';
     if (status.includes('success')) return 'DeliveredToTerminal';
     if (status.includes('expired') || status.includes('expire')) return 'Expired';
     if (status.includes('dnd')) return 'DND';
-    if (status.includes('undeliver')) return 'Undeliverable';
     if (status.includes('fail') || status.includes('failed')) return 'Failed';
     if (status.includes('reject') || status.includes('rejected')) return 'Rejected';
     if (status.includes('invalid')) return 'InvalidNumber';
@@ -1300,6 +1302,7 @@ export async function onRequest(context) {
                   customerName: tx.fullName,
                   ref,
                   amount: fmtSms(tx.amountRepaid || tx.cashAdvance),
+                  dueDate: tx.deadlineDate || '',
                   businessName: smsCfg.businessName,
                   shopPhone: smsCfg.shopPhone,
                 });
@@ -1344,6 +1347,7 @@ export async function onRequest(context) {
                   customerName: tx.fullName,
                   ref,
                   amount: fmtSms(tx.cashAdvance),
+                  dueDate: tx.deadlineDate || '',
                   businessName: smsCfg.businessName,
                   shopPhone: smsCfg.shopPhone,
                 });
@@ -2173,12 +2177,12 @@ export async function onRequest(context) {
         pending_webhooks: pending,
         recent_webhooks: recent,
         webhook_url: 'https://cifcash.pages.dev/api/sms/webhook',
-        status: pending.length === 0 ? 'webhook_working' : (pending.length > 5 ? 'webhook_may_not_be_working' : 'webhook_working_but_slow')
+        status: Number(stats?.pending_webhooks || 0) === 0 ? 'webhook_working' : (Number(stats?.pending_webhooks || 0) > 5 ? 'webhook_may_not_be_working' : 'webhook_working_but_slow')
       });
     }
 
     // ── GET /api/sms/status/:messageId — manually check SMS status from Termii ──
-    if (path.match(/^sms\/status\/[a-zA-Z0-9]+$/) && method === 'GET') {
+    if (path.match(/^sms\/status\/[a-zA-Z0-9_.\-]+$/) && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
 
@@ -2311,6 +2315,7 @@ export async function onRequest(context) {
         customerName: txData.fullName,
         ref: txRef,
         amount: fmtN(txData.cashAdvance),
+        dueDate: txData.deadlineDate || '',
         businessName: smsCfg.businessName,
         shopPhone: smsCfg.shopPhone,
       });
@@ -2444,6 +2449,7 @@ export async function onRequest(context) {
                 ref: row.ref,
                 amount: fmtN(txData.cashAdvance),
                 daysLeft: daysBefore,
+                dueDate: customerDueDate,
                 businessName: smsCfg.businessName,
                 shopPhone: smsCfg.shopPhone,
               }),
@@ -2465,6 +2471,7 @@ export async function onRequest(context) {
                   ref: row.ref,
                   amount: fmtN(txData.cashAdvance),
                   daysLeft: daysBefore,
+                  dueDate: customerDueDate,
                   businessName: smsCfg.businessName,
                   shopPhone: smsCfg.shopPhone,
                 }),
@@ -2484,6 +2491,7 @@ export async function onRequest(context) {
               customerName: txData.fullName,
               ref: row.ref,
               amount: fmtN(settlementAmount),
+              dueDate: customerDueDate,
               businessName: smsCfg.businessName,
               shopPhone: smsCfg.shopPhone,
             }),
@@ -2510,6 +2518,7 @@ export async function onRequest(context) {
                 ref: row.ref,
                 amount: fmtN(txData.cashAdvance),
                 daysOverdue: daysAfter,
+                dueDate: customerDueDate,
                 balanceToday: fmtN(currentBalance),
                 businessName: smsCfg.businessName,
                 shopPhone: smsCfg.shopPhone,
@@ -2535,6 +2544,7 @@ export async function onRequest(context) {
                   customerName: txData.fullName,
                   ref: row.ref,
                   amount: fmtN(txData.cashAdvance),
+                  dueDate: customerDueDate,
                   balanceToday: fmtN(currentBalance),
                   businessName: smsCfg.businessName,
                   shopPhone: smsCfg.shopPhone,
