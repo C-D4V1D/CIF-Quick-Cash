@@ -413,12 +413,13 @@ const DEFAULT_SETTINGS = {
   priceDropEnabled: false, priceDropIntervalDays: 3,
   shopShowSoldHistory: true, shopMaxSoldHistoryItems: 8,
   // AI & API Keys
-  geminiApiKey: '', geminiModel: 'gemini-2.5-flash', serpApiKey: '', ninApiKey: '',
+  geminiApiKey: '', geminiModel: 'gemini-3-flash-preview', geminiThinkingBudget: -1, geminiTemperature: null, serpApiKey: '', serpApiAiKey: '', ninApiKey: '',
   // API Free Tier Limits (adjustable in case Google changes them)
   geminiDailyLimit: 100, // Gemini 2.5 Pro free tier: 100 RPD (Flash: 250, Flash-Lite: 1000)
   geminiRpmLimit: 5,     // Gemini 2.5 Pro free tier: 5 RPM (Flash: 10, Flash-Lite: 15)
   visionMonthlyLimit: 1000, // Cloud Vision free tier: 1,000 images/month (per feature)
   serpApiMonthlyLimit: 250, // SerpApi free Developer plan: 250 searches/month
+  serpApiAiMonthlyLimit: 250, // SerpApi AI (Google AI search) monthly limit
   // Identity Verification
   requireNinVerification: false,
   ninCreditCost: 150,
@@ -1147,6 +1148,15 @@ const syncApiUsageFromDb = async () => {
         }
       }
     }
+    if (dbUsage.serpApiAi) {
+      if (!local.serpApiAi) local.serpApiAi = {};
+      for (const [month, dbCount] of Object.entries(dbUsage.serpApiAi)) {
+        if (dbCount > (local.serpApiAi[month] || 0)) {
+          local.serpApiAi[month] = dbCount;
+          changed = true;
+        }
+      }
+    }
     if (changed) saveApiUsage(local);
   } catch (e) { console.error('Failed to sync API usage from DB:', e); }
 };
@@ -1189,6 +1199,31 @@ const checkSerpApiLimit = (settings, liveAccount = null) => {
   const monthlyLimit = settings.serpApiMonthlyLimit || 250;
   const usedThisMonth = getSerpApiUsageThisMonth();
   if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
+  return { blocked: false, remaining: monthlyLimit - usedThisMonth };
+};
+
+const trackSerpApiAiCall = (count = 1) => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  if (!usage.serpApiAi) usage.serpApiAi = {};
+  if (!usage.serpApiAi[month]) usage.serpApiAi[month] = 0;
+  usage.serpApiAi[month] += count;
+  const keys = Object.keys(usage.serpApiAi).sort();
+  if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.serpApiAi[k]; }
+  saveApiUsage(usage);
+  API.post('usage/track', { service: 'serpApiAi', month, count }).catch(() => {});
+};
+
+const getSerpApiAiUsageThisMonth = () => {
+  const usage = getApiUsage();
+  const month = getMonthKey();
+  return (usage.serpApiAi?.[month]) || 0;
+};
+
+const checkSerpApiAiLimit = (settings) => {
+  const monthlyLimit = settings.serpApiAiMonthlyLimit || 250;
+  const usedThisMonth = getSerpApiAiUsageThisMonth();
+  if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi AI monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
   return { blocked: false, remaining: monthlyLimit - usedThisMonth };
 };
 
@@ -1243,7 +1278,7 @@ const extractGeminiText = (data) => {
   return null;
 };
 
-const callGeminiAI = async (apiKey, model, images, promptText) => {
+const callGeminiAI = async (apiKey, model, images, promptText, thinkingBudget = -1, temperature = null) => {
   if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
   try {
     const preferredModel = (model || '').trim() || DEFAULT_SETTINGS.geminiModel;
@@ -1258,10 +1293,12 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
 
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      // For thinking models (2.5-pro), set a low thinking budget to reduce latency
-      const isThinkingModel = modelName.includes('pro');
+      const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }] };
-      if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      const genConfig = {};
+      if (!isLiteModel) genConfig.thinkingConfig = { thinkingBudget: Number(thinkingBudget) };
+      if (temperature !== null && temperature !== undefined) genConfig.temperature = Number(temperature);
+      if (Object.keys(genConfig).length > 0) body.generationConfig = genConfig;
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
@@ -1275,8 +1312,8 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
       if (responseText) return { text: responseText, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
-      const isTransient = [429, 500, 502, 503].includes(resp.status);
-      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const isTransient = [400, 429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported') || errorMsg.includes('invalid');
       const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
       if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
     }
@@ -1286,7 +1323,7 @@ const callGeminiAI = async (apiKey, model, images, promptText) => {
 };
 
 // Gemini AI call with Google Search grounding (for real-time price lookups)
-const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
+const callGeminiWithSearch = async (apiKey, model, images, promptText, thinkingBudget = -1, temperature = null) => {
   if (!apiKey) return { error: 'No Gemini API key set. Go to Admin > Settings to add your key.' };
   try {
     const preferredModel = (model || '').trim() || DEFAULT_SETTINGS.geminiModel;
@@ -1301,9 +1338,12 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
 
     for (const modelName of modelCandidates) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-      const isThinkingModel = modelName.includes('pro');
+      const isLiteModel = modelName.includes('lite');
       const body = { contents: [{ parts }], tools: [{ google_search: {} }] };
-      if (isThinkingModel) body.generationConfig = { thinkingConfig: { thinkingBudget: 2048 } };
+      const genConfig = {};
+      if (!isLiteModel) genConfig.thinkingConfig = { thinkingBudget: Number(thinkingBudget) };
+      if (temperature !== null && temperature !== undefined) genConfig.temperature = Number(temperature);
+      if (Object.keys(genConfig).length > 0) body.generationConfig = genConfig;
       const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
       trackGeminiCall();
       let resp = await fetch(url, options);
@@ -1317,8 +1357,8 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText) => {
       if (responseText) return { text: responseText, model: modelName };
 
       const errorMsg = (data?.error?.message || `Gemini request failed with status ${resp.status}.`).toLowerCase();
-      const isTransient = [429, 500, 502, 503].includes(resp.status);
-      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported');
+      const isTransient = [400, 429, 500, 502, 503].includes(resp.status);
+      const modelUnavailable = isTransient || errorMsg.includes('no longer available') || errorMsg.includes('not found') || errorMsg.includes('unsupported') || errorMsg.includes('invalid');
       const canFallback = modelUnavailable && modelName !== modelCandidates[modelCandidates.length - 1];
       if (!canFallback) return { error: data?.error?.message || `Gemini request failed with status ${resp.status}.` };
     }
@@ -1355,6 +1395,46 @@ const callSerpApiLens = async (apiKey, photo) => {
     ].filter(Boolean).join('\n');
 
     return { visualMatches, textResults, summary };
+  } catch (e) { return { error: e.message }; }
+};
+
+// SerpApi Google AI Mode — queries Google's AI Mode engine for a conversational
+// AI answer about the item's price in Nigeria. Returns { summary } with the
+// full AI-generated text and source references, or { error }.
+const callSerpApiGoogleAI = async (apiKey, query) => {
+  if (!apiKey) return { error: 'No SerpApi AI key set.' };
+  if (!query) return { error: 'No query provided.' };
+  try {
+    trackSerpApiAiCall(1);
+    const resp = await API.post('serpapi-ai', { query, apiKey });
+    if (resp?.error) return { error: resp.error };
+
+    // google_ai_mode returns text_blocks: array of { snippet/content } objects
+    const blocks = (resp.text_blocks || [])
+      .map(b => b.snippet || b.content || b.text || '')
+      .filter(Boolean);
+    const aiText = blocks.join('\n').substring(0, 2000);
+
+    // Append source references for context
+    const refs = (resp.references || [])
+      .map((r, i) => `[${i + 1}] ${r.title}`)
+      .filter(Boolean)
+      .join(', ');
+
+    // Detect known failure phrases from Google AI Mode
+    const isFailure = !aiText ||
+      aiText.toLowerCase().includes("something went wrong") ||
+      aiText.toLowerCase().includes("ai response wasn't generated") ||
+      aiText.toLowerCase().includes("couldn't generate") ||
+      aiText.toLowerCase().includes("unable to generate");
+    if (isFailure) return { error: 'Google AI Mode could not generate a response for this query.' };
+
+    const summary = [
+      `Google AI Mode Answer:\n${aiText}`,
+      refs ? `Sources: ${refs}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    return { summary };
   } catch (e) { return { error: e.message }; }
 };
 
@@ -1548,6 +1628,8 @@ function Field({ label, required, children, style: st }) {
   return (<div style={{ marginBottom: '14px', ...st }}><label style={S.label}>{label} {required && <span style={{ color: COLORS.danger }}>*</span>}</label>{children}</div>);
 }
 
+const Spinner = () => <span className="spin-icon">⏳</span>;
+
 // ============================================================
 // INFO ICON — contextual help tooltip (hover on desktop, tap on mobile)
 // Tooltip uses position:fixed so it is never clipped by overflow:hidden parents.
@@ -1634,6 +1716,45 @@ function InfoIcon({ tip }) {
       }}>ℹ</span>
       {coords && createPortal(<span style={tooltipStyle}>{tip}</span>, document.body)}
     </span>
+  );
+}
+
+function DetectModelsButton({ apiKey, currentModel, onSelect }) {
+  const [detecting, setDetecting] = useState(false);
+  const [models, setModels] = useState(null);
+  const [error, setError] = useState('');
+  const detect = async () => {
+    if (!apiKey) { setError('Enter your Gemini API key first.'); return; }
+    setDetecting(true); setModels(null); setError('');
+    try {
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+      const data = await resp.json();
+      if (data.error) { setError(data.error.message); setDetecting(false); return; }
+      const list = (data.models || [])
+        .map(m => m.name?.replace('models/', ''))
+        .filter(n => n && (n.includes('flash') || n.includes('pro')))
+        .sort();
+      setModels(list);
+    } catch (e) { setError(e.message); }
+    setDetecting(false);
+  };
+  return (
+    <div style={{ marginTop: '6px' }}>
+      <button style={{ ...S.btnSm('secondary') }} onClick={detect} disabled={detecting}>
+        {detecting ? <><Spinner /> Detecting...</> : '🔍 Detect available models'}
+      </button>
+      {error && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>{error}</div>}
+      {models && (
+        <div style={{ marginTop: '8px', padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '12px' }}>
+          <div style={{ fontWeight: 700, marginBottom: '4px' }}>Models on your API key — tap to select:</div>
+          {models.map(m => (
+            <div key={m} onClick={() => onSelect(m)} style={{ padding: '4px 6px', marginTop: '2px', borderRadius: '4px', cursor: 'pointer', background: currentModel === m ? COLORS.primaryLight : '#fff', border: `1px solid ${COLORS.border}` }}>
+              {m}{currentModel === m ? ' ✓' : ''}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2120,10 +2241,10 @@ function ItemValuationPage({ onBack, settings }) {
                 }}
               >
                 {loading ? (
-                  <><span style={{ display: 'inline-block', animation: 'spin 1s linear infinite', fontSize: '20px' }}>⏳</span> Checking your item, please wait…</>
+                  <><Spinner /> Checking your item, please wait…</>
                 ) : '💰 Show Me How Much I Can Get'}
               </button>
-              <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+              
               <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '13px', marginTop: '10px' }}>
                 This check is free. No registration needed.
               </div>
@@ -2971,7 +3092,7 @@ Current description: "${shopNote}"${inspRef}
 Condition grade: "${conditionGrade}"
 ${toneMap[tone]}
 Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten text, nothing else.`;
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt);
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt, settings.geminiThinkingBudget, settings.geminiTemperature);
     if (result?.text) setShopNote(result.text.trim());
     else alert(result?.error || 'AI generation failed. Check your Gemini API key in Settings.');
     setAiToneLoading(null);
@@ -3173,7 +3294,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
             { key: 'short', label: '💬 Short & Punchy' },
           ].map(({ key, label }) => (
             <button key={key} disabled={!settings.geminiApiKey || !!aiToneLoading} onClick={() => handleAiTone(key)} style={S_AI_BTN(aiToneLoading === key)}>
-              {aiToneLoading === key ? '⏳ Rewriting...' : label}
+              {aiToneLoading === key ? <><Spinner /> Rewriting...</> : label}
             </button>
           ))}
           {!settings.geminiApiKey && <span style={{ fontSize: '11px', color: '#9ca3af' }}>Gemini key required (Settings)</span>}
@@ -3284,7 +3405,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
       {/* ── Action buttons ── */}
       <div style={{ display: 'flex', gap: '10px', paddingTop: '4px' }}>
         <button onClick={handleSave} disabled={!canSave} style={{ flex: 1, padding: '14px', borderRadius: '10px', border: 'none', background: canSave ? '#1a5f2a' : '#d1d5db', color: '#fff', fontWeight: 700, fontSize: '15px', cursor: canSave ? 'pointer' : 'not-allowed', transition: 'background 0.2s' }}>
-          {saving ? '⏳ Saving...' : isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
+          {saving ? <><Spinner /> Saving...</> : isNewListing ? '🏪 List in Shop' : '💾 Save Changes'}
         </button>
         <button onClick={onClose} disabled={saving} style={{ padding: '14px 20px', borderRadius: '10px', border: '1.5px solid #d1d5db', background: '#fff', color: '#374151', fontWeight: 600, fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer' }}>Cancel</button>
       </div>
@@ -3826,7 +3947,7 @@ function LoginScreen({ onLogin }) {
           </div>
         </div>
         <button style={{ ...S.btn('primary'), width: '100%', justifyContent: 'center', marginTop: '8px', padding: '12px', opacity: loading ? 0.6 : 1 }} onClick={handleLogin} disabled={loading}>
-          {loading ? '⏳ Signing in...' : 'Sign In →'}
+          {loading ? <><Spinner /> Signing in...</> : 'Sign In →'}
         </button>
       </div>
     </div>
@@ -4246,7 +4367,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
   const handleExtractIMEI = async () => {
     setImeiAiLoading(true); setImeiAiError('');
     if (!tx.imeiPhoto) { setImeiAiError('Upload a photo of the IMEI screen first.'); setImeiAiLoading(false); return; }
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.imeiPhoto], AI_PROMPT_IMEI);
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.imeiPhoto], AI_PROMPT_IMEI, settings.geminiThinkingBudget, settings.geminiTemperature);
     if (result.error) { setImeiAiError(result.error); }
     else {
       const extracted = (parseAiField(result.text, 'IMEI') || result.text || '').trim().replace(/\D/g, '');
@@ -4266,7 +4387,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
   const handleExtractSerial = async () => {
     setSerialAiLoading(true); setSerialAiError('');
     if (!tx.serialNumberPhoto) { setSerialAiError('Upload a photo of the serial label first.'); setSerialAiLoading(false); return; }
-    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.serialNumberPhoto], AI_PROMPT_SERIAL);
+    const result = await callGeminiAI(settings.geminiApiKey, settings.geminiModel, [tx.serialNumberPhoto], AI_PROMPT_SERIAL, settings.geminiThinkingBudget, settings.geminiTemperature);
     if (result.error) { setSerialAiError(result.error); }
     else {
       const extracted = (parseAiField(result.text, 'SERIAL_NUMBER') || result.text || '').trim();
@@ -4379,7 +4500,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 {tx.imeiPhoto && (
                   <div style={{ marginTop: '10px' }}>
                     <button style={S.btn('primary')} onClick={handleExtractIMEI} disabled={imeiAiLoading}>
-                      {imeiAiLoading ? '⏳ Extracting...' : '🤖 Extract IMEI with AI'}
+                      {imeiAiLoading ? <><Spinner /> Extracting...</> : '🤖 Extract IMEI with AI'}
                     </button>
                   </div>
                 )}
@@ -4447,7 +4568,7 @@ function CaptureStep({ tx, upd, settings, onJumpToOffer, onEndTransaction, onDec
                 {tx.serialNumberPhoto && (
                   <div style={{ marginTop: '10px' }}>
                     <button style={S.btn('primary')} onClick={handleExtractSerial} disabled={serialAiLoading}>
-                      {serialAiLoading ? '⏳ Extracting...' : '🤖 Extract Serial Number with AI'}
+                      {serialAiLoading ? <><Spinner /> Extracting...</> : '🤖 Extract Serial Number with AI'}
                     </button>
                   </div>
                 )}
@@ -4905,7 +5026,7 @@ Then still reply with ALL 6 fields above with your best guess. Your CONFIDENCE s
 
       // Step 2: Gemini synthesises all uploaded photos + Lens grounding context
       setAiLoadingPhase('run1');
-      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(lensContext)), AI_TIMEOUT);
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, basePrompt(lensContext), settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
       upd('aiRawResponse', result.text);
       parseGeminiResult(result.text);
@@ -4949,7 +5070,7 @@ MODEL_VERIFIED: [YES if you confirmed it exists with matching type and specs, CO
 
       const geminiCheck2 = checkGeminiLimit(settings);
       if (!geminiCheck2.blocked) {
-        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, verifyPrompt), AI_TIMEOUT);
+        const result2 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, verifyPrompt, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
         if (!result2.error && result2.text) {
           const verifyStatus = aiParseField(result2.text, 'MODEL_VERIFIED');
           if (verifyStatus) {
@@ -5004,7 +5125,7 @@ Staff notes: ${staffNotes}
 
 Reply with the condition description only. Nothing else.`;
     try {
-      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
+      const result = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
       if (result.error) { switchToManualMode(result.error); return; }
       // Post-process: sanitize newlines, collapse spaces, enforce 400 char limit
       let text = (result.text || '').trim().replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ');
@@ -5020,73 +5141,34 @@ Reply with the condition description only. Nothing else.`;
     setAiLoading(false); setAiLoadingPhase('');
   };
 
-  // RUN 3: Resale Valuation (with Google Search grounding)
-  const handleAIRun3 = async () => {
-    setAiLoading(true); setAiLoadingPhase('run3'); setAiError('');
-    const geminiCheck = checkGeminiLimit(settings);
-    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+  // RUN 3: Resale Valuation — two-step sequential AI workflow
+  // Step 3a: market price search (Google Search grounding, no photos)
+  // Step 3b: photo-based valuation using the price found in 3a (or a staff-corrected price)
+
+  // Shared Step 3b logic — accepts the market price to use so it can be called
+  // both from the full handleAIRun3 flow and from handleAIRun3bOnly (re-run with corrected price).
+  const execRun3b = async (newMarketPrice) => {
+    setAiLoadingPhase('run3b');
     const photos = getPhotos();
-    const conditionText = tx.conditionDescription || tx.aiCondition || '';
-    const prompt = `You are a pricing expert helping a second-hand item shop in Aguleri, Anambra State, Nigeria. We need to know the fair resale price of this item so we can sell it within 14 days.
-
-CRITICAL: All prices MUST be in Nigerian Naira (NGN). Do not use dollars, pounds, or any other currency. If you find prices in other currencies, convert them to Naira at the current exchange rate.
-
-Item details:
-* Type: ${tx.aiItemType || tx.captureItemType || 'Unknown'}
-* Brand and model: ${tx.aiBrand || 'Unknown'} ${tx.aiModel || 'Unknown'}
-* Colour: ${tx.aiColour || 'Unknown'}
-* Specs: ${tx.aiKeySpecs || 'Not available'}
-* Condition: ${conditionText || '(assess from the photos)'}
-
-Instructions:
-1. Search for the BRAND NEW retail price of this exact model in Nigeria TODAY.
-   - Include the colour in your search if known (e.g. search "black JBL Charge 5 price Nigeria 2024")
-   - Check at least 3 Nigerian stores: Jumia.com.ng, Konga.com, Slot.ng, and others
-   - Pick the MOST COMMON price across listings (modal price — the price that comes up most often)
-   - Do NOT average the prices — use the price that appears most frequently across stores
-   - If the colour affects price (e.g. some iPhone colours cost more), use the price for that specific colour
-   - Only use current listed prices — do NOT use old or outdated prices
-   - If this is a generic/unbranded Chinese item, search for equivalent items with similar specs
-
-2. Search the internet for the current selling price of this exact item (used/second-hand) on Jiji.ng, Facebook Marketplace Nigeria, and any similar Nigerian resale platforms. Include listings from Anambra, Onitsha, Awka, Lagos, and other Nigerian cities.
-
-CRITICAL ANTI-SCAM RULE for Jiji.ng prices:
-- Sort all listings for this item by price from lowest to highest
-- Throw away the cheapest 20% of listings — these are usually scam bait
-- From the remaining 80%, find the MEDIAN price (the middle value, not the average)
-- Use this median as your base for the used price
-
-3. Use those prices as your base. Then adjust for:
-   - The item condition described above${conditionText ? '' : ' (also look at the photos)'}
-   - Current supply/demand — if this item is very common in resale markets, price competitively; if rare, price slightly higher
-   - Age of the model — older models lose value faster
-
-IMPORTANT PRICING CONTEXT:
-- Prices in Aguleri/Anambra State are comparable to Onitsha and Lagos — do NOT discount for location. Aguleri is a trading town near Onitsha Main Market.
-- We need to sell this item within 14 days, so price it to move — but do NOT undervalue it. We want the best realistic price a buyer will pay within 2 weeks, not a desperate clearance price.
-- Second-hand items in good working condition typically sell for 50-75% of brand new price. Items in fair condition sell for 35-55% of brand new price.
-- Do NOT lowball. If the brand new price is ₦50,000 and the item is in good condition, the used price should be around ₦25,000-₦37,500 — not ₦10,000.
-
-4. Give me the realistic price we can sell this item for in Aguleri within 14 days. This should be a fair market price — not inflated, not deflated.
-
-5. Use simple everyday English. No big words.
-
-Reply in this exact format only (no numbered prefixes, no markdown, no extra text):
-ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma]
-PRICE_BASIS: [2 to 3 short sentences explaining what brand new prices and used prices you found, and how you calculated your estimate]
-NEW_MARKET_PRICE: [number only — the brand new price in Nigeria, or 0 if not found]
-PRICE_RANGE: [lowest realistic price — highest realistic price, e.g. 45000-60000]
-VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if you found real price data, lower if you had to estimate]`;
+    const itemType = tx.aiItemType || tx.captureItemType || 'Unknown';
+    const brand = tx.aiBrand || 'Unknown';
+    const model = tx.aiModel || 'Unknown';
+    const colour = tx.aiColour || 'Unknown';
+    const prompt2 = `Act as an expert second-hand appraiser in Aguleri, Anambra State. Based on the uploaded photos of this ${itemType}, ${brand}, ${model}, ${colour}, which current brand new price is ${newMarketPrice > 0 ? newMarketPrice : 'unknown'}, provide a valuation for a 7-day sale.${newMarketPrice > 0 ? ` Important: the highest value in the PRICE_RANGE must not exceed 60% of the brand new price (i.e. ${Math.round(newMarketPrice * 0.6).toLocaleString()}).` : ''} Strictly follow this output format:
+ESTIMATED_RESALE_VALUE: [number only — no naira sign, no comma] |
+PRICE_BASIS: [2 to 3 short sentences explaining how you calculated your estimate based on the photos and local market] |
+PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CONFIDENCE: [your confidence as a percentage]`;
     try {
-      const result = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, photos, prompt), AI_TIMEOUT);
-      if (result.error) { switchToManualMode(result.error); return; }
-      const text = result.text;
-      upd('aiRawResponse3', text);
+      const result2 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, photos, prompt2, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+      if (result2.error) { switchToManualMode(result2.error); return false; }
+      const rawText = result2.text;
+      upd('aiRawResponse3', rawText);
+      // Normalise pipe separators to newlines so aiParseField can find each field reliably
+      const text = rawText.replace(/\s*\|\s*/g, '\n');
       const estimatedVal = aiParseField(text, 'ESTIMATED_RESALE_VALUE').replace(/[^0-9]/g, '');
       upd('aiEstimatedValue', estimatedVal);
       upd('estimatedValue', Number(estimatedVal) || 0);
       upd('aiPriceBasis', aiParseField(text, 'PRICE_BASIS'));
-      upd('aiNewMarketPrice', aiParseField(text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, ''));
       // Parse PRICE_RANGE: handles "45000-60000", "₦45,000 to ₦60,000", "45000 – 60000"
       const rangeRaw = aiParseField(text, 'PRICE_RANGE');
       const rangeCleaned = rangeRaw.replace(/[₦NGN,\s]/gi, '');
@@ -5098,30 +5180,72 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         upd('aiPriceRangeHigh', String(Math.max(low, high)));
       }
       upd('aiValuationConfidence', aiParseField(text, 'VALUATION_CONFIDENCE'));
-
       // Post-parse sanity checks — warning only, staff can still proceed
       const val = Number(estimatedVal) || 0;
       const parsedLow = Number(rangeMatch?.[1]) || 0;
       const parsedHigh = Number(rangeMatch?.[2]) || 0;
       const warnings = [];
-      if (val > 0 && (val < 1000 || val > 5000000)) {
-        warnings.push(`AI estimated ₦${val.toLocaleString()} — this seems unusual. Please verify manually.`);
-      }
-      if (parsedLow > 0 && parsedHigh > 0 && parsedHigh > parsedLow * 5) {
-        warnings.push('Price range spread is very wide — estimate may be unreliable.');
-      }
+      if (val > 0 && (val < 1000 || val > 5000000)) warnings.push(`AI estimated ₦${val.toLocaleString()} — this seems unusual. Please verify manually.`);
+      if (parsedLow > 0 && parsedHigh > 0 && parsedHigh > parsedLow * 5) warnings.push('Price range spread is very wide — estimate may be unreliable.');
       if (warnings.length > 0) setAiError('Warning: ' + warnings.join(' '));
       // Clamp estimated value within price range
       if (val > 0 && parsedHigh > 0 && val > parsedHigh) upd('estimatedValue', parsedHigh);
       if (val > 0 && parsedLow > 0 && val < parsedLow) upd('estimatedValue', parsedLow);
-
       upd('aiRun3Done', true);
-    } catch (e) {
-      switchToManualMode(e.message);
-      return;
-    }
+      return true;
+    } catch (e) { switchToManualMode(e.message); return false; }
+  };
+
+  // Full two-step flow: 3a (market price search) → 3b (photo valuation)
+  const handleAIRun3 = async () => {
+    setAiLoading(true); setAiLoadingPhase('run3a'); setAiError('');
+    const geminiCheck = checkGeminiLimit(settings);
+    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+
+    const itemType = tx.aiItemType || tx.captureItemType || 'Unknown';
+    const brand = tx.aiBrand || 'Unknown';
+    const model = tx.aiModel || 'Unknown';
+    const colour = tx.aiColour || 'Unknown';
+    const keySpecs = tx.aiKeySpecs || '';
+
+    // ── STEP 3a: Find current brand-new market price ──
+    let newMarketPrice = 0;
+    try {
+      let result1;
+      let serpSummaryForDisplay = null;
+      if (settings.serpApiAiKey) {
+        // Two-step: SerpAPI Google AI search → Gemini price extraction
+        const serpAiCheck = checkSerpApiAiLimit(settings);
+        if (serpAiCheck.blocked) { switchToManualMode(serpAiCheck.reason); return; }
+        const searchQuery = `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? Search every single site on the web that has the exact new item in stock before giving me your answer. If you cannot find the median price of the item in Nigeria, what would your estimate be?`;
+        const serpResult = await callWithTimeout(() => callSerpApiGoogleAI(settings.serpApiAiKey, searchQuery), AI_TIMEOUT);
+        if (!serpResult.error) {
+          serpSummaryForDisplay = serpResult.summary;
+          const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the midpoint. If multiple prices are mentioned, use the median.\n\n${serpResult.summary}`;
+          result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+        } else {
+          // SerpAPI failed — fall back to Gemini with built-in Google Search grounding
+          const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
+          result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+        }
+      } else {
+        // Fallback: Gemini with built-in Google Search grounding
+        const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
+        result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+      }
+      if (result1.error) { switchToManualMode(result1.error); return; }
+      // When SerpAPI was used, store its result for display; otherwise store Gemini's response
+      upd('aiRawResponse3a', serpSummaryForDisplay || `[Model used: ${result1.model}]\n${result1.text}`);
+      const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
+      newMarketPrice = Number(parsedPrice) || 0;
+      upd('aiNewMarketPrice', String(newMarketPrice));
+    } catch (e) { switchToManualMode(e.message); return; }
+
+    // ── STEP 3b: Photo-based resale valuation ──
+    await execRun3b(newMarketPrice);
     setAiLoading(false); setAiLoadingPhase('');
   };
+
 
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
   const maxAdvance = tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100);
@@ -5414,7 +5538,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               </Field>
             </div>
             {tx.idType === 'bvn' && <div style={S.alert('warning')}>⚠ BVN does not return home address. You will need to ask the customer manually.</div>}
-            <button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? '⏳ Verifying...' : `Verify ${tx.idType.toUpperCase()}`}</button>
+            <button style={S.btn('primary')} onClick={handleVerify} disabled={ninLoading || !tx.idNumber}>{ninLoading ? <><Spinner /> Verifying...</> : `Verify ${tx.idType.toUpperCase()}`}</button>
             {!ninLoading && ninError && <div style={{ ...S.alert('warning'), marginTop: '12px' }}>⚠ {ninError}</div>}
             {tx.ninVerificationAttempted && !ninLoading && (
               <div style={{ marginTop: '16px', padding: '16px', background: tx.ninVerified ? COLORS.primaryLight : COLORS.warningLight, borderRadius: '12px', border: `1px solid ${tx.ninVerified ? '#b7e4c7' : '#fde2b3'}` }}>
@@ -5491,9 +5615,9 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               {tx.aiModelVerified && <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '12px', marginLeft: '4px', background: tx.aiModelVerified === 'YES' ? '#dcfce7' : tx.aiModelVerified === 'CORRECTED' ? '#fef3c7' : '#fde8e6', color: tx.aiModelVerified === 'YES' ? '#166534' : tx.aiModelVerified === 'CORRECTED' ? '#92400e' : COLORS.danger }}>{tx.aiModelVerified === 'YES' ? '✓ Model verified' : tx.aiModelVerified === 'CORRECTED' ? '⚠ Model corrected' : '? Unverified'}</span>}
             </div>
             <button style={S.btn('primary')} onClick={handleAIRun1} disabled={aiLoading}>
-              {aiLoading && aiLoadingPhase === 'run1' ? '⏳ Identifying Item...' :
-               aiLoading && aiLoadingPhase === 'run1_vision' ? '⏳ Running reverse image search...' :
-               aiLoading && aiLoadingPhase === 'run1_verify' ? '⏳ Verifying model online...' :
+              {aiLoading && aiLoadingPhase === 'run1' ? <><Spinner /> Identifying Item...</> :
+               aiLoading && aiLoadingPhase === 'run1_vision' ? <><Spinner /> Running reverse image search...</> :
+               aiLoading && aiLoadingPhase === 'run1_verify' ? <><Spinner /> Verifying model online...</> :
                tx.aiRun1Done ? '🔄 Re-run Identification' : '🤖 Identify Item with AI'}
             </button>
             {aiError && !aiLoading && !tx.aiRun1Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
@@ -5528,7 +5652,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               <span style={{ fontWeight: 700, fontSize: '14px' }}>Condition Description</span>
             </div>
             <button style={S.btn('primary')} onClick={handleAIRun2} disabled={aiLoading || (!tx.aiRun1Done && !tx.aiManualMode && !tx.aiItemType)}>
-              {aiLoading && aiLoadingPhase === 'run2' ? '⏳ Generating Description...' : tx.aiRun2Done ? '🔄 Re-generate Description' : '📝 Generate Condition Description'}
+              {aiLoading && aiLoadingPhase === 'run2' ? <><Spinner /> Generating Description...</> : tx.aiRun2Done ? '🔄 Re-generate Description' : '📝 Generate Condition Description'}
             </button>
             {aiError && !aiLoading && tx.aiRun1Done && !tx.aiRun2Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
 
@@ -5548,9 +5672,14 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               {tx.aiRun3Done && !tx.aiValuationConfidence && <span style={{ marginLeft: 'auto', fontSize: '11px', color: COLORS.textMuted }}>Powered by Google Search</span>}
             </div>
             <button style={{ ...S.btn('primary'), background: '#e67e22' }} onClick={handleAIRun3} disabled={aiLoading || (!tx.aiRun2Done && !tx.aiManualMode && !tx.aiItemType)}>
-              {aiLoading && aiLoadingPhase === 'run3' ? '⏳ Searching Market Prices...' : tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Market Price'}
+              {aiLoading && aiLoadingPhase === 'run3a' ? <><Spinner /> Finding Market Price...</> :
+               aiLoading && aiLoadingPhase === 'run3b' ? <><Spinner /> Calculating Valuation...</> :
+               tx.aiRun3Done ? '🔄 Re-check Market Price' : '💰 Get Valuation'}
             </button>
             {aiError && !aiLoading && tx.aiRun2Done && !tx.aiRun3Done && <div style={{ ...S.alert('danger'), marginTop: '8px' }}>{aiError}</div>}
+
+            {/* Market price search result — read-only transparency for staff */}
+            {tx.aiRawResponse3a && <details style={{ marginTop: '8px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View market price search result</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '200px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3a}</div></details>}
 
             {/* Price range display */}
             {tx.aiRun3Done && tx.aiPriceRangeLow && tx.aiPriceRangeHigh && (
@@ -5591,7 +5720,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
               }} placeholder="e.g. 85000" />
               {Number(tx.aiPriceRangeHigh) > 0 && <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '2px' }}>Maximum allowed: {fmtMoney(Number(tx.aiPriceRangeHigh))}</div>}
             </Field>
-            {tx.aiRawResponse3 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View raw AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3}</div></details>}
+            {tx.aiRawResponse3 && <details style={{ marginTop: '4px' }}><summary style={{ fontSize: '11px', color: COLORS.textMuted, cursor: 'pointer' }}>View valuation AI response</summary><div style={{ padding: '8px', background: COLORS.bg, borderRadius: '6px', fontSize: '11px', color: COLORS.textMuted, whiteSpace: 'pre-wrap', maxHeight: '100px', overflow: 'auto', marginTop: '4px' }}>{tx.aiRawResponse3}</div></details>}
           </div>
         </>)}
 
@@ -5725,7 +5854,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
                             onClick={smsAllWizard}
                           >
                             {wizardNotifyStatus === 'sending'
-                              ? '⏳ Sending…'
+                              ? <><Spinner /> Sending…</>
                               : wizardNotifyStatus?.sent != null
                                 ? `✅ SMS sent to ${wizardNotifyStatus.sent}${wizardNotifyStatus.failed > 0 ? ` (${wizardNotifyStatus.failed} failed)` : ''} — Send Again`
                                 : '📱 SMS All Stakeholders'}
@@ -5776,7 +5905,7 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
           disabled={pdfLoading}
           onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
         >
-          {pdfLoading ? '⏳ Generating PDF…' : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
+          {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
         </button>
         <button
           style={{ ...S.btn('outline'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
@@ -6272,7 +6401,7 @@ function SenderIdPicker({ value, onChange, termiiApiKey, inputStyle }) {
       )}
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
         <button style={S.btnSm('secondary')} onClick={doFetch} disabled={fetching}>
-          {fetching ? '⏳ Fetching…' : '🔄 Fetch from Termii'}
+          {fetching ? <><Spinner /> Fetching…</> : '🔄 Fetch from Termii'}
         </button>
         {sids !== null && sids.length === 0 && !err && (
           <span style={{ fontSize: '12px', color: COLORS.textMuted }}>No approved Sender IDs found on this account.</span>
@@ -6303,7 +6432,7 @@ function SmsTestPanel({ inputStyle }) {
         <input style={{ ...inputStyle, flex: 1, minWidth: '160px' }} value={phone} onChange={e => setPhone(e.target.value)}
           placeholder="Phone number (e.g. 08012345678)" inputMode="tel" />
         <button style={S.btnSm('primary')} onClick={send} disabled={loading || !phone.trim()}>
-          {loading ? '⏳ Sending…' : '📤 Send Test SMS'}
+          {loading ? <><Spinner /> Sending…</> : '📤 Send Test SMS'}
         </button>
       </div>
       {result && (
@@ -6768,7 +6897,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
           <span>📱 SMS Log</span>
           <button style={S.btnSm('secondary')} onClick={refreshSmsLogs} disabled={smsLogsLoading}>
-            {smsLogsLoading ? '⏳' : '🔄'} Refresh
+            {smsLogsLoading ? <Spinner /> : '🔄'} Refresh
           </button>
         </div>
         {smsLogsLoading ? (
@@ -9649,7 +9778,7 @@ export default function App() {
                             onClick={smsSendAll}
                           >
                             {capitalSmsSendState === 'sending'
-                              ? '⏳ Sending SMS…'
+                              ? <><Spinner /> Sending SMS…</>
                               : capitalSmsSendState?.sent != null
                                 ? `✅ SMS sent to ${capitalSmsSendState.sent}${capitalSmsSendState.failed > 0 ? ` (${capitalSmsSendState.failed} failed)` : ''} — Send Again`
                                 : '📱 SMS All Stakeholders'}
@@ -10260,7 +10389,7 @@ export default function App() {
                                       onClick={withdrawSmsAll}
                                     >
                                       {withdrawalSmsSendState === 'sending'
-                                        ? '⏳ Sending SMS…'
+                                        ? <><Spinner /> Sending SMS…</>
                                         : withdrawalSmsSendState?.sent != null
                                           ? `✅ SMS sent to ${withdrawalSmsSendState.sent}${withdrawalSmsSendState.failed > 0 ? ` (${withdrawalSmsSendState.failed} failed)` : ''} — Send Again`
                                           : '📱 SMS All Stakeholders'}
@@ -11082,11 +11211,35 @@ export default function App() {
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini AI API Key<InfoIcon tip="The key that turns on the AI valuation feature. You can get one for free at aistudio.google.com." /></span>}>
               <input style={S.input} type="password" value={es.geminiApiKey} onChange={e => updateSettings({ ...es, geminiApiKey: e.target.value })} placeholder="From aistudio.google.com" />
             </Field>
-            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Leave it as default — the system will switch to a backup automatically if needed." /></span>}>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Model<InfoIcon tip="Which AI model to use for valuations. Use 'Detect Models' to see exactly which models your API key can access." /></span>}>
               <input style={S.input} value={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onChange={e => updateSettings({ ...es, geminiModel: e.target.value })} placeholder={DEFAULT_SETTINGS.geminiModel} />
+              <DetectModelsButton apiKey={es.geminiApiKey} currentModel={es.geminiModel || DEFAULT_SETTINGS.geminiModel} onSelect={m => updateSettings({ ...es, geminiModel: m })} />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Thinking Level<InfoIcon tip="Controls how much the AI 'thinks' before answering. Higher levels give more thorough results but are slower and consume more tokens. Dynamic lets the model decide automatically. Use Off for fastest responses on simple tasks." /></span>}>
+              <select style={S.input} value={es.geminiThinkingBudget ?? DEFAULT_SETTINGS.geminiThinkingBudget} onChange={e => updateSettings({ ...es, geminiThinkingBudget: Number(e.target.value) })}>
+                <option value={-1}>Dynamic – model decides (default)</option>
+                <option value={0}>Off – no thinking (fastest)</option>
+                <option value={512}>Low – 512 tokens</option>
+                <option value={2048}>Medium – 2,048 tokens</option>
+                <option value={8192}>High – 8,192 tokens</option>
+                <option value={24576}>Maximum – 24,576 tokens</option>
+              </select>
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Gemini Temperature<InfoIcon tip="Controls the randomness of AI responses. Lower values make responses more focused and deterministic; higher values make them more creative and varied. Default leaves the field unset and lets Google use its model-specific default (typically 1.0)." /></span>}>
+              <select style={S.input} value={es.geminiTemperature === null || es.geminiTemperature === undefined ? '' : String(es.geminiTemperature)} onChange={e => updateSettings({ ...es, geminiTemperature: e.target.value === '' ? null : Number(e.target.value) })}>
+                <option value="">Default – model decides</option>
+                <option value="0">0.0 – Deterministic</option>
+                <option value="0.5">0.5 – Focused</option>
+                <option value="1">1.0 – Balanced (Google default)</option>
+                <option value="1.5">1.5 – Creative</option>
+                <option value="2">2.0 – Maximum creativity</option>
+              </select>
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Key (Google Lens)<InfoIcon tip="Recommended. Used for Google Lens reverse image search — identifies exact device models by matching against real product listings. Much more accurate than generic image analysis. Get a free key at serpapi.com." /></span>}>
               <input style={S.input} type="password" value={es.serpApiKey || ''} onChange={e => updateSettings({ ...es, serpApiKey: e.target.value })} placeholder="From serpapi.com (recommended)" />
+            </Field>
+            <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi AI Key (Google AI Search)<InfoIcon tip="Used for Run 3a market price lookup. When set, Run 3a performs a live Google AI search via SerpApi to find the current brand-new price in Nigeria, then passes the result to Gemini for analysis. More accurate than Gemini's built-in search grounding. Get a key at serpapi.com (can be the same or a different account)." /></span>}>
+              <input style={S.input} type="password" value={es.serpApiAiKey || ''} onChange={e => updateSettings({ ...es, serpApiAiKey: e.target.value })} placeholder="From serpapi.com (for price search)" />
             </Field>
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>NIN/BVN API Key<InfoIcon tip="The key for the NIN/BVN check service. This lets the system look up a customer's identity details automatically." /></span>}>
               <input style={S.input} type="password" value={es.ninApiKey} onChange={e => updateSettings({ ...es, ninApiKey: e.target.value })} placeholder="From checkmyninbvn.com.ng" />
@@ -11104,6 +11257,9 @@ export default function App() {
                 <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi Monthly Limit<InfoIcon tip="Maximum Google Lens (SerpApi) searches per month. Free Developer plan: 250/month. Upgrade your SerpApi plan and increase this if you need more." /></span>}>
                   <input style={S.input} type="number" min="1" value={es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit} onChange={e => updateSettings({ ...es, serpApiMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.serpApiMonthlyLimit })} />
                 </Field>
+                <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>SerpApi AI Monthly Limit<InfoIcon tip="Maximum SerpApi AI (Google AI Search) calls per month used for Run 3a price lookup. Free Developer plan: 250/month." /></span>}>
+                  <input style={S.input} type="number" min="1" value={es.serpApiAiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiAiMonthlyLimit} onChange={e => updateSettings({ ...es, serpApiAiMonthlyLimit: Number(e.target.value) || DEFAULT_SETTINGS.serpApiAiMonthlyLimit })} />
+                </Field>
               </div>
               <div style={{ ...S.card, background: COLORS.bg, padding: '12px', marginTop: '10px' }}>
                 <div style={{ fontSize: '12px', fontWeight: 700, marginBottom: '8px' }}>Current Usage</div>
@@ -11114,6 +11270,7 @@ export default function App() {
                     ? <div>Google Lens this month: <strong>{serpApiAccount.this_month_usage}</strong> / {serpApiAccount.searches_per_month} <span style={{ color: COLORS.textMuted }}>(live from SerpApi{serpApiAccount.plan_name ? ` · ${serpApiAccount.plan_name}` : ''})</span></div>
                     : <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong> / {es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit}</div>
                   }
+                  {es.serpApiAiKey && <div>SerpApi AI this month: <strong>{getSerpApiAiUsageThisMonth()}</strong> / {es.serpApiAiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiAiMonthlyLimit}</div>}
                 </div>
               </div>
             </div>

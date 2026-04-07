@@ -2691,6 +2691,7 @@ export async function onRequest(context) {
       if (!service) return error('Missing service');
       if (service === 'gemini' && !date) return error('Missing date for gemini');
       if (service === 'serpapi' && !month) return error('Missing month for serpapi');
+      if (service === 'serpApiAi' && !month) return error('Missing month for serpApiAi');
 
       const row = await db.prepare("SELECT value FROM settings WHERE key = 'api_usage'").first();
       const usage = row ? JSON.parse(row.value) : {};
@@ -2707,6 +2708,12 @@ export async function onRequest(context) {
         // Keep last 3 months only
         const keys = Object.keys(usage.serpapi).sort();
         if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.serpapi[k]; }
+      } else if (service === 'serpApiAi') {
+        if (!usage.serpApiAi) usage.serpApiAi = {};
+        usage.serpApiAi[month] = (usage.serpApiAi[month] || 0) + Number(count);
+        // Keep last 3 months only
+        const keys = Object.keys(usage.serpApiAi).sort();
+        if (keys.length > 3) { for (const k of keys.slice(0, -3)) delete usage.serpApiAi[k]; }
       } else {
         return error('Unknown service');
       }
@@ -2764,6 +2771,33 @@ export async function onRequest(context) {
         visual_matches: data.visual_matches || [],
         text_results: data.text_results || [],
         knowledge_graph: data.knowledge_graph || null,
+      });
+    }
+
+    // ============================================================
+    // SERPAPI GOOGLE AI MODE PROXY: POST /api/serpapi-ai
+    // Accepts { query, apiKey } and proxies to SerpApi using the
+    // google_ai_mode engine (Google's AI Mode / conversational AI).
+    // Returns text_blocks (AI answer) and references for analysis.
+    // ============================================================
+    if (path === 'serpapi-ai' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const { query, apiKey } = await request.json();
+      if (!apiKey) return error('No SerpApi AI key provided');
+      if (!query) return error('No query provided');
+      const serpUrl = new URL('https://serpapi.com/search.json');
+      serpUrl.searchParams.set('engine', 'google_ai_mode');
+      serpUrl.searchParams.set('q', query);
+      serpUrl.searchParams.set('gl', 'ng');
+      serpUrl.searchParams.set('hl', 'en');
+      serpUrl.searchParams.set('api_key', apiKey);
+      const resp2 = await fetch(serpUrl.toString());
+      const data2 = await resp2.json().catch(() => null);
+      if (!resp2.ok) return error(data2?.error || data2?.message || `SerpApi request failed with status ${resp2.status}`, resp2.status);
+      return json({
+        text_blocks: data2.text_blocks || [],
+        references: (data2.references || []).slice(0, 5).map(r => ({ title: r.title || '', link: r.link || '' })),
       });
     }
 
