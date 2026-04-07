@@ -2760,6 +2760,30 @@ export async function onRequest(context) {
     }
 
     // ============================================================
+    // SERPAPI AI ACCOUNT INFO: GET /api/serpapi-ai-account
+    // Proxies to serpapi.com/account.json using the stored AI key.
+    // Returns live usage and plan limits. Does not consume quota.
+    // ============================================================
+    if (path === 'serpapi-ai-account' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      const cfg = row ? JSON.parse(row.value) : {};
+      const apiKey = cfg.serpApiAiKey;
+      if (!apiKey) return error('No SerpApi AI key configured', 400);
+      const resp = await fetch(`https://serpapi.com/account.json?api_key=${encodeURIComponent(apiKey)}`);
+      const data = await resp.json().catch(() => null);
+      if (!resp.ok) return error(data?.error || `SerpApi AI account request failed with status ${resp.status}`, resp.status);
+      return json({
+        this_month_usage: data.this_month_usage ?? 0,
+        searches_per_month: data.searches_per_month ?? 0,
+        plan_searches_left: data.plan_searches_left ?? 0,
+        total_searches_left: data.total_searches_left ?? 0,
+        plan_name: data.plan_name ?? '',
+      });
+    }
+
+    // ============================================================
     // SERPAPI GOOGLE LENS PROXY: POST /api/serpapi-lens
     // Accepts { imageUrl, apiKey } and proxies to SerpApi to keep
     // the key server-side. Requires a valid authenticated session.

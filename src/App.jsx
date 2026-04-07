@@ -1220,12 +1220,26 @@ const getSerpApiAiUsageThisMonth = () => {
   return (usage.serpApiAi?.[month]) || 0;
 };
 
-const checkSerpApiAiLimit = (settings) => {
+const checkSerpApiAiLimit = (settings, liveAccount = null) => {
+  if (liveAccount && typeof liveAccount.total_searches_left === 'number') {
+    if (liveAccount.total_searches_left <= 0) return { blocked: true, reason: `SerpApi AI monthly limit reached (${liveAccount.this_month_usage}/${liveAccount.searches_per_month}). Resets at the start of next month.` };
+    return { blocked: false, remaining: liveAccount.total_searches_left };
+  }
   const monthlyLimit = settings.serpApiAiMonthlyLimit || 250;
   const usedThisMonth = getSerpApiAiUsageThisMonth();
   if (usedThisMonth >= monthlyLimit) return { blocked: true, reason: `SerpApi AI monthly limit reached (${usedThisMonth}/${monthlyLimit}). Resets at the start of next month.` };
   return { blocked: false, remaining: monthlyLimit - usedThisMonth };
 };
+
+// Returns true when the given key string is set AND the corresponding quota check says it is not blocked.
+// Used by both Run 1 (Lens) and Run 3a (AI Mode) to pick between the two SerpApi keys.
+const isSerpKeyAvailable = (key, checkFn, settings, account) =>
+  !!(key || '').trim() && !checkFn(settings, account).blocked;
+
+// Regex patterns used to extract a Naira price from a free-form SerpAPI AI response
+// when Gemini is unavailable to do the extraction step.
+const PRICE_FROM_NAIRA_SYMBOL_RE = /(?:₦|NGN)\s*([0-9][0-9,\.]*)/i;
+const PRICE_BEFORE_NAIRA_WORD_RE = /([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:naira|NGN)/i;
 
 
 // ============================================================
@@ -1370,7 +1384,7 @@ const callGeminiWithSearch = async (apiKey, model, images, promptText, thinkingB
 // SerpApi Google Lens — shopping-first reverse image search for item identification.
 // Accepts a photo value (R2 relative path, full HTTPS URL, or base64 data URI).
 // Returns { visualMatches, textResults, summary } or { error }.
-const callSerpApiLens = async (apiKey, photo) => {
+const callSerpApiLens = async (apiKey, photo, trackFn = trackSerpApiCall) => {
   if (!apiKey) return { error: 'No SerpApi key set.' };
   if (!photo) return { error: 'No photo provided.' };
 
@@ -1382,7 +1396,7 @@ const callSerpApiLens = async (apiKey, photo) => {
   if (!imageUrl.startsWith('https://')) return { error: 'Photo URL is not publicly accessible.' };
 
   try {
-    trackSerpApiCall(1);
+    trackFn(1);
     const resp = await API.post('serpapi-lens', { imageUrl, apiKey });
     if (resp?.error) return { error: resp.error };
 
@@ -1401,11 +1415,11 @@ const callSerpApiLens = async (apiKey, photo) => {
 // SerpApi Google AI Mode — queries Google's AI Mode engine for a conversational
 // AI answer about the item's price in Nigeria. Returns { summary } with the
 // full AI-generated text and source references, or { error }.
-const callSerpApiGoogleAI = async (apiKey, query) => {
+const callSerpApiGoogleAI = async (apiKey, query, trackFn = trackSerpApiAiCall) => {
   if (!apiKey) return { error: 'No SerpApi AI key set.' };
   if (!query) return { error: 'No query provided.' };
   try {
-    trackSerpApiAiCall(1);
+    trackFn(1);
     const resp = await API.post('serpapi-ai', { query, apiKey });
     if (resp?.error) return { error: resp.error };
 
@@ -4750,7 +4764,7 @@ const EMPTY_TX = {
   contactLog: [], notes: '',
 };
 
-function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, availableLendingCapital, totalCapital, capByName }) {
+function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, serpApiAiAccount, availableLendingCapital, totalCapital, capByName }) {
   const [step, setStep] = useState(draft?.wizardStep || 0);
   const [tx, setTx] = useState(() => {
     const base = draft || { ...EMPTY_TX, ref: genRef(), createdBy: currentUser?.name || '', createdAt: new Date().toISOString() };
@@ -4986,41 +5000,49 @@ Then still reply with ALL 6 fields above with your best guess. Your CONFIDENCE s
     };
 
     try {
-      const hasSerpKey = !!(settings.serpApiKey || '').trim();
+      // Resolve which SerpApi key to use for Google Lens.
+      // Primary: serpApiKey (Lens key). Fallback: serpApiAiKey when the primary is exhausted/not set.
+      // Track usage against whichever key is actually consumed.
+      let lensApiKey = null;
+      let lensTrackFn = trackSerpApiCall;
+      const lensKeyAvail = isSerpKeyAvailable(settings.serpApiKey, checkSerpApiLimit, settings, serpApiAccount);
+      const aiKeyForLensAvail = isSerpKeyAvailable(settings.serpApiAiKey, checkSerpApiAiLimit, settings, serpApiAiAccount);
+      if (lensKeyAvail) {
+        lensApiKey = settings.serpApiKey;
+        lensTrackFn = trackSerpApiCall;
+      } else if (aiKeyForLensAvail) {
+        lensApiKey = settings.serpApiAiKey;
+        lensTrackFn = trackSerpApiAiCall;
+      }
       let lensContext = '';
 
-      // Step 1: Google Lens via SerpApi (if configured) — use Back Panel (index 2) as primary
+      // Step 1: Google Lens via SerpApi (if a key is available) — use Back Panel (index 2) as primary
       // visual identifier, and About Page/Spec Label (index 0) for OCR grounding.
       // Gemini will still see ALL photos; SerpApi only analyses these 2 most informative ones.
-      if (hasSerpKey) {
-        const serpCheck = checkSerpApiLimit(settings, serpApiAccount);
-        if (serpCheck.blocked) {
-          console.warn('SerpApi skipped:', serpCheck.reason);
-        } else {
-          try {
-            setAiLoadingPhase('run1_vision');
-            const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
-            const lensTargets = [
-              { photo: photoArr[2], label: 'Back Panel' },
-              { photo: photoArr[0], label: 'About Page / Spec Label' },
-            ].filter(t => t.photo);
+      if (lensApiKey) {
+        try {
+          setAiLoadingPhase('run1_vision');
+          const photoArr = Array.isArray(tx.itemPhotos) ? tx.itemPhotos : [];
+          const lensTargets = [
+            { photo: photoArr[2], label: 'Back Panel' },
+            { photo: photoArr[0], label: 'About Page / Spec Label' },
+          ].filter(t => t.photo);
 
-            const lensResults = [];
-            const allMatchTitles = [];
-            for (const { photo } of lensTargets) {
-              const lr = await callWithTimeout(() => callSerpApiLens(settings.serpApiKey, photo), 30000);
-              if (!lr.error && lr.summary) lensResults.push(lr.summary);
-              if (!lr.error && lr.visualMatches) allMatchTitles.push(...lr.visualMatches);
-            }
-            const uniqueTitles = [...new Set(allMatchTitles.filter(Boolean))];
-            if (uniqueTitles.length > 0) upd('aiVisionLabels', uniqueTitles.join(', '));
-            if (lensResults.length > 0) {
-              upd('aiVisionUsed', true);
-              lensContext = lensResults.join('\n---\n');
-            }
-          } catch (e) {
-            console.error('Google Lens (SerpApi) failed, continuing without it:', e.message);
+          const lensResults = [];
+          const allMatchTitles = [];
+          for (const { photo } of lensTargets) {
+            const lr = await callWithTimeout(() => callSerpApiLens(lensApiKey, photo, lensTrackFn), 30000);
+            if (!lr.error && lr.summary) lensResults.push(lr.summary);
+            if (!lr.error && lr.visualMatches) allMatchTitles.push(...lr.visualMatches);
           }
+          const uniqueTitles = [...new Set(allMatchTitles.filter(Boolean))];
+          if (uniqueTitles.length > 0) upd('aiVisionLabels', uniqueTitles.join(', '));
+          if (lensResults.length > 0) {
+            upd('aiVisionUsed', true);
+            lensContext = lensResults.join('\n---\n');
+          }
+        } catch (e) {
+          console.error('Google Lens (SerpApi) failed, continuing without it:', e.message);
         }
       }
 
@@ -5200,7 +5222,27 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   const handleAIRun3 = async () => {
     setAiLoading(true); setAiLoadingPhase('run3a'); setAiError('');
     const geminiCheck = checkGeminiLimit(settings);
-    if (geminiCheck.blocked) { setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return; }
+
+    // Resolve which SerpApi key to use for AI Mode (google_ai_mode engine).
+    // Primary: serpApiAiKey. Fallback: serpApiKey when the primary is exhausted/not set.
+    // Track usage against whichever key is actually consumed.
+    let serpAiApiKey = null;
+    let serpAiTrackFn = trackSerpApiAiCall;
+    const aiKeyAvail = isSerpKeyAvailable(settings.serpApiAiKey, checkSerpApiAiLimit, settings, serpApiAiAccount);
+    const lensKeyForAiAvail = isSerpKeyAvailable(settings.serpApiKey, checkSerpApiLimit, settings, serpApiAccount);
+    if (aiKeyAvail) {
+      serpAiApiKey = settings.serpApiAiKey;
+      serpAiTrackFn = trackSerpApiAiCall;
+    } else if (lensKeyForAiAvail) {
+      serpAiApiKey = settings.serpApiKey;
+      serpAiTrackFn = trackSerpApiCall;
+    }
+    const serpAiAvailable = !!serpAiApiKey;
+
+    // Need at least one of Gemini or SerpAPI AI to proceed with price lookup
+    if (geminiCheck.blocked && !serpAiAvailable) {
+      setAiError(geminiCheck.reason); setAiLoading(false); setAiLoadingPhase(''); return;
+    }
 
     const itemType = tx.aiItemType || tx.captureItemType || 'Unknown';
     const brand = tx.aiBrand || 'Unknown';
@@ -5213,30 +5255,48 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     try {
       let result1;
       let serpSummaryForDisplay = null;
-      if (settings.serpApiAiKey) {
-        // Two-step: SerpAPI Google AI search → Gemini price extraction
-        const serpAiCheck = checkSerpApiAiLimit(settings);
-        if (serpAiCheck.blocked) { switchToManualMode(serpAiCheck.reason); return; }
-        const searchQuery = `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? Search every single site on the web that has the exact new item in stock before giving me your answer. If you cannot find the median price of the item in Nigeria, what would your estimate be?`;
-        const serpResult = await callWithTimeout(() => callSerpApiGoogleAI(settings.serpApiAiKey, searchQuery), AI_TIMEOUT);
+      if (serpAiAvailable) {
+        // A SerpApi key is available — use it for live price search.
+        // When Gemini is also available, use a conversational query and let Gemini extract the price.
+        // When Gemini is exhausted, use a format-directed query so the price can be parsed directly.
+        const searchQuery = !geminiCheck.blocked
+          ? `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? Search every single site on the web that has the exact new item in stock before giving me your answer. If you cannot find the median price of the item in Nigeria, what would your estimate be?`
+          : `What is the exact median price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria as of today? Search every site on the web. Return only: NEW_MARKET_PRICE: [number only, no naira sign, no comma, whole number]`;
+        const serpResult = await callWithTimeout(() => callSerpApiGoogleAI(serpAiApiKey, searchQuery, serpAiTrackFn), AI_TIMEOUT);
         if (!serpResult.error) {
           serpSummaryForDisplay = serpResult.summary;
-          const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the midpoint. If multiple prices are mentioned, use the median.\n\n${serpResult.summary}`;
-          result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+          if (!geminiCheck.blocked) {
+            // Gemini available — use it to extract the price from the search result
+            const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the midpoint. If multiple prices are mentioned, use the median.\n\n${serpResult.summary}`;
+            result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+          } else {
+            // Gemini exhausted — use the SerpAPI AI response directly; price parsing will also use regex fallback
+            result1 = { text: serpResult.summary, model: 'serpapi-ai' };
+          }
         } else {
-          // SerpAPI failed — fall back to Gemini with built-in Google Search grounding
-          const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
-          result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+          // SerpAPI call failed — fall back to Gemini with search grounding (if available)
+          if (!geminiCheck.blocked) {
+            const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
+            result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
+          } else {
+            switchToManualMode('Both SerpApi and Gemini are unavailable. Please enter the price manually.'); return;
+          }
         }
       } else {
-        // Fallback: Gemini with built-in Google Search grounding
+        // No SerpAPI key available — use Gemini with built-in Google Search grounding
         const prompt1 = `modal or median current price of brand new ${itemType}, ${brand}, ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''} in Nigeria. Return ONLY the final determined price in this exact format: NEW_MARKET_PRICE: [number only]`;
         result1 = await callWithTimeout(() => callGeminiWithSearch(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
       }
       if (result1.error) { switchToManualMode(result1.error); return; }
       // When SerpAPI was used, store its result for display; otherwise store Gemini's response
       upd('aiRawResponse3a', serpSummaryForDisplay || `[Model used: ${result1.model}]\n${result1.text}`);
-      const parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
+      let parsedPrice = aiParseField(result1.text, 'NEW_MARKET_PRICE').replace(/[^0-9]/g, '');
+      // Regex fallback for when SerpAPI AI response is used directly (no Gemini extraction)
+      if (!parsedPrice) {
+        const priceMatch = result1.text.match(PRICE_FROM_NAIRA_SYMBOL_RE) ||
+                           result1.text.match(PRICE_BEFORE_NAIRA_WORD_RE);
+        if (priceMatch) parsedPrice = priceMatch[1].replace(/[^0-9]/g, '');
+      }
       newMarketPrice = Number(parsedPrice) || 0;
       upd('aiNewMarketPrice', String(newMarketPrice));
     } catch (e) { switchToManualMode(e.message); return; }
@@ -5603,6 +5663,10 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             {settings.serpApiKey && (serpApiAccount
               ? <span>Google Lens: {serpApiAccount.this_month_usage}/{serpApiAccount.searches_per_month} this month</span>
               : <span>Google Lens: {getSerpApiUsageThisMonth()}/{settings.serpApiMonthlyLimit || 250} this month</span>
+            )}
+            {settings.serpApiAiKey && (serpApiAiAccount
+              ? <span>SerpApi AI: {serpApiAiAccount.this_month_usage}/{serpApiAiAccount.searches_per_month} this month</span>
+              : <span>SerpApi AI: {getSerpApiAiUsageThisMonth()}/{settings.serpApiAiMonthlyLimit || 250} this month</span>
             )}
           </div>
 
@@ -7568,6 +7632,7 @@ export default function App() {
   const [smsAutoSendDone, setSmsAutoSendDone] = useState(false); // prevent firing twice per session
   const [autoGenDone, setAutoGenDone] = useState(false); // prevent auto-generate firing twice per session
   const [serpApiAccount, setSerpApiAccount] = useState(null); // live data from serpapi.com/account.json
+  const [serpApiAiAccount, setSerpApiAiAccount] = useState(null); // live data for AI key from serpapi.com/account.json
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
 
   useEffect(() => {
@@ -7663,6 +7728,11 @@ export default function App() {
     // Fetch live SerpApi account stats (usage + plan limit) — does not consume quota.
     API.get('serpapi-account').then(data => {
       if (data && typeof data.this_month_usage === 'number') setSerpApiAccount(data);
+    }).catch(() => {});
+
+    // Fetch live SerpApi AI account stats (for AI key, may be the same or different account).
+    API.get('serpapi-ai-account').then(data => {
+      if (data && typeof data.this_month_usage === 'number') setSerpApiAiAccount(data);
     }).catch(() => {});
 
     // Load large list datasets in the background so navigation/header remain interactive.
@@ -8142,7 +8212,7 @@ export default function App() {
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
-        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} availableLendingCapital={availableLendingCapital} totalCapital={totalCapital} capByName={capitalPrediction?.capByName || []} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
+        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} serpApiAiAccount={serpApiAiAccount} availableLendingCapital={availableLendingCapital} totalCapital={totalCapital} capByName={capitalPrediction?.capByName || []} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
       </div>
     </div>
   );
@@ -11270,7 +11340,10 @@ export default function App() {
                     ? <div>Google Lens this month: <strong>{serpApiAccount.this_month_usage}</strong> / {serpApiAccount.searches_per_month} <span style={{ color: COLORS.textMuted }}>(live from SerpApi{serpApiAccount.plan_name ? ` · ${serpApiAccount.plan_name}` : ''})</span></div>
                     : <div>Google Lens this month: <strong>{getSerpApiUsageThisMonth()}</strong> / {es.serpApiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiMonthlyLimit}</div>
                   }
-                  {es.serpApiAiKey && <div>SerpApi AI this month: <strong>{getSerpApiAiUsageThisMonth()}</strong> / {es.serpApiAiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiAiMonthlyLimit}</div>}
+                  {es.serpApiAiKey && (serpApiAiAccount
+                    ? <div>SerpApi AI this month: <strong>{serpApiAiAccount.this_month_usage}</strong> / {serpApiAiAccount.searches_per_month} <span style={{ color: COLORS.textMuted }}>(live from SerpApi{serpApiAiAccount.plan_name ? ` · ${serpApiAiAccount.plan_name}` : ''})</span></div>
+                    : <div>SerpApi AI this month: <strong>{getSerpApiAiUsageThisMonth()}</strong> / {es.serpApiAiMonthlyLimit ?? DEFAULT_SETTINGS.serpApiAiMonthlyLimit}</div>
+                  )}
                 </div>
               </div>
             </div>
