@@ -1107,7 +1107,12 @@ export async function onRequest(context) {
             const phone = toIntlPhone(rawPhone);
             const rawPhone2 = tx.phoneNumbers?.[1] || '';
             const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
-            if (phone) {
+            if (!phone) {
+              // Log a skipped entry so the transaction's SMS Log shows why no SMS was sent.
+              await db.prepare(
+                "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, 'outright_confirmation', '', '', 'skipped', ?)"
+              ).bind(tx.ref, JSON.stringify({ reason: 'no_phone_number' })).run().catch(() => {});
+            } else if (phone) {
               const triggerType = 'outright_confirmation';
               const today = todayNigeria();
               const alreadySent = await db.prepare(
@@ -1150,7 +1155,12 @@ export async function onRequest(context) {
             const phone = toIntlPhone(rawPhone);
             const rawPhone2 = tx.phoneNumbers?.[1] || '';
             const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
-            if (phone) {
+            if (!phone) {
+              // Log a skipped entry so the transaction's SMS Log shows why no SMS was sent.
+              await db.prepare(
+                "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, 'advance_confirmation', '', '', 'skipped', ?)"
+              ).bind(tx.ref, JSON.stringify({ reason: 'no_phone_number' })).run().catch(() => {});
+            } else {
               const triggerType = 'advance_confirmation';
               const today = todayNigeria();
               const alreadySent = await db.prepare(
@@ -1290,7 +1300,11 @@ export async function onRequest(context) {
             const phone = toIntlPhone(rawPhone);
             const rawPhone2 = tx.phoneNumbers?.[1] || '';
             const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
-            if (phone) {
+            if (!phone) {
+              await db.prepare(
+                "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, 'redemption_confirmation', '', '', 'skipped', ?)"
+              ).bind(ref, JSON.stringify({ reason: 'no_phone_number' })).run().catch(() => {});
+            } else {
               const triggerType = 'redemption_confirmation';
               const todayClosed = todayNigeria();
               const alreadySent = await db.prepare(
@@ -1335,7 +1349,11 @@ export async function onRequest(context) {
             const phone = toIntlPhone(rawPhone);
             const rawPhone2 = tx.phoneNumbers?.[1] || '';
             const phone2 = rawPhone2 && rawPhone2 !== rawPhone ? toIntlPhone(rawPhone2) : null;
-            if (phone) {
+            if (!phone) {
+              await db.prepare(
+                "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, 'listed_for_sale', '', '', 'skipped', ?)"
+              ).bind(ref, JSON.stringify({ reason: 'no_phone_number' })).run().catch(() => {});
+            } else {
               const triggerType = 'listed_for_sale';
               const todayListed = todayNigeria();
               const alreadySent = await db.prepare(
@@ -1380,7 +1398,11 @@ export async function onRequest(context) {
           if (smsCfg.enabled && smsCfg.saleConfirmationEnabled) {
             const rawPhone = tx.saleBuyerPhone || '';
             const phone = toIntlPhone(rawPhone);
-            if (phone) {
+            if (!phone) {
+              await db.prepare(
+                "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, 'sale_confirmation', '', '', 'skipped', ?)"
+              ).bind(ref, JSON.stringify({ reason: 'no_buyer_phone' })).run().catch(() => {});
+            } else {
               const triggerType = 'sale_confirmation';
               const todaySold = todayNigeria();
               const alreadySent = await db.prepare(
@@ -2399,8 +2421,16 @@ export async function onRequest(context) {
     }
 
     if (path === 'sms/auto-send' && method === 'POST') {
-      const auth = requireAuth(request);
-      if (auth.error) return auth.error;
+      // Accept either a valid session cookie (staff/admin UI call) OR the X-Cron-Secret
+      // header (Cloudflare Cron Worker call). This lets a companion scheduled Worker
+      // trigger auto-send daily without needing a browser session.
+      const cronSecret = env.CRON_SECRET;
+      const incomingSecret = request.headers.get('X-Cron-Secret');
+      const isCronCall = !!(cronSecret && incomingSecret && cronSecret === incomingSecret);
+      if (!isCronCall) {
+        const auth = requireAuth(request);
+        if (auth.error) return auth.error;
+      }
 
       const smsCfg = await loadSmsConfig();
       if (!smsCfg.apiKey) return json({ skipped: true, reason: 'Termii API key not configured.' });
