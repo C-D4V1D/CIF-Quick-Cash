@@ -2270,24 +2270,24 @@ function ItemValuationPage({ onBack, settings }) {
                           style={{
                             flex: 1, background: '#111827', border: '1px solid #2a3447',
                             borderRadius: '6px', color: '#d1d5db', fontSize: '11px',
-                            padding: '6px 2px', cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px',
+                            padding: '4px 2px', cursor: 'pointer', minHeight: '44px',
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px',
                             fontFamily: 'inherit',
                           }}
                         >
-                          <span>📷</span><span>Camera</span>
+                          <span style={{ fontSize: '16px', lineHeight: 1 }}>📷</span><span>Camera</span>
                         </button>
                         <button
                           onClick={() => document.getElementById(`photo-gal-${idx}`).click()}
                           style={{
                             flex: 1, background: '#111827', border: '1px solid #2a3447',
                             borderRadius: '6px', color: '#d1d5db', fontSize: '11px',
-                            padding: '6px 2px', cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px',
+                            padding: '4px 2px', cursor: 'pointer', minHeight: '44px',
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px',
                             fontFamily: 'inherit',
                           }}
                         >
-                          <span>🖼️</span><span>Gallery</span>
+                          <span style={{ fontSize: '16px', lineHeight: 1 }}>🖼️</span><span>Gallery</span>
                         </button>
                       </div>
                     </div>
