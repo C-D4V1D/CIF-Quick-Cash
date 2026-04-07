@@ -2216,8 +2216,24 @@ function ItemValuationPage({ onBack, settings }) {
                 {[0, 1, 2].map(idx => {
                   const labels = ['Front', 'Back', 'Label / Damage'];
                   return (
-                    <label key={idx} style={{ flex: 1, cursor: 'pointer' }}>
-                      <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handlePhotoChange(idx, e.target.files?.[0])} />
+                    <div key={idx} style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {/* Hidden inputs — camera (capture) and gallery (no capture) */}
+                      <input
+                        id={`photo-cam-${idx}`}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        style={{ display: 'none' }}
+                        onChange={e => { handlePhotoChange(idx, e.target.files?.[0]); e.target.value = ''; }}
+                      />
+                      <input
+                        id={`photo-gal-${idx}`}
+                        type="file"
+                        accept="image/*"
+                        style={{ display: 'none' }}
+                        onChange={e => { handlePhotoChange(idx, e.target.files?.[0]); e.target.value = ''; }}
+                      />
+                      {/* Photo preview box */}
                       <div style={{
                         background: photos[idx] ? 'transparent' : '#111827',
                         border: `2px dashed ${photos[idx] ? '#4ade80' : '#2a3447'}`,
@@ -2227,18 +2243,58 @@ function ItemValuationPage({ onBack, settings }) {
                         overflow: 'hidden', position: 'relative',
                       }}>
                         {photos[idx]
-                          ? <img src={photos[idx]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ? <>
+                              <img src={photos[idx]} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              <button
+                                onClick={() => setPhotos(prev => { const next = [...prev]; next[idx] = null; return next; })}
+                                style={{
+                                  position: 'absolute', top: '4px', right: '4px',
+                                  background: 'rgba(0,0,0,0.65)', border: 'none', borderRadius: '50%',
+                                  width: '22px', height: '22px', color: '#fff', cursor: 'pointer',
+                                  fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  lineHeight: 1, padding: 0,
+                                }}
+                                aria-label="Remove photo"
+                              >✕</button>
+                            </>
                           : <>
-                              <span style={{ fontSize: '28px' }}>📷</span>
+                              <span style={{ fontSize: '24px' }}>📷</span>
                               <span style={{ fontSize: '11px', color: '#6b7280', marginTop: '4px', textAlign: 'center', padding: '0 4px' }}>{labels[idx]}</span>
                             </>
                         }
                       </div>
-                    </label>
+                      {/* Camera / Gallery buttons */}
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        <button
+                          onClick={() => document.getElementById(`photo-cam-${idx}`).click()}
+                          style={{
+                            flex: 1, background: '#111827', border: '1px solid #2a3447',
+                            borderRadius: '6px', color: '#d1d5db', fontSize: '11px',
+                            padding: '6px 2px', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px',
+                            fontFamily: 'inherit',
+                          }}
+                        >
+                          <span>📷</span><span>Camera</span>
+                        </button>
+                        <button
+                          onClick={() => document.getElementById(`photo-gal-${idx}`).click()}
+                          style={{
+                            flex: 1, background: '#111827', border: '1px solid #2a3447',
+                            borderRadius: '6px', color: '#d1d5db', fontSize: '11px',
+                            padding: '6px 2px', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px',
+                            fontFamily: 'inherit',
+                          }}
+                        >
+                          <span>🖼️</span><span>Gallery</span>
+                        </button>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
-              <div style={{ color: '#6b7280', fontSize: '12px', marginTop: '8px' }}>Tap any box above to take a photo or choose from your gallery.</div>
+              <div style={{ color: '#6b7280', fontSize: '12px', marginTop: '8px' }}>Use the buttons below each slot to take a photo or choose from your gallery.</div>
             </div>
           )}
 
