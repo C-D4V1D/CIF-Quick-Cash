@@ -1536,6 +1536,43 @@ const compressImageFile = (file, { maxDimension = 1400, quality = 0.82 } = {}) =
   img.src = URL.createObjectURL(file);
 });
 
+// Stamps a date/time watermark on a compressed base64 image (Nigeria timezone).
+const stampImageWithDateTime = (base64) => new Promise((resolve) => {
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    // Build Nigeria date-time string
+    const now = new Date();
+    const dtStr = new Intl.DateTimeFormat('en-GB', {
+      timeZone: NIGERIA_TZ, day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).format(now);
+    const stamp = `📅 ${dtStr}`;
+    const fontSize = Math.max(14, Math.round(img.width / 30));
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    const pad = Math.round(fontSize * 0.6);
+    const metrics = ctx.measureText(stamp);
+    const boxW = metrics.width + pad * 2;
+    const boxH = fontSize + pad * 2;
+    const x = img.width - boxW - pad;
+    const y = img.height - boxH - pad;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.beginPath();
+    ctx.roundRect(x, y, boxW, boxH, 6);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(stamp, x + pad, y + boxH / 2);
+    resolve(canvas.toDataURL('image/jpeg', 0.85));
+  };
+  img.onerror = () => resolve(base64); // fallback: return unstamped
+  img.src = base64;
+});
+
 function PhotoUpload({ label, value, onChange, required, size = 120 }) {
   const cameraRef = useRef();
   const fileRef = useRef();
@@ -1633,6 +1670,77 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
         <button type="button" style={S.btnSm('secondary')} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>🖼 Gallery</button>
       </div>
       <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
+      {uploadError && <div style={{ fontSize: '11px', color: COLORS.danger, marginTop: '4px', maxWidth: size }}>{uploadError}</div>}
+    </div>
+  );
+}
+
+// PhotoUpload variant that auto-stamps date & time on the photo.
+function TimestampPhotoUpload({ label, value, onChange, required, size = 120 }) {
+  const cameraRef = useRef();
+  const fileRef = useRef();
+  const [preview, setPreview] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const [zoomed, setZoomed] = useState(false);
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    setUploadError(null);
+    let base64;
+    try { base64 = await compressImageFile(file); } catch { setUploadError('Could not read this image. Please try a different photo.'); return; }
+    // Stamp date/time watermark
+    try { base64 = await stampImageWithDateTime(base64); } catch { /* use unstamped */ }
+    setPreview(base64);
+    setUploading(true);
+    const oldValue = value;
+    try {
+      const mimeType = base64.split(';')[0].split(':')[1];
+      const data = base64.split(',')[1];
+      const result = await API.post('photos', { data, mimeType });
+      if (result?.url) {
+        if (oldValue && oldValue.startsWith('/api/photos/')) { API.del(oldValue.slice(5)).catch(() => {}); }
+        onChange(result.url);
+        setPreview(null);
+      } else { onChange(base64); setPreview(null); }
+    } catch { onChange(base64); setPreview(null); } finally { setUploading(false); }
+  };
+  const displaySrc = preview || value;
+  return (
+    <div style={{ textAlign: 'center' }}>
+      {zoomed && (
+        <div onClick={() => setZoomed(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000, padding: '16px' }}>
+          <div onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', textAlign: 'center' }}>
+            <img src={displaySrc} alt={label} style={{ maxWidth: '100%', maxHeight: '80vh', borderRadius: '12px', display: 'block' }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='14' fill='%23dc2626'%3EPhoto unavailable%3C/text%3E%3C/svg%3E"; }} />
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginTop: '16px', flexWrap: 'wrap' }}>
+              {displaySrc && <button type="button" style={{ ...S.btn('primary'), border: 'none', cursor: 'pointer' }} onClick={async () => { try { const resp = await fetch(displaySrc); const blob = await resp.blob(); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `collection-photo-${Date.now()}.jpg`; a.click(); URL.revokeObjectURL(url); } catch { window.open(displaySrc, '_blank'); } }}>⬇ Download</button>}
+              <button type="button" style={S.btn('outline')} onClick={() => setZoomed(false)}>✕ Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div style={{ ...S.photoBox, width: size, height: size, cursor: uploading ? 'default' : 'pointer', border: `2px dashed ${COLORS.accent}` }} onClick={() => { if (uploading) return; displaySrc ? setZoomed(true) : cameraRef.current?.click(); }}>
+        {displaySrc
+          ? <img src={displaySrc} style={S.photoImg} alt={label} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Crect width='120' height='120' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E"; }} />
+          : <span style={{ fontSize: '11px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>📷 {label}</span>}
+        {uploading && (
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
+            <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700 }}>Stamping & uploading…</span>
+          </div>
+        )}
+        {displaySrc && !uploading && (
+          <button type="button" onClick={e => { e.stopPropagation(); if (value && value.startsWith('/api/photos/')) { API.del(value.slice(5)).catch(() => {}); } onChange(null); setPreview(null); }} style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', border: 'none', background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '11px', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1 }}>✕</button>
+        )}
+        <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
+        <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '6px' }}>
+        <button type="button" style={S.btnSm('primary')} onClick={() => { if (!uploading) cameraRef.current?.click(); }} disabled={uploading}>📷 Camera</button>
+        <button type="button" style={{ ...S.btnSm('secondary'), background: COLORS.accent }} onClick={() => { if (!uploading) fileRef.current?.click(); }} disabled={uploading}>🖼 Gallery</button>
+      </div>
+      <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
+      {displaySrc && <div style={{ fontSize: '10px', color: COLORS.primary, marginTop: '2px', fontWeight: 600 }}>✅ Date & time stamped</div>}
       {uploadError && <div style={{ fontSize: '11px', color: COLORS.danger, marginTop: '4px', maxWidth: size }}>{uploadError}</div>}
     </div>
   );
@@ -6299,18 +6407,83 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   const totalFees = days * dailyFee;
   const totalDue = (tx.cashAdvance || 0) + totalFees;
   const [confirmed, setConfirmed] = useState(false);
+  const [collectionPhoto, setCollectionPhoto] = useState(tx.photoCollectionHandover || null);
+  const [collectionNotes, setCollectionNotes] = useState(tx.collectionNotes || '');
   return (
     <div>
-      <div style={{ ...S.card, background: COLORS.bg }}><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}><div><span style={S.statLabel}>Customer</span><br /><strong>{tx.fullName}</strong></div><div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div><div><span style={S.statLabel}>Advance</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(tx.cashAdvance)}</strong></div><div><span style={S.statLabel}>Days</span><br /><strong style={{ fontSize: '18px' }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div></div></div>
+      {/* ── Ref Number (eye-catching) ── */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px' }}>
+        <span style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '8px', background: '#fff7ed', border: '2px solid #f59e0b', color: '#b45309', fontSize: '18px', fontWeight: 800, letterSpacing: '1px' }}>🏷 Ref: {tx.ref}</span>
+      </div>
+
+      {/* ── Customer Info Card ── */}
+      <div style={{ ...S.card, background: COLORS.bg }}>
+        <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '12px', color: COLORS.primaryDark }}>{tx.fullName}</div>
+
+        {/* ── Customer Photos (ID + Holding Item) ── */}
+        {(tx.photoCustomerID || tx.photoCustomerHolding) && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+            {tx.photoCustomerID && (
+              <div style={{ textAlign: 'center' }}>
+                <img src={tx.photoCustomerID} alt="Customer ID" style={{ width: '100%', maxWidth: '160px', height: '130px', objectFit: 'cover', borderRadius: '10px', border: `2px solid ${COLORS.border}` }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
+                <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginTop: '4px' }}>📄 Customer ID</div>
+              </div>
+            )}
+            {tx.photoCustomerHolding && (
+              <div style={{ textAlign: 'center' }}>
+                <img src={tx.photoCustomerHolding} alt="Customer holding item" style={{ width: '100%', maxWidth: '160px', height: '130px', objectFit: 'cover', borderRadius: '10px', border: `2px solid ${COLORS.border}` }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.style.display = 'none'; }} />
+                <div style={{ fontSize: '11px', fontWeight: 600, color: COLORS.textMuted, marginTop: '4px' }}>📸 Customer with Item</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+          <div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div>
+          <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(tx.cashAdvance)}</strong></div>
+          <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
+        </div>
+      </div>
+
+      {/* ── Date Breakdown ── */}
       <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
         <div style={{ fontSize: '14px', fontWeight: 700 }}>
           Date Given: {fmtDate(tx.dateGiven)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}
         </div>
         <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Today is counted as a full day.</div>
       </div>
+
+      {/* ── Total Due ── */}
       <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Total Due</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
+
+      {/* ── Collection Photo (auto-stamped) ── */}
+      <div style={{ ...S.card, border: `2px dashed ${COLORS.accent}`, background: '#fffbeb' }}>
+        <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '8px', color: '#92400e' }}>📸 Collection Handover Photo</div>
+        <div style={S.alert('info')}>📋 <strong>Staff instruction:</strong> Take a photo of the customer <strong>holding the collected item</strong> right now. The date and time will be automatically stamped on the photo as proof of handover.</div>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <TimestampPhotoUpload label="Customer with Collected Item" value={collectionPhoto} onChange={setCollectionPhoto} required size={160} />
+        </div>
+      </div>
+
+      {/* ── Feedback / Staff Notes ── */}
+      <div style={{ ...S.card }}>
+        <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>📝 Feedback / Staff Notes</div>
+        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>Any comments from the customer or notes from staff about this collection.</div>
+        <textarea
+          style={S.textarea}
+          placeholder="e.g. Customer satisfied, item in good condition. / Customer noted a scratch that wasn't there before."
+          value={collectionNotes}
+          onChange={e => setCollectionNotes(e.target.value)}
+        />
+      </div>
+
+      {/* ── Confirmation & Actions ── */}
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item returned</span></label>
-      <div style={{ display: 'flex', gap: '12px' }}><button style={S.btn('primary')} disabled={!confirmed} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: localISODate(), daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '' })}>✅ Confirm</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+      <div style={{ display: 'flex', gap: '12px' }}>
+        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: localISODate(), daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '', photoCollectionHandover: collectionPhoto, collectionNotes: collectionNotes.trim() })}>✅ Confirm</button>
+        <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
+      </div>
+      {!collectionPhoto && confirmed && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '8px', fontWeight: 600 }}>⚠ Please take the collection handover photo before confirming.</div>}
     </div>
   );
 }
@@ -6844,7 +7017,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(settings.serviceFee) > 0 && <> · Service fee: <strong>{fmtMoney(settings.serviceFee)}</strong></>}
         </div>
       )}
-      {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}</div>}
+      {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
       {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>{tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}</div>}
     </div>
 
@@ -6909,6 +7082,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           tx.receiptPhoto,
           tx.photoSigning,
           tx.photoSealedPkg,
+          tx.photoCollectionHandover,
         ]
           .filter(Boolean)
           .map((p, i) => (
@@ -8358,7 +8532,7 @@ export default function App() {
             <div style={{ marginBottom: '20px' }}>
               <button style={S.btn('outline')} onClick={() => navigate(txDetailPath(txRef))}>← Back to Transaction</button>
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>💰 Collect Repayment</h2>
-              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Ref: <strong>{txRef}</strong> · Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
             </div>
             <RepaymentModal tx={tx} settings={settings} currentUser={currentUser} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
           </div>
