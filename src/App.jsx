@@ -1545,6 +1545,26 @@ const stampImageWithDateTime = (base64) => new Promise((resolve) => {
     canvas.height = img.height;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(img, 0, 0);
+    const drawRoundedRect = (x, y, w, h, r) => {
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, r);
+        ctx.closePath();
+        return;
+      }
+      const radius = Math.min(r, w / 2, h / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+    };
     // Build Nigeria date-time string
     const now = new Date();
     const dtStr = new Intl.DateTimeFormat('en-GB', {
@@ -1561,8 +1581,7 @@ const stampImageWithDateTime = (base64) => new Promise((resolve) => {
     const x = img.width - boxW - pad;
     const y = img.height - boxH - pad;
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    ctx.beginPath();
-    ctx.roundRect(x, y, boxW, boxH, 6);
+    drawRoundedRect(x, y, boxW, boxH, 6);
     ctx.fill();
     ctx.fillStyle = '#ffffff';
     ctx.textBaseline = 'middle';
@@ -6472,7 +6491,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
         <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>Any comments from the customer or notes from staff about this collection.</div>
         <textarea
           style={S.textarea}
-          placeholder="e.g. Customer satisfied, item in good condition. / Customer noted a scratch that wasn't there before."
+          placeholder="e.g. Customer satisfied, item in good condition."
           value={collectionNotes}
           onChange={e => setCollectionNotes(e.target.value)}
         />
