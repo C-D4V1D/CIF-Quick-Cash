@@ -11162,7 +11162,7 @@ export default function App() {
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; {
         const es = pendingSettings ?? settings; // effective settings (pending or saved)
-        const serviceFeeRanges = normalizeServiceFeeRanges(es);
+        const serviceFeeRanges = Array.isArray(es?.serviceFeeRanges) ? es.serviceFeeRanges : [];
         const hasUnsaved = pendingSettings !== null;
         const updateSettings = (s) => setPendingSettings(s);
         const distributableStaff = users.filter(u => u.active !== 0 && u.role === 'staff');
@@ -11260,16 +11260,17 @@ export default function App() {
               </div>
               <div style={{ display: 'grid', gap: '8px' }}>
                 {serviceFeeRanges.map((range, idx) => (
-                  <div key={range.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '8px', alignItems: 'end' }}>
+                  <div key={range.id || `range-${idx}`} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '8px', alignItems: 'end' }}>
                     <Field label="Min Advance (₦)">
                       <input
                         style={S.input}
                         type="number"
                         min="0"
-                        value={range.min}
+                        value={range?.min ?? ''}
                         onChange={e => {
                           const next = [...serviceFeeRanges];
-                          next[idx] = { ...range, min: Math.max(0, Number(e.target.value) || 0) };
+                          const raw = e.target.value;
+                          next[idx] = { ...range, min: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
                           updateSettings({ ...es, serviceFeeRanges: next });
                         }}
                       />
@@ -11280,7 +11281,7 @@ export default function App() {
                         type="number"
                         min="0"
                         placeholder="No limit"
-                        value={range.max ?? ''}
+                        value={range?.max ?? ''}
                         onChange={e => {
                           const raw = e.target.value;
                           const next = [...serviceFeeRanges];
@@ -11294,10 +11295,11 @@ export default function App() {
                         style={S.input}
                         type="number"
                         min="0"
-                        value={range.fee}
+                        value={range?.fee ?? ''}
                         onChange={e => {
                           const next = [...serviceFeeRanges];
-                          next[idx] = { ...range, fee: Math.max(0, Number(e.target.value) || 0) };
+                          const raw = e.target.value;
+                          next[idx] = { ...range, fee: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
                           updateSettings({ ...es, serviceFeeRanges: next });
                         }}
                       />
