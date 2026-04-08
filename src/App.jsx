@@ -6165,14 +6165,14 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         <button
           style={{ ...S.btn('accent'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
           disabled={pdfLoading}
-          onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
+          onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
         >
           {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
         </button>
         <button
           style={{ ...S.btn('outline'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
           disabled={pdfLoading}
-          onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
+          onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
         >
           ⬇ Download PDF
         </button>
@@ -12098,6 +12098,7 @@ export default function App() {
           loadData={loadData}
           isMobile={isMobile}
           onUnreadChange={(count) => setUnreadNotifCount(count)}
+          callGeminiAI={callGeminiAI}
           onContactSaved={(fields) => {
             const updated = { ...currentUser, ...fields };
             setCurrentUser(updated);

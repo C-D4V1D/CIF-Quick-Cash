@@ -46,6 +46,11 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const p1Called = (tx.phonesVerified || [])[0];
   const p2Called = (tx.phonesVerified || [])[1];
 
+  // Rep signature image (attached via tx.repSignatureUrl) — embedded in Part E
+  const repSigCell = tx.repSignatureUrl
+    ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
+    : '';
+
   // ── PART E — SIGNATURES (lives on back cover for both copies) ──
   const partEContent = `
     <div class="hr-gold"></div>
@@ -72,7 +77,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
         <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
         <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
         <td class="fl" style="width:18%"><b>Shop Rep Signature:</b></td>
-        <td class="fv" style="width:32%"></td>
+        <td class="fv" style="width:32%">${repSigCell}</td>
       </tr>
     </table>
     <div class="photo-note">
@@ -306,6 +311,11 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const p1Called = (tx.phonesVerified || [])[0];
   const p2Called = (tx.phonesVerified || [])[1];
 
+  // Rep signature image (attached via tx.repSignatureUrl) — embedded in Part E
+  const repSigCell = tx.repSignatureUrl
+    ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
+    : '';
+
   // ── PAGE 1 (seller details + item details) ──
   const page1 = `
   <div class="page">
@@ -490,7 +500,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
         <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
         <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
         <td class="fl" style="width:18%"><b>Shop Rep Signature:</b></td>
-        <td class="fv" style="width:32%"></td>
+        <td class="fv" style="width:32%">${repSigCell}</td>
       </tr>
     </table>
 
