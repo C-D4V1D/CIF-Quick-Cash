@@ -3265,10 +3265,20 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const visibleCount = photosList.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
   const daysListed = getForSaleDaysListed(tx) || 0;
   const listedDate = getForSaleListedDate(tx);
+  // Use the listing date as anchor; fall back to today for new listings
+  const effectiveListedDate = listedDate || (isNewListing ? localISODate() : null);
 
   // Price drop calculations (all prices rounded to nearest ₦50)
+  // scheduleWindowDays: actual days from listing date to target sale date for this item
+  const scheduleWindowDays = (() => {
+    if (targetSaleDate && effectiveListedDate) {
+      const diff = Math.round((new Date(targetSaleDate) - new Date(effectiveListedDate)) / 86400000);
+      return Math.max(1, diff);
+    }
+    return targetDeadline;
+  })();
   const dropInterval = Math.max(1, priceDropIntervalDays);
-  const maxDrops = Math.floor(targetDeadline / dropInterval);
+  const maxDrops = Math.floor(scheduleWindowDays / dropInterval);
   const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
   const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? roundToNice(Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
   const suggestedPrice = (priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
@@ -3276,10 +3286,21 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const dropSchedule = (priceDropEnabled && maxDrops > 0 && dropPerInterval > 0)
     ? Array.from({ length: maxDrops + 1 }, (_, i) => ({
         day: i * dropInterval,
+        date: effectiveListedDate ? addDays(effectiveListedDate, i * dropInterval) : null,
         price: Math.max(minPrice, listedPrice - i * dropPerInterval),
         isCurrent: !isNewListing && i * dropInterval <= daysListed && (i + 1) * dropInterval > daysListed,
       }))
     : [];
+
+  // Auto-apply the suggested price whenever the schedule is active and the price changes
+  useEffect(() => {
+    if (priceDropEnabled && suggestedPrice > 0) {
+      setSalePrice(suggestedPrice);
+    }
+  // setSalePrice is stable (useState setter); salePrice is intentionally excluded to avoid
+  // re-triggering when we set the price — suggestedPrice only changes on interval/schedule edits.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [priceDropEnabled, suggestedPrice, setSalePrice]);
 
   // Inspection data
   const inspectionNotes = tx.inspectionNotes || '';
@@ -3542,7 +3563,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
       <div style={S_SECTION}>
         <label style={S_LABEL}>Sale Price (₦)</label>
         <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
-          <input type="number" min="0" step="50" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
+          <input type="number" min="0" step="50" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
           <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap', color: '#374151' }}>Reset to Target</button>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
@@ -3597,25 +3618,22 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
           <div>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</span>
-              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value)))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
-              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>days · target sell within {targetDeadline} days</span>
+              <input type="number" min="1" max="30" value={priceDropIntervalDays || ''} onChange={e => setPriceDropIntervalDays(e.target.value === '' ? '' : Number(e.target.value))} onBlur={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value) || 1))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
+              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>
+                days · target: <strong>{targetSaleDate ? fmtDate(targetSaleDate) : `${scheduleWindowDays} days`}</strong>
+              </span>
             </div>
             {dropPerInterval > 0 && (
               <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '10px' }}>
-                Drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} step{maxDrops !== 1 ? 's' : ''} · floor: <strong>{fmtMoney(minPrice)}</strong>
+                Drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} step{maxDrops !== 1 ? 's' : ''} over {scheduleWindowDays} days · floor: <strong>{fmtMoney(minPrice)}</strong>
               </div>
             )}
             {!isNewListing && daysListed > 0 && (
               <div style={{ background: '#fff', borderRadius: '8px', padding: '10px 12px', marginBottom: '10px', border: '1px solid #fde68a' }}>
-                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: suggestedPrice < salePrice ? '8px' : '0' }}>
-                  Day <strong>{daysListed}</strong> listed — suggested price today: <strong style={{ fontSize: '15px' }}>{fmtMoney(suggestedPrice)}</strong>
-                  {suggestedPrice === salePrice && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Matches current price</span>}
+                <div style={{ fontSize: '12px', color: '#92400e' }}>
+                  Day <strong>{daysListed}</strong> listed — sale price set to: <strong style={{ fontSize: '15px' }}>{fmtMoney(suggestedPrice)}</strong>
+                  <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Auto-applied</span>
                 </div>
-                {suggestedPrice < salePrice && (
-                  <button onClick={() => setSalePrice(suggestedPrice)} style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #f59e0b', background: '#fffbeb', color: '#92400e', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}>
-                    Apply Suggested Price ({fmtMoney(suggestedPrice)})
-                  </button>
-                )}
               </div>
             )}
             {dropSchedule.length > 1 && (
@@ -3627,7 +3645,9 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
                   <div style={{ background: '#fff', borderRadius: '8px', overflow: 'hidden', border: '1px solid #fde68a', maxHeight: '200px', overflowY: 'auto' }}>
                     {dropSchedule.map((step, i) => (
                       <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', background: step.isCurrent ? '#fef9c3' : i % 2 === 0 ? '#fff' : '#fafafa', borderBottom: i < dropSchedule.length - 1 ? '1px solid #fde68a' : 'none' }}>
-                        <span style={{ fontSize: '12px', color: '#92400e', fontWeight: step.isCurrent ? 700 : 400 }}>Day {step.day}{step.isCurrent ? ' ← today' : ''}</span>
+                        <span style={{ fontSize: '12px', color: '#92400e', fontWeight: step.isCurrent ? 700 : 400 }}>
+                          Day {step.day}{step.date ? ` · ${fmtDate(step.date)}` : ''}{step.isCurrent ? ' ← today' : ''}
+                        </span>
                         <span style={{ fontSize: '12px', color: step.price === minPrice ? '#dc2626' : '#92400e', fontWeight: step.isCurrent ? 700 : 500 }}>{fmtMoney(step.price)}</span>
                       </div>
                     ))}
@@ -6000,7 +6020,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             )}
 
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
-              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue ?? tx.aiEstimatedValue ?? ''} onChange={e => {
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
                 let val = Number(e.target.value) || 0;
                 const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
                 if (maxPrice > 0 && val > maxPrice) val = maxPrice;
@@ -6695,7 +6715,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   return (
     <div>
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
-      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
+      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
       <Field label="Buyer Name" required><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} />{!saleBuyer.trim() && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer name is required</div>}</Field>
       <Field label="Buyer Phone" required><input style={S.input} inputMode="numeric" maxLength={11} value={saleBuyerPhone} onChange={e => setSaleBuyerPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08012345678" />{saleBuyerPhone && saleBuyerPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Phone must be exactly 11 digits ({saleBuyerPhone.length}/11)</div>}{!saleBuyerPhone && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer phone is required</div>}</Field>
       <Field label="Condition at Sale" required>
