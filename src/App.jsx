@@ -3563,7 +3563,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
       <div style={S_SECTION}>
         <label style={S_LABEL}>Sale Price (₦)</label>
         <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
-          <input type="number" min="0" step="50" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
+          <input type="number" min="0" step="50" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
           <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap', color: '#374151' }}>Reset to Target</button>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
@@ -6020,7 +6020,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             )}
 
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
-              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue ?? tx.aiEstimatedValue ?? ''} onChange={e => {
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
                 let val = Number(e.target.value) || 0;
                 const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
                 if (maxPrice > 0 && val > maxPrice) val = maxPrice;
@@ -6715,7 +6715,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   return (
     <div>
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
-      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
+      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
       <Field label="Buyer Name" required><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} />{!saleBuyer.trim() && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer name is required</div>}</Field>
       <Field label="Buyer Phone" required><input style={S.input} inputMode="numeric" maxLength={11} value={saleBuyerPhone} onChange={e => setSaleBuyerPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08012345678" />{saleBuyerPhone && saleBuyerPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Phone must be exactly 11 digits ({saleBuyerPhone.length}/11)</div>}{!saleBuyerPhone && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer phone is required</div>}</Field>
       <Field label="Condition at Sale" required>
