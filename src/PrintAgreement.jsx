@@ -51,6 +51,9 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
     : '';
 
+  // Date the PDF is generated (for signature area)
+  const pdfGeneratedDate = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+
   // ── PART E — SIGNATURES (lives on back cover for both copies) ──
   const partEContent = `
     <div class="hr-gold"></div>
@@ -59,10 +62,12 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <table class="sig-tbl">
       <tr>
         <td class="sig-left">
-          <div><b>Customer Signature:</b></div>
-          <div class="sig-space"></div>
-          <div class="sig-line"></div>
-          <div class="sig-sub"><i>Name &amp; Date</i></div>
+          <div class="sig-box">
+            <div><b>Customer Signature:</b></div>
+            <div class="sig-space"></div>
+            <div class="sig-line"></div>
+            <div class="sig-name-date">${tx.fullName || ''}<br/>${pdfGeneratedDate}</div>
+          </div>
         </td>
         <td class="sig-right">
           <div><b>Right Thumbprint — Press firmly:</b></div>
@@ -85,31 +90,53 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     </div>`;
 
   // ── OFFICIAL USE ONLY (business copy only — lives on back cover) ──
+  // Auto-fill from transaction data when available
+  const isRepaid = tx.status === 'closed';
+  const isSold = tx.status === 'sold';
+  const repaidAmount = isRepaid && tx.amountRepaid ? `₦ ${Number(tx.amountRepaid).toLocaleString()}` : '₦';
+  const repaidDate = isRepaid && tx.dateRepaid ? fmtDateLong(tx.dateRepaid) : '';
+  const elapsedDaysCharged = (() => {
+    if (isRepaid && tx.dateGiven && tx.dateRepaid) {
+      const d1 = new Date(tx.dateGiven + 'T00:00:00');
+      const d2 = new Date(tx.dateRepaid + 'T00:00:00');
+      return String(Math.max(0, Math.round((d2 - d1) / 86400000)));
+    }
+    return '';
+  })();
+  const totalFeesCharged = isRepaid && tx.amountRepaid && tx.cashAdvance
+    ? `₦ ${Math.max(0, Number(tx.amountRepaid) - Number(tx.cashAdvance)).toLocaleString()}`
+    : '';
+  const itemReturnedChk = isRepaid ? '☑' : '☐';
+  const itemReturnedDate = isRepaid && tx.dateRepaid ? fmtDateLong(tx.dateRepaid) : '';
+  const itemSoldChk = isSold ? '☑' : '☐';
+  const soldDateVal = isSold && tx.saleDate ? fmtDateLong(tx.saleDate) : '_______________';
+  const soldAmountVal = isSold && tx.salePrice ? `₦ ${Number(tx.salePrice).toLocaleString()}` : '₦ _______________';
+
   const officialUseHTML = `
     <div class="hr-gold"></div>
     <div class="official-hdr">OFFICIAL USE ONLY</div>
     <table class="field-tbl">
       <tr>
         <td class="fl" style="width:18%"><b>Amount Repaid:</b></td>
-        <td class="fv" style="width:32%">₦</td>
+        <td class="fv" style="width:32%">${repaidAmount}</td>
         <td class="fl" style="width:16%"><b>Date Repaid:</b></td>
-        <td class="fv" style="width:34%"></td>
+        <td class="fv" style="width:34%">${repaidDate}</td>
       </tr>
       <tr>
         <td class="fl"><b>No. of Days Charged:</b></td>
-        <td class="fv"></td>
+        <td class="fv">${elapsedDaysCharged}</td>
         <td class="fl"><b>Total Fees Charged (₦):</b></td>
-        <td class="fv"></td>
+        <td class="fv">${totalFeesCharged}</td>
       </tr>
       <tr>
-        <td class="fl"><b>Item Returned: &nbsp;☐</b></td>
+        <td class="fl"><b>Item Returned: &nbsp;${itemReturnedChk}</b></td>
         <td class="fv"></td>
         <td class="fl"><b>Date Returned:</b></td>
-        <td class="fv"></td>
+        <td class="fv">${itemReturnedDate}</td>
       </tr>
       <tr>
-        <td class="fl"><b>Item Sold (if not redeemed): &nbsp;☐</b></td>
-        <td class="fv" colspan="3"><span class="muted-italic">Date Sold: _______________ &nbsp;&nbsp; Amount Sold: ₦ _______________</span></td>
+        <td class="fl"><b>Item Sold (if not redeemed): &nbsp;${itemSoldChk}</b></td>
+        <td class="fv" colspan="3"><span class="muted-italic">Date Sold: ${soldDateVal} &nbsp;&nbsp; Amount Sold: ${soldAmountVal}</span></td>
       </tr>
     </table>
     <div class="value-row">
@@ -316,7 +343,8 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
     : '';
 
-  // ── PAGE 1 (seller details + item details) ──
+  // Date the PDF is generated (for signature area)
+  const pdfGeneratedDate = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
   const page1 = `
   <div class="page">
     <!-- HEADER -->
@@ -481,10 +509,12 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <table class="sig-tbl">
       <tr>
         <td class="sig-left">
-          <div><b>Seller Signature:</b></div>
-          <div class="sig-space" style="height:45px;"></div>
-          <div class="sig-line"></div>
-          <div class="sig-sub"><i>Name &amp; Date</i></div>
+          <div class="sig-box">
+            <div><b>Seller Signature:</b></div>
+            <div class="sig-space" style="height:45px;"></div>
+            <div class="sig-line"></div>
+            <div class="sig-name-date">${tx.fullName || ''}<br/>${pdfGeneratedDate}</div>
+          </div>
         </td>
         <td class="sig-right">
           <div><b>Right Thumbprint — Press firmly:</b></div>
@@ -508,28 +538,41 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
       <i>Photos of the seller holding the item, seller signing this receipt, ID card if provided, and item front/back have been taken and stored with this transaction record.</i>
     </div>
 
-    ${isBusinessCopy ? `
+    ${isBusinessCopy ? (() => {
+      const isListed = tx.status === 'for_sale';
+      const isSoldOutright = tx.status === 'sold';
+      const listedChk = isListed || isSoldOutright ? '☑' : '☐';
+      const listedDate = tx.listedForSaleDate ? fmtDateLong(tx.listedForSaleDate) : '';
+      const listingPriceVal = tx.listingPrice ? `₦ ${Number(tx.listingPrice).toLocaleString()}` : '₦';
+      const soldChk = isSoldOutright ? '☑' : '☐';
+      const soldDate = isSoldOutright && tx.saleDate ? fmtDateLong(tx.saleDate) : '_______________';
+      const soldAmount = isSoldOutright && tx.salePrice ? `₦ ${Number(tx.salePrice).toLocaleString()}` : '₦ _______________';
+      const profit = isSoldOutright && tx.salePrice && tx.cashAdvance
+        ? `₦ ${Math.max(0, Number(tx.salePrice) - Number(tx.cashAdvance)).toLocaleString()}`
+        : '₦ _______________';
+      return `
     <div class="hr-gold"></div>
     <div class="official-hdr">OFFICIAL USE ONLY</div>
     <table class="field-tbl">
       <tr>
-        <td class="fl" style="width:22%"><b>Listed for Sale: &nbsp;☐</b></td>
+        <td class="fl" style="width:22%"><b>Listed for Sale: &nbsp;${listedChk}</b></td>
         <td class="fv" style="width:28%"></td>
         <td class="fl" style="width:14%"><b>Date Listed:</b></td>
-        <td class="fv" style="width:36%"></td>
+        <td class="fv" style="width:36%">${listedDate}</td>
       </tr>
       <tr>
         <td class="fl"><b>Listing Price:</b></td>
-        <td class="fv">₦</td>
+        <td class="fv">${listingPriceVal}</td>
         <td class="fl"><b>Shop Ref:</b></td>
         <td class="fv">${tx.shopId || ''}</td>
       </tr>
       <tr>
-        <td class="fl"><b>Item Sold: &nbsp;☐</b></td>
-        <td class="fv" colspan="3"><span class="muted-italic">Date: _______________ &nbsp;&nbsp; Sale Amount: ₦ _______________ &nbsp;&nbsp; Profit: ₦ _______________</span></td>
+        <td class="fl"><b>Item Sold: &nbsp;${soldChk}</b></td>
+        <td class="fv" colspan="3"><span class="muted-italic">Date: ${soldDate} &nbsp;&nbsp; Sale Amount: ${soldAmount} &nbsp;&nbsp; Profit: ${profit}</span></td>
       </tr>
     </table>
-    ` : ''}
+      `;
+    })() : ''}
 
     <div class="page-footer">${copyLabel} — Page <b>2</b> of <b>2</b></div>
   </div>`;
@@ -550,6 +593,8 @@ body{
   color: #000;
   background: #fff;
   line-height: 1.35;
+  letter-spacing: 0.015em;
+  word-spacing: 0.03em;
 }
 
 /* === PAGE (outright portrait — A4 at 96dpi) === */
@@ -582,24 +627,24 @@ body{
 
 ${!isOutright ? `
 /* Advance booklet: very compact sizing for narrow A5 panels */
-body{ font-size:7.5pt; line-height:1.2; }
+body{ font-size:7.5pt; line-height:1.2; letter-spacing:0.01em; word-spacing:0.02em; }
 .hdr-tbl{ margin-bottom:3px; }
 .hdr-right{ padding:4px 6px; }
 .biz-name{ font-size:10.5pt; }
 .biz-sub{ font-size:7pt; margin-top:1px; }
 .copy-label{ font-size:7.5pt; margin-bottom:3px; }
 .ref-line{ font-size:7.5pt; padding-top:3px; margin-top:2px; }
-.ref-val{ font-size:8.5pt; min-width:70px; }
+.ref-val{ font-size:8.5pt; min-width:70px; padding-bottom:3px; }
 .section-hdr{ font-size:7.5pt; padding:2px 6px; margin:4px 0 2px 0; }
 .sub-hdr{ font-size:7.5pt; padding:2px 6px; margin:3px 0 2px 0; }
 .staff-note{ font-size:7pt; padding:2px 6px; margin-bottom:2px; }
 .field-tbl{ margin-bottom:1px; }
 .fl{ font-size:7.5pt; padding:1px 3px 1px 0; }
-.fv{ font-size:7.5pt; padding:1px 2px; }
+.fv{ font-size:7.5pt; padding:1px 2px 3px 2px; }
 .big-val{ font-size:8.5pt; }
 .check-row{ font-size:7pt; padding:1px 6px; margin:2px 0; }
 .value-row{ font-size:7pt; padding:2px 6px; margin:2px 0; }
-.underline-val{ min-width:80px; }
+.underline-val{ min-width:80px; padding-bottom:3px; }
 .muted-italic{ font-size:6.5pt; }
 .photos-tbl td{ font-size:7pt; padding:2px 5px; }
 .hr-gold{ margin:2px 0; border-top-width:2px; }
@@ -609,9 +654,11 @@ body{ font-size:7.5pt; line-height:1.2; }
 .clause-body{ font-size:7pt; padding:2px 6px; margin-bottom:2px; line-height:1.3; }
 .consent{ font-size:7pt; margin:2px 0; }
 .sig-tbl{ margin-top:3px; }
+.sig-box{ padding:4px 6px; }
 .sig-space{ height:26px; }
 .sig-line{ width:80%; margin-top:2px; }
 .sig-sub{ font-size:6.5pt; }
+.sig-name-date{ font-size:6.5pt; margin-top:2px; line-height:1.3; }
 .thumb-box{ height:50px; width:80%; padding:3px; margin-top:2px; }
 .thumb-text{ font-size:6pt; }
 .photo-note{ font-size:6.5pt; padding:2px 6px; margin-top:3px; }
@@ -639,7 +686,7 @@ body{ font-size:7.5pt; line-height:1.2; }
 }
 .ref-val{
   display: inline-block; font-weight: bold; font-size: 12pt;
-  border-bottom: 2px solid #000; min-width: 130px; padding-bottom: 1px;
+  border-bottom: 2px solid #000; min-width: 130px; padding-bottom: 4px;
 }
 
 /* === SECTION HEADERS === */
@@ -670,7 +717,7 @@ body{ font-size:7.5pt; line-height:1.2; }
   vertical-align: top; white-space: nowrap;
 }
 .fv{
-  font-size: 10.5pt; padding: 6px 4px;
+  font-size: 10.5pt; padding: 6px 4px 4px 4px;
   border-bottom: 1px solid #555; vertical-align: bottom;
 }
 .big-val{ font-size: 11.5pt; font-weight: 600; }
@@ -688,7 +735,7 @@ body{ font-size:7.5pt; line-height:1.2; }
 }
 .underline-val{
   display: inline-block; min-width: 160px;
-  border-bottom: 1.5px solid #000; padding-bottom: 1px;
+  border-bottom: 1.5px solid #000; padding-bottom: 4px;
 }
 .muted-italic{
   font-style: italic; color: #666; font-size: 9.5pt;
@@ -753,9 +800,13 @@ body{ font-size:7.5pt; line-height:1.2; }
 .sig-tbl{ width:100%; border-collapse:collapse; margin-top:8px; }
 .sig-left{ width:50%; padding-right:20px; vertical-align:top; }
 .sig-right{ width:50%; vertical-align:top; }
+.sig-box{
+  border: 1.5px solid #1A3A5C; padding: 10px 14px;
+}
 .sig-space{ height: 55px; }
 .sig-line{ border-bottom: 1.5px solid #000; width: 75%; margin-top:4px; }
 .sig-sub{ font-size: 9.5pt; color: #555; margin-top:3px; }
+.sig-name-date{ font-size: 9.5pt; color: #333; margin-top:4px; line-height:1.4; }
 .thumb-box{
   border: 1.5px solid #555; height: 95px; width: 85%;
   display: flex; align-items: flex-end; justify-content: flex-end;
@@ -903,4 +954,48 @@ export async function downloadAgreementPDF(tx, settings = {}) {
   const pdf = await generateAgreementPDF(tx, settings);
   const isOutright = tx.type === 'outright';
   pdf.save(`${isOutright ? 'Receipt' : 'Agreement'}_${tx.ref || 'doc'}.pdf`);
+}
+
+// ---------------------------------------------------------------------------
+// Generate a PDF containing only the business copy (for transaction view)
+// ---------------------------------------------------------------------------
+export async function generateBusinessCopyPDF(tx, settings = {}) {
+  const isOutright = tx.type === 'outright';
+  const css = getDocumentCSS(isOutright);
+
+  if (isOutright) {
+    const W = 794;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pages = buildOutrightCopyHTML(tx, settings, 'BUSINESS COPY', true);
+    for (let i = 0; i < pages.length; i++) {
+      if (i > 0) pdf.addPage();
+      const imgData = await capturePageHTML(pages[i], css, W);
+      addImageToPage(pdf, imgData, 210, 297);
+    }
+    return pdf;
+  } else {
+    const W = 1123;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const faces = buildCopyHTML(tx, settings, 'BUSINESS COPY', true);
+    for (let i = 0; i < faces.length; i++) {
+      if (i > 0) pdf.addPage();
+      const imgData = await capturePageHTML(faces[i], css, W);
+      addImageToPage(pdf, imgData, 297, 210);
+    }
+    return pdf;
+  }
+}
+
+// Open business-copy-only PDF in a new browser tab
+export async function viewBusinessCopyPDF(tx, settings = {}) {
+  const pdf = await generateBusinessCopyPDF(tx, settings);
+  const url = pdf.output('bloburl');
+  window.open(url, '_blank');
+}
+
+// Download business-copy-only PDF
+export async function downloadBusinessCopyPDF(tx, settings = {}) {
+  const pdf = await generateBusinessCopyPDF(tx, settings);
+  const isOutright = tx.type === 'outright';
+  pdf.save(`${isOutright ? 'Receipt' : 'Agreement'}_Business_${tx.ref || 'doc'}.pdf`);
 }
