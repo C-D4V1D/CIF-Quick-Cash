@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { viewAgreementPDF, downloadAgreementPDF } from './PrintAgreement.jsx';
@@ -223,6 +223,31 @@ const addDays = (dateStr, daysToAdd) => {
   return date.toISOString().split('T')[0];
 };
 
+const getFlatServiceFee = (settings = {}) => Number(settings?.serviceFee ?? 1000) || 0;
+
+const normalizeServiceFeeRanges = (settings = {}) => {
+  const ranges = Array.isArray(settings?.serviceFeeRanges) ? settings.serviceFeeRanges : [];
+  return ranges
+    .map((r, idx) => ({
+      id: r?.id || `range-${idx}`,
+      min: Math.max(0, Number(r?.min) || 0),
+      max: r?.max === '' || r?.max === null || r?.max === undefined ? null : Math.max(0, Number(r?.max) || 0),
+      fee: Math.max(0, Number(r?.fee) || 0),
+    }))
+    .sort((a, b) => a.min - b.min);
+};
+
+const getServiceFeeForAdvance = (settings = {}, advanceAmount = 0) => {
+  const amount = Math.max(0, Number(advanceAmount) || 0);
+  const ranges = normalizeServiceFeeRanges(settings);
+  for (const r of ranges) {
+    const inMin = amount >= r.min;
+    const inMax = r.max === null ? true : amount <= r.max;
+    if (inMin && inMax) return r.fee;
+  }
+  return getFlatServiceFee(settings);
+};
+
 // Returns a short human-readable label for how far a date is from today (Nigeria time).
 // e.g. "Today", "Yesterday", "Tomorrow", "5 days ago", "In 10 days".
 const relativeDateLabel = (dateStr) => {
@@ -407,7 +432,7 @@ const DEFAULT_SETTINGS = {
   cacRegNumber: '',
   // Loan Parameters
   interestRate: 1, loanCapNoReceipt: 40, loanCapWithReceipt: 50,
-  graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
+  graceDays: 3, serviceFee: 1000, serviceFeeRanges: [], maxLoanDays: 30,
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, outrightMinMarkupPct: 20, maxPartsOnlyAdvance: 5000,
   priceDropEnabled: false, priceDropIntervalDays: 3,
@@ -701,7 +726,7 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
-  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpensesAll = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpensesAll;
@@ -3240,10 +3265,20 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const visibleCount = photosList.filter((_, i) => !hiddenPhotoIndexes.includes(i)).length;
   const daysListed = getForSaleDaysListed(tx) || 0;
   const listedDate = getForSaleListedDate(tx);
+  // Use the listing date as anchor; fall back to today for new listings
+  const effectiveListedDate = listedDate || (isNewListing ? localISODate() : null);
 
   // Price drop calculations (all prices rounded to nearest ₦50)
+  // scheduleWindowDays: actual days from listing date to target sale date for this item
+  const scheduleWindowDays = (() => {
+    if (targetSaleDate && effectiveListedDate) {
+      const diff = Math.round((new Date(targetSaleDate) - new Date(effectiveListedDate)) / 86400000);
+      return Math.max(1, diff);
+    }
+    return targetDeadline;
+  })();
   const dropInterval = Math.max(1, priceDropIntervalDays);
-  const maxDrops = Math.floor(targetDeadline / dropInterval);
+  const maxDrops = Math.floor(scheduleWindowDays / dropInterval);
   const drops = Math.min(Math.floor(daysListed / dropInterval), maxDrops);
   const dropPerInterval = (maxDrops > 0 && priceDropEnabled) ? roundToNice(Math.floor((listedPrice - minPrice) / maxDrops)) : 0;
   const suggestedPrice = (priceDropEnabled && drops > 0 && dropPerInterval > 0) ? Math.max(minPrice, listedPrice - drops * dropPerInterval) : listedPrice;
@@ -3251,10 +3286,21 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
   const dropSchedule = (priceDropEnabled && maxDrops > 0 && dropPerInterval > 0)
     ? Array.from({ length: maxDrops + 1 }, (_, i) => ({
         day: i * dropInterval,
+        date: effectiveListedDate ? addDays(effectiveListedDate, i * dropInterval) : null,
         price: Math.max(minPrice, listedPrice - i * dropPerInterval),
         isCurrent: !isNewListing && i * dropInterval <= daysListed && (i + 1) * dropInterval > daysListed,
       }))
     : [];
+
+  // Auto-apply the suggested price whenever the schedule is active and the price changes
+  useEffect(() => {
+    if (priceDropEnabled && suggestedPrice > 0) {
+      setSalePrice(suggestedPrice);
+    }
+  // setSalePrice is stable (useState setter); salePrice is intentionally excluded to avoid
+  // re-triggering when we set the price — suggestedPrice only changes on interval/schedule edits.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [priceDropEnabled, suggestedPrice, setSalePrice]);
 
   // Inspection data
   const inspectionNotes = tx.inspectionNotes || '';
@@ -3517,7 +3563,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
       <div style={S_SECTION}>
         <label style={S_LABEL}>Sale Price (₦)</label>
         <div style={{ display: 'flex', gap: '8px', marginBottom: '6px' }}>
-          <input type="number" min="0" step="50" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
+          <input type="number" min="0" step="50" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} onBlur={e => setSalePrice(roundToNice(Number(e.target.value)))} style={{ ...S_INPUT, flex: 1, fontSize: '22px', fontWeight: 800, color: priceBelowMin ? '#dc2626' : '#1a5f2a' }} />
           <button onClick={() => setSalePrice(listedPrice)} style={{ padding: '8px 14px', borderRadius: '8px', border: '1.5px solid #d1d5db', background: '#f9fafb', fontWeight: 600, fontSize: '12px', cursor: 'pointer', whiteSpace: 'nowrap', color: '#374151' }}>Reset to Target</button>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', fontSize: '12px', color: '#6b7280', marginBottom: '4px' }}>
@@ -3572,25 +3618,22 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
           <div>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</span>
-              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value)))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
-              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>days · target sell within {targetDeadline} days</span>
+              <input type="number" min="1" max="30" value={priceDropIntervalDays || ''} onChange={e => setPriceDropIntervalDays(e.target.value === '' ? '' : Number(e.target.value))} onBlur={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value) || 1))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
+              <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>
+                days · target: <strong>{targetSaleDate ? fmtDate(targetSaleDate) : `${scheduleWindowDays} days`}</strong>
+              </span>
             </div>
             {dropPerInterval > 0 && (
               <div style={{ fontSize: '12px', color: '#92400e', marginBottom: '10px' }}>
-                Drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} step{maxDrops !== 1 ? 's' : ''} · floor: <strong>{fmtMoney(minPrice)}</strong>
+                Drops by <strong>{fmtMoney(dropPerInterval)}</strong> every {dropInterval} day{dropInterval > 1 ? 's' : ''} · {maxDrops} step{maxDrops !== 1 ? 's' : ''} over {scheduleWindowDays} days · floor: <strong>{fmtMoney(minPrice)}</strong>
               </div>
             )}
             {!isNewListing && daysListed > 0 && (
               <div style={{ background: '#fff', borderRadius: '8px', padding: '10px 12px', marginBottom: '10px', border: '1px solid #fde68a' }}>
-                <div style={{ fontSize: '12px', color: '#92400e', marginBottom: suggestedPrice < salePrice ? '8px' : '0' }}>
-                  Day <strong>{daysListed}</strong> listed — suggested price today: <strong style={{ fontSize: '15px' }}>{fmtMoney(suggestedPrice)}</strong>
-                  {suggestedPrice === salePrice && <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Matches current price</span>}
+                <div style={{ fontSize: '12px', color: '#92400e' }}>
+                  Day <strong>{daysListed}</strong> listed — sale price set to: <strong style={{ fontSize: '15px' }}>{fmtMoney(suggestedPrice)}</strong>
+                  <span style={{ color: '#10b981', marginLeft: '8px' }}>✓ Auto-applied</span>
                 </div>
-                {suggestedPrice < salePrice && (
-                  <button onClick={() => setSalePrice(suggestedPrice)} style={{ padding: '6px 14px', borderRadius: '8px', border: '1.5px solid #f59e0b', background: '#fffbeb', color: '#92400e', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}>
-                    Apply Suggested Price ({fmtMoney(suggestedPrice)})
-                  </button>
-                )}
               </div>
             )}
             {dropSchedule.length > 1 && (
@@ -3602,7 +3645,9 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
                   <div style={{ background: '#fff', borderRadius: '8px', overflow: 'hidden', border: '1px solid #fde68a', maxHeight: '200px', overflowY: 'auto' }}>
                     {dropSchedule.map((step, i) => (
                       <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 12px', background: step.isCurrent ? '#fef9c3' : i % 2 === 0 ? '#fff' : '#fafafa', borderBottom: i < dropSchedule.length - 1 ? '1px solid #fde68a' : 'none' }}>
-                        <span style={{ fontSize: '12px', color: '#92400e', fontWeight: step.isCurrent ? 700 : 400 }}>Day {step.day}{step.isCurrent ? ' ← today' : ''}</span>
+                        <span style={{ fontSize: '12px', color: '#92400e', fontWeight: step.isCurrent ? 700 : 400 }}>
+                          Day {step.day}{step.date ? ` · ${fmtDate(step.date)}` : ''}{step.isCurrent ? ' ← today' : ''}
+                        </span>
                         <span style={{ fontSize: '12px', color: step.price === minPrice ? '#dc2626' : '#92400e', fontWeight: step.isCurrent ? 700 : 500 }}>{fmtMoney(step.price)}</span>
                       </div>
                     ))}
@@ -4941,7 +4986,7 @@ const EMPTY_TX = {
   type: 'advance', status: 'active', idType: 'nin', idNumber: '', ninVerified: false, ninVerificationAttempted: false, ninVerificationStatus: 'not_attempted', ninData: null, ninPhoto: null,
   fullName: '', address: '', phoneNumbers: ['', ''], phonesVerified: [false, false],
   familyName: '', familyPhone: '', familyRelation: '',
-  photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null,
+  photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null, termsConfirmed: false,
   captureItemType: '', itemPowersOn: null, partsOnly: false,
   itemPhotos: [],
   inspectionChecklist: {}, inspectionNotes: '',
@@ -5553,7 +5598,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       }
       case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.aiBrand && tx.estimatedValue > 0 && (tx.conditionDescription || tx.aiCondition));
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
-      case 'agreement': return !!tx.photoSigning;
+      case 'agreement': return !!tx.photoSigning && !!tx.termsConfirmed;
       default: return true;
     }
   };
@@ -5632,7 +5677,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         if (!tx.dateGiven) issues.push('You must set the date given before proceeding.');
         break;
       case 'agreement':
-        if (!tx.photoSigning) issues.push('You must upload a photo of the signed agreement before proceeding.');
+        if (!tx.termsConfirmed) issues.push('You must confirm that the customer has read or had the terms read to them before proceeding.');
+        if (!tx.photoSigning) issues.push('You must upload a photo of the customer signing the agreement before proceeding.');
         break;
       default: break;
     }
@@ -5679,7 +5725,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   };
 
   const handleComplete = async () => {
-    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString(), serviceFeeAmount: tx.type === 'advance' && tx.serviceFeeCollected ? (settings.serviceFee || 1000) : 0 };
+    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString(), serviceFeeAmount: tx.type === 'advance' && tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0 };
     const saved = await API.post('transactions', finalTx);
     if (!saved?.success) return;
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
@@ -5974,7 +6020,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             )}
 
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
-              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue ?? tx.aiEstimatedValue ?? ''} onChange={e => {
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
                 let val = Number(e.target.value) || 0;
                 const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
                 if (maxPrice > 0 && val > maxPrice) val = maxPrice;
@@ -6139,50 +6185,133 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             </div>
           );
         })()}
-        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect. <InfoIcon tip="Collect this flat fee from the customer today, on top of the cash you're giving them. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
-      case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>{tx.type === 'outright' ? 'View / Download Receipt PDF' : 'View / Download Agreement PDF'}</strong> to generate a properly formatted A4 PDF — both the Business Copy and {tx.type === 'outright' ? 'Seller Copy' : 'Customer Copy'} are included. Open it, then print from your PDF viewer (set paper to <strong>A4</strong>). Read every clause aloud to the {tx.type === 'outright' ? 'seller' : 'customer'}. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
-      <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
-        <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-          <div style={{ fontSize: '16px', fontWeight: 800 }}>CHRIST-IN-FABIAN QUICK CASH</div>
-          <div style={{ fontSize: '12px', color: COLORS.textMuted }}>{tx.type === 'outright' ? 'Outright Purchase Receipt' : 'Cash Advance & Buy-Back Agreement'}</div>
-          <div style={{ fontSize: '13px', fontWeight: 700, marginTop: '4px' }}>Ref: {tx.ref}</div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px 12px', fontSize: '13px' }}>
-          <strong>Name:</strong><span>{tx.fullName}</span>
-          <strong>Address:</strong><span>{tx.address}</span>
-          <strong>ID:</strong><span>{tx.idType?.toUpperCase()} — {tx.idNumber}</span>
-          <strong>Phone(s):</strong><span>{tx.phoneNumbers?.filter(Boolean).join(', ')}</span>
-          <strong>Family:</strong><span>{tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}</span>
-          <strong>Item:</strong><span>{tx.aiItemType} / {tx.aiBrand} / {tx.aiModel}</span>
-          <strong>Condition:</strong><span>{tx.conditionDescription}</span>
-          {tx.imei && <><strong>IMEI:</strong><span>{tx.imei}</span></>}
-          <strong>Cash:</strong><span style={{ fontWeight: 700, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</span>
-          {tx.type === 'advance' && <><strong>Date Given:</strong><span>{fmtDate(tx.dateGiven)}</span><strong>Deadline:</strong><span>{fmtDate(tx.deadlineDate)}</span><strong>Daily Fee:</strong><span>{fmtMoney(dailyFeeCalc)}/day</span></>}
-        </div>
-      </div>
-      <div style={{ display: 'flex', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
-        <button
-          style={{ ...S.btn('accent'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
-          disabled={pdfLoading}
-          onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
-        >
-          {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
-        </button>
-        <button
-          style={{ ...S.btn('outline'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
-          disabled={pdfLoading}
-          onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
-        >
-          ⬇ Download PDF
-        </button>
-      </div>
-      <div style={{ marginTop: '16px' }}>
-        <PhotoUpload label="Photo of Signing / Thumbprint" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} />
-      </div>
-      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
+      case 'agreement': {
+        const stepBox = (num, title, color, children) => (
+          <div style={{ border: `1.5px solid ${color}`, borderRadius: '10px', marginBottom: '14px', overflow: 'hidden' }}>
+            <div style={{ background: color, padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{ background: '#fff', color, borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '13px', flexShrink: 0 }}>{num}</div>
+              <span style={{ fontWeight: 700, fontSize: '14px', color: '#fff' }}>{title}</span>
+            </div>
+            <div style={{ padding: '12px 14px', background: '#fff', fontSize: '13px', lineHeight: 1.6 }}>{children}</div>
+          </div>
+        );
+        return (
+          <div>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '4px' }}>📄 Agreement Preview</h3>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Follow each step below in order before moving to the next screen.</p>
 
-      case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔒 Finalize Transaction</h3>{tx.type === 'advance' ? <div style={S.alert('info')}>📋 Follow these steps before clicking Complete: <strong>1.</strong> Count the cash advance in front of the customer and let them count it too. <strong>2.</strong> Collect the ₦{settings.serviceFee?.toLocaleString() || '1,000'} service fee from the customer. <strong>3.</strong> Tick the checkbox below to confirm the fee has been collected.</div> : <div style={S.alert('info')}>📋 Count the purchase amount in front of the customer and let them count it too, then click Complete.</div>}{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}{tx.type === 'advance' && <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>I have collected the ₦{settings.serviceFee} service fee <span style={{ color: COLORS.danger }}>*</span></span></label>}<div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: (tx.type === 'advance' && !tx.serviceFeeCollected) ? 0.5 : 1 }} disabled={tx.type === 'advance' && !tx.serviceFeeCollected} onClick={handleComplete}>{(tx.type === 'advance' && !tx.serviceFeeCollected) ? 'Tick the checkbox above to continue' : 'Click to Complete Transaction'}</button></div>);
+            {/* Step 1 — Review the details */}
+            {stepBox(1, 'Check the Details', '#4f46e5', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>Look at the summary below. Make sure everything is correct before printing.</p>
+                <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: '8px', padding: '14px', background: COLORS.bgAlt || '#f8f8fb' }}>
+                  <div style={{ textAlign: 'center', marginBottom: '10px' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 800 }}>CHRIST-IN-FABIAN QUICK CASH</div>
+                    <div style={{ fontSize: '11px', color: COLORS.textMuted }}>{tx.type === 'outright' ? 'Outright Purchase Receipt' : 'Cash Advance & Buy-Back Agreement'}</div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '2px' }}>Ref: {tx.ref}</div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '3px 10px', fontSize: '12px' }}>
+                    <strong>Name:</strong><span>{tx.fullName}</span>
+                    <strong>Address:</strong><span>{tx.address}</span>
+                    <strong>ID:</strong><span>{tx.idType?.toUpperCase()} — {tx.idNumber}</span>
+                    <strong>Phone(s):</strong><span>{tx.phoneNumbers?.filter(Boolean).join(', ')}</span>
+                    <strong>Family:</strong><span>{tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}</span>
+                    <strong>Item:</strong><span>{tx.aiItemType} / {tx.aiBrand} / {tx.aiModel}</span>
+                    <strong>Condition:</strong><span>{tx.conditionDescription}</span>
+                    {tx.imei && <><strong>IMEI:</strong><span>{tx.imei}</span></>}
+                    <strong>Cash:</strong><span style={{ fontWeight: 700, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</span>
+                    {tx.type === 'advance' && <><strong>Date Given:</strong><span>{fmtDate(tx.dateGiven)}</span><strong>Deadline:</strong><span>{fmtDate(tx.deadlineDate)}</span><strong>Daily Fee:</strong><span>{fmtMoney(dailyFeeCalc)}/day</span></>}
+                  </div>
+                </div>
+              </>
+            ))}
+
+            {/* Step 2 — Generate & print */}
+            {stepBox(2, 'Generate & Print the PDF', '#0891b2', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>Click the button to open or download the {tx.type === 'outright' ? 'receipt' : 'agreement'} PDF. Print it on <strong>A4 paper</strong>. You will get two copies — one for the business and one for the {tx.type === 'outright' ? 'seller' : 'customer'}.</p>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    style={{ ...S.btn('accent'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
+                    disabled={pdfLoading}
+                    onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
+                  >
+                    {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
+                  </button>
+                  <button
+                    style={{ ...S.btn('outline'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
+                    disabled={pdfLoading}
+                    onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
+                  >
+                    ⬇ Download PDF
+                  </button>
+                </div>
+              </>
+            ))}
+
+            {/* Step 3 — Read terms aloud */}
+            {stepBox(3, 'Go Through the Terms', '#059669', (
+              <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} their copy. Let them read it if they can.</li>
+                <li>If they <strong>cannot read</strong>, read and explain each clause to them clearly before they sign.</li>
+                <li>Make sure they understand the {tx.type === 'advance' ? 'cash amount, repayment deadline, and consequences of not paying on time' : 'purchase amount and terms'}.</li>
+              </ul>
+            ))}
+
+            {/* Step 4 — Confirm terms */}
+            {stepBox(4, 'Confirm Customer Understands & Agrees', tx.termsConfirmed ? '#16a34a' : '#dc2626', (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={!!tx.termsConfirmed}
+                  onChange={e => upd('termsConfirmed', e.target.checked)}
+                  style={{ width: '20px', height: '20px', marginTop: '2px', flexShrink: 0 }}
+                />
+                <span>
+                  <span style={{ fontWeight: 700, fontSize: '13px' }}>I confirm: the {tx.type === 'outright' ? 'seller' : 'customer'} understands and agrees to all terms. <span style={{ color: COLORS.danger }}>*</span></span>
+                  <span style={{ display: 'block', fontSize: '12px', color: COLORS.textMuted, marginTop: '3px' }}>They have read the {tx.type === 'outright' ? 'receipt' : 'agreement'} themselves, or the terms have been read and fully explained to them.</span>
+                </span>
+              </label>
+            ))}
+
+            {/* Step 5 — Sign & thumbprint */}
+            {stepBox(5, 'Sign & Thumbprint Both Copies', '#d97706', (
+              <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                <li>Ask them to write their signature on the signature line.</li>
+                <li>Ask them to press their right thumb on the thumbprint box.</li>
+                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} one copy and keep one copy for the business.</li>
+              </ul>
+            ))}
+
+            {/* Step 6 — Photo of signing */}
+            {stepBox(6, 'Take a Photo of the Customer Signing', tx.photoSigning ? '#16a34a' : '#dc2626', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Take a clear photo right now</strong> while the {tx.type === 'outright' ? 'seller' : 'customer'} is signing the {tx.type === 'outright' ? 'receipt' : 'agreement'}. The photo must clearly show:
+                </p>
+                <ul style={{ margin: '0 0 12px', paddingLeft: '18px' }}>
+                  <li>The {tx.type === 'outright' ? 'seller' : 'customer'}'s face or upper body</li>
+                  <li>The {tx.type === 'outright' ? 'receipt' : 'agreement'} paper in their hand or on the table</li>
+                  <li>The moment they are signing or thumbprinting</li>
+                </ul>
+                <p style={{ margin: '0 0 10px', color: COLORS.danger, fontWeight: 600 }}>This photo is required. You cannot proceed without it.</p>
+                <PhotoUpload label="Photo of Customer Signing" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} />
+              </>
+            ))}
+
+            <div style={{ marginTop: '8px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔒 Finalize Transaction</h3>{tx.type === 'advance' ? <div style={S.alert('info')}>📋 Follow these steps before clicking Complete: <strong>1.</strong> Count the cash advance in front of the customer and let them count it too. <strong>2.</strong> Collect the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance).toLocaleString()} service fee from the customer. <strong>3.</strong> Tick the checkbox below to confirm the fee has been collected.</div> : <div style={S.alert('info')}>📋 Count the purchase amount in front of the customer and let them count it too, then click Complete.</div>}{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}{tx.type === 'advance' && <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>I have collected the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance)} service fee <span style={{ color: COLORS.danger }}>*</span></span></label>}<div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: (tx.type === 'advance' && !tx.serviceFeeCollected) ? 0.5 : 1 }} disabled={tx.type === 'advance' && !tx.serviceFeeCollected} onClick={handleComplete}>{(tx.type === 'advance' && !tx.serviceFeeCollected) ? 'Tick the checkbox above to continue' : 'Click to Complete Transaction'}</button></div>);
 
       default: return <div>Unknown step</div>;
     }
@@ -6586,7 +6715,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   return (
     <div>
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
-      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
+      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
       <Field label="Buyer Name" required><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} />{!saleBuyer.trim() && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer name is required</div>}</Field>
       <Field label="Buyer Phone" required><input style={S.input} inputMode="numeric" maxLength={11} value={saleBuyerPhone} onChange={e => setSaleBuyerPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08012345678" />{saleBuyerPhone && saleBuyerPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Phone must be exactly 11 digits ({saleBuyerPhone.length}/11)</div>}{!saleBuyerPhone && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer phone is required</div>}</Field>
       <Field label="Condition at Sale" required>
@@ -7051,7 +7180,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       </div>
       {tx.type === 'advance' && (
         <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
-          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(settings.serviceFee) > 0 && <> · Service fee: <strong>{fmtMoney(settings.serviceFee)}</strong></>}
+          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
@@ -7918,6 +8047,8 @@ export default function App() {
   const [serpApiAccount, setSerpApiAccount] = useState(null); // live data from serpapi.com/account.json
   const [serpApiAiAccount, setSerpApiAiAccount] = useState(null); // live data for AI key from serpapi.com/account.json
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [unreadImportantNotifCount, setUnreadImportantNotifCount] = useState(0);
+  const [unreadUrgentNotifCount, setUnreadUrgentNotifCount] = useState(0);
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -8191,7 +8322,7 @@ export default function App() {
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
-  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
@@ -8239,12 +8370,13 @@ export default function App() {
     };
   }, [currentUser, capitalPrediction, availableLendingCapital, totalCapital, settings]);
 
-  // Compute the unread notification badge count from live data so it stays accurate as data
-  // changes (new transactions, capital entries, etc.) without requiring the user to visit
-  // the profile page first.  When the user marks notifications as read, onUnreadChange keeps
-  // the count current; this effect handles everything that changes underneath.
-  useEffect(() => {
-    if (!currentUser) return;
+  const recomputeUnreadNotificationMetrics = useCallback(() => {
+    if (!currentUser) {
+      setUnreadNotifCount(0);
+      setUnreadImportantNotifCount(0);
+      setUnreadUrgentNotifCount(0);
+      return;
+    }
     try {
       const notifs = buildNotifications({
         currentUser, capital, distributions, activityLogs,
@@ -8252,9 +8384,20 @@ export default function App() {
         distDecisions, ninCredits, stakeholderCapitalData: myCapitalAlertData,
       });
       const readIds = getReadIds(currentUser.id);
-      setUnreadNotifCount(notifs.filter(n => !readIds.has(n.id)).length);
-    } catch { /* buildNotifications is a pure derived computation; errors here must not crash the app — the badge simply retains its previous value */ }
+      const unread = notifs.filter(n => !readIds.has(n.id));
+      setUnreadNotifCount(unread.length);
+      setUnreadImportantNotifCount(unread.filter(n => n.priority === 'high').length);
+      setUnreadUrgentNotifCount(unread.filter(n => n.priority === 'urgent').length);
+    } catch {
+      /* buildNotifications is a pure derived computation; errors here must not crash the app */
+    }
   }, [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, myCapitalAlertData]);
+
+  // Compute unread notification metrics from live data so they stay accurate as data changes
+  // (new transactions, capital entries, etc.) without requiring the user to visit profile first.
+  useEffect(() => {
+    recomputeUnreadNotificationMetrics();
+  }, [recomputeUnreadNotificationMetrics]);
 
   // On login (or app reload in a new browser), seed the notification read-ID cache from the
   // backend so the badge reflects the user's already-read state across devices/deployments.
@@ -8267,22 +8410,14 @@ export default function App() {
         if (cancelled || !prefs?.notifReadIds?.length) return;
         seedReadIds(currentUser.id, prefs.notifReadIds);
         // Recompute badge with the freshly-seeded read IDs.
-        try {
-          const notifs = buildNotifications({
-            currentUser, capital, distributions, activityLogs,
-            transactions, smsCredits, smsBalance, settings,
-            distDecisions, ninCredits, stakeholderCapitalData: myCapitalAlertData,
-          });
-          const readIds = getReadIds(currentUser.id);
-          setUnreadNotifCount(notifs.filter(n => !readIds.has(n.id)).length);
-        } catch { /**/ }
+        recomputeUnreadNotificationMetrics();
       })
       .catch(() => {});
     return () => { cancelled = true; };
   // Intentionally keyed on currentUser?.id only: this runs once per login to seed localStorage
   // from the backend.  The badge-update effect (above) handles live data changes separately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.id]);
+  }, [currentUser?.id, recomputeUnreadNotificationMetrics]);
 
   // Archive this month's prediction and fill in actuals for past months
   useEffect(() => {
@@ -8676,6 +8811,14 @@ export default function App() {
             </div>
           );
         })()}
+        {(unreadImportantNotifCount + unreadUrgentNotifCount) > 0 && (
+          <div style={{ background: '#fff7ed', border: '2px solid #fb923c', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+            <span style={{ fontSize: '18px', lineHeight: 1 }}>🔔</span>
+            <div style={{ fontSize: '13px', color: '#9a3412', lineHeight: 1.45 }}>
+              You have <strong>{unreadImportantNotifCount + unreadUrgentNotifCount}</strong> unread important/urgent notification{(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 's' : ''}. Open your Profile to review and mark {(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 'them' : 'it'} as read.
+            </div>
+          </div>
+        )}
         <div style={S.grid4}>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Available Lending Capital<InfoIcon tip="The money we have available to give out as new loans right now. It's what's left after taking away everything that's already out or paid out." /></div><div style={S.statValue}>{secondaryLoading ? '—' : fmtMoney(availableLendingCapital)}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital Out<InfoIcon tip="The total cash that's currently with customers who haven't paid back yet." /></div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
@@ -9459,7 +9602,7 @@ export default function App() {
         const rRepaymentFees = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0);
         // Sales revenue = margin (salePrice − cashAdvance). The principal was deployed capital, not profit.
         const rSalesRevenue = rSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
-        const rServiceFees = rNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+        const rServiceFees = rNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
         const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
@@ -9573,7 +9716,7 @@ export default function App() {
           rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
           rExpTotal, rProfit, rStaff, rStakeholder,
           rCapitalDeployed, rCapitalReturned,
-          serviceFee: settings.serviceFee || 1000,
+          serviceFee: getFlatServiceFee(settings),
           rNewLoans,
           stakeholders: rStakeholders,
           rStaffByTask, staffSharePct, totalTaskPoints,
@@ -9614,7 +9757,7 @@ export default function App() {
             '',
             'NEW LOANS',
             toCSV(['Ref','Customer','Cash Advanced','Service Fee','Loan Term (days)','Date','Status'],
-              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), t.loanDays || 30, t.created_at, t.status])),
+              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), t.loanDays || 30, t.created_at, t.status])),
             '',
             'EXPENSES',
             toCSV(['Date','Category','Description','Amount'],
@@ -9859,7 +10002,7 @@ export default function App() {
                           <td style={S.td}><strong>{t.ref}</strong></td>
                           <td style={S.td}>{t.fullName || '—'}</td>
                           <td style={{ ...S.td, fontWeight: 700 }}>{fmtMoney(t.cashAdvance)}</td>
-                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)))}</td>
+                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)))}</td>
                           <td style={S.td}>{t.loanDays || 30} days</td>
                           <td style={S.td}>{fmtDate(t.created_at)}</td>
                           <td style={S.td}><span style={{ fontSize: '12px', fontWeight: 600, color: statusColor(t, settings) }}>{statusLabel(t, settings)}</span></td>
@@ -10252,7 +10395,7 @@ export default function App() {
                     const periodSold = soldTxs.filter(t => { const ds = t.saleDate || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
                     const periodNewLoans = periodTxs.filter(t => t.type !== 'outright' && t.status !== 'declined');
                     const periodExp = expenses.filter(e => { if (!e.date) return false; const d = new Date(e.date.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
-                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
                     const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
                     const profit = rev - expT;
                     const sPct = settings.staffSharePct ?? 10;
@@ -11137,6 +11280,7 @@ export default function App() {
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; {
         const es = pendingSettings ?? settings; // effective settings (pending or saved)
+        const serviceFeeRanges = Array.isArray(es?.serviceFeeRanges) ? es.serviceFeeRanges : [];
         const hasUnsaved = pendingSettings !== null;
         const updateSettings = (s) => setPendingSettings(s);
         const distributableStaff = users.filter(u => u.active !== 0 && u.role === 'staff');
@@ -11226,6 +11370,76 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Grace Days<InfoIcon tip="Extra days we give a customer after they go overdue, before we start selling their item. It's a last chance for them to come back." /></span>}>
                 <input style={S.input} type="number" min="0" max="30" value={es.graceDays} onChange={e => updateSettings({ ...es, graceDays: Number(e.target.value) })} />
               </Field>
+            </div>
+            <div style={{ marginTop: '14px', padding: '12px', borderRadius: '10px', border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>Range-Based Service Fees (optional)</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>
+                Keep the flat service fee above as fallback. Add ranges below to charge different fees based on the cash advance amount.
+              </div>
+              <div style={{ display: 'grid', gap: '8px' }}>
+                {serviceFeeRanges.map((range, idx) => (
+                  <div key={range.id || `range-${idx}`} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '8px', alignItems: 'end' }}>
+                    <Field label="Min Advance (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        value={range?.min ?? ''}
+                        onChange={e => {
+                          const next = [...serviceFeeRanges];
+                          const raw = e.target.value;
+                          next[idx] = { ...range, min: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, serviceFeeRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <Field label="Max Advance (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        placeholder="No limit"
+                        value={range?.max ?? ''}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          const next = [...serviceFeeRanges];
+                          next[idx] = { ...range, max: raw === '' ? null : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, serviceFeeRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <Field label="Fee (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        value={range?.fee ?? ''}
+                        onChange={e => {
+                          const next = [...serviceFeeRanges];
+                          const raw = e.target.value;
+                          next[idx] = { ...range, fee: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, serviceFeeRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <button
+                      style={{ ...S.btnSm('muted'), color: COLORS.danger, borderColor: COLORS.danger }}
+                      onClick={() => updateSettings({ ...es, serviceFeeRanges: serviceFeeRanges.filter((_, i) => i !== idx) })}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                style={{ ...S.btnSm('primary'), marginTop: '10px' }}
+                onClick={() => updateSettings({
+                  ...es,
+                  serviceFeeRanges: [...serviceFeeRanges, { id: `range-${Date.now()}`, min: 0, max: null, fee: getFlatServiceFee(es) }],
+                })}
+              >
+                + Add Range
+              </button>
             </div>
           </div>
 
@@ -12097,7 +12311,10 @@ export default function App() {
           stakeholderCapitalData={myCapitalAlertData}
           loadData={loadData}
           isMobile={isMobile}
-          onUnreadChange={(count) => setUnreadNotifCount(count)}
+          onUnreadChange={(count) => {
+            setUnreadNotifCount(count);
+            recomputeUnreadNotificationMetrics();
+          }}
           callGeminiAI={callGeminiAI}
           onContactSaved={(fields) => {
             const updated = { ...currentUser, ...fields };
