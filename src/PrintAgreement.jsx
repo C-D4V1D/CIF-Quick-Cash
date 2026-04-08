@@ -48,7 +48,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
   // Rep signature image (attached via tx.repSignatureUrl) — embedded in Part E
   const repSigCell = tx.repSignatureUrl
-    ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
+    ? `<div style="text-align:center;line-height:0"><img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="height:40px;max-width:95%;object-fit:contain;display:inline-block" /></div>`
     : '';
 
   // ── PART E — SIGNATURES (lives on back cover for both copies) ──
@@ -313,7 +313,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
   // Rep signature image (attached via tx.repSignatureUrl) — embedded in Part E
   const repSigCell = tx.repSignatureUrl
-    ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
+    ? `<div style="text-align:center;line-height:0"><img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="height:40px;max-width:95%;object-fit:contain;display:inline-block" /></div>`
     : '';
 
   // ── PAGE 1 (seller details + item details) ──
