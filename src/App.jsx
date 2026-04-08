@@ -6,6 +6,7 @@ import { printMonthReport } from './PrintMonthReport.jsx';
 import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
 import { buildNotifications, getReadIds, seedReadIds } from './ProfilePage/NotificationsPanel.jsx';
+import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT } from './utils/signatureRefine';
 import {
   ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area,
@@ -1730,6 +1731,166 @@ function PhotoUpload({ label, value, onChange, required, size = 120 }) {
       </div>
       <div style={{ fontSize: '10.5px', marginTop: '4px', color: required ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && '*'}</div>
       {uploadError && <div style={{ fontSize: '11px', color: COLORS.danger, marginTop: '4px', maxWidth: size }}>{uploadError}</div>}
+    </div>
+  );
+}
+
+// SignatureCapture — camera/upload → AI-refined blue-pen signature → R2.
+// Used in the wizard to capture the customer's signature off the printed agreement.
+// Shows a refined preview before committing, so the staff can retake if blurry.
+function SignatureCapture({ label, value, onChange, settings, required, size = 140 }) {
+  const cameraRef = useRef();
+  const fileRef = useRef();
+  const [rawData, setRawData] = useState(null);
+  const [refinedData, setRefinedData] = useState(null);
+  const [stage, setStage] = useState('idle'); // idle | refining | confirm | saving | error
+  const [error, setError] = useState('');
+  const [aiNote, setAiNote] = useState('');
+  const [zoomed, setZoomed] = useState(false);
+
+  const resetWizard = () => {
+    setRawData(null);
+    setRefinedData(null);
+    setStage('idle');
+    setError('');
+    setAiNote('');
+  };
+
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError('');
+    setAiNote('');
+    setStage('refining');
+    try {
+      const b64 = await compressToDataUrl(file);
+      setRawData(b64);
+      // Optional AI verification (only if an API key is configured)
+      if (settings?.geminiApiKey) {
+        try {
+          const result = await callGeminiAI(
+            settings.geminiApiKey,
+            settings.geminiModel,
+            [b64],
+            SIGNATURE_AI_PROMPT,
+            settings.geminiThinkingBudget,
+            settings.geminiTemperature,
+          );
+          if (result?.text) {
+            const noteMatch = result.text.match(/NOTE:\s*(.+)/i);
+            if (noteMatch) setAiNote(noteMatch[1].trim());
+            if (!/IS_SIGNATURE:\s*yes/i.test(result.text)) {
+              setError('AI could not clearly see a signature — retake if needed.');
+            }
+          }
+        } catch { /* AI is optional — proceed to refinement */ }
+      }
+      const refined = await refineSignatureImage(b64);
+      setRefinedData(refined);
+      setStage('confirm');
+    } catch (err) {
+      setError(err.message || 'Could not process this image.');
+      setStage('error');
+    }
+  };
+
+  const handleAccept = async () => {
+    if (!refinedData) return;
+    setStage('saving');
+    setError('');
+    try {
+      const mimeType = refinedData.split(';')[0].split(':')[1];
+      const data = refinedData.split(',')[1];
+      const result = await API.post('photos', { data, mimeType });
+      const url = result?.url || refinedData;
+      // Delete the previous R2 photo
+      if (value && typeof value === 'string' && value.startsWith('/api/photos/') && value !== url) {
+        API.del(value.slice(5)).catch(() => {});
+      }
+      onChange(url);
+      resetWizard();
+    } catch (err) {
+      setError(err.message || 'Upload failed. Try again.');
+      setStage('confirm');
+    }
+  };
+
+  const handleRemove = () => {
+    if (value && typeof value === 'string' && value.startsWith('/api/photos/')) {
+      API.del(value.slice(5)).catch(() => {});
+    }
+    onChange(null);
+    resetWizard();
+  };
+
+  const displaySrc = refinedData || rawData || value;
+  const hasSaved = !!value && stage === 'idle';
+
+  return (
+    <div style={{ textAlign: 'center' }}>
+      {zoomed && displaySrc && (
+        <div onClick={() => setZoomed(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000, padding: '16px' }}>
+          <div onClick={e => e.stopPropagation()} style={{ maxWidth: '100%', maxHeight: '100%', textAlign: 'center' }}>
+            <img src={displaySrc} alt={label} style={{ maxWidth: '100%', maxHeight: '80vh', background: '#fff', padding: '20px', borderRadius: '12px' }} />
+            <div style={{ marginTop: '16px' }}>
+              <button type="button" style={S.btn('outline')} onClick={() => setZoomed(false)}>✕ Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div
+        style={{ width: '100%', maxWidth: 280, height: size, margin: '0 auto', borderRadius: '10px', border: `2px dashed ${value ? COLORS.primary : COLORS.border}`, background: displaySrc ? '#fafaf7' : COLORS.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', cursor: stage === 'refining' || stage === 'saving' ? 'default' : 'pointer', position: 'relative' }}
+        onClick={() => { if (stage === 'refining' || stage === 'saving') return; if (displaySrc) setZoomed(true); else cameraRef.current?.click(); }}
+      >
+        {displaySrc
+          ? <img src={displaySrc} alt={label} style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} onError={e => { e.currentTarget.onerror = null; e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='80'%3E%3Crect width='200' height='80' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='11' fill='%23dc2626'%3ESignature unavailable%3C/text%3E%3C/svg%3E"; }} />
+          : <span style={{ fontSize: '12px', color: COLORS.textMuted, padding: '8px', textAlign: 'center' }}>✍️ Tap to snap the signed paper</span>}
+        {(stage === 'refining' || stage === 'saving') && (
+          <div style={{ position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primaryDark }}>{stage === 'refining' ? '✨ Cleaning up…' : '☁ Uploading…'}</span>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+        {stage === 'idle' && !value && (
+          <>
+            <button type="button" style={S.btnSm('primary')} onClick={() => cameraRef.current?.click()}>📷 Camera</button>
+            <button type="button" style={S.btnSm('secondary')} onClick={() => fileRef.current?.click()}>🖼 Gallery</button>
+          </>
+        )}
+        {stage === 'confirm' && (
+          <>
+            <button type="button" style={S.btnSm('primary')} onClick={handleAccept}>✅ Looks good — Save</button>
+            <button type="button" style={S.btnSm('secondary')} onClick={resetWizard}>↻ Retake</button>
+          </>
+        )}
+        {stage === 'error' && (
+          <button type="button" style={S.btnSm('secondary')} onClick={resetWizard}>↻ Try again</button>
+        )}
+        {hasSaved && (
+          <>
+            <button type="button" style={S.btnSm('secondary')} onClick={() => cameraRef.current?.click()}>↻ Retake</button>
+            <button type="button" style={S.btnSm('muted')} onClick={handleRemove}>🗑 Remove</button>
+          </>
+        )}
+      </div>
+
+      <div style={{ fontSize: '10.5px', marginTop: '4px', color: required && !value ? COLORS.danger : COLORS.textMuted, fontWeight: 600 }}>{label} {required && !value && '*'}</div>
+      {aiNote && (
+        <div style={{ marginTop: '6px', padding: '6px 10px', background: COLORS.primaryLight, borderRadius: '6px', fontSize: '11px', color: COLORS.primaryDark, fontWeight: 600, maxWidth: 280, margin: '6px auto 0' }}>
+          🤖 {aiNote}
+        </div>
+      )}
+      {error && (
+        <div style={{ marginTop: '6px', padding: '6px 10px', background: COLORS.dangerLight, borderRadius: '6px', fontSize: '11px', color: COLORS.danger, fontWeight: 600, maxWidth: 280, margin: '6px auto 0' }}>
+          {error}
+        </div>
+      )}
+
+      <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: 'none' }} />
+      <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} style={{ display: 'none' }} />
     </div>
   );
 }
@@ -4987,6 +5148,7 @@ const EMPTY_TX = {
   fullName: '', address: '', phoneNumbers: ['', ''], phonesVerified: [false, false],
   familyName: '', familyPhone: '', familyRelation: '',
   photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null, termsConfirmed: false,
+  sealedPackageConfirm: null, customerSignatureImage: null,
   captureItemType: '', itemPowersOn: null, partsOnly: false,
   itemPhotos: [],
   inspectionChecklist: {}, inspectionNotes: '',
@@ -5598,7 +5760,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       }
       case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.aiBrand && tx.estimatedValue > 0 && (tx.conditionDescription || tx.aiCondition));
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
-      case 'agreement': return !!tx.photoSigning && !!tx.termsConfirmed;
+      case 'agreement': return !!tx.photoSigning && !!tx.termsConfirmed && (tx.type !== 'advance' || !!tx.sealedPackageConfirm);
       default: return true;
     }
   };
@@ -5679,6 +5841,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       case 'agreement':
         if (!tx.termsConfirmed) issues.push('You must confirm that the customer has read or had the terms read to them before proceeding.');
         if (!tx.photoSigning) issues.push('You must upload a photo of the customer signing the agreement before proceeding.');
+        if (tx.type === 'advance' && !tx.sealedPackageConfirm) issues.push('You must confirm the customer signed the sealed package, or mark the item as not sealable.');
         break;
       default: break;
     }
@@ -5751,6 +5914,16 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   // Step renderer (abbreviated — same UI as before)
   const renderStep = () => {
     const sid = WIZARD_STEPS[step]?.id;
+    // Shared sequential "step box" used by the agreement and complete screens.
+    const stepBox = (num, title, color, children) => (
+      <div style={{ border: `1.5px solid ${color}`, borderRadius: '10px', marginBottom: '14px', overflow: 'hidden' }}>
+        <div style={{ background: color, padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ background: '#fff', color, borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '13px', flexShrink: 0 }}>{num}</div>
+          <span style={{ fontWeight: 700, fontSize: '14px', color: '#fff' }}>{title}</span>
+        </div>
+        <div style={{ padding: '12px 14px', background: '#fff', fontSize: '13px', lineHeight: 1.6 }}>{children}</div>
+      </div>
+    );
     switch (sid) {
       case 'type': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>What type of transaction?</h3><div style={S.alert('info')}>📋 Select the transaction type before proceeding. If unsure, choose <strong>Cash Advance</strong>.</div><div style={{ display: 'flex', gap: '16px' }}>{[{ value: 'advance', label: 'Cash Advance', desc: 'Customer leaves item as collateral', icon: '🤝' }, { value: 'outright', label: 'Outright Purchase', desc: 'Customer sells the item immediately', icon: '🛒' }].map(o => (<div key={o.value} onClick={() => upd('type', o.value)} style={{ flex: 1, padding: '20px', borderRadius: '12px', cursor: 'pointer', textAlign: 'center', border: `2px solid ${tx.type === o.value ? COLORS.primary : COLORS.border}`, background: tx.type === o.value ? COLORS.primaryLight : '#fff' }}><div style={{ fontSize: '32px', marginBottom: '8px' }}>{o.icon}</div><div style={{ fontWeight: 700 }}>{o.label}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>{o.desc}</div></div>))}</div></div>);
 
@@ -6188,15 +6361,6 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': {
-        const stepBox = (num, title, color, children) => (
-          <div style={{ border: `1.5px solid ${color}`, borderRadius: '10px', marginBottom: '14px', overflow: 'hidden' }}>
-            <div style={{ background: color, padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div style={{ background: '#fff', color, borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '13px', flexShrink: 0 }}>{num}</div>
-              <span style={{ fontWeight: 700, fontSize: '14px', color: '#fff' }}>{title}</span>
-            </div>
-            <div style={{ padding: '12px 14px', background: '#fff', fontSize: '13px', lineHeight: 1.6 }}>{children}</div>
-          </div>
-        );
         return (
           <div>
             <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '4px' }}>📄 Agreement Preview</h3>
@@ -6301,6 +6465,45 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               </>
             ))}
 
+            {/* Step 7 — Customer signs the sealed package (only for advance type) */}
+            {tx.type === 'advance' && stepBox(7, 'Customer Signs the Sealed Package', tx.sealedPackageConfirm ? '#16a34a' : '#dc2626', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>
+                  Seal the item in its package (e.g. bag, box, envelope) and ask the customer to sign
+                  across the seal. This makes sure nobody opens it before they come back to redeem it.
+                </p>
+                <p style={{ margin: '0 0 10px', fontSize: '12px', color: COLORS.textMuted }}>
+                  Some items cannot be sealed (like generators, fridges, big TVs). Pick the option that fits.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '10px', border: `1.5px solid ${tx.sealedPackageConfirm === 'signed' ? '#16a34a' : COLORS.border}`, borderRadius: '8px', background: tx.sealedPackageConfirm === 'signed' ? '#dcfce7' : '#fff' }}>
+                    <input
+                      type="radio"
+                      name="sealedPkgConfirm"
+                      checked={tx.sealedPackageConfirm === 'signed'}
+                      onChange={() => upd('sealedPackageConfirm', 'signed')}
+                      style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: '13px', fontWeight: 600 }}>
+                      ✅ The customer has signed the sealed package.
+                    </span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '10px', border: `1.5px solid ${tx.sealedPackageConfirm === 'not_sealable' ? '#d97706' : COLORS.border}`, borderRadius: '8px', background: tx.sealedPackageConfirm === 'not_sealable' ? '#fef3c7' : '#fff' }}>
+                    <input
+                      type="radio"
+                      name="sealedPkgConfirm"
+                      checked={tx.sealedPackageConfirm === 'not_sealable'}
+                      onChange={() => upd('sealedPackageConfirm', 'not_sealable')}
+                      style={{ width: '18px', height: '18px', marginTop: '2px', flexShrink: 0 }}
+                    />
+                    <span style={{ fontSize: '13px', fontWeight: 600 }}>
+                      ⚠️ This item cannot be sealed or packaged (e.g. generator, fridge, big TV).
+                    </span>
+                  </label>
+                </div>
+              </>
+            ))}
+
             <div style={{ marginTop: '8px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -6311,7 +6514,103 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         );
       }
 
-      case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔒 Finalize Transaction</h3>{tx.type === 'advance' ? <div style={S.alert('info')}>📋 Follow these steps before clicking Complete: <strong>1.</strong> Count the cash advance in front of the customer and let them count it too. <strong>2.</strong> Collect the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance).toLocaleString()} service fee from the customer. <strong>3.</strong> Tick the checkbox below to confirm the fee has been collected.</div> : <div style={S.alert('info')}>📋 Count the purchase amount in front of the customer and let them count it too, then click Complete.</div>}{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}{tx.type === 'advance' && <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>I have collected the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance)} service fee <span style={{ color: COLORS.danger }}>*</span></span></label>}<div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: (tx.type === 'advance' && !tx.serviceFeeCollected) ? 0.5 : 1 }} disabled={tx.type === 'advance' && !tx.serviceFeeCollected} onClick={handleComplete}>{(tx.type === 'advance' && !tx.serviceFeeCollected) ? 'Tick the checkbox above to continue' : 'Click to Complete Transaction'}</button></div>);
+      case 'complete': {
+        const isAdvance = tx.type === 'advance';
+        const serviceFeeAmt = getServiceFeeForAdvance(settings, tx.cashAdvance);
+        const needsSealedPhoto = isAdvance && tx.sealedPackageConfirm !== 'not_sealable';
+        const allDone = isAdvance
+          ? (tx.serviceFeeCollected && !!tx.customerSignatureImage && (needsSealedPhoto ? !!tx.photoSealedPkg : true))
+          : !!tx.customerSignatureImage;
+        return (
+          <div>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '4px' }}>🔒 Finalize Transaction</h3>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Go through each step in order. The Complete button unlocks once everything is done.</p>
+
+            {/* Step 1 — Service fee (advance only) */}
+            {isAdvance && stepBox(1, `Collect the ₦${serviceFeeAmt.toLocaleString()} Service Fee`, tx.serviceFeeCollected ? '#16a34a' : '#dc2626', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>
+                  Ask the customer for the <strong>₦{serviceFeeAmt.toLocaleString()}</strong> service fee. Count it in front of them. Only tick the box below after the money is in your hand.
+                </p>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', padding: '10px', background: tx.serviceFeeCollected ? '#dcfce7' : COLORS.accentLight, border: `1.5px solid ${tx.serviceFeeCollected ? '#16a34a' : COLORS.border}`, borderRadius: '8px' }}>
+                  <input
+                    type="checkbox"
+                    checked={!!tx.serviceFeeCollected}
+                    onChange={e => upd('serviceFeeCollected', e.target.checked)}
+                    style={{ width: '20px', height: '20px', marginTop: '2px', flexShrink: 0 }}
+                  />
+                  <span style={{ fontSize: '13px', fontWeight: 700 }}>
+                    I have collected the ₦{serviceFeeAmt.toLocaleString()} service fee <span style={{ color: COLORS.danger }}>*</span>
+                  </span>
+                </label>
+              </>
+            ))}
+
+            {/* Step 2 — Cash advance/purchase amount */}
+            {stepBox(isAdvance ? 2 : 1, `Give the ${isAdvance ? 'Cash Advance' : 'Purchase Amount'}`, COLORS.primary, (
+              <>
+                <p style={{ margin: '0 0 10px' }}>
+                  Count the money in front of the {isAdvance ? 'customer' : 'seller'} and let them count it too before handing it over.
+                </p>
+                <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', margin: 0 }}>
+                  <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {isAdvance ? 'Advance Given' : 'Paid'}</div>
+                  <div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div>
+                  <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of {isAdvance ? 'customer' : 'seller'}. Let them count too.</div>
+                </div>
+              </>
+            ))}
+
+            {/* Step 3 — Snap the customer signature on the agreement */}
+            {stepBox(isAdvance ? 3 : 2, `Snap the ${isAdvance ? 'Customer' : 'Seller'} Signature on the ${isAdvance ? 'Agreement' : 'Receipt'}`, tx.customerSignatureImage ? '#16a34a' : '#dc2626', (
+              <>
+                <p style={{ margin: '0 0 8px' }}>
+                  After the {isAdvance ? 'customer' : 'seller'} has signed the {isAdvance ? 'agreement' : 'receipt'}, take a clear close-up photo of <strong>just the signature line</strong>. Place the paper on a flat, well-lit surface.
+                </p>
+                <p style={{ margin: '0 0 10px', fontSize: '12px', color: COLORS.textMuted }}>
+                  We will clean it up with AI and keep it with the business copy of the {isAdvance ? 'agreement' : 'receipt'}.
+                </p>
+                <SignatureCapture
+                  label={`Photo of ${isAdvance ? 'Customer' : 'Seller'} Signature`}
+                  value={tx.customerSignatureImage}
+                  onChange={v => upd('customerSignatureImage', v)}
+                  settings={settings}
+                  required
+                />
+              </>
+            ))}
+
+            {/* Step 4 — Snap the sealed item (advance only, hidden if item not sealable) */}
+            {isAdvance && stepBox(4, 'Snap the Sealed Item', tx.photoSealedPkg || tx.sealedPackageConfirm === 'not_sealable' ? '#16a34a' : '#dc2626', (
+              tx.sealedPackageConfirm === 'not_sealable' ? (
+                <p style={{ margin: 0, color: COLORS.textMuted }}>
+                  ℹ️ You marked this item as not sealable in the previous screen, so no sealed package photo is needed. You can proceed.
+                </p>
+              ) : (
+                <>
+                  <p style={{ margin: '0 0 10px' }}>
+                    Take a clear photo of the <strong>sealed package</strong>. Make sure the customer's signature on the seal is visible in the photo. This is your proof the package was sealed in their presence.
+                  </p>
+                  <PhotoUpload
+                    label="Sealed Package Photo"
+                    value={tx.photoSealedPkg}
+                    onChange={v => upd('photoSealedPkg', v)}
+                    required
+                    size={140}
+                  />
+                </>
+              )
+            ))}
+
+            <button
+              style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: allDone ? 1 : 0.5 }}
+              disabled={!allDone}
+              onClick={handleComplete}
+            >
+              {allDone ? 'Click to Complete Transaction' : 'Finish the steps above to continue'}
+            </button>
+          </div>
+        );
+      }
 
       default: return <div>Unknown step</div>;
     }

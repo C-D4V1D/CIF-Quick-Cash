@@ -546,6 +546,7 @@ export async function onRequest(context) {
     collect(data.photoCustomerID);
     collect(data.photoSigning);
     collect(data.photoSealedPkg);
+    collect(data.customerSignatureImage);
     collect(data.imeiPhoto);
     collect(data.serialNumberPhoto);
     collect(data.receiptPhoto);
