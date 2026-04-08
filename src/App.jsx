@@ -6235,8 +6235,9 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
                   onChange={e => upd('termsConfirmed', e.target.checked)}
                   style={{ width: '20px', height: '20px', marginTop: '2px', flexShrink: 0 }}
                 />
-                <span style={{ fontWeight: 600, fontSize: '13px' }}>
-                  The {tx.type === 'outright' ? 'seller' : 'customer'} has read the {tx.type === 'outright' ? 'receipt' : 'agreement'}, or the terms have been read and explained to them in full. They confirm they understand and agree to everything stated. <span style={{ color: COLORS.danger }}>*</span>
+                <span>
+                  <span style={{ fontWeight: 700, fontSize: '13px' }}>I confirm: the {tx.type === 'outright' ? 'seller' : 'customer'} understands and agrees to all terms. <span style={{ color: COLORS.danger }}>*</span></span>
+                  <span style={{ display: 'block', fontSize: '12px', color: COLORS.textMuted, marginTop: '3px' }}>They have read the {tx.type === 'outright' ? 'receipt' : 'agreement'} themselves, or the terms have been read and fully explained to them.</span>
                 </span>
               </label>
             ))}
