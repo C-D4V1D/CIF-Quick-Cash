@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
-import { viewAgreementPDF, downloadAgreementPDF } from './PrintAgreement.jsx';
+import { viewAgreementPDF, downloadAgreementPDF, viewBusinessCopyPDF, downloadBusinessCopyPDF } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
 import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
@@ -6996,6 +6996,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const [smsLogs, setSmsLogs] = useState(null);
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
+  const [txPdfLoading, setTxPdfLoading] = useState(false);
   // Determine the most suitable pre-filled SMS template for this transaction's current state
   const pickSmsTemplate = () => {
     const fmtN = n => '₦' + Number(n || 0).toLocaleString('en-NG');
@@ -7279,6 +7280,30 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           ))}
       </div>
       <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
+    </div>
+
+    {/* ── Business Copy PDF ── */}
+    <div style={S.card}>
+      <div style={S.cardTitle}>📄 {tx.type === 'outright' ? 'Business Receipt' : 'Business Agreement'}</div>
+      <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '12px' }}>
+        View or download the business copy of the {tx.type === 'outright' ? 'outright purchase receipt' : 'cash advance agreement'}. The Official Use Only section is filled automatically from the transaction data.
+      </div>
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        <button
+          style={{ ...S.btn('accent'), opacity: txPdfLoading ? 0.6 : 1 }}
+          disabled={txPdfLoading}
+          onClick={async () => { setTxPdfLoading(true); try { await viewBusinessCopyPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setTxPdfLoading(false); } }}
+        >
+          {txPdfLoading ? '⏳ Generating…' : `👁 View ${tx.type === 'outright' ? 'Receipt' : 'Agreement'}`}
+        </button>
+        <button
+          style={{ ...S.btn('outline'), opacity: txPdfLoading ? 0.6 : 1 }}
+          disabled={txPdfLoading}
+          onClick={async () => { setTxPdfLoading(true); try { await downloadBusinessCopyPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setTxPdfLoading(false); } }}
+        >
+          {txPdfLoading ? '⏳ Generating…' : `⬇ Download ${tx.type === 'outright' ? 'Receipt' : 'Agreement'}`}
+        </button>
+      </div>
     </div>
 
     {/* ── Contact Log ── */}
