@@ -76,6 +76,11 @@ const refineSignatureImage = (dataUrl) =>
         // Pixels darker than (mean * 0.75) are treated as ink.
         const threshold = mean * 0.75;
 
+        // Blue-pen target color (deep ballpoint blue)
+        const INK_R = 18;
+        const INK_G = 42;
+        const INK_B = 138;
+
         let minX = canvas.width, minY = canvas.height, maxX = 0, maxY = 0;
         let inkCount = 0;
         for (let y = 0; y < canvas.height; y++) {
@@ -83,9 +88,14 @@ const refineSignatureImage = (dataUrl) =>
             const i = (y * canvas.width + x) * 4;
             const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
             if (lum < threshold) {
-              // Ink pixel → darken to near-black & keep alpha
-              const k = Math.max(0, Math.round(lum * 0.5));
-              data[i] = k; data[i + 1] = k; data[i + 2] = k; data[i + 3] = 255;
+              // Ink pixel → recolor to blue pen. Darker source pixels become more opaque
+              // (so pen strokes stay crisp while faint smudges soften).
+              const strength = 1 - lum / threshold; // 0..1
+              const alpha = Math.min(255, Math.round(180 + strength * 75));
+              data[i]     = INK_R;
+              data[i + 1] = INK_G;
+              data[i + 2] = INK_B;
+              data[i + 3] = alpha;
               if (x < minX) minX = x;
               if (y < minY) minY = y;
               if (x > maxX) maxX = x;

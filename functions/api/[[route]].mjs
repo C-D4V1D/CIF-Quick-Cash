@@ -638,9 +638,14 @@ export async function onRequest(context) {
         .bind(username)
         .first()
         .catch(() =>
-          // Fallback for databases where the `active`/`roles`/`signature` migration hasn't run yet
-          db.prepare('SELECT id, username, password, role, name FROM users WHERE username = ?')
-            .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]', signature: null } : null)
+          // Fallback 1: `signature` column not migrated yet — select everything else
+          db.prepare('SELECT id, username, password, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE username = ?')
+            .bind(username).first().then(u => u ? { ...u, signature: null } : null)
+            .catch(() =>
+              // Fallback 2: `active`/`roles` migration also not run — minimal schema
+              db.prepare('SELECT id, username, password, role, name FROM users WHERE username = ?')
+                .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]', signature: null } : null)
+            )
         );
       if (!user) {
         await db.prepare('INSERT INTO login_attempts (username, success) VALUES (?, 0)').bind(username).run().catch(() => {});
@@ -682,7 +687,13 @@ export async function onRequest(context) {
       // Always query fresh so contact info (phone1/phone2/email/signature) reflects latest updates
       const fresh = await db
         .prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, signature, created_at FROM users WHERE id = ?')
-        .bind(user.id).first().catch(() => null);
+        .bind(user.id).first()
+        .catch(() =>
+          // Fallback if `signature` column has not been migrated yet
+          db.prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE id = ?')
+            .bind(user.id).first().then(u => u ? { ...u, signature: null } : null)
+            .catch(() => null)
+        );
       if (!fresh) return json(user); // fallback to session data if DB unreachable
       return json({ ...user, phone1: fresh.phone1 || null, phone2: fresh.phone2 || null, email: fresh.email || null, signature: fresh.signature || null, created_at: fresh.created_at || null, roles: parseRoles(fresh.roles), active: fresh.active });
     }
@@ -923,7 +934,12 @@ export async function onRequest(context) {
       }
       // Non-admin can only edit their own contact info
       if (!isAdmin && !isSelf) return error('Forbidden', 403);
-      const cur = await db.prepare('SELECT username, name, role, roles, active, phone1, phone2, email, signature FROM users WHERE id = ?').bind(id).first();
+      const cur = await db.prepare('SELECT username, name, role, roles, active, phone1, phone2, email, signature FROM users WHERE id = ?').bind(id).first()
+        .catch(() =>
+          // Fallback if `signature` column has not been migrated yet
+          db.prepare('SELECT username, name, role, roles, active, phone1, phone2, email FROM users WHERE id = ?').bind(id).first()
+            .then(u => u ? { ...u, signature: null } : null)
+        );
       if (!cur) return error('User not found', 404);
       const setClauses = []; const setParams = [];
       if (isAdmin) {
