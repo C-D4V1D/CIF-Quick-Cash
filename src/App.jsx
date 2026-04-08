@@ -4966,7 +4966,7 @@ const EMPTY_TX = {
   type: 'advance', status: 'active', idType: 'nin', idNumber: '', ninVerified: false, ninVerificationAttempted: false, ninVerificationStatus: 'not_attempted', ninData: null, ninPhoto: null,
   fullName: '', address: '', phoneNumbers: ['', ''], phonesVerified: [false, false],
   familyName: '', familyPhone: '', familyRelation: '',
-  photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null,
+  photoCustomerHolding: null, photoCustomerID: null, photoSigning: null, photoSealedPkg: null, termsConfirmed: false,
   captureItemType: '', itemPowersOn: null, partsOnly: false,
   itemPhotos: [],
   inspectionChecklist: {}, inspectionNotes: '',
@@ -5578,7 +5578,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       }
       case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.aiBrand && tx.estimatedValue > 0 && (tx.conditionDescription || tx.aiCondition));
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
-      case 'agreement': return !!tx.photoSigning;
+      case 'agreement': return !!tx.photoSigning && !!tx.termsConfirmed;
       default: return true;
     }
   };
@@ -5657,7 +5657,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         if (!tx.dateGiven) issues.push('You must set the date given before proceeding.');
         break;
       case 'agreement':
-        if (!tx.photoSigning) issues.push('You must upload a photo of the signed agreement before proceeding.');
+        if (!tx.termsConfirmed) issues.push('You must confirm that the customer has read or had the terms read to them before proceeding.');
+        if (!tx.photoSigning) issues.push('You must upload a photo of the customer signing the agreement before proceeding.');
         break;
       default: break;
     }
@@ -6166,46 +6167,129 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         })()}
         <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
-      case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>{tx.type === 'outright' ? 'View / Download Receipt PDF' : 'View / Download Agreement PDF'}</strong> to generate a properly formatted A4 PDF — both the Business Copy and {tx.type === 'outright' ? 'Seller Copy' : 'Customer Copy'} are included. Open it, then print from your PDF viewer (set paper to <strong>A4</strong>). Read every clause aloud to the {tx.type === 'outright' ? 'seller' : 'customer'}. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
-      <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
-        <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-          <div style={{ fontSize: '16px', fontWeight: 800 }}>CHRIST-IN-FABIAN QUICK CASH</div>
-          <div style={{ fontSize: '12px', color: COLORS.textMuted }}>{tx.type === 'outright' ? 'Outright Purchase Receipt' : 'Cash Advance & Buy-Back Agreement'}</div>
-          <div style={{ fontSize: '13px', fontWeight: 700, marginTop: '4px' }}>Ref: {tx.ref}</div>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '4px 12px', fontSize: '13px' }}>
-          <strong>Name:</strong><span>{tx.fullName}</span>
-          <strong>Address:</strong><span>{tx.address}</span>
-          <strong>ID:</strong><span>{tx.idType?.toUpperCase()} — {tx.idNumber}</span>
-          <strong>Phone(s):</strong><span>{tx.phoneNumbers?.filter(Boolean).join(', ')}</span>
-          <strong>Family:</strong><span>{tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}</span>
-          <strong>Item:</strong><span>{tx.aiItemType} / {tx.aiBrand} / {tx.aiModel}</span>
-          <strong>Condition:</strong><span>{tx.conditionDescription}</span>
-          {tx.imei && <><strong>IMEI:</strong><span>{tx.imei}</span></>}
-          <strong>Cash:</strong><span style={{ fontWeight: 700, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</span>
-          {tx.type === 'advance' && <><strong>Date Given:</strong><span>{fmtDate(tx.dateGiven)}</span><strong>Deadline:</strong><span>{fmtDate(tx.deadlineDate)}</span><strong>Daily Fee:</strong><span>{fmtMoney(dailyFeeCalc)}/day</span></>}
-        </div>
-      </div>
-      <div style={{ display: 'flex', gap: '8px', marginTop: '16px', flexWrap: 'wrap' }}>
-        <button
-          style={{ ...S.btn('accent'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
-          disabled={pdfLoading}
-          onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
-        >
-          {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
-        </button>
-        <button
-          style={{ ...S.btn('outline'), padding: '12px 24px', fontSize: '15px', opacity: pdfLoading ? 0.6 : 1 }}
-          disabled={pdfLoading}
-          onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
-        >
-          ⬇ Download PDF
-        </button>
-      </div>
-      <div style={{ marginTop: '16px' }}>
-        <PhotoUpload label="Photo of Signing / Thumbprint" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} />
-      </div>
-      <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
+      case 'agreement': {
+        const stepBox = (num, title, color, children) => (
+          <div style={{ border: `1.5px solid ${color}`, borderRadius: '10px', marginBottom: '14px', overflow: 'hidden' }}>
+            <div style={{ background: color, padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{ background: '#fff', color, borderRadius: '50%', width: '24px', height: '24px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: '13px', flexShrink: 0 }}>{num}</div>
+              <span style={{ fontWeight: 700, fontSize: '14px', color: '#fff' }}>{title}</span>
+            </div>
+            <div style={{ padding: '12px 14px', background: '#fff', fontSize: '13px', lineHeight: 1.6 }}>{children}</div>
+          </div>
+        );
+        return (
+          <div>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '4px' }}>📄 Agreement Preview</h3>
+            <p style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '16px' }}>Follow each step below in order before moving to the next screen.</p>
+
+            {/* Step 1 — Review the details */}
+            {stepBox(1, 'Check the Details', '#4f46e5', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>Look at the summary below. Make sure everything is correct before printing.</p>
+                <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: '8px', padding: '14px', background: COLORS.bgAlt || '#f8f8fb' }}>
+                  <div style={{ textAlign: 'center', marginBottom: '10px' }}>
+                    <div style={{ fontSize: '14px', fontWeight: 800 }}>CHRIST-IN-FABIAN QUICK CASH</div>
+                    <div style={{ fontSize: '11px', color: COLORS.textMuted }}>{tx.type === 'outright' ? 'Outright Purchase Receipt' : 'Cash Advance & Buy-Back Agreement'}</div>
+                    <div style={{ fontSize: '12px', fontWeight: 700, marginTop: '2px' }}>Ref: {tx.ref}</div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '3px 10px', fontSize: '12px' }}>
+                    <strong>Name:</strong><span>{tx.fullName}</span>
+                    <strong>Address:</strong><span>{tx.address}</span>
+                    <strong>ID:</strong><span>{tx.idType?.toUpperCase()} — {tx.idNumber}</span>
+                    <strong>Phone(s):</strong><span>{tx.phoneNumbers?.filter(Boolean).join(', ')}</span>
+                    <strong>Family:</strong><span>{tx.familyName} ({tx.familyRelation}) — {tx.familyPhone}</span>
+                    <strong>Item:</strong><span>{tx.aiItemType} / {tx.aiBrand} / {tx.aiModel}</span>
+                    <strong>Condition:</strong><span>{tx.conditionDescription}</span>
+                    {tx.imei && <><strong>IMEI:</strong><span>{tx.imei}</span></>}
+                    <strong>Cash:</strong><span style={{ fontWeight: 700, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</span>
+                    {tx.type === 'advance' && <><strong>Date Given:</strong><span>{fmtDate(tx.dateGiven)}</span><strong>Deadline:</strong><span>{fmtDate(tx.deadlineDate)}</span><strong>Daily Fee:</strong><span>{fmtMoney(dailyFeeCalc)}/day</span></>}
+                  </div>
+                </div>
+              </>
+            ))}
+
+            {/* Step 2 — Generate & print */}
+            {stepBox(2, 'Generate & Print the PDF', '#0891b2', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>Click the button to open or download the {tx.type === 'outright' ? 'receipt' : 'agreement'} PDF. Print it on <strong>A4 paper</strong>. You will get two copies — one for the business and one for the {tx.type === 'outright' ? 'seller' : 'customer'}.</p>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <button
+                    style={{ ...S.btn('accent'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
+                    disabled={pdfLoading}
+                    onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
+                  >
+                    {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
+                  </button>
+                  <button
+                    style={{ ...S.btn('outline'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
+                    disabled={pdfLoading}
+                    onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF(tx, settings); } finally { setPdfLoading(false); } }}
+                  >
+                    ⬇ Download PDF
+                  </button>
+                </div>
+              </>
+            ))}
+
+            {/* Step 3 — Read terms aloud */}
+            {stepBox(3, 'Go Through the Terms', '#059669', (
+              <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} their copy. Let them read it if they can.</li>
+                <li>If they <strong>cannot read</strong>, read and explain each clause to them clearly before they sign.</li>
+                <li>Make sure they understand the {tx.type === 'advance' ? 'cash amount, repayment deadline, and consequences of not paying on time' : 'purchase amount and terms'}.</li>
+              </ul>
+            ))}
+
+            {/* Step 4 — Confirm terms */}
+            {stepBox(4, 'Confirm Customer Understands & Agrees', tx.termsConfirmed ? '#16a34a' : '#dc2626', (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={!!tx.termsConfirmed}
+                  onChange={e => upd('termsConfirmed', e.target.checked)}
+                  style={{ width: '20px', height: '20px', marginTop: '2px', flexShrink: 0 }}
+                />
+                <span>
+                  <span style={{ fontWeight: 700, fontSize: '13px' }}>I confirm: the {tx.type === 'outright' ? 'seller' : 'customer'} understands and agrees to all terms. <span style={{ color: COLORS.danger }}>*</span></span>
+                  <span style={{ display: 'block', fontSize: '12px', color: COLORS.textMuted, marginTop: '3px' }}>They have read the {tx.type === 'outright' ? 'receipt' : 'agreement'} themselves, or the terms have been read and fully explained to them.</span>
+                </span>
+              </label>
+            ))}
+
+            {/* Step 5 — Sign & thumbprint */}
+            {stepBox(5, 'Sign & Thumbprint Both Copies', '#d97706', (
+              <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                <li>Ask them to write their signature on the signature line.</li>
+                <li>Ask them to press their right thumb on the thumbprint box.</li>
+                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} one copy and keep one copy for the business.</li>
+              </ul>
+            ))}
+
+            {/* Step 6 — Photo of signing */}
+            {stepBox(6, 'Take a Photo of the Customer Signing', tx.photoSigning ? '#16a34a' : '#dc2626', (
+              <>
+                <p style={{ margin: '0 0 10px' }}>
+                  <strong>Take a clear photo right now</strong> while the {tx.type === 'outright' ? 'seller' : 'customer'} is signing the {tx.type === 'outright' ? 'receipt' : 'agreement'}. The photo must clearly show:
+                </p>
+                <ul style={{ margin: '0 0 12px', paddingLeft: '18px' }}>
+                  <li>The {tx.type === 'outright' ? 'seller' : 'customer'}'s face or upper body</li>
+                  <li>The {tx.type === 'outright' ? 'receipt' : 'agreement'} paper in their hand or on the table</li>
+                  <li>The moment they are signing or thumbprinting</li>
+                </ul>
+                <p style={{ margin: '0 0 10px', color: COLORS.danger, fontWeight: 600 }}>This photo is required. You cannot proceed without it.</p>
+                <PhotoUpload label="Photo of Customer Signing" value={tx.photoSigning} onChange={v => upd('photoSigning', v)} required size={140} />
+              </>
+            ))}
+
+            <div style={{ marginTop: '8px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
+              <div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
 
       case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔒 Finalize Transaction</h3>{tx.type === 'advance' ? <div style={S.alert('info')}>📋 Follow these steps before clicking Complete: <strong>1.</strong> Count the cash advance in front of the customer and let them count it too. <strong>2.</strong> Collect the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance).toLocaleString()} service fee from the customer. <strong>3.</strong> Tick the checkbox below to confirm the fee has been collected.</div> : <div style={S.alert('info')}>📋 Count the purchase amount in front of the customer and let them count it too, then click Complete.</div>}{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}{tx.type === 'advance' && <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>I have collected the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance)} service fee <span style={{ color: COLORS.danger }}>*</span></span></label>}<div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: (tx.type === 'advance' && !tx.serviceFeeCollected) ? 0.5 : 1 }} disabled={tx.type === 'advance' && !tx.serviceFeeCollected} onClick={handleComplete}>{(tx.type === 'advance' && !tx.serviceFeeCollected) ? 'Tick the checkbox above to continue' : 'Click to Complete Transaction'}</button></div>);
 
