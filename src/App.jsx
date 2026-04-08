@@ -223,6 +223,31 @@ const addDays = (dateStr, daysToAdd) => {
   return date.toISOString().split('T')[0];
 };
 
+const getFlatServiceFee = (settings = {}) => Number(settings?.serviceFee ?? 1000) || 0;
+
+const normalizeServiceFeeRanges = (settings = {}) => {
+  const ranges = Array.isArray(settings?.serviceFeeRanges) ? settings.serviceFeeRanges : [];
+  return ranges
+    .map((r, idx) => ({
+      id: r?.id || `range-${idx}`,
+      min: Math.max(0, Number(r?.min) || 0),
+      max: r?.max === '' || r?.max === null || r?.max === undefined ? null : Math.max(0, Number(r?.max) || 0),
+      fee: Math.max(0, Number(r?.fee) || 0),
+    }))
+    .sort((a, b) => a.min - b.min);
+};
+
+const getServiceFeeForAdvance = (settings = {}, advanceAmount = 0) => {
+  const amount = Math.max(0, Number(advanceAmount) || 0);
+  const ranges = normalizeServiceFeeRanges(settings);
+  for (const r of ranges) {
+    const inMin = amount >= r.min;
+    const inMax = r.max === null ? true : amount <= r.max;
+    if (inMin && inMax) return r.fee;
+  }
+  return getFlatServiceFee(settings);
+};
+
 // Returns a short human-readable label for how far a date is from today (Nigeria time).
 // e.g. "Today", "Yesterday", "Tomorrow", "5 days ago", "In 10 days".
 const relativeDateLabel = (dateStr) => {
@@ -407,7 +432,7 @@ const DEFAULT_SETTINGS = {
   cacRegNumber: '',
   // Loan Parameters
   interestRate: 1, loanCapNoReceipt: 40, loanCapWithReceipt: 50,
-  graceDays: 3, serviceFee: 1000, maxLoanDays: 30,
+  graceDays: 3, serviceFee: 1000, serviceFeeRanges: [], maxLoanDays: 30,
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, outrightMinMarkupPct: 20, maxPartsOnlyAdvance: 5000,
   priceDropEnabled: false, priceDropIntervalDays: 3,
@@ -701,7 +726,7 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
-  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpensesAll = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpensesAll;
@@ -5679,7 +5704,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   };
 
   const handleComplete = async () => {
-    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString(), serviceFeeAmount: tx.type === 'advance' && tx.serviceFeeCollected ? (settings.serviceFee || 1000) : 0 };
+    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString(), serviceFeeAmount: tx.type === 'advance' && tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0 };
     const saved = await API.post('transactions', finalTx);
     if (!saved?.success) return;
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
@@ -6139,7 +6164,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             </div>
           );
         })()}
-        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(settings.serviceFee)} to collect. <InfoIcon tip="Collect this flat fee from the customer today, on top of the cash you're giving them. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📄 Agreement Preview</h3><div style={S.alert('info')}>📋 Click <strong>{tx.type === 'outright' ? 'View / Download Receipt PDF' : 'View / Download Agreement PDF'}</strong> to generate a properly formatted A4 PDF — both the Business Copy and {tx.type === 'outright' ? 'Seller Copy' : 'Customer Copy'} are included. Open it, then print from your PDF viewer (set paper to <strong>A4</strong>). Read every clause aloud to the {tx.type === 'outright' ? 'seller' : 'customer'}. After both copies are signed and thumbprinted, take a photo of the signing and upload it here before proceeding.</div>
       <div style={{ border: `2px solid ${COLORS.border}`, borderRadius: '12px', padding: '20px', background: '#fff' }}>
@@ -6182,7 +6207,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       </div>
       <div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
 
-      case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔒 Finalize Transaction</h3>{tx.type === 'advance' ? <div style={S.alert('info')}>📋 Follow these steps before clicking Complete: <strong>1.</strong> Count the cash advance in front of the customer and let them count it too. <strong>2.</strong> Collect the ₦{settings.serviceFee?.toLocaleString() || '1,000'} service fee from the customer. <strong>3.</strong> Tick the checkbox below to confirm the fee has been collected.</div> : <div style={S.alert('info')}>📋 Count the purchase amount in front of the customer and let them count it too, then click Complete.</div>}{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}{tx.type === 'advance' && <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>I have collected the ₦{settings.serviceFee} service fee <span style={{ color: COLORS.danger }}>*</span></span></label>}<div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: (tx.type === 'advance' && !tx.serviceFeeCollected) ? 0.5 : 1 }} disabled={tx.type === 'advance' && !tx.serviceFeeCollected} onClick={handleComplete}>{(tx.type === 'advance' && !tx.serviceFeeCollected) ? 'Tick the checkbox above to continue' : 'Click to Complete Transaction'}</button></div>);
+      case 'complete': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🔒 Finalize Transaction</h3>{tx.type === 'advance' ? <div style={S.alert('info')}>📋 Follow these steps before clicking Complete: <strong>1.</strong> Count the cash advance in front of the customer and let them count it too. <strong>2.</strong> Collect the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance).toLocaleString()} service fee from the customer. <strong>3.</strong> Tick the checkbox below to confirm the fee has been collected.</div> : <div style={S.alert('info')}>📋 Count the purchase amount in front of the customer and let them count it too, then click Complete.</div>}{tx.type === 'advance' && <PhotoUpload label="Sealed Package Photo" value={tx.photoSealedPkg} onChange={v => upd('photoSealedPkg', v)} size={140} />}{tx.type === 'advance' && <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '12px', background: COLORS.accentLight, borderRadius: '8px', marginTop: '12px' }}><input type="checkbox" checked={tx.serviceFeeCollected} onChange={e => upd('serviceFeeCollected', e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontSize: '14px', fontWeight: 600 }}>I have collected the ₦{getServiceFeeForAdvance(settings, tx.cashAdvance)} service fee <span style={{ color: COLORS.danger }}>*</span></span></label>}<div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center', marginTop: '12px' }}><div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '8px' }}>Cash {tx.type === 'outright' ? 'Paid' : 'Advance Given'}</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.cashAdvance)}</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Count in front of customer. Let them count too.</div></div><button style={{ ...S.btn('primary'), padding: '16px', fontSize: '16px', justifyContent: 'center', width: '100%', marginTop: '12px', opacity: (tx.type === 'advance' && !tx.serviceFeeCollected) ? 0.5 : 1 }} disabled={tx.type === 'advance' && !tx.serviceFeeCollected} onClick={handleComplete}>{(tx.type === 'advance' && !tx.serviceFeeCollected) ? 'Tick the checkbox above to continue' : 'Click to Complete Transaction'}</button></div>);
 
       default: return <div>Unknown step</div>;
     }
@@ -7051,7 +7076,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       </div>
       {tx.type === 'advance' && (
         <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
-          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(settings.serviceFee) > 0 && <> · Service fee: <strong>{fmtMoney(settings.serviceFee)}</strong></>}
+          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
@@ -8191,7 +8216,7 @@ export default function App() {
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
-  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+  const totalServiceFees = transactions.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
@@ -9459,7 +9484,7 @@ export default function App() {
         const rRepaymentFees = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0);
         // Sales revenue = margin (salePrice − cashAdvance). The principal was deployed capital, not profit.
         const rSalesRevenue = rSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
-        const rServiceFees = rNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+        const rServiceFees = rNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
         const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
@@ -9573,7 +9598,7 @@ export default function App() {
           rRepaymentFees, rSalesRevenue, rServiceFees, rRevenue,
           rExpTotal, rProfit, rStaff, rStakeholder,
           rCapitalDeployed, rCapitalReturned,
-          serviceFee: settings.serviceFee || 1000,
+          serviceFee: getFlatServiceFee(settings),
           rNewLoans,
           stakeholders: rStakeholders,
           rStaffByTask, staffSharePct, totalTaskPoints,
@@ -9614,7 +9639,7 @@ export default function App() {
             '',
             'NEW LOANS',
             toCSV(['Ref','Customer','Cash Advanced','Service Fee','Loan Term (days)','Date','Status'],
-              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), t.loanDays || 30, t.created_at, t.status])),
+              rNewTxs.map(t => [t.ref, t.fullName, t.cashAdvance, t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), t.loanDays || 30, t.created_at, t.status])),
             '',
             'EXPENSES',
             toCSV(['Date','Category','Description','Amount'],
@@ -9859,7 +9884,7 @@ export default function App() {
                           <td style={S.td}><strong>{t.ref}</strong></td>
                           <td style={S.td}>{t.fullName || '—'}</td>
                           <td style={{ ...S.td, fontWeight: 700 }}>{fmtMoney(t.cashAdvance)}</td>
-                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)))}</td>
+                          <td style={{ ...S.td, color: COLORS.primary }}>{fmtMoney(t.type === 'outright' ? 0 : (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)))}</td>
                           <td style={S.td}>{t.loanDays || 30} days</td>
                           <td style={S.td}>{fmtDate(t.created_at)}</td>
                           <td style={S.td}><span style={{ fontSize: '12px', fontWeight: 600, color: statusColor(t, settings) }}>{statusLabel(t, settings)}</span></td>
@@ -10252,7 +10277,7 @@ export default function App() {
                     const periodSold = soldTxs.filter(t => { const ds = t.saleDate || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
                     const periodNewLoans = periodTxs.filter(t => t.type !== 'outright' && t.status !== 'declined');
                     const periodExp = expenses.filter(e => { if (!e.date) return false; const d = new Date(e.date.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
-                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? (settings.serviceFee || 1000) : 0)), 0);
+                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
                     const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
                     const profit = rev - expT;
                     const sPct = settings.staffSharePct ?? 10;
@@ -11137,6 +11162,7 @@ export default function App() {
 
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; {
         const es = pendingSettings ?? settings; // effective settings (pending or saved)
+        const serviceFeeRanges = Array.isArray(es?.serviceFeeRanges) ? es.serviceFeeRanges : [];
         const hasUnsaved = pendingSettings !== null;
         const updateSettings = (s) => setPendingSettings(s);
         const distributableStaff = users.filter(u => u.active !== 0 && u.role === 'staff');
@@ -11226,6 +11252,76 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Grace Days<InfoIcon tip="Extra days we give a customer after they go overdue, before we start selling their item. It's a last chance for them to come back." /></span>}>
                 <input style={S.input} type="number" min="0" max="30" value={es.graceDays} onChange={e => updateSettings({ ...es, graceDays: Number(e.target.value) })} />
               </Field>
+            </div>
+            <div style={{ marginTop: '14px', padding: '12px', borderRadius: '10px', border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>Range-Based Service Fees (optional)</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>
+                Keep the flat service fee above as fallback. Add ranges below to charge different fees based on the cash advance amount.
+              </div>
+              <div style={{ display: 'grid', gap: '8px' }}>
+                {serviceFeeRanges.map((range, idx) => (
+                  <div key={range.id || `range-${idx}`} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '8px', alignItems: 'end' }}>
+                    <Field label="Min Advance (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        value={range?.min ?? ''}
+                        onChange={e => {
+                          const next = [...serviceFeeRanges];
+                          const raw = e.target.value;
+                          next[idx] = { ...range, min: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, serviceFeeRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <Field label="Max Advance (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        placeholder="No limit"
+                        value={range?.max ?? ''}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          const next = [...serviceFeeRanges];
+                          next[idx] = { ...range, max: raw === '' ? null : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, serviceFeeRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <Field label="Fee (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        value={range?.fee ?? ''}
+                        onChange={e => {
+                          const next = [...serviceFeeRanges];
+                          const raw = e.target.value;
+                          next[idx] = { ...range, fee: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, serviceFeeRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <button
+                      style={{ ...S.btnSm('muted'), color: COLORS.danger, borderColor: COLORS.danger }}
+                      onClick={() => updateSettings({ ...es, serviceFeeRanges: serviceFeeRanges.filter((_, i) => i !== idx) })}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                style={{ ...S.btnSm('primary'), marginTop: '10px' }}
+                onClick={() => updateSettings({
+                  ...es,
+                  serviceFeeRanges: [...serviceFeeRanges, { id: `range-${Date.now()}`, min: 0, max: null, fee: getFlatServiceFee(es) }],
+                })}
+              >
+                + Add Range
+              </button>
             </div>
           </div>
 
