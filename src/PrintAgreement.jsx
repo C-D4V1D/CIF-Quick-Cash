@@ -48,7 +48,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
   // Rep signature image (attached via tx.repSignatureUrl) — embedded in Part E
   const repSigCell = tx.repSignatureUrl
-    ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
+    ? `<div style="text-align:center;line-height:0"><img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="height:40px;max-width:95%;object-fit:contain;display:inline-block" /></div>`
     : '';
 
   // Date the PDF is generated (for signature area)
@@ -79,10 +79,12 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     </table>
     <table class="field-tbl" style="margin-top:4px">
       <tr>
-        <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
-        <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
-        <td class="fl" style="width:18%"><b>Shop Rep Signature:</b></td>
-        <td class="fv" style="width:32%">${repSigCell}</td>
+        <td class="fl" style="width:22%"><b>Shop Rep Name:</b></td>
+        <td class="fv" style="width:78%">${tx.completedBy || tx.createdBy || ''}</td>
+      </tr>
+      <tr>
+        <td class="fl" style="width:22%;vertical-align:bottom"><b>Shop Rep Signature:</b></td>
+        <td class="fv" style="width:78%">${repSigCell}</td>
       </tr>
     </table>
     <div class="photo-note">
@@ -340,7 +342,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
   // Rep signature image (attached via tx.repSignatureUrl) — embedded in Part E
   const repSigCell = tx.repSignatureUrl
-    ? `<img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="max-height:22px;max-width:100%;object-fit:contain;vertical-align:middle" />`
+    ? `<div style="text-align:center;line-height:0"><img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="height:40px;max-width:95%;object-fit:contain;display:inline-block" /></div>`
     : '';
 
   // Date the PDF is generated (for signature area)
@@ -527,10 +529,12 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
 
     <table class="field-tbl" style="margin-top:10px">
       <tr>
-        <td class="fl" style="width:18%"><b>Shop Rep Name:</b></td>
-        <td class="fv" style="width:32%">${tx.completedBy || tx.createdBy || ''}</td>
-        <td class="fl" style="width:18%"><b>Shop Rep Signature:</b></td>
-        <td class="fv" style="width:32%">${repSigCell}</td>
+        <td class="fl" style="width:22%"><b>Shop Rep Name:</b></td>
+        <td class="fv" style="width:78%">${tx.completedBy || tx.createdBy || ''}</td>
+      </tr>
+      <tr>
+        <td class="fl" style="width:22%;vertical-align:bottom"><b>Shop Rep Signature:</b></td>
+        <td class="fv" style="width:78%">${repSigCell}</td>
       </tr>
     </table>
 
