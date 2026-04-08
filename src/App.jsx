@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
 import { viewAgreementPDF, downloadAgreementPDF } from './PrintAgreement.jsx';
@@ -8027,6 +8027,8 @@ export default function App() {
   const [serpApiAccount, setSerpApiAccount] = useState(null); // live data from serpapi.com/account.json
   const [serpApiAiAccount, setSerpApiAiAccount] = useState(null); // live data for AI key from serpapi.com/account.json
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [unreadImportantNotifCount, setUnreadImportantNotifCount] = useState(0);
+  const [unreadUrgentNotifCount, setUnreadUrgentNotifCount] = useState(0);
 
   useEffect(() => {
     const restoreSession = async () => {
@@ -8348,12 +8350,13 @@ export default function App() {
     };
   }, [currentUser, capitalPrediction, availableLendingCapital, totalCapital, settings]);
 
-  // Compute the unread notification badge count from live data so it stays accurate as data
-  // changes (new transactions, capital entries, etc.) without requiring the user to visit
-  // the profile page first.  When the user marks notifications as read, onUnreadChange keeps
-  // the count current; this effect handles everything that changes underneath.
-  useEffect(() => {
-    if (!currentUser) return;
+  const recomputeUnreadNotificationMetrics = useCallback(() => {
+    if (!currentUser) {
+      setUnreadNotifCount(0);
+      setUnreadImportantNotifCount(0);
+      setUnreadUrgentNotifCount(0);
+      return;
+    }
     try {
       const notifs = buildNotifications({
         currentUser, capital, distributions, activityLogs,
@@ -8361,9 +8364,20 @@ export default function App() {
         distDecisions, ninCredits, stakeholderCapitalData: myCapitalAlertData,
       });
       const readIds = getReadIds(currentUser.id);
-      setUnreadNotifCount(notifs.filter(n => !readIds.has(n.id)).length);
-    } catch { /* buildNotifications is a pure derived computation; errors here must not crash the app — the badge simply retains its previous value */ }
+      const unread = notifs.filter(n => !readIds.has(n.id));
+      setUnreadNotifCount(unread.length);
+      setUnreadImportantNotifCount(unread.filter(n => n.priority === 'high').length);
+      setUnreadUrgentNotifCount(unread.filter(n => n.priority === 'urgent').length);
+    } catch {
+      /* buildNotifications is a pure derived computation; errors here must not crash the app */
+    }
   }, [currentUser, capital, distributions, activityLogs, transactions, smsCredits, smsBalance, settings, distDecisions, ninCredits, myCapitalAlertData]);
+
+  // Compute unread notification metrics from live data so they stay accurate as data changes
+  // (new transactions, capital entries, etc.) without requiring the user to visit profile first.
+  useEffect(() => {
+    recomputeUnreadNotificationMetrics();
+  }, [recomputeUnreadNotificationMetrics]);
 
   // On login (or app reload in a new browser), seed the notification read-ID cache from the
   // backend so the badge reflects the user's already-read state across devices/deployments.
@@ -8376,22 +8390,14 @@ export default function App() {
         if (cancelled || !prefs?.notifReadIds?.length) return;
         seedReadIds(currentUser.id, prefs.notifReadIds);
         // Recompute badge with the freshly-seeded read IDs.
-        try {
-          const notifs = buildNotifications({
-            currentUser, capital, distributions, activityLogs,
-            transactions, smsCredits, smsBalance, settings,
-            distDecisions, ninCredits, stakeholderCapitalData: myCapitalAlertData,
-          });
-          const readIds = getReadIds(currentUser.id);
-          setUnreadNotifCount(notifs.filter(n => !readIds.has(n.id)).length);
-        } catch { /**/ }
+        recomputeUnreadNotificationMetrics();
       })
       .catch(() => {});
     return () => { cancelled = true; };
   // Intentionally keyed on currentUser?.id only: this runs once per login to seed localStorage
   // from the backend.  The badge-update effect (above) handles live data changes separately.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.id]);
+  }, [currentUser?.id, recomputeUnreadNotificationMetrics]);
 
   // Archive this month's prediction and fill in actuals for past months
   useEffect(() => {
@@ -8785,6 +8791,14 @@ export default function App() {
             </div>
           );
         })()}
+        {(unreadImportantNotifCount + unreadUrgentNotifCount) > 0 && (
+          <div style={{ background: '#fff7ed', border: '2px solid #fb923c', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+            <span style={{ fontSize: '18px', lineHeight: 1 }}>🔔</span>
+            <div style={{ fontSize: '13px', color: '#9a3412', lineHeight: 1.45 }}>
+              You have <strong>{unreadImportantNotifCount + unreadUrgentNotifCount}</strong> unread important/urgent notification{(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 's' : ''}. Open your Profile to review and mark {(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 'them' : 'it'} as read.
+            </div>
+          </div>
+        )}
         <div style={S.grid4}>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Available Lending Capital<InfoIcon tip="The money we have available to give out as new loans right now. It's what's left after taking away everything that's already out or paid out." /></div><div style={S.statValue}>{secondaryLoading ? '—' : fmtMoney(availableLendingCapital)}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Capital Out<InfoIcon tip="The total cash that's currently with customers who haven't paid back yet." /></div><div style={S.statValue}>{fmtMoney(totalCapitalOut)}</div></div>
@@ -12277,7 +12291,10 @@ export default function App() {
           stakeholderCapitalData={myCapitalAlertData}
           loadData={loadData}
           isMobile={isMobile}
-          onUnreadChange={(count) => setUnreadNotifCount(count)}
+          onUnreadChange={(count) => {
+            setUnreadNotifCount(count);
+            recomputeUnreadNotificationMetrics();
+          }}
           onContactSaved={(fields) => {
             const updated = { ...currentUser, ...fields };
             setCurrentUser(updated);
