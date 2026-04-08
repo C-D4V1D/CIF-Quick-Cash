@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   phone1      TEXT    DEFAULT NULL,
   phone2      TEXT    DEFAULT NULL,
   email       TEXT    DEFAULT NULL,
+  signature   TEXT    DEFAULT NULL, -- /api/photos/:key URL for refined signature PNG
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
 -- ALTER TABLE users ADD COLUMN phone1 TEXT DEFAULT NULL;
 -- ALTER TABLE users ADD COLUMN phone2 TEXT DEFAULT NULL;
 -- ALTER TABLE users ADD COLUMN email  TEXT DEFAULT NULL;
+-- ALTER TABLE users ADD COLUMN signature TEXT DEFAULT NULL;
 -- (Or run: migrate-user-contact.sql)
 
 -- Default admin user

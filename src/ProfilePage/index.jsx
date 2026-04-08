@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { COLORS } from '../theme';
 import ProfileHeader from './ProfileHeader';
 import ContactInfo from './ContactInfo';
+import SignatureSection from './SignatureSection';
 import NotificationsPanel from './NotificationsPanel';
 import StaffPerformance from './StaffPerformance';
 import FinancialSummary from './FinancialSummary';
@@ -50,6 +51,7 @@ export default function ProfilePage({
   onContactSaved,
   onOpenSmsRecharge,
   onOpenNinRecharge,
+  callGeminiAI,
 }) {
   const [dataReady, setDataReady] = useState(false);
 
@@ -98,6 +100,16 @@ export default function ProfilePage({
         onSaved={onContactSaved}
         isMobile={isMobile}
       />
+
+      {isStaff && (
+        <SignatureSection
+          currentUser={currentUser}
+          settings={settings}
+          callGeminiAI={callGeminiAI}
+          onSaved={onContactSaved}
+          isMobile={isMobile}
+        />
+      )}
 
       <NotificationsPanel
         activityLogs={activityLogs}

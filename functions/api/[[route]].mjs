@@ -634,13 +634,18 @@ export async function onRequest(context) {
       }
 
       let user = await db
-        .prepare('SELECT id, username, password, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE username = ?')
+        .prepare('SELECT id, username, password, role, roles, name, active, phone1, phone2, email, signature, created_at FROM users WHERE username = ?')
         .bind(username)
         .first()
         .catch(() =>
-          // Fallback for databases where the `active`/`roles` migration hasn't run yet
-          db.prepare('SELECT id, username, password, role, name FROM users WHERE username = ?')
-            .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]' } : null)
+          // Fallback 1: `signature` column not migrated yet — select everything else
+          db.prepare('SELECT id, username, password, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE username = ?')
+            .bind(username).first().then(u => u ? { ...u, signature: null } : null)
+            .catch(() =>
+              // Fallback 2: `active`/`roles` migration also not run — minimal schema
+              db.prepare('SELECT id, username, password, role, name FROM users WHERE username = ?')
+                .bind(username).first().then(u => u ? { ...u, active: 1, roles: '[]', signature: null } : null)
+            )
         );
       if (!user) {
         await db.prepare('INSERT INTO login_attempts (username, success) VALUES (?, 0)').bind(username).run().catch(() => {});
@@ -661,7 +666,7 @@ export async function onRequest(context) {
       }
 
       const parsedRoles = parseRoles(user.roles);
-      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, phone1: user.phone1 || null, phone2: user.phone2 || null, email: user.email || null, created_at: user.created_at || null, issuedAt: Date.now() });
+      const sessionPayload = JSON.stringify({ id: user.id, username: user.username, role: user.role, roles: parsedRoles, name: user.name, phone1: user.phone1 || null, phone2: user.phone2 || null, email: user.email || null, signature: user.signature || null, created_at: user.created_at || null, issuedAt: Date.now() });
       const activeCookie = rememberMe
         ? buildSessionCookie(SESSION_COOKIE_LONG, sessionPayload, REMEMBER_ME_MAX_AGE)
         : buildSessionCookie(SESSION_COOKIE_SHORT, sessionPayload);
@@ -679,12 +684,18 @@ export async function onRequest(context) {
     if (path === 'me' && method === 'GET') {
       const user = getSessionUser(request);
       if (!user) return error('Not authenticated', 401);
-      // Always query fresh so contact info (phone1/phone2/email) reflects latest updates
+      // Always query fresh so contact info (phone1/phone2/email/signature) reflects latest updates
       const fresh = await db
-        .prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE id = ?')
-        .bind(user.id).first().catch(() => null);
+        .prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, signature, created_at FROM users WHERE id = ?')
+        .bind(user.id).first()
+        .catch(() =>
+          // Fallback if `signature` column has not been migrated yet
+          db.prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, created_at FROM users WHERE id = ?')
+            .bind(user.id).first().then(u => u ? { ...u, signature: null } : null)
+            .catch(() => null)
+        );
       if (!fresh) return json(user); // fallback to session data if DB unreachable
-      return json({ ...user, phone1: fresh.phone1 || null, phone2: fresh.phone2 || null, email: fresh.email || null, created_at: fresh.created_at || null, roles: parseRoles(fresh.roles), active: fresh.active });
+      return json({ ...user, phone1: fresh.phone1 || null, phone2: fresh.phone2 || null, email: fresh.email || null, signature: fresh.signature || null, created_at: fresh.created_at || null, roles: parseRoles(fresh.roles), active: fresh.active });
     }
 
     // ============================================================
@@ -916,14 +927,19 @@ export async function onRequest(context) {
       const isSelf = sessionAuth.user.id === id;
       const isAdmin = sessionAuth.user.role === 'admin';
       const body = await request.json();
-      const { username, password, active, roles, phone1, phone2, email } = body;
+      const { username, password, active, roles, phone1, phone2, email, signature } = body;
       // Non-admin trying to modify privileged fields
       if (!isAdmin && (username !== undefined || password !== undefined || active !== undefined || roles !== undefined)) {
         return error('Admin access required', 403);
       }
       // Non-admin can only edit their own contact info
       if (!isAdmin && !isSelf) return error('Forbidden', 403);
-      const cur = await db.prepare('SELECT username, name, role, roles, active, phone1, phone2, email FROM users WHERE id = ?').bind(id).first();
+      const cur = await db.prepare('SELECT username, name, role, roles, active, phone1, phone2, email, signature FROM users WHERE id = ?').bind(id).first()
+        .catch(() =>
+          // Fallback if `signature` column has not been migrated yet
+          db.prepare('SELECT username, name, role, roles, active, phone1, phone2, email FROM users WHERE id = ?').bind(id).first()
+            .then(u => u ? { ...u, signature: null } : null)
+        );
       if (!cur) return error('User not found', 404);
       const setClauses = []; const setParams = [];
       if (isAdmin) {
@@ -935,6 +951,7 @@ export async function onRequest(context) {
       if (phone1 !== undefined) { setClauses.push('phone1 = ?'); setParams.push(phone1 || null); }
       if (phone2 !== undefined) { setClauses.push('phone2 = ?'); setParams.push(phone2 || null); }
       if (email  !== undefined) { setClauses.push('email = ?');  setParams.push(email  || null); }
+      if (signature !== undefined) { setClauses.push('signature = ?'); setParams.push(signature || null); }
       if (setClauses.length) await db.prepare(`UPDATE users SET ${setClauses.join(', ')} WHERE id = ?`).bind(...setParams, id).run();
       if (isAdmin) {
         if (username !== undefined && username.trim() && username.trim() !== cur.username)
