@@ -6215,18 +6215,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               </ul>
             ))}
 
-            {/* Step 4 — Sign & thumbprint */}
-            {stepBox(4, 'Sign & Thumbprint Both Copies', '#d97706', (
-              <ul style={{ margin: 0, paddingLeft: '18px' }}>
-                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} one copy and keep one copy for the business.</li>
-                <li>Ask them to write their signature on the signature line.</li>
-                <li>Ask them to press their right thumb on the thumbprint box.</li>
-                <li>Do the same on the business copy.</li>
-              </ul>
-            ))}
-
-            {/* Step 5 — Confirm terms */}
-            {stepBox(5, 'Confirm Customer Understands & Agrees', tx.termsConfirmed ? '#16a34a' : '#dc2626', (
+            {/* Step 4 — Confirm terms */}
+            {stepBox(4, 'Confirm Customer Understands & Agrees', tx.termsConfirmed ? '#16a34a' : '#dc2626', (
               <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer' }}>
                 <input
                   type="checkbox"
@@ -6239,6 +6229,15 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
                   <span style={{ display: 'block', fontSize: '12px', color: COLORS.textMuted, marginTop: '3px' }}>They have read the {tx.type === 'outright' ? 'receipt' : 'agreement'} themselves, or the terms have been read and fully explained to them.</span>
                 </span>
               </label>
+            ))}
+
+            {/* Step 5 — Sign & thumbprint */}
+            {stepBox(5, 'Sign & Thumbprint Both Copies', '#d97706', (
+              <ul style={{ margin: 0, paddingLeft: '18px' }}>
+                <li>Ask them to write their signature on the signature line.</li>
+                <li>Ask them to press their right thumb on the thumbprint box.</li>
+                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} one copy and keep one copy for the business.</li>
+              </ul>
             ))}
 
             {/* Step 6 — Photo of signing */}
