@@ -6207,12 +6207,11 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             ))}
 
             {/* Step 3 — Read terms aloud */}
-            {stepBox(3, 'Read the Terms to the Customer', '#059669', (
+            {stepBox(3, 'Go Through the Terms', '#059669', (
               <ul style={{ margin: 0, paddingLeft: '18px' }}>
-                <li>Open the printed {tx.type === 'outright' ? 'receipt' : 'agreement'} and read every clause aloud to the {tx.type === 'outright' ? 'seller' : 'customer'}.</li>
-                <li>Speak clearly and slowly. Make sure they understand.</li>
-                <li>Explain: how much cash they are {tx.type === 'outright' ? 'receiving for their item' : 'getting'}{tx.type === 'advance' ? ', the repayment deadline, and what happens if they do not pay on time' : ''}.</li>
-                <li>If the {tx.type === 'outright' ? 'seller' : 'customer'} cannot read, read and explain everything to them before they sign.</li>
+                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} their copy. Let them read it if they can.</li>
+                <li>If they <strong>cannot read</strong>, read and explain each clause to them clearly before they sign.</li>
+                <li>Make sure they understand the {tx.type === 'advance' ? 'cash amount, repayment deadline, and consequences of not paying on time' : 'purchase amount and terms'}.</li>
               </ul>
             ))}
 
