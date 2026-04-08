@@ -74,7 +74,7 @@ export function buildNotifications({ currentUser, capital, distributions, activi
         short: `${fmtMoney(entry.amount)} added to your capital via ${entry.method}`,
         full: `A capital contribution of ${fmtMoney(entry.amount)} was recorded for you on ${fmtDateFull(entry.date)} via ${entry.method}. Your total capital in the business has been updated.${entry.receipt ? ' A receipt was attached.' : ''}`,
         createdAt: entry.date,
-        priority: 'normal',
+        priority: 'high',
         link: '/capital',
         linkLabel: 'View Capital',
       });
@@ -144,7 +144,7 @@ export function buildNotifications({ currentUser, capital, distributions, activi
         short: `Your business report for ${monthName} is available to view`,
         full: `The monthly business performance report for ${monthName} ${ly} has been generated. It includes profit calculations, capital movements, and your share of this month's returns.\n\nOpen the Monthly Report page to view the full breakdown.`,
         createdAt: new Date(ly, lm + 1, 1).toISOString(),
-        priority: 'normal',
+        priority: 'high',
         link: '/reports',
         linkLabel: 'View Monthly Report',
       });

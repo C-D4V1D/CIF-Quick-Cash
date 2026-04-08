@@ -8795,7 +8795,7 @@ export default function App() {
           <div style={{ background: '#fff7ed', border: '2px solid #fb923c', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
             <span style={{ fontSize: '18px', lineHeight: 1 }}>🔔</span>
             <div style={{ fontSize: '13px', color: '#9a3412', lineHeight: 1.45 }}>
-              You have <strong>{unreadImportantNotifCount + unreadUrgentNotifCount}</strong> unread important/urgent notification{(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 's' : ''} ({unreadUrgentNotifCount} urgent, {unreadImportantNotifCount} important). Open your Profile to review and mark {(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 'them' : 'it'} as read.
+              You have <strong>{unreadImportantNotifCount + unreadUrgentNotifCount}</strong> unread important/urgent notification{(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 's' : ''}. Open your Profile to review and mark {(unreadImportantNotifCount + unreadUrgentNotifCount) !== 1 ? 'them' : 'it'} as read.
             </div>
           </div>
         )}
