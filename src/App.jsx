@@ -3618,7 +3618,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
           <div>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>Drop every</span>
-              <input type="number" min="1" max="30" value={priceDropIntervalDays} onChange={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value)))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
+              <input type="number" min="1" max="30" value={priceDropIntervalDays || ''} onChange={e => setPriceDropIntervalDays(e.target.value === '' ? '' : Number(e.target.value))} onBlur={e => setPriceDropIntervalDays(Math.max(1, Number(e.target.value) || 1))} style={{ ...S_INPUT, width: '64px', textAlign: 'center', padding: '6px' }} />
               <span style={{ fontSize: '13px', color: '#92400e', fontWeight: 500 }}>
                 days · target: <strong>{targetSaleDate ? fmtDate(targetSaleDate) : `${scheduleWindowDays} days`}</strong>
               </span>
