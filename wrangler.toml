@@ -9,6 +9,10 @@ compatibility_flags = ["nodejs_compat"]
 # Generate a fresh key pair with: node -e "const {subtle}=globalThis.crypto;(async()=>{const kp=await subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);const pub=await subtle.exportKey('raw',kp.publicKey);const priv=await subtle.exportKey('pkcs8',kp.privateKey);const b=b=>Buffer.from(b).toString('base64url');console.log('PUBLIC:',b(pub),'\nPRIVATE:',b(priv));})()"
 [vars]
 VAPID_PUBLIC_KEY = "BP170YQOAM1B98-bACXiUF8goLWbKrXQj0tNhZ8b1zmBjWhGi6am-F0JCrkxffsPwI0lFR8lEk-LIoWrTssq2P4"
+# CRON_SECRET: set this as a Cloudflare Pages Secret (dashboard → Settings → Environment variables).
+# Generate a random value, e.g.: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+# Use the same value in the companion cron Worker (see cron-worker.js).
+# CRON_SECRET = ""  ← do not commit the real value here
 
 [[d1_databases]]
 binding       = "DB"

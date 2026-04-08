@@ -6949,6 +6949,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   };
   const SMS_TRIGGER_LABELS = {
     manual:                  '📝 Manual',
+    test_send:               '🧪 Test SMS',
     due_today:               '🔴 Due Today',
     ownership_today:         '🚨 Last Ownership Day',
     ownership_transferred:   '🏳️ Ownership Transferred',
@@ -6958,6 +6959,8 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     mid_loan:                '📊 Mid-Loan Update',
     listed_for_sale:         '🏷️ Listed for Sale',
     sale_confirmation:       '💰 Item Sold',
+    capital_alert:           '🏦 Capital Alert',
+    profit_distribution:     '📈 Profit Distribution',
   };
   const getSmsLabel = (trigger) => {
     if (!trigger) return '—';
@@ -7220,17 +7223,22 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     </div>
 
     {/* ── SMS Log ── */}
-    {settings.termiiApiKey && (
-      <div style={S.card}>
-        <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>📱 SMS Log</span>
+    <div style={S.card}>
+      <div style={{ ...S.cardTitle, justifyContent: 'space-between', alignItems: 'center' }}>
+        <span>📱 SMS Log</span>
+        {settings.termiiApiKey && (
           <button style={S.btnSm('secondary')} onClick={refreshSmsLogs} disabled={smsLogsLoading}>
             {smsLogsLoading ? <Spinner /> : '🔄'} Refresh
           </button>
+        )}
+      </div>
+      {!settings.termiiApiKey ? (
+        <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>
+          SMS not configured — add your Termii API key in <strong>Settings → SMS Automation</strong> to enable messaging.
         </div>
-        {smsLogsLoading ? (
-          <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>Loading SMS history…</div>
-        ) : smsLogs && smsLogs.length > 0 ? (
+      ) : smsLogsLoading ? (
+        <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>Loading SMS history…</div>
+      ) : smsLogs && smsLogs.length > 0 ? (
           <div>
             {smsLogs.slice(smsLogPage * SMS_PAGE_SIZE, (smsLogPage + 1) * SMS_PAGE_SIZE).map((entry, i, page) => {
                 const dlr = entry.delivery_status;
@@ -7238,11 +7246,13 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 const getDeliveryStatusDisplay = (status) => {
                   if (!status) return { label: null, color: null };
                   const s = status.toLowerCase();
+                  // NOTE: 'undeliverable' must be checked before includes('deliver') because
+                  // 'undeliverable' contains the substring 'deliver' and would match incorrectly.
+                  if (s === 'undeliverable') return { label: '✗ Undeliverable', color: '#dc2626' };
                   if (s.includes('deliver')) return { label: '✓ Delivered', color: '#10b981' };
                   if (s.includes('success')) return { label: '✓ Delivered', color: '#10b981' };
                   if (s === 'expired') return { label: '✗ Expired', color: '#dc2626' };
                   if (s === 'dnd') return { label: '✗ Do Not Disturb', color: '#dc2626' };
-                  if (s === 'undeliverable') return { label: '✗ Undeliverable', color: '#dc2626' };
                   if (s === 'failed') return { label: '✗ Failed', color: '#dc2626' };
                   if (s === 'rejected') return { label: '✗ Rejected', color: '#dc2626' };
                   if (s === 'invalidnumber') return { label: '✗ Invalid Number', color: '#dc2626' };
@@ -7258,16 +7268,26 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 const showAcceptedBadge = entry.status === 'sent';
                 const showPendingBadge = entry.status === 'sent' && !dlr; // Show "Pending Delivery" if sent but no delivery status yet
                 const showFailedBadge = entry.status === 'failed';
+                const isSkipped = entry.status === 'skipped';
+                const skipReason = (() => {
+                  if (!isSkipped) return null;
+                  try { const r = JSON.parse(entry.termii_response || '{}'); return r.reason || null; } catch { return null; }
+                })();
+                const skipLabel = skipReason === 'no_phone_number' ? '— No phone number on record'
+                               : skipReason === 'no_buyer_phone'  ? '— No buyer phone number recorded'
+                               : '— SMS skipped';
 
                 return (
               <div key={entry.id} style={{ padding: '10px 0', borderBottom: i < page.length - 1 ? `1px solid ${COLORS.border}` : 'none' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '4px', marginBottom: '4px' }}>
                   <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {isSkipped  && <span style={{ ...S.badge('#6b7280'), fontSize: '11px' }}>⊘ Skipped</span>}
                     {showAcceptedBadge && <span style={{ ...S.badge('#10b981'), fontSize: '11px' }}>✓ Accepted</span>}
                     {showPendingBadge && <span style={{ ...S.badge('#f59e0b'), fontSize: '11px' }}>⏳ Pending Delivery</span>}
                     {dlrLabel && <span style={{ ...S.badge(dlrColor), fontSize: '11px' }}>{dlrLabel}</span>}
                     {showFailedBadge && <span style={{ ...S.badge('#dc2626'), fontSize: '11px' }}>✗ Failed</span>}
                     <span style={{ ...S.badge('#6b7280'), fontSize: '11px' }}>{getSmsLabel(entry.trigger_type)}</span>
+                    {isSkipped && skipLabel && <span style={{ fontSize: '11px', color: COLORS.textMuted }}>{skipLabel}</span>}
                   </div>
                   <span style={{ fontSize: '11px', color: COLORS.textMuted }}>{new Date(entry.sent_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
@@ -7289,8 +7309,9 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         ) : (
           <div style={{ color: COLORS.textMuted, fontSize: '13px' }}>No SMS messages sent for this transaction yet.</div>
         )}
-        {/* Manual SMS send (staff only) */}
-        {isStaff && settings.smsEnabled && tx.phoneNumbers?.[0] && (
+        {/* Manual SMS send (staff only) — shown whenever an API key exists and the transaction has a phone.
+            If smsEnabled=false, the backend POST /api/sms/send will return a clear error message. */}
+        {isStaff && settings.termiiApiKey && tx.phoneNumbers?.[0] && (
           <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: `1px solid ${COLORS.border}` }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
               <div style={{ fontSize: '13px', fontWeight: 700 }}>Send Manual SMS</div>
@@ -7353,7 +7374,6 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           </div>
         )}
       </div>
-    )}
   </div>);
 }
 
