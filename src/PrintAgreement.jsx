@@ -51,6 +51,13 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     ? `<div style="text-align:center;line-height:0"><img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="height:40px;max-width:95%;object-fit:contain;display:inline-block" /></div>`
     : '';
 
+  // Customer signature image (captured during the Complete step, refined with AI).
+  // Only shown on the BUSINESS copy so the physical customer copy stays blank for
+  // them to sign on paper.
+  const custSigImage = (isBusinessCopy && tx.customerSignatureImage)
+    ? `<div style="text-align:center;line-height:0;margin-top:4px"><img src="${tx.customerSignatureImage}" alt="Customer Signature" style="height:70px;max-width:90%;object-fit:contain;display:inline-block" /></div>`
+    : '<div class="sig-space"></div>';
+
   // Date the PDF is generated (for signature area)
   const pdfGeneratedDate = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -64,7 +71,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
         <td class="sig-left">
           <div class="sig-box">
             <div><b>Customer Signature:</b></div>
-            <div class="sig-space"></div>
+            ${custSigImage}
             <div class="sig-line"></div>
             <div class="sig-name-date">${tx.fullName || ''}<br/>${pdfGeneratedDate}</div>
           </div>
@@ -345,6 +352,12 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     ? `<div style="text-align:center;line-height:0"><img src="${tx.repSignatureUrl}" alt="Shop Rep Signature" style="height:40px;max-width:95%;object-fit:contain;display:inline-block" /></div>`
     : '';
 
+  // Customer signature image (captured during the Complete step, refined with AI).
+  // Only shown on the BUSINESS copy so the physical customer copy stays blank.
+  const custSigImage = (isBusinessCopy && tx.customerSignatureImage)
+    ? `<div style="text-align:center;line-height:0;margin-top:4px"><img src="${tx.customerSignatureImage}" alt="Seller Signature" style="height:70px;max-width:90%;object-fit:contain;display:inline-block" /></div>`
+    : '<div class="sig-space" style="height:70px;"></div>';
+
   // Date the PDF is generated (for signature area)
   const pdfGeneratedDate = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
   const page1 = `
@@ -513,7 +526,7 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
         <td class="sig-left">
           <div class="sig-box">
             <div><b>Seller Signature:</b></div>
-            <div class="sig-space" style="height:45px;"></div>
+            ${custSigImage}
             <div class="sig-line"></div>
             <div class="sig-name-date">${tx.fullName || ''}<br/>${pdfGeneratedDate}</div>
           </div>
@@ -807,7 +820,7 @@ body{ font-size:7.5pt; line-height:1.2; letter-spacing:0.01em; word-spacing:0.02
 .sig-box{
   border: 1.5px solid #1A3A5C; padding: 10px 14px;
 }
-.sig-space{ height: 55px; }
+.sig-space{ height: 80px; }
 .sig-line{ border-bottom: 1.5px solid #000; width: 75%; margin-top:4px; }
 .sig-sub{ font-size: 9.5pt; color: #555; margin-top:3px; }
 .sig-name-date{ font-size: 9.5pt; color: #333; margin-top:4px; line-height:1.4; }
