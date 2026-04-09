@@ -5169,9 +5169,10 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   const [wizDeclineModal, setWizDeclineModal] = useState(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const saveTimer = useRef(null);
+  const outrightOfferAutoFillRef = useRef(false);
 
   const isMobile = useMobile();
-  const upd = (field, val) => setTx(prev => ({ ...prev, [field]: val }));
+  const upd = useCallback((field, val) => setTx(prev => ({ ...prev, [field]: val })), []);
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
 
   useEffect(() => {
@@ -5181,7 +5182,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
         upd('deadlineDate', addDays(tx.dateGiven, maxLoanDays));
       }
     }
-  }, [maxLoanDays, tx.loanDays, tx.dateGiven]);
+  }, [maxLoanDays, tx.loanDays, tx.dateGiven, upd]);
 
   // Auto-save draft every 3 seconds (debounced) after identity step has been passed.
   // On unmount, flush any pending save immediately so exiting via ✕ never loses a draft.
@@ -5690,6 +5691,20 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
   const maxAdvance = tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100);
   const dailyFeeCalc = Math.round((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+
+  useEffect(() => {
+    const stepId = WIZARD_STEPS[step]?.id;
+    if (stepId !== 'offer' || tx.type !== 'outright') {
+      outrightOfferAutoFillRef.current = false;
+      return;
+    }
+    if (outrightOfferAutoFillRef.current || maxAdvance <= 0) return;
+    if (!tx.cashAdvance) {
+      upd('cashAdvance', maxAdvance);
+      upd('dailyFee', Math.round(maxAdvance * (settings.interestRate || 1) / 100));
+    }
+    outrightOfferAutoFillRef.current = true;
+  }, [step, tx.type, tx.cashAdvance, maxAdvance, settings.interestRate, upd]);
 
   const canProceed = () => {
     switch (WIZARD_STEPS[step]?.id) {
@@ -7459,7 +7474,24 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
-      {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>{tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}</div>}
+      {tx.status === 'sold' && (
+        <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>
+          💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>
+          {tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}
+          {tx.saleBuyerPhone ? ` · 📞 ${tx.saleBuyerPhone}` : ''}
+          {tx.saleCondition ? <span> · Condition: <strong>{tx.saleCondition}</strong></span> : null}
+          {tx.salePhotoNote ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#fffbeb', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Sale note:</strong> {tx.salePhotoNote}</div> : null}
+          {tx.salePhotos && tx.salePhotos.length > 0 && (
+            <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {tx.salePhotos.map((url, i) => (
+                <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                  <img src={url} alt={`Sale photo ${i + 1}`} style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '6px', border: `1px solid ${COLORS.border}` }} />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
 
     {/* ── Loan Timeline (advance only) ── */}
