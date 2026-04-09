@@ -7484,7 +7484,24 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
-      {tx.status === 'sold' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>{tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}</div>}
+      {tx.status === 'sold' && (
+        <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px' }}>
+          💰 <strong>Sold:</strong> {fmtMoney(tx.salePrice)} on {fmtDate(tx.saleDate)} · Profit: <strong>{fmtMoney((tx.salePrice || 0) - (tx.cashAdvance || 0))}</strong>
+          {tx.saleBuyer ? ` · Buyer: ${tx.saleBuyer}` : ''}
+          {tx.saleBuyerPhone ? ` · 📞 ${tx.saleBuyerPhone}` : ''}
+          {tx.saleCondition ? <span> · Condition: <strong>{tx.saleCondition}</strong></span> : null}
+          {tx.salePhotoNote ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#fffbeb', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Sale note:</strong> {tx.salePhotoNote}</div> : null}
+          {tx.salePhotos && tx.salePhotos.length > 0 && (
+            <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {tx.salePhotos.map((url, i) => (
+                <a key={i} href={url} target="_blank" rel="noopener noreferrer">
+                  <img src={url} alt={`Sale photo ${i + 1}`} style={{ width: '72px', height: '72px', objectFit: 'cover', borderRadius: '6px', border: `1px solid ${COLORS.border}` }} />
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
 
     {/* ── Loan Timeline (advance only) ── */}
