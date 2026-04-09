@@ -7722,6 +7722,24 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 const showPendingBadge = entry.status === 'sent' && !dlr; // Show "Pending Delivery" if sent but no delivery status yet
                 const showFailedBadge = entry.status === 'failed';
                 const isSkipped = entry.status === 'skipped';
+                const failReason = (() => {
+                  if (!showFailedBadge) return null;
+                  try {
+                    const r = JSON.parse(entry.termii_response || '{}');
+                    // Runtime/network-level failures from backend wrapper
+                    if (r?.error === 'fetch_failed' || r?.error === 'runtime_exception') {
+                      return r.message || 'Network/runtime error while sending SMS';
+                    }
+                    // Common Termii payloads
+                    if (typeof r?.message === 'string' && r.message.trim()) return r.message.trim();
+                    if (typeof r?.reason === 'string' && r.reason.trim()) return r.reason.trim();
+                    if (typeof r?.error === 'string' && r.error.trim()) return r.error.trim();
+                    if (typeof r?.status === 'string' && r.status.trim()) return r.status.trim();
+                    return null;
+                  } catch {
+                    return null;
+                  }
+                })();
                 const skipReason = (() => {
                   if (!isSkipped) return null;
                   try { const r = JSON.parse(entry.termii_response || '{}'); return r.reason || null; } catch { return null; }
@@ -7746,6 +7764,11 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 </div>
                 <div style={{ fontSize: '12px', color: COLORS.text, marginTop: '2px' }}>To: <strong>{entry.recipient}</strong></div>
                 <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', fontStyle: 'italic' }}>{entry.message}</div>
+                {showFailedBadge && failReason && (
+                  <div style={{ fontSize: '11px', color: '#dc2626', marginTop: '4px' }}>
+                    Reason: {failReason}
+                  </div>
+                )}
               </div>
                 );
             })}
