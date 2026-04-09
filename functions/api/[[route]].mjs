@@ -1031,6 +1031,118 @@ export async function onRequest(context) {
       ]);
       return json(resultsRes.results.map((r) => withLoanTimeline({ ...JSON.parse(r.data), ref: r.ref, status: r.status }, loanCfg)));
     }
+    // ── SMS helpers — must be defined before transaction POST/PUT handlers that use them ──
+
+    // Helper: load SMS config from settings
+    const loadSmsConfig = async () => {
+      const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
+      const cfg = row ? JSON.parse(row.value) : {};
+      return {
+        apiKey:           cfg.termiiApiKey || '',
+        baseUrl:          (cfg.termiiBaseUrl || 'https://v3.api.termii.com').replace(/\/$/, ''),
+        senderId:         (cfg.termiiSenderId || 'N-Alert').trim(),
+        channel:          cfg.termiiChannel || 'generic',
+        enabled:          cfg.smsEnabled === true,
+        nairaPerCredit:   Math.max(1, Number(cfg.smsNairaPerCredit) || 5),
+        dueDateDays:      Array.isArray(cfg.smsDueDateReminderDays)    ? cfg.smsDueDateReminderDays.map(Number)    : [2, 1, 0],
+        ownershipDays:    Array.isArray(cfg.smsOwnershipReminderDays)  ? cfg.smsOwnershipReminderDays.map(Number)  : [3, 0],
+        tmplDueReminder:  cfg.smsDueDateReminder  || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due in {daysLeft} day(s). Please visit {businessName} to make payment.',
+        tmplDueToday:     cfg.smsDueTodayReminder || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
+        tmplOwnReminder:  cfg.smsOwnershipReminder || 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
+        tmplOwnToday:     cfg.smsOwnershipLastDay  || 'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
+        tmplOwnTransferred: cfg.smsOwnershipTransferred || 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
+        ownTransferredEnabled: cfg.smsOwnershipTransferredEnabled !== false,
+        tmplOutrightConfirmation: cfg.smsOutrightConfirmation || 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
+        outrightConfirmationEnabled: cfg.smsOutrightConfirmationEnabled !== false,
+        // ── New: Advance loan confirmation ──
+        advanceConfirmationEnabled: cfg.smsAdvanceConfirmationEnabled !== false,
+        tmplAdvanceConfirmation: cfg.smsAdvanceConfirmation || 'Dear {customerName}, your cash advance of {amount} (Ref: {ref}) has been processed. Your return date is {dueDate}. Repay on time to avoid penalties. {businessName}. Call: {shopPhone}',
+        // ── New: Overdue reminders (post-due-date, pre-internal-deadline) ──
+        overdueReminderDays: Array.isArray(cfg.smsOverdueReminderDays) ? cfg.smsOverdueReminderDays.map(Number).filter(d => Number.isFinite(d) && d >= 1) : [1, 3, 5],
+        tmplOverdueReminder: cfg.smsOverdueReminder || 'Dear {customerName}, your loan (Ref: {ref}) is {daysOverdue} day(s) overdue. Balance if repaid today: {balanceToday}. Visit {businessName} now to avoid losing your item. Call: {shopPhone}',
+        // ── New: Redemption/repayment confirmation ──
+        redemptionConfirmationEnabled: cfg.smsRedemptionConfirmationEnabled !== false,
+        tmplRedemptionConfirmation: cfg.smsRedemptionConfirmation || 'Dear {customerName}, your loan (Ref: {ref}) has been fully repaid. You paid {amount} and your item has been returned. Thank you for choosing {businessName}!',
+        // ── New: Mid-loan balance reminder ──
+        midLoanReminderEnabled: cfg.smsMidLoanReminderEnabled !== false,
+        tmplMidLoanReminder: cfg.smsMidLoanReminder || 'Hello {customerName}, your loan (Ref: {ref}) is at its midpoint. Your balance if repaid today is {balanceToday}. Early repayment is always welcome at {businessName}. Call: {shopPhone}',
+        // ── New: Item listed for sale (advance → for_sale transition) ──
+        listedForSaleEnabled: cfg.smsListedForSaleEnabled !== false,
+        tmplListedForSale: cfg.smsListedForSale || 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
+        // ── New: Sale confirmation (receipt sent to the new buyer) ──
+        saleConfirmationEnabled: cfg.smsSaleConfirmationEnabled !== false,
+        tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Shop Ref: {shopRef}) from {businessName}. Call {shopPhone} for any queries.',
+        smsRetryEnabled: cfg.smsRetryEnabled !== false,
+        smsRetryDays:    Math.max(1, Math.min(7, Number(cfg.smsRetryDays) || 3)),
+        businessName:     cfg.businessName || 'CIF Quick Cash',
+        shopPhone:        cfg.shopPhone1 || '',
+        maxLoanDays:      Math.max(1, Number(cfg.maxLoanDays) || 30),
+        graceDays:        Math.max(0, Number(cfg.graceDays) || 3),
+        interestRate:     Math.max(0, Number(cfg.interestRate) || 1),
+      };
+    };
+
+    // Helper: normalise a Nigerian phone number to international format (234XXXXXXXXXX)
+    const toIntlPhone = (raw = '') => {
+      const digits = raw.replace(/\D/g, '');
+      if (digits.startsWith('234') && digits.length === 13) return digits;
+      if (digits.startsWith('0') && digits.length === 11) return '234' + digits.slice(1);
+      return digits; // best-effort for non-standard formats
+    };
+
+    // Helper: fill template variables
+    const fillSmsTemplate = (template, vars = {}) =>
+      template
+        .replace(/\{customerName\}/g,  vars.customerName || '')
+        .replace(/\{ref\}/g,           vars.ref || '')
+        .replace(/\{amount\}/g,         vars.amount || '')
+        .replace(/\{daysLeft\}/g,       String(vars.daysLeft ?? ''))
+        .replace(/\{daysOverdue\}/g,    String(vars.daysOverdue ?? ''))
+        .replace(/\{dueDate\}/g,        vars.dueDate || '')
+        .replace(/\{balanceToday\}/g,   vars.balanceToday || '')
+        .replace(/\{buyerName\}/g,      vars.buyerName || '')
+        .replace(/\{itemDesc\}/g,       vars.itemDesc || '')
+        .replace(/\{shopRef\}/g,        vars.shopRef || '')
+        .replace(/\{businessName\}/g,   vars.businessName || '')
+        .replace(/\{shopPhone\}/g,      vars.shopPhone || '');
+
+    // Helper: send one SMS via Termii, returns { ok, messageId, response, usedFallback }
+    const termiiSend = async (smsCfg, phone, message) => {
+      const doSend = async (from, channel) => {
+        const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: phone,
+            from,
+            sms: message,
+            type: 'plain',
+            channel,
+            api_key: smsCfg.apiKey,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
+        const messageId = data?.message_id ? String(data.message_id) : null;
+        return { ok, messageId, response: data };
+      };
+
+      // Primary attempt with configured sender ID
+      const primary = await doSend(smsCfg.senderId, smsCfg.channel || 'generic');
+      if (primary.ok) return { ...primary, usedFallback: false };
+
+      // If Termii rejected the sender ID, fall back to N-Alert (pre-approved on every account)
+      const termiiMsg = primary.response?.message || '';
+      const senderIdRejected = termiiMsg.includes('ApplicationSenderId not found') ||
+                               termiiMsg.toLowerCase().includes('sender') && termiiMsg.toLowerCase().includes('not found');
+      if (senderIdRejected && smsCfg.senderId !== 'N-Alert') {
+        const fallback = await doSend('N-Alert', 'generic');
+        return { ...fallback, usedFallback: true, primaryResponse: primary.response };
+      }
+
+      return { ...primary, usedFallback: false };
+    };
+
     if (path === 'transactions' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
@@ -2017,116 +2129,6 @@ export async function onRequest(context) {
     // ============================================================
     // SMS (Termii) — /api/sms/*
     // ============================================================
-
-    // Helper: load SMS config from settings
-    const loadSmsConfig = async () => {
-      const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first();
-      const cfg = row ? JSON.parse(row.value) : {};
-      return {
-        apiKey:           cfg.termiiApiKey || '',
-        baseUrl:          (cfg.termiiBaseUrl || 'https://v3.api.termii.com').replace(/\/$/, ''),
-        senderId:         (cfg.termiiSenderId || 'N-Alert').trim(),
-        channel:          cfg.termiiChannel || 'generic',
-        enabled:          cfg.smsEnabled === true,
-        nairaPerCredit:   Math.max(1, Number(cfg.smsNairaPerCredit) || 5),
-        dueDateDays:      Array.isArray(cfg.smsDueDateReminderDays)    ? cfg.smsDueDateReminderDays.map(Number)    : [2, 1, 0],
-        ownershipDays:    Array.isArray(cfg.smsOwnershipReminderDays)  ? cfg.smsOwnershipReminderDays.map(Number)  : [3, 0],
-        tmplDueReminder:  cfg.smsDueDateReminder  || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due in {daysLeft} day(s). Please visit {businessName} to make payment.',
-        tmplDueToday:     cfg.smsDueTodayReminder || 'Hello {customerName}, your loan (Ref: {ref}) of {amount} is due TODAY. Please visit {businessName} immediately to avoid penalties.',
-        tmplOwnReminder:  cfg.smsOwnershipReminder || 'Dear {customerName}, your item (Ref: {ref}) becomes property of {businessName} in {daysLeft} day(s) if unpaid. Please come in urgently.',
-        tmplOwnToday:     cfg.smsOwnershipLastDay  || 'Dear {customerName}, TODAY is the last day to reclaim your item (Ref: {ref}). Visit {businessName} now or the item becomes ours. Call: {shopPhone}',
-        tmplOwnTransferred: cfg.smsOwnershipTransferred || 'Dear {customerName}, your item (Ref: {ref}) has been successfully acquired by {businessName} at {amount} per your signed cash advance agreement. It will now be listed for public sale. Thank you.',
-        ownTransferredEnabled: cfg.smsOwnershipTransferredEnabled !== false,
-        tmplOutrightConfirmation: cfg.smsOutrightConfirmation || 'Dear {customerName}, thank you for selling your item to {businessName}. We have received and paid you {amount} for Ref: {ref}. The item will be listed for public sale. Thank you for choosing {businessName}.',
-        outrightConfirmationEnabled: cfg.smsOutrightConfirmationEnabled !== false,
-        // ── New: Advance loan confirmation ──
-        advanceConfirmationEnabled: cfg.smsAdvanceConfirmationEnabled !== false,
-        tmplAdvanceConfirmation: cfg.smsAdvanceConfirmation || 'Dear {customerName}, your cash advance of {amount} (Ref: {ref}) has been processed. Your return date is {dueDate}. Repay on time to avoid penalties. {businessName}. Call: {shopPhone}',
-        // ── New: Overdue reminders (post-due-date, pre-internal-deadline) ──
-        overdueReminderDays: Array.isArray(cfg.smsOverdueReminderDays) ? cfg.smsOverdueReminderDays.map(Number).filter(d => Number.isFinite(d) && d >= 1) : [1, 3, 5],
-        tmplOverdueReminder: cfg.smsOverdueReminder || 'Dear {customerName}, your loan (Ref: {ref}) is {daysOverdue} day(s) overdue. Balance if repaid today: {balanceToday}. Visit {businessName} now to avoid losing your item. Call: {shopPhone}',
-        // ── New: Redemption/repayment confirmation ──
-        redemptionConfirmationEnabled: cfg.smsRedemptionConfirmationEnabled !== false,
-        tmplRedemptionConfirmation: cfg.smsRedemptionConfirmation || 'Dear {customerName}, your loan (Ref: {ref}) has been fully repaid. You paid {amount} and your item has been returned. Thank you for choosing {businessName}!',
-        // ── New: Mid-loan balance reminder ──
-        midLoanReminderEnabled: cfg.smsMidLoanReminderEnabled !== false,
-        tmplMidLoanReminder: cfg.smsMidLoanReminder || 'Hello {customerName}, your loan (Ref: {ref}) is at its midpoint. Your balance if repaid today is {balanceToday}. Early repayment is always welcome at {businessName}. Call: {shopPhone}',
-        // ── New: Item listed for sale (advance → for_sale transition) ──
-        listedForSaleEnabled: cfg.smsListedForSaleEnabled !== false,
-        tmplListedForSale: cfg.smsListedForSale || 'Dear {customerName}, your item (Ref: {ref}) has been listed for public sale by {businessName} as per your signed agreement. Call {shopPhone} with any questions.',
-        // ── New: Sale confirmation (receipt sent to the new buyer) ──
-        saleConfirmationEnabled: cfg.smsSaleConfirmationEnabled !== false,
-        tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Shop Ref: {shopRef}) from {businessName}. Call {shopPhone} for any queries.',
-        smsRetryEnabled: cfg.smsRetryEnabled !== false,
-        smsRetryDays:    Math.max(1, Math.min(7, Number(cfg.smsRetryDays) || 3)),
-        businessName:     cfg.businessName || 'CIF Quick Cash',
-        shopPhone:        cfg.shopPhone1 || '',
-        maxLoanDays:      Math.max(1, Number(cfg.maxLoanDays) || 30),
-        graceDays:        Math.max(0, Number(cfg.graceDays) || 3),
-        interestRate:     Math.max(0, Number(cfg.interestRate) || 1),
-      };
-    };
-
-    // Helper: normalise a Nigerian phone number to international format (234XXXXXXXXXX)
-    const toIntlPhone = (raw = '') => {
-      const digits = raw.replace(/\D/g, '');
-      if (digits.startsWith('234') && digits.length === 13) return digits;
-      if (digits.startsWith('0') && digits.length === 11) return '234' + digits.slice(1);
-      return digits; // best-effort for non-standard formats
-    };
-
-    // Helper: fill template variables
-    const fillSmsTemplate = (template, vars = {}) =>
-      template
-        .replace(/\{customerName\}/g,  vars.customerName || '')
-        .replace(/\{ref\}/g,           vars.ref || '')
-        .replace(/\{amount\}/g,         vars.amount || '')
-        .replace(/\{daysLeft\}/g,       String(vars.daysLeft ?? ''))
-        .replace(/\{daysOverdue\}/g,    String(vars.daysOverdue ?? ''))
-        .replace(/\{dueDate\}/g,        vars.dueDate || '')
-        .replace(/\{balanceToday\}/g,   vars.balanceToday || '')
-        .replace(/\{buyerName\}/g,      vars.buyerName || '')
-        .replace(/\{itemDesc\}/g,       vars.itemDesc || '')
-        .replace(/\{shopRef\}/g,        vars.shopRef || '')
-        .replace(/\{businessName\}/g,   vars.businessName || '')
-        .replace(/\{shopPhone\}/g,      vars.shopPhone || '');
-
-    // Helper: send one SMS via Termii, returns { ok, messageId, response, usedFallback }
-    const termiiSend = async (smsCfg, phone, message) => {
-      const doSend = async (from, channel) => {
-        const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: phone,
-            from,
-            sms: message,
-            type: 'plain',
-            channel,
-            api_key: smsCfg.apiKey,
-          }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
-        const messageId = data?.message_id ? String(data.message_id) : null;
-        return { ok, messageId, response: data };
-      };
-
-      // Primary attempt with configured sender ID
-      const primary = await doSend(smsCfg.senderId, smsCfg.channel || 'generic');
-      if (primary.ok) return { ...primary, usedFallback: false };
-
-      // If Termii rejected the sender ID, fall back to N-Alert (pre-approved on every account)
-      const termiiMsg = primary.response?.message || '';
-      const senderIdRejected = termiiMsg.includes('ApplicationSenderId not found') ||
-                               termiiMsg.toLowerCase().includes('sender') && termiiMsg.toLowerCase().includes('not found');
-      if (senderIdRejected && smsCfg.senderId !== 'N-Alert') {
-        const fallback = await doSend('N-Alert', 'generic');
-        return { ...fallback, usedFallback: true, primaryResponse: primary.response };
-      }
-
-      return { ...primary, usedFallback: false };
-    };
 
     // ── GET /api/sms/balance — Termii wallet balance + credit count ──
     if (path === 'sms/balance' && method === 'GET') {
