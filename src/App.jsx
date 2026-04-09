@@ -1264,7 +1264,7 @@ const isSerpKeyAvailable = (key, checkFn, settings, account) =>
 
 // Regex patterns used to extract a Naira price from a free-form SerpAPI AI response
 // when Gemini is unavailable to do the extraction step.
-const PRICE_FROM_NAIRA_SYMBOL_RE = /(?:₦|NGN)\s*([0-9][0-9,\.]*)/i;
+const PRICE_FROM_NAIRA_SYMBOL_RE = /(?:₦|NGN)\s*([0-9][0-9,.]*)/i;
 const PRICE_BEFORE_NAIRA_WORD_RE = /([0-9][0-9,]*(?:\.[0-9]+)?)\s*(?:naira|NGN)/i;
 
 
@@ -2369,37 +2369,15 @@ function ItemValuationPage({ onBack, settings }) {
   const [description, setDescription] = useState('');
   const [photos, setPhotos] = useState([null, null, null]);
   const [loading, setLoading] = useState(false);
-  const [loadingMsg, setLoadingMsg] = useState('');
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [rateLimited, setRateLimited] = useState(false);
 
   const descriptionRef = useRef(null);
   const resultRef = useRef(null);
-  const loadingMsgInterval = useRef(null);
 
   const descReady = description.trim().length >= 10;
   const canSubmit = selectedType && descReady && !loading;
-
-  const LOADING_MESSAGES = [
-    'Checking current market prices…',
-    'Looking up what people are paying for this item…',
-    'Searching online stores for price information…',
-    'Calculating a fair estimate for you…',
-    'Almost done…',
-  ];
-
-  const startLoadingMessages = () => {
-    let i = 0;
-    setLoadingMsg(LOADING_MESSAGES[0]);
-    loadingMsgInterval.current = setInterval(() => {
-      i = (i + 1) % LOADING_MESSAGES.length;
-      setLoadingMsg(LOADING_MESSAGES[i]);
-    }, 3500);
-  };
-  const stopLoadingMessages = () => {
-    if (loadingMsgInterval.current) { clearInterval(loadingMsgInterval.current); loadingMsgInterval.current = null; }
-  };
 
   // Resize image to max 1200px wide, JPEG 0.85 quality — keeps request size small
   const resizePhoto = (dataUri) => new Promise((resolve) => {
@@ -2434,7 +2412,6 @@ function ItemValuationPage({ onBack, settings }) {
     setErrorMsg('');
     setResult(null);
     setRateLimited(false);
-    startLoadingMessages();
 
     try {
       const photoData = photos.filter(Boolean);
@@ -2455,7 +2432,6 @@ function ItemValuationPage({ onBack, settings }) {
       setErrorMsg('We could not connect right now. Please check your internet and try again, or call us directly.');
     } finally {
       setLoading(false);
-      stopLoadingMessages();
     }
   };
 
@@ -3460,7 +3436,6 @@ function ShopListingModal({ tx, settings, onClose, onSave }) {
     }
   // setSalePrice is stable (useState setter); salePrice is intentionally excluded to avoid
   // re-triggering when we set the price — suggestedPrice only changes on interval/schedule edits.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [priceDropEnabled, suggestedPrice, setSalePrice]);
 
   // Inspection data
@@ -7754,6 +7729,24 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 const showPendingBadge = entry.status === 'sent' && !dlr; // Show "Pending Delivery" if sent but no delivery status yet
                 const showFailedBadge = entry.status === 'failed';
                 const isSkipped = entry.status === 'skipped';
+                const failReason = (() => {
+                  if (!showFailedBadge) return null;
+                  try {
+                    const r = JSON.parse(entry.termii_response || '{}');
+                    // Runtime/network-level failures from backend wrapper
+                    if (r?.error === 'fetch_failed' || r?.error === 'runtime_exception') {
+                      return r.message || 'Network/runtime error while sending SMS';
+                    }
+                    // Common Termii payloads
+                    if (typeof r?.message === 'string' && r.message.trim()) return r.message.trim();
+                    if (typeof r?.reason === 'string' && r.reason.trim()) return r.reason.trim();
+                    if (typeof r?.error === 'string' && r.error.trim()) return r.error.trim();
+                    if (typeof r?.status === 'string' && r.status.trim()) return r.status.trim();
+                    return null;
+                  } catch {
+                    return null;
+                  }
+                })();
                 const skipReason = (() => {
                   if (!isSkipped) return null;
                   try { const r = JSON.parse(entry.termii_response || '{}'); return r.reason || null; } catch { return null; }
@@ -7778,6 +7771,11 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 </div>
                 <div style={{ fontSize: '12px', color: COLORS.text, marginTop: '2px' }}>To: <strong>{entry.recipient}</strong></div>
                 <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px', fontStyle: 'italic' }}>{entry.message}</div>
+                {showFailedBadge && failReason && (
+                  <div style={{ fontSize: '11px', color: '#dc2626', marginTop: '4px' }}>
+                    Reason: {failReason}
+                  </div>
+                )}
               </div>
                 );
             })}

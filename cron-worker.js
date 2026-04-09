@@ -33,7 +33,7 @@
 const PAGES_APP_URL = 'https://cifcash.pages.dev';
 
 export default {
-  async scheduled(event, env, ctx) {
+  async scheduled(event, env) {
     const secret = env.CRON_SECRET;
     if (!secret) {
       console.error('[cifcash-cron] CRON_SECRET is not set — aborting to avoid unauthenticated request.');

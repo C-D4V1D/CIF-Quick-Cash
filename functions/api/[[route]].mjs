@@ -1109,22 +1109,30 @@ export async function onRequest(context) {
     // Helper: send one SMS via Termii, returns { ok, messageId, response, usedFallback }
     const termiiSend = async (smsCfg, phone, message) => {
       const doSend = async (from, channel) => {
-        const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: phone,
-            from,
-            sms: message,
-            type: 'plain',
-            channel,
-            api_key: smsCfg.apiKey,
-          }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
-        const messageId = data?.message_id ? String(data.message_id) : null;
-        return { ok, messageId, response: data };
+        try {
+          const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: phone,
+              from,
+              sms: message,
+              type: 'plain',
+              channel,
+              api_key: smsCfg.apiKey,
+            }),
+          });
+          const data = await resp.json().catch(() => ({}));
+          const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
+          const messageId = data?.message_id ? String(data.message_id) : null;
+          return { ok, messageId, response: data };
+        } catch (err) {
+          return {
+            ok: false,
+            messageId: null,
+            response: { error: 'fetch_failed', message: err?.message || String(err) },
+          };
+        }
       };
 
       // Primary attempt with configured sender ID
@@ -1144,27 +1152,91 @@ export async function onRequest(context) {
     };
 
     // Helper: insert an SMS log row with backward compatibility for older
-    // databases that were created before sms_logs.message_id existed.
+    // databases, while keeping per-request DB subqueries minimal.
+    // null  => unknown
+    // true  => message_id column works
+    // false => message_id column not available
     let smsLogSchemaSupportsMessageId = null;
     const insertSmsLog = async ({ transactionRef, triggerType, message, recipient, status, termiiResponse, messageId = null }) => {
-      if (smsLogSchemaSupportsMessageId === null) {
+      const runWithMessageId = () => db.prepare(
+          'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse, messageId).run();
+      const runWithoutMessageId = () => db.prepare(
+        'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse).run();
+
+      const ensureSmsLogsTable = async () => {
+        await db.prepare(`
+          CREATE TABLE IF NOT EXISTS sms_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_ref TEXT    NOT NULL,
+            sent_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+            trigger_type    TEXT    NOT NULL,
+            message         TEXT    NOT NULL,
+            recipient       TEXT    NOT NULL,
+            status          TEXT    NOT NULL DEFAULT 'pending',
+            termii_response TEXT,
+            message_id      TEXT,
+            delivery_status TEXT
+          )
+        `).run();
+        await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_transaction_ref ON sms_logs (transaction_ref)').run();
+        await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_sent_at ON sms_logs (sent_at DESC)').run();
+        await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_message_id ON sms_logs (message_id)').run();
+      };
+
+      if (smsLogSchemaSupportsMessageId !== false) {
         try {
-          const cols = await db.prepare('PRAGMA table_info(sms_logs)').all();
-          smsLogSchemaSupportsMessageId = (cols?.results || []).some(c => c?.name === 'message_id');
-        } catch (_) {
-          smsLogSchemaSupportsMessageId = false;
+          const res = await runWithMessageId();
+          smsLogSchemaSupportsMessageId = true;
+          return res;
+        } catch (err) {
+          const msg = String(err?.message || err || '');
+          if (msg.includes('no such table: sms_logs')) {
+            await ensureSmsLogsTable();
+            smsLogSchemaSupportsMessageId = true;
+            return runWithMessageId();
+          }
+          if (msg.includes('no column named message_id')) {
+            smsLogSchemaSupportsMessageId = false;
+            return runWithoutMessageId();
+          }
+          throw err;
         }
       }
 
-      if (smsLogSchemaSupportsMessageId) {
-        return db.prepare(
-          'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse, messageId).run();
+      try {
+        return await runWithoutMessageId();
+      } catch (err) {
+        const msg = String(err?.message || err || '');
+        if (msg.includes('no such table: sms_logs')) {
+          await ensureSmsLogsTable();
+          smsLogSchemaSupportsMessageId = true;
+          return runWithMessageId();
+        }
+        throw err;
       }
+    };
 
-      return db.prepare(
-        'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse).run();
+    // Helper: record unexpected SMS runtime errors without blocking transaction flows.
+    const logSmsRuntimeError = async ({ user, transactionRef, triggerType, err }) => {
+      const errMsg = err?.message || String(err || 'unknown_error');
+      await insertSmsLog({
+        transactionRef,
+        triggerType: `${triggerType}_runtime_error`,
+        message: '',
+        recipient: 'unknown',
+        status: 'failed',
+        termiiResponse: JSON.stringify({ error: 'runtime_exception', message: errMsg }),
+        messageId: null,
+      }).catch(() => {});
+      await logActivity({
+        user,
+        action: 'sms',
+        entityType: 'transaction',
+        entityId: transactionRef,
+        description: `⚠️ SMS runtime error (${triggerType}) for ${transactionRef}: ${errMsg}`,
+      }).catch(() => {});
     };
 
     if (path === 'transactions' && method === 'POST') {
@@ -1234,23 +1306,6 @@ export async function onRequest(context) {
       }
       await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
 
-      // ── Push notifications for new transactions ──
-      if (tx.type === 'outright' || tx.status === 'for_sale') {
-        await pushNotifyAll(env, db, {
-          title: '🏷️ Outright Purchase',
-          body: `${tx.ref}: ${tx.fullName} — ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtN(tx.cashAdvance)}`,
-          url: '/transactions',
-          tag: 'new-transaction',
-        });
-      } else {
-        await pushNotifyAll(env, db, {
-          title: '📋 New Loan',
-          body: `${tx.ref}: ${tx.fullName} — ₦${fmtN(tx.cashAdvance)} advance`,
-          url: '/transactions',
-          tag: 'new-transaction',
-        });
-      }
-
       // ── Immediate outright-purchase confirmation SMS ──
       // Sent right when the transaction is created, not via the nightly cron.
       if (tx.type === 'outright') {
@@ -1307,6 +1362,7 @@ export async function onRequest(context) {
           }
         } catch (_smsErr) {
           // SMS failure must never block the transaction save
+          await logSmsRuntimeError({ user: auth.user, transactionRef: tx.ref, triggerType: 'outright_confirmation', err: _smsErr });
         }
       }
 
@@ -1369,7 +1425,27 @@ export async function onRequest(context) {
           }
         } catch (_smsErr) {
           // SMS failure must never block the transaction save
+          await logSmsRuntimeError({ user: auth.user, transactionRef: tx.ref, triggerType: 'advance_confirmation', err: _smsErr });
         }
+      }
+
+      // ── Push notifications for new transactions ──
+      // Keep this after transactional SMS so free-plan subrequest limits
+      // don't starve customer-facing SMS sends when many devices are subscribed.
+      if (tx.type === 'outright' || tx.status === 'for_sale') {
+        await pushNotifyAll(env, db, {
+          title: '🏷️ Outright Purchase',
+          body: `${tx.ref}: ${tx.fullName} — ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtN(tx.cashAdvance)}`,
+          url: '/transactions',
+          tag: 'new-transaction',
+        });
+      } else {
+        await pushNotifyAll(env, db, {
+          title: '📋 New Loan',
+          body: `${tx.ref}: ${tx.fullName} — ₦${fmtN(tx.cashAdvance)} advance`,
+          url: '/transactions',
+          tag: 'new-transaction',
+        });
       }
 
       return json({ success: true });
@@ -1449,23 +1525,6 @@ export async function onRequest(context) {
       }
       await logActivity({ user: auth.user, action: putAction, entityType: 'transaction', entityId: ref, description: putDesc });
 
-      // ── Push notifications for significant status changes ──
-      if (tx.status === 'closed' && existing?.status !== 'closed') {
-        await pushNotifyAll(env, db, {
-          title: '✅ Loan Redeemed',
-          body: `${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} over ${tx.daysCharged || 0} days`,
-          url: '/transactions',
-          tag: 'loan-redeemed',
-        });
-      } else if (tx.status === 'sold' && existing?.status !== 'sold') {
-        await pushNotifyAll(env, db, {
-          title: '💰 Item Sold',
-          body: `${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtNP(tx.salePrice)}`,
-          url: '/transactions',
-          tag: 'item-sold',
-        });
-      }
-
       // ── Redemption/full repayment confirmation SMS ──
       // Sent immediately when a customer repays in full and collects their item.
       // Transition guard: only fire on the active→closed transition so that re-saving
@@ -1525,6 +1584,7 @@ export async function onRequest(context) {
           }
         } catch (_smsErr) {
           // SMS failure must never block the transaction save
+          await logSmsRuntimeError({ user: auth.user, transactionRef: ref, triggerType: 'redemption_confirmation', err: _smsErr });
         }
       }
 
@@ -1586,6 +1646,7 @@ export async function onRequest(context) {
           }
         } catch (_smsErr) {
           // SMS failure must never block the transaction save
+          await logSmsRuntimeError({ user: auth.user, transactionRef: ref, triggerType: 'listed_for_sale', err: _smsErr });
         }
       }
 
@@ -1639,7 +1700,27 @@ export async function onRequest(context) {
           }
         } catch (_smsErr) {
           // SMS failure must never block the transaction save
+          await logSmsRuntimeError({ user: auth.user, transactionRef: ref, triggerType: 'sale_confirmation', err: _smsErr });
         }
+      }
+
+      // ── Push notifications for significant status changes ──
+      // Keep this after transactional SMS so free-plan subrequest limits
+      // don't starve customer-facing SMS sends when many devices are subscribed.
+      if (tx.status === 'closed' && existing?.status !== 'closed') {
+        await pushNotifyAll(env, db, {
+          title: '✅ Loan Redeemed',
+          body: `${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} over ${tx.daysCharged || 0} days`,
+          url: '/transactions',
+          tag: 'loan-redeemed',
+        });
+      } else if (tx.status === 'sold' && existing?.status !== 'sold') {
+        await pushNotifyAll(env, db, {
+          title: '💰 Item Sold',
+          body: `${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — ₦${fmtNP(tx.salePrice)}`,
+          url: '/transactions',
+          tag: 'item-sold',
+        });
       }
 
       return json({ success: true });
