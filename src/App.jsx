@@ -5194,6 +5194,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   const [wizDeclineModal, setWizDeclineModal] = useState(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const saveTimer = useRef(null);
+  const outrightOfferAutoFillRef = useRef(false);
 
   const isMobile = useMobile();
   const upd = (field, val) => setTx(prev => ({ ...prev, [field]: val }));
@@ -5715,6 +5716,20 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
   const maxAdvance = tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100);
   const dailyFeeCalc = Math.round((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+
+  useEffect(() => {
+    const stepId = WIZARD_STEPS[step]?.id;
+    if (stepId !== 'offer' || tx.type !== 'outright') {
+      outrightOfferAutoFillRef.current = false;
+      return;
+    }
+    if (outrightOfferAutoFillRef.current || maxAdvance <= 0) return;
+    if (!tx.cashAdvance || tx.cashAdvance === 0) {
+      upd('cashAdvance', maxAdvance);
+      upd('dailyFee', Math.round(maxAdvance * (settings.interestRate || 1) / 100));
+    }
+    outrightOfferAutoFillRef.current = true;
+  }, [step, tx.type, tx.cashAdvance, maxAdvance, settings.interestRate]);
 
   const canProceed = () => {
     switch (WIZARD_STEPS[step]?.id) {
