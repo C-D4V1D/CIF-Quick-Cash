@@ -1152,46 +1152,66 @@ export async function onRequest(context) {
     };
 
     // Helper: insert an SMS log row with backward compatibility for older
-    // databases that were created before sms_logs.message_id existed.
+    // databases, while keeping per-request DB subqueries minimal.
+    // null  => unknown
+    // true  => message_id column works
+    // false => message_id column not available
     let smsLogSchemaSupportsMessageId = null;
     const insertSmsLog = async ({ transactionRef, triggerType, message, recipient, status, termiiResponse, messageId = null }) => {
-      if (smsLogSchemaSupportsMessageId === null) {
-        try {
-          // Self-heal: create SMS log table/indexes if migrations were missed.
-          await db.prepare(`
-            CREATE TABLE IF NOT EXISTS sms_logs (
-              id              INTEGER PRIMARY KEY AUTOINCREMENT,
-              transaction_ref TEXT    NOT NULL,
-              sent_at         TEXT    NOT NULL DEFAULT (datetime('now')),
-              trigger_type    TEXT    NOT NULL,
-              message         TEXT    NOT NULL,
-              recipient       TEXT    NOT NULL,
-              status          TEXT    NOT NULL DEFAULT 'pending',
-              termii_response TEXT
-            )
-          `).run();
-          await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_transaction_ref ON sms_logs (transaction_ref)').run();
-          await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_sent_at ON sms_logs (sent_at DESC)').run();
-          // Best-effort schema upgrades for older tables.
-          await db.prepare('ALTER TABLE sms_logs ADD COLUMN message_id TEXT').run().catch(() => {});
-          await db.prepare('ALTER TABLE sms_logs ADD COLUMN delivery_status TEXT').run().catch(() => {});
+      const runWithMessageId = () => db.prepare(
+          'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse, messageId).run();
+      const runWithoutMessageId = () => db.prepare(
+        'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse).run();
 
-          const cols = await db.prepare('PRAGMA table_info(sms_logs)').all();
-          smsLogSchemaSupportsMessageId = (cols?.results || []).some(c => c?.name === 'message_id');
-        } catch (_) {
-          smsLogSchemaSupportsMessageId = false;
+      const ensureSmsLogsTable = async () => {
+        await db.prepare(`
+          CREATE TABLE IF NOT EXISTS sms_logs (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_ref TEXT    NOT NULL,
+            sent_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+            trigger_type    TEXT    NOT NULL,
+            message         TEXT    NOT NULL,
+            recipient       TEXT    NOT NULL,
+            status          TEXT    NOT NULL DEFAULT 'pending',
+            termii_response TEXT
+          )
+        `).run();
+        await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_transaction_ref ON sms_logs (transaction_ref)').run();
+        await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_sent_at ON sms_logs (sent_at DESC)').run();
+      };
+
+      if (smsLogSchemaSupportsMessageId !== false) {
+        try {
+          const res = await runWithMessageId();
+          smsLogSchemaSupportsMessageId = true;
+          return res;
+        } catch (err) {
+          const msg = String(err?.message || err || '');
+          if (msg.includes('no such table: sms_logs')) {
+            await ensureSmsLogsTable();
+            smsLogSchemaSupportsMessageId = false;
+            return runWithoutMessageId();
+          }
+          if (msg.includes('no column named message_id')) {
+            smsLogSchemaSupportsMessageId = false;
+            return runWithoutMessageId();
+          }
+          throw err;
         }
       }
 
-      if (smsLogSchemaSupportsMessageId) {
-        return db.prepare(
-          'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-        ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse, messageId).run();
+      try {
+        return await runWithoutMessageId();
+      } catch (err) {
+        const msg = String(err?.message || err || '');
+        if (msg.includes('no such table: sms_logs')) {
+          await ensureSmsLogsTable();
+          return runWithoutMessageId();
+        }
+        throw err;
       }
-
-      return db.prepare(
-        'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, ?, ?, ?, ?, ?)'
-      ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse).run();
     };
 
     // Helper: record unexpected SMS runtime errors without blocking transaction flows.
