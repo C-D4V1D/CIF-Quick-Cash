@@ -1109,22 +1109,28 @@ export async function onRequest(context) {
     // Helper: send one SMS via Termii, returns { ok, messageId, response, usedFallback }
     const termiiSend = async (smsCfg, phone, message) => {
       const doSend = async (from, channel) => {
-        const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            to: phone,
-            from,
-            sms: message,
-            type: 'plain',
-            channel,
-            api_key: smsCfg.apiKey,
-          }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
-        const messageId = data?.message_id ? String(data.message_id) : null;
-        return { ok, messageId, response: data };
+        try {
+          const resp = await fetch(`${smsCfg.baseUrl}/api/sms/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              to: phone,
+              from,
+              sms: message,
+              type: 'plain',
+              channel,
+              api_key: smsCfg.apiKey,
+            }),
+          });
+          const data = await resp.json().catch(() => ({}));
+          const ok = (data?.code === 'ok' || data?.message === 'Successfully Sent' || resp.ok) && data?.status !== 'error';
+          const messageId = data?.message_id ? String(data.message_id) : null;
+          return { ok, messageId, response: data };
+        } catch (fetchErr) {
+          // fetch() itself threw (e.g. DNS failure, network unreachable).
+          // Return a failure object so the caller can still write an SMS log entry.
+          return { ok: false, messageId: null, response: { error: fetchErr.message || 'network_error' } };
+        }
       };
 
       // Primary attempt with configured sender ID
@@ -1269,9 +1275,12 @@ export async function onRequest(context) {
             } else if (phone) {
               const triggerType = 'outright_confirmation';
               const today = todayNigeria();
-              const alreadySent = await db.prepare(
-                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
-              ).bind(tx.ref, triggerType, today).first();
+              let alreadySent = null;
+              try {
+                alreadySent = await db.prepare(
+                  "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+                ).bind(tx.ref, triggerType, today).first();
+              } catch (dbErr) { console.error('SMS alreadySent check failed (outright_confirmation):', dbErr?.message); }
               if (!alreadySent) {
                 const message = fillSmsTemplate(smsCfg.tmplOutrightConfirmation, {
                   customerName: tx.fullName,
@@ -1329,9 +1338,12 @@ export async function onRequest(context) {
             } else {
               const triggerType = 'advance_confirmation';
               const today = todayNigeria();
-              const alreadySent = await db.prepare(
-                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
-              ).bind(tx.ref, triggerType, today).first();
+              let alreadySent = null;
+              try {
+                alreadySent = await db.prepare(
+                  "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+                ).bind(tx.ref, triggerType, today).first();
+              } catch (dbErr) { console.error('SMS alreadySent check failed (advance_confirmation):', dbErr?.message); }
               if (!alreadySent) {
                 const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
                 const message = fillSmsTemplate(smsCfg.tmplAdvanceConfirmation, {
@@ -1485,9 +1497,12 @@ export async function onRequest(context) {
             } else {
               const triggerType = 'redemption_confirmation';
               const todayClosed = todayNigeria();
-              const alreadySent = await db.prepare(
-                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
-              ).bind(ref, triggerType, todayClosed).first();
+              let alreadySent = null;
+              try {
+                alreadySent = await db.prepare(
+                  "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+                ).bind(ref, triggerType, todayClosed).first();
+              } catch (dbErr) { console.error('SMS alreadySent check failed (redemption_confirmation):', dbErr?.message); }
               if (!alreadySent) {
                 const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
                 const message = fillSmsTemplate(smsCfg.tmplRedemptionConfirmation, {
@@ -1546,9 +1561,12 @@ export async function onRequest(context) {
             } else {
               const triggerType = 'listed_for_sale';
               const todayListed = todayNigeria();
-              const alreadySent = await db.prepare(
-                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
-              ).bind(ref, triggerType, todayListed).first();
+              let alreadySent = null;
+              try {
+                alreadySent = await db.prepare(
+                  "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+                ).bind(ref, triggerType, todayListed).first();
+              } catch (dbErr) { console.error('SMS alreadySent check failed (listed_for_sale):', dbErr?.message); }
               if (!alreadySent) {
                 const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
                 const message = fillSmsTemplate(smsCfg.tmplListedForSale, {
@@ -1607,9 +1625,12 @@ export async function onRequest(context) {
             } else {
               const triggerType = 'sale_confirmation';
               const todaySold = todayNigeria();
-              const alreadySent = await db.prepare(
-                "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
-              ).bind(ref, triggerType, todaySold).first();
+              let alreadySent = null;
+              try {
+                alreadySent = await db.prepare(
+                  "SELECT id FROM sms_logs WHERE transaction_ref = ? AND trigger_type = ? AND date(sent_at, '+1 hour') = ?"
+                ).bind(ref, triggerType, todaySold).first();
+              } catch (dbErr) { console.error('SMS alreadySent check failed (sale_confirmation):', dbErr?.message); }
               if (!alreadySent) {
                 const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
                 const itemDesc = [tx.aiBrand, tx.aiModel].filter(Boolean).join(' ') || tx.aiItemType || 'item';
