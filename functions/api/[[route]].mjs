@@ -1143,6 +1143,30 @@ export async function onRequest(context) {
       return { ...primary, usedFallback: false };
     };
 
+    // Helper: insert an SMS log row with backward compatibility for older
+    // databases that were created before sms_logs.message_id existed.
+    let smsLogSchemaSupportsMessageId = null;
+    const insertSmsLog = async ({ transactionRef, triggerType, message, recipient, status, termiiResponse, messageId = null }) => {
+      if (smsLogSchemaSupportsMessageId === null) {
+        try {
+          const cols = await db.prepare('PRAGMA table_info(sms_logs)').all();
+          smsLogSchemaSupportsMessageId = (cols?.results || []).some(c => c?.name === 'message_id');
+        } catch (_) {
+          smsLogSchemaSupportsMessageId = false;
+        }
+      }
+
+      if (smsLogSchemaSupportsMessageId) {
+        return db.prepare(
+          'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse, messageId).run();
+      }
+
+      return db.prepare(
+        'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response) VALUES (?, ?, ?, ?, ?, ?)'
+      ).bind(transactionRef, triggerType, message, recipient, status, termiiResponse).run();
+    };
+
     if (path === 'transactions' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
@@ -1257,14 +1281,26 @@ export async function onRequest(context) {
                   shopPhone: smsCfg.shopPhone,
                 });
                 const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
-                await db.prepare(
-                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                ).bind(tx.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                await insertSmsLog({
+                  transactionRef: tx.ref,
+                  triggerType,
+                  message,
+                  recipient: phone,
+                  status: ok ? 'sent' : 'failed',
+                  termiiResponse: JSON.stringify(response),
+                  messageId,
+                });
                 if (phone2) {
                   const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
-                  await db.prepare(
-                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                  ).bind(tx.ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                  await insertSmsLog({
+                    transactionRef: tx.ref,
+                    triggerType: triggerType + '_phone2',
+                    message,
+                    recipient: phone2,
+                    status: ok2 ? 'sent' : 'failed',
+                    termiiResponse: JSON.stringify(response2),
+                    messageId: messageId2,
+                  });
                 }
               }
             }
@@ -1307,14 +1343,26 @@ export async function onRequest(context) {
                   shopPhone: smsCfg.shopPhone,
                 });
                 const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
-                await db.prepare(
-                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                ).bind(tx.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                await insertSmsLog({
+                  transactionRef: tx.ref,
+                  triggerType,
+                  message,
+                  recipient: phone,
+                  status: ok ? 'sent' : 'failed',
+                  termiiResponse: JSON.stringify(response),
+                  messageId,
+                });
                 if (phone2) {
                   const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
-                  await db.prepare(
-                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                  ).bind(tx.ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                  await insertSmsLog({
+                    transactionRef: tx.ref,
+                    triggerType: triggerType + '_phone2',
+                    message,
+                    recipient: phone2,
+                    status: ok2 ? 'sent' : 'failed',
+                    termiiResponse: JSON.stringify(response2),
+                    messageId: messageId2,
+                  });
                 }
               }
             }
@@ -1451,14 +1499,26 @@ export async function onRequest(context) {
                   shopPhone: smsCfg.shopPhone,
                 });
                 const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
-                await db.prepare(
-                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                await insertSmsLog({
+                  transactionRef: ref,
+                  triggerType,
+                  message,
+                  recipient: phone,
+                  status: ok ? 'sent' : 'failed',
+                  termiiResponse: JSON.stringify(response),
+                  messageId,
+                });
                 if (phone2) {
                   const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
-                  await db.prepare(
-                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                  ).bind(ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                  await insertSmsLog({
+                    transactionRef: ref,
+                    triggerType: triggerType + '_phone2',
+                    message,
+                    recipient: phone2,
+                    status: ok2 ? 'sent' : 'failed',
+                    termiiResponse: JSON.stringify(response2),
+                    messageId: messageId2,
+                  });
                 }
               }
             }
@@ -1500,14 +1560,26 @@ export async function onRequest(context) {
                   shopPhone: smsCfg.shopPhone,
                 });
                 const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
-                await db.prepare(
-                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                await insertSmsLog({
+                  transactionRef: ref,
+                  triggerType,
+                  message,
+                  recipient: phone,
+                  status: ok ? 'sent' : 'failed',
+                  termiiResponse: JSON.stringify(response),
+                  messageId,
+                });
                 if (phone2) {
                   const { ok: ok2, messageId: messageId2, response: response2 } = await termiiSend(smsCfg, phone2, message);
-                  await db.prepare(
-                    'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                  ).bind(ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+                  await insertSmsLog({
+                    transactionRef: ref,
+                    triggerType: triggerType + '_phone2',
+                    message,
+                    recipient: phone2,
+                    status: ok2 ? 'sent' : 'failed',
+                    termiiResponse: JSON.stringify(response2),
+                    messageId: messageId2,
+                  });
                 }
               }
             }
@@ -1553,9 +1625,15 @@ export async function onRequest(context) {
                   shopPhone: smsCfg.shopPhone,
                 });
                 const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
-                await db.prepare(
-                  'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-                ).bind(ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+                await insertSmsLog({
+                  transactionRef: ref,
+                  triggerType,
+                  message,
+                  recipient: phone,
+                  status: ok ? 'sent' : 'failed',
+                  termiiResponse: JSON.stringify(response),
+                  messageId,
+                });
               }
             }
           }
@@ -2363,9 +2441,15 @@ export async function onRequest(context) {
       });
 
       const { ok, messageId, response, usedFallback, primaryResponse } = await termiiSend(smsCfg, phone, message);
-      const inserted = await db.prepare(
-        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'manual', ?, ?, ?, ?, ?)"
-      ).bind(txRef, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+      const inserted = await insertSmsLog({
+        transactionRef: txRef,
+        triggerType: 'manual',
+        message,
+        recipient: phone,
+        status: ok ? 'sent' : 'failed',
+        termiiResponse: JSON.stringify(response),
+        messageId,
+      });
 
       await logActivity({
         user: auth.user, action: 'sms', entityType: 'transaction', entityId: txRef,
@@ -2389,9 +2473,15 @@ export async function onRequest(context) {
       const { ok, messageId, response, usedFallback, primaryResponse } = await termiiSend(smsCfg, phone, message);
 
       // Log the test SMS to sms_logs so it can be tracked
-      const inserted = await db.prepare(
-        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'test_send', ?, ?, ?, ?, ?)"
-      ).bind('TEST-SMS', message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+      const inserted = await insertSmsLog({
+        transactionRef: 'TEST-SMS',
+        triggerType: 'test_send',
+        message,
+        recipient: phone,
+        status: ok ? 'sent' : 'failed',
+        termiiResponse: JSON.stringify(response),
+        messageId,
+      });
 
       return json({
         ok,
@@ -2428,9 +2518,15 @@ export async function onRequest(context) {
 
       const { ok, messageId, response, usedFallback, primaryResponse } = await termiiSend(smsCfg, phone, message);
 
-      await db.prepare(
-        "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'capital_alert', ?, ?, ?, ?, ?)"
-      ).bind('CAPITAL-ALERT', message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+      await insertSmsLog({
+        transactionRef: 'CAPITAL-ALERT',
+        triggerType: 'capital_alert',
+        message,
+        recipient: phone,
+        status: ok ? 'sent' : 'failed',
+        termiiResponse: JSON.stringify(response),
+        messageId,
+      });
 
       await logActivity({
         user: auth.user, action: 'sms', entityType: 'capital', entityId: 'CAPITAL-ALERT',
@@ -2447,9 +2543,11 @@ export async function onRequest(context) {
       const cronSecret = env.CRON_SECRET;
       const incomingSecret = request.headers.get('X-Cron-Secret');
       const isCronCall = !!(cronSecret && incomingSecret && cronSecret === incomingSecret);
+      let authUser = null;
       if (!isCronCall) {
         const auth = requireAuth(request);
         if (auth.error) return auth.error;
+        authUser = auth.user;
       }
 
       const smsCfg = await loadSmsConfig();
@@ -2612,18 +2710,30 @@ export async function onRequest(context) {
           if (alreadySent) { skipped.push({ ref: row.ref, triggerType, reason: 'already_sent_today' }); continue; }
 
           const { ok, messageId, response, usedFallback } = await termiiSend(smsCfg, phone, message);
-          await db.prepare(
-            'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(row.ref, triggerType, message, phone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+          await insertSmsLog({
+            transactionRef: row.ref,
+            triggerType,
+            message,
+            recipient: phone,
+            status: ok ? 'sent' : 'failed',
+            termiiResponse: JSON.stringify(response),
+            messageId,
+          });
 
           (ok ? sent : failed).push({ ref: row.ref, triggerType, phone, usedFallback });
 
           // Also send to phone 2 if provided and different from phone 1
           if (phone2) {
             const { ok: ok2, messageId: messageId2, response: response2, usedFallback: usedFallback2 } = await termiiSend(smsCfg, phone2, message);
-            await db.prepare(
-              'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-            ).bind(row.ref, triggerType + '_phone2', message, phone2, ok2 ? 'sent' : 'failed', JSON.stringify(response2), messageId2).run();
+            await insertSmsLog({
+              transactionRef: row.ref,
+              triggerType: triggerType + '_phone2',
+              message,
+              recipient: phone2,
+              status: ok2 ? 'sent' : 'failed',
+              termiiResponse: JSON.stringify(response2),
+              messageId: messageId2,
+            });
 
             (ok2 ? sent : failed).push({ ref: row.ref, triggerType: triggerType + '_phone2', phone: phone2, usedFallback: usedFallback2 });
           }
@@ -2632,7 +2742,7 @@ export async function onRequest(context) {
 
       if (sent.length > 0) {
         await logActivity({
-          user: auth.user, action: 'sms', entityType: 'settings', entityId: 'auto',
+          user: authUser || { id: 'system', role: 'system', name: 'System' }, action: 'sms', entityType: 'settings', entityId: 'auto',
           description: `📱 Auto-SMS run: ${sent.length} sent, ${failed.length} failed, ${skipped.length} skipped`,
         });
       }
@@ -2668,9 +2778,15 @@ export async function onRequest(context) {
           if (alreadyRetried) continue;
 
           const { ok: retryOk, messageId: retryMsgId, response: retryResp } = await termiiSend(smsCfg, log.recipient, log.message);
-          await db.prepare(
-            'INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
-          ).bind(log.transaction_ref, retryType, log.message, log.recipient, retryOk ? 'sent' : 'failed', JSON.stringify(retryResp), retryMsgId).run();
+          await insertSmsLog({
+            transactionRef: log.transaction_ref,
+            triggerType: retryType,
+            message: log.message,
+            recipient: log.recipient,
+            status: retryOk ? 'sent' : 'failed',
+            termiiResponse: JSON.stringify(retryResp),
+            messageId: retryMsgId,
+          });
 
           (retryOk ? sent : failed).push({ ref: log.transaction_ref, triggerType: retryType, phone: log.recipient, isRetry: true });
         }
@@ -2974,9 +3090,15 @@ export async function onRequest(context) {
             const intlPhone = toIntlPhone(phone);
             if (!intlPhone) { smsResults.push({ name: s.name, status: 'skipped', reason: 'invalid_phone' }); continue; }
             const { ok, messageId, response } = await termiiSend(smsCfg, intlPhone, msg);
-            await db.prepare(
-              "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'profit_distribution', ?, ?, ?, ?, ?)"
-            ).bind(`PROFIT-${period}`, msg, intlPhone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+            await insertSmsLog({
+              transactionRef: `PROFIT-${period}`,
+              triggerType: 'profit_distribution',
+              message: msg,
+              recipient: intlPhone,
+              status: ok ? 'sent' : 'failed',
+              termiiResponse: JSON.stringify(response),
+              messageId,
+            });
             smsResults.push({ name: s.name, status: ok ? 'sent' : 'failed', messageId });
           }
         }
@@ -3171,9 +3293,15 @@ export async function onRequest(context) {
             const intlPhone = toIntlPhone(phone);
             if (!intlPhone) { smsResults.push({ name: s.name, status: 'skipped', reason: 'invalid_phone' }); continue; }
             const { ok, messageId, response } = await termiiSend(smsCfg, intlPhone, msg);
-            await db.prepare(
-              "INSERT INTO sms_logs (transaction_ref, trigger_type, message, recipient, status, termii_response, message_id) VALUES (?, 'profit_distribution', ?, ?, ?, ?, ?)"
-            ).bind(`PROFIT-${period}`, msg, intlPhone, ok ? 'sent' : 'failed', JSON.stringify(response), messageId).run();
+            await insertSmsLog({
+              transactionRef: `PROFIT-${period}`,
+              triggerType: 'profit_distribution',
+              message: msg,
+              recipient: intlPhone,
+              status: ok ? 'sent' : 'failed',
+              termiiResponse: JSON.stringify(response),
+              messageId,
+            });
             smsResults.push({ name: s.name, status: ok ? 'sent' : 'failed', messageId });
           }
         }
