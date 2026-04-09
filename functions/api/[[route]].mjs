@@ -1175,11 +1175,14 @@ export async function onRequest(context) {
             message         TEXT    NOT NULL,
             recipient       TEXT    NOT NULL,
             status          TEXT    NOT NULL DEFAULT 'pending',
-            termii_response TEXT
+            termii_response TEXT,
+            message_id      TEXT,
+            delivery_status TEXT
           )
         `).run();
         await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_transaction_ref ON sms_logs (transaction_ref)').run();
         await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_sent_at ON sms_logs (sent_at DESC)').run();
+        await db.prepare('CREATE INDEX IF NOT EXISTS idx_sms_logs_message_id ON sms_logs (message_id)').run();
       };
 
       if (smsLogSchemaSupportsMessageId !== false) {
@@ -1191,8 +1194,8 @@ export async function onRequest(context) {
           const msg = String(err?.message || err || '');
           if (msg.includes('no such table: sms_logs')) {
             await ensureSmsLogsTable();
-            smsLogSchemaSupportsMessageId = false;
-            return runWithoutMessageId();
+            smsLogSchemaSupportsMessageId = true;
+            return runWithMessageId();
           }
           if (msg.includes('no column named message_id')) {
             smsLogSchemaSupportsMessageId = false;
@@ -1208,7 +1211,8 @@ export async function onRequest(context) {
         const msg = String(err?.message || err || '');
         if (msg.includes('no such table: sms_logs')) {
           await ensureSmsLogsTable();
-          return runWithoutMessageId();
+          smsLogSchemaSupportsMessageId = true;
+          return runWithMessageId();
         }
         throw err;
       }
