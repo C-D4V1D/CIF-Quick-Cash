@@ -5724,7 +5724,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       return;
     }
     if (outrightOfferAutoFillRef.current || maxAdvance <= 0) return;
-    if (!tx.cashAdvance || tx.cashAdvance === 0) {
+    if (!tx.cashAdvance) {
       upd('cashAdvance', maxAdvance);
       upd('dailyFee', Math.round(maxAdvance * (settings.interestRate || 1) / 100));
     }
