@@ -5197,7 +5197,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   const outrightOfferAutoFillRef = useRef(false);
 
   const isMobile = useMobile();
-  const upd = (field, val) => setTx(prev => ({ ...prev, [field]: val }));
+  const upd = useCallback((field, val) => setTx(prev => ({ ...prev, [field]: val })), []);
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
 
   useEffect(() => {
@@ -5207,7 +5207,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
         upd('deadlineDate', addDays(tx.dateGiven, maxLoanDays));
       }
     }
-  }, [maxLoanDays, tx.loanDays, tx.dateGiven]);
+  }, [maxLoanDays, tx.loanDays, tx.dateGiven, upd]);
 
   // Auto-save draft every 3 seconds (debounced) after identity step has been passed.
   // On unmount, flush any pending save immediately so exiting via ✕ never loses a draft.
@@ -5729,7 +5729,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       upd('dailyFee', Math.round(maxAdvance * (settings.interestRate || 1) / 100));
     }
     outrightOfferAutoFillRef.current = true;
-  }, [step, tx.type, tx.cashAdvance, maxAdvance, settings.interestRate]);
+  }, [step, tx.type, tx.cashAdvance, maxAdvance, settings.interestRate, upd]);
 
   const canProceed = () => {
     switch (WIZARD_STEPS[step]?.id) {
