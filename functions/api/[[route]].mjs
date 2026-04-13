@@ -490,6 +490,180 @@ const withLoanTimeline = (r, loanCfg = {}) => {
   return { ...r, ...timeline };
 };
 
+// ── Auto schema initialisation ───────────────────────────────────────────────
+// Runs at most once per Worker isolate. On a brand-new database (cifcash-prod-db)
+// all tables are created automatically so no manual migration step is needed.
+let _schemaReady = false;
+
+async function ensureSchema(db) {
+  if (_schemaReady) return;
+  const row = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").first();
+  if (row) { _schemaReady = true; return; }
+
+  await db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id          TEXT    PRIMARY KEY,
+  username    TEXT    NOT NULL UNIQUE,
+  password    TEXT    NOT NULL,
+  role        TEXT    NOT NULL DEFAULT 'user',
+  roles       TEXT    NOT NULL DEFAULT '[]',
+  name        TEXT    NOT NULL,
+  active      INTEGER NOT NULL DEFAULT 1,
+  phone1      TEXT    DEFAULT NULL,
+  phone2      TEXT    DEFAULT NULL,
+  email       TEXT    DEFAULT NULL,
+  signature   TEXT    DEFAULT NULL,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO users (id, username, password, role, name)
+  VALUES ('admin', 'cifadmin', 'pbkdf2_sha256$100000$u7LD0M2xIoi2gVt1cujVBw==$MhniNOx1JQYo18UYqwk+6AS6SPW5j8zTyqXQG9Lv900=', 'admin', 'Administrator');
+CREATE TABLE IF NOT EXISTS transactions (
+  ref         TEXT    PRIMARY KEY,
+  data        TEXT    NOT NULL,
+  status      TEXT    NOT NULL DEFAULT 'active',
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_transactions_status     ON transactions (status);
+CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions (created_at DESC);
+CREATE TABLE IF NOT EXISTS drafts (
+  ref         TEXT    PRIMARY KEY,
+  data        TEXT    NOT NULL,
+  updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  created_by  TEXT
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key         TEXT    PRIMARY KEY,
+  value       TEXT    NOT NULL,
+  updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS expenses (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  date          TEXT    NOT NULL,
+  category      TEXT    NOT NULL,
+  description   TEXT,
+  amount        REAL    NOT NULL,
+  registered_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (date DESC);
+CREATE TABLE IF NOT EXISTS capital (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  name    TEXT    NOT NULL,
+  amount  REAL    NOT NULL,
+  date    TEXT    NOT NULL,
+  method  TEXT    NOT NULL,
+  receipt TEXT,
+  user_id TEXT    REFERENCES users(id)
+);
+CREATE TABLE IF NOT EXISTS declined_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  date          TEXT    NOT NULL,
+  ref           TEXT,
+  customer_name TEXT,
+  nin_bvn       TEXT,
+  item          TEXT    NOT NULL,
+  reason        TEXT    NOT NULL,
+  notes         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_declined_log_date ON declined_log (date DESC);
+CREATE TABLE IF NOT EXISTS profit_distributions (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  date             TEXT    NOT NULL,
+  amount           REAL    NOT NULL,
+  method           TEXT    NOT NULL,
+  note             TEXT,
+  receipt          TEXT,
+  created_by       TEXT,
+  decision_ids     TEXT,
+  stakeholder_name TEXT,
+  created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_profit_distributions_date ON profit_distributions (date DESC);
+CREATE TABLE IF NOT EXISTS activity_logs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  user_id     TEXT    NOT NULL,
+  username    TEXT    NOT NULL,
+  user_role   TEXT    NOT NULL,
+  action      TEXT    NOT NULL,
+  entity_type TEXT    NOT NULL,
+  entity_id   TEXT,
+  description TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs (created_at DESC);
+CREATE TABLE IF NOT EXISTS nin_bvn_cache (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  id_type     TEXT    NOT NULL,
+  id_number   TEXT    NOT NULL,
+  data        TEXT    NOT NULL,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_nin_bvn_cache_type_number ON nin_bvn_cache (id_type, id_number);
+CREATE TABLE IF NOT EXISTS sms_logs (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_ref TEXT    NOT NULL,
+  sent_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  trigger_type    TEXT    NOT NULL,
+  message         TEXT    NOT NULL,
+  recipient       TEXT    NOT NULL,
+  status          TEXT    NOT NULL DEFAULT 'pending',
+  termii_response TEXT,
+  message_id      TEXT,
+  delivery_status TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sms_logs_transaction_ref ON sms_logs (transaction_ref);
+CREATE INDEX IF NOT EXISTS idx_sms_logs_sent_at         ON sms_logs (sent_at DESC);
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  username     TEXT    NOT NULL,
+  attempted_at TEXT    NOT NULL DEFAULT (datetime('now')),
+  success      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_username ON login_attempts (username, attempted_at DESC);
+CREATE TABLE IF NOT EXISTS distribution_decisions (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  period              TEXT    NOT NULL,
+  user_id             TEXT    NOT NULL REFERENCES users(id),
+  stakeholder_name    TEXT    NOT NULL,
+  profit_amount       REAL    NOT NULL,
+  capital_days        REAL    NOT NULL,
+  total_capital_days  REAL    NOT NULL,
+  reinvest_amount     REAL    NOT NULL DEFAULT 0,
+  distribute_amount   REAL    NOT NULL DEFAULT 0,
+  decision            TEXT    NOT NULL DEFAULT 'pending',
+  decided_at          TEXT,
+  auto_decided        INTEGER NOT NULL DEFAULT 0,
+  capital_surplus     INTEGER NOT NULL DEFAULT 0,
+  system_note         TEXT,
+  deadline            TEXT    NOT NULL,
+  paid_at             TEXT,
+  paid_by             TEXT,
+  created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_distribution_decisions_period ON distribution_decisions (period);
+CREATE INDEX IF NOT EXISTS idx_distribution_decisions_user   ON distribution_decisions (user_id);
+CREATE TABLE IF NOT EXISTS public_valuation_requests (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ip         TEXT    NOT NULL,
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pvr_ip ON public_valuation_requests (ip, created_at DESC);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   TEXT NOT NULL UNIQUE,
+  p256dh     TEXT NOT NULL,
+  auth       TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_push_subs_user_id ON push_subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_users_name_role ON users(name, role);
+  `);
+
+  _schemaReady = true;
+}
+// ── End auto schema initialisation ───────────────────────────────────────────
+
 export async function onRequest(context) {
   const { request, env } = context;
   const url = new URL(request.url);
@@ -501,6 +675,8 @@ export async function onRequest(context) {
   }
 
   const db = env.DB;
+
+  await ensureSchema(db);
 
   const logActivity = async ({ user, action, entityType, entityId, description = '' }) => {
     if (!user) return;
