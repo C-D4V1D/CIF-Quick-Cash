@@ -14,12 +14,26 @@ VAPID_PUBLIC_KEY = "BP170YQOAM1B98-bACXiUF8goLWbKrXQj0tNhZ8b1zmBjWhGi6am-F0JCrkx
 # Use the same value in the companion cron Worker (see cron-worker.js).
 # CRON_SECRET = ""  ← do not commit the real value here
 
-[[d1_databases]]
+# ── Production environment (main branch) ────────────────────────────────────
+[env.production]
+[[env.production.d1_databases]]
 binding       = "DB"
 database_name = "cifcash-db"
 database_id   = "84f2f966-3cf2-43d5-b5bc-028435dcc419"
 
-[[r2_buckets]]
+[[env.production.r2_buckets]]
+binding     = "PHOTOS"
+bucket_name = "cifcash-photos"
+
+# ── Dev / Preview environment (all non-main branches) ────────────────────────
+# Run ./setup-dev-db.sh once to create cifcash-dev-db and populate this ID.
+[env.preview]
+[[env.preview.d1_databases]]
+binding       = "DB"
+database_name = "cifcash-dev-db"
+database_id   = "DEV_DB_ID_PLACEHOLDER"
+
+[[env.preview.r2_buckets]]
 binding     = "PHOTOS"
 bucket_name = "cifcash-photos"
 
