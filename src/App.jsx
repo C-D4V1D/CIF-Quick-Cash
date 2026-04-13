@@ -12633,7 +12633,10 @@ export default function App() {
             </div>
             <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: showSettingsImport ? '16px' : 0 }}>
               <button style={S.btn('outline')} onClick={async () => {
-                const code = btoa(JSON.stringify(es));
+                // TextEncoder → btoa handles full Unicode (₦, etc.) safely
+                const json = JSON.stringify(es);
+                const bytes = new TextEncoder().encode(json);
+                const code = btoa(String.fromCharCode(...bytes));
                 try { await navigator.clipboard.writeText(code); alert('Settings backup code copied to clipboard. Paste it on the other environment using "Import Settings".'); }
                 catch { window.prompt('Copy this settings backup code:', code); }
               }}>Export Settings</button>
@@ -12652,7 +12655,9 @@ export default function App() {
                 />
                 <button style={{ ...S.btn('primary'), marginTop: '8px' }} onClick={() => {
                   try {
-                    const parsed = JSON.parse(atob(settingsImportText.trim()));
+                    const binary = atob(settingsImportText.trim());
+                    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+                    const parsed = JSON.parse(new TextDecoder().decode(bytes));
                     if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid');
                     updateSettings({ ...parsed });
                     setShowSettingsImport(false);
