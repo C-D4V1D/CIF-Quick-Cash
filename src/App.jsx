@@ -8359,6 +8359,8 @@ export default function App() {
   const [settingsPwdError, setSettingsPwdError] = useState('');
   const [settingsPwdLoading, setSettingsPwdLoading] = useState(false);
   const [settingsTab, setSettingsTab] = useState('business');
+  const [showSettingsImport, setShowSettingsImport] = useState(false);
+  const [settingsImportText, setSettingsImportText] = useState('');
   // Lifted modal form state — prevents form fields resetting when App re-renders while a modal is open
   const [expForm, setExpForm] = useState({ date: '', category: '', description: '', amount: '' });
   const [distForm, setDistForm] = useState({ date: '', amount: '', method: '', note: '', receipt: '' });
@@ -12622,7 +12624,47 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── 17. DANGER ZONE ── */}
+          {/* ── 17. SETTINGS BACKUP ── */}
+          <div style={S.card}>
+            <div style={S.cardTitle}>💾 Settings Backup</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+              Export all settings as a backup code, or paste a previously exported code to restore them.
+              Useful when moving settings to a different environment (e.g. from dev to production).
+            </div>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: showSettingsImport ? '16px' : 0 }}>
+              <button style={S.btn('outline')} onClick={async () => {
+                const code = btoa(JSON.stringify(es));
+                try { await navigator.clipboard.writeText(code); alert('Settings backup code copied to clipboard. Paste it on the other environment using "Import Settings".'); }
+                catch { window.prompt('Copy this settings backup code:', code); }
+              }}>Export Settings</button>
+              <button style={S.btn('outline')} onClick={() => { setShowSettingsImport(v => !v); setSettingsImportText(''); }}>
+                {showSettingsImport ? 'Cancel Import' : 'Import Settings'}
+              </button>
+            </div>
+            {showSettingsImport && (
+              <div style={{ marginTop: '12px' }}>
+                <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '8px' }}>Paste the backup code from your other environment:</div>
+                <textarea
+                  style={{ ...S.textarea, fontFamily: 'monospace', fontSize: '12px', minHeight: '80px' }}
+                  placeholder="Paste settings backup code here…"
+                  value={settingsImportText}
+                  onChange={e => setSettingsImportText(e.target.value)}
+                />
+                <button style={{ ...S.btn('primary'), marginTop: '8px' }} onClick={() => {
+                  try {
+                    const parsed = JSON.parse(atob(settingsImportText.trim()));
+                    if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid');
+                    updateSettings({ ...parsed });
+                    setShowSettingsImport(false);
+                    setSettingsImportText('');
+                    alert('Settings imported. Review the values below, then click Save Changes to apply.');
+                  } catch { alert('Invalid backup code. Make sure you copied the full code from Export Settings.'); }
+                }}>Apply Import</button>
+              </div>
+            )}
+          </div>
+
+          {/* ── 18. DANGER ZONE ── */}
           <div style={{ ...S.card, border: `2px solid ${COLORS.danger}`, background: COLORS.dangerLight }}>
             <div style={{ ...S.cardTitle, color: COLORS.danger }}>🚨 Danger Zone</div>
             <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '14px' }}>Irreversible actions. Proceed with extreme caution.</div>
