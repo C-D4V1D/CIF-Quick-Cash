@@ -5708,7 +5708,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
           serpSummaryForDisplay = serpResult.summary;
           if (!geminiCheck.blocked) {
             // Gemini available — use it to extract the price from the search result
-            const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the upper end of the range. If multiple independent prices are mentioned, use the median.\n\n${serpResult.summary}`;
+            const prompt1 = `From the following Google search results, extract the price of a brand new ${itemType} (${brand} ${model}, ${colour}${keySpecs ? `, ${keySpecs}` : ''}) in Nigeria. Do NOT determine or estimate a price yourself — only read what the search results say. Return ONLY the extracted price in this exact format: NEW_MARKET_PRICE: [number only, no naira sign or comma, approximated to whole number]. If a price range is given, use the midpoint. If multiple independent prices are mentioned, use the median.\n\n${serpResult.summary}`;
             result1 = await callWithTimeout(() => callGeminiAI(settings.geminiApiKey, settings.geminiModel, [], prompt1, settings.geminiThinkingBudget, settings.geminiTemperature), AI_TIMEOUT);
           } else {
             // Gemini exhausted — use the SerpAPI AI response directly; price parsing will also use regex fallback
