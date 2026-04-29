@@ -5972,27 +5972,52 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     const newItem = buildCurrentItem();
     const updatedItems = [...tx.items];
     updatedItems[tx.currentItemIndex] = newItem;
+    const nextIndex = tx.currentItemIndex + 1;
+    const custPhotosStep = WIZARD_STEPS.findIndex(s => s.id === 'custPhotos');
     setTx(prev => ({
       ...prev,
       ...clearItemFields(),
       items: updatedItems,
-      currentItemIndex: (prev.currentItemIndex || 0) + 1,
+      currentItemIndex: nextIndex,
     }));
-    setStep(WIZARD_STEPS.findIndex(s => s.id === 'custPhotos'));
+    setStep(custPhotosStep);
   };
 
   // Snapshots the current item into tx.items and advances to the offer step.
-  const handleProceedToOffer = async () => {
+  // Navigate immediately so the UI responds; draft is saved in background.
+  const handleProceedToOffer = () => {
     const newItem = buildCurrentItem();
     const updatedItems = [...tx.items];
     updatedItems[tx.currentItemIndex] = newItem;
     const newStep = WIZARD_STEPS.findIndex(s => s.id === 'offer');
-    // Compute aggregate estimated value across all items for top-level field
     const totalEstimatedValue = updatedItems.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
     const updatedTx = { ...tx, items: updatedItems, estimatedValue: totalEstimatedValue };
-    await API.post('drafts', { ...updatedTx, wizardStep: newStep });
     setTx(() => updatedTx);
     setStep(newStep);
+    // Background draft save (non-blocking — don't gate navigation on network)
+    API.post('drafts', { ...updatedTx, wizardStep: newStep }).catch(() => {});
+  };
+
+  // Back navigation that understands the multi-item capture loop.
+  // When staff is at the first per-item step (custPhotos) for item 2+, pressing Back should
+  // UNDO the "Add Another Item" action: restore the previous item to flat fields and return
+  // to the Items screen — rather than going backwards into the customer info steps.
+  const handleBack = () => {
+    const currentStepId = WIZARD_STEPS[step]?.id;
+    if (currentStepId === 'custPhotos' && tx.currentItemIndex > 0) {
+      const prevIndex = tx.currentItemIndex - 1;
+      const savedPrev = tx.items[prevIndex];
+      // Restore previous item's fields to the flat tx so it's "current" again
+      const restoredFields = {};
+      ITEM_FIELDS.forEach(f => { restoredFields[f] = savedPrev?.[f] ?? EMPTY_TX[f]; });
+      restoredFields.itemPhotos = normalizeItemPhotos(savedPrev?.itemPhotos);
+      // Remove the previous item from the saved array (it's now live in flat fields)
+      const updatedItems = tx.items.slice(0, prevIndex);
+      setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems, currentItemIndex: prevIndex }));
+      setStep(WIZARD_STEPS.findIndex(s => s.id === 'itemsDone'));
+      return;
+    }
+    setStep(step - 1);
   };
 
   const handleComplete = async () => {
@@ -6171,23 +6196,27 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
 
       case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" maxLength={11} value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value.replace(/\D/g, '').slice(0, 11); upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div>{tx.phoneNumbers[0] && tx.phoneNumbers[0].length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.phoneNumbers[0].length}/11)</div>}</Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" maxLength={11} value={tx.phoneNumbers[1]} onChange={e => { const val = e.target.value.replace(/\D/g, '').slice(0, 11); const n = [...tx.phoneNumbers]; n[1] = val; upd('phoneNumbers', n); if (!val) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div>{tx.phoneNumbers[1] && tx.phoneNumbers[1].length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.phoneNumbers[1].length}/11)</div>}</Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required={tx.type !== 'outright'}><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required={tx.type !== 'outright'}><input style={S.input} inputMode="numeric" maxLength={11} value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08099887766" />{tx.familyPhone && tx.familyPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.familyPhone.length}/11)</div>}</Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
-      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
+      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos{tx.currentItemIndex > 0 ? ` — Item ${tx.currentItemIndex + 1}` : ''}</h3>{tx.currentItemIndex > 0 && (<div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}.</strong> Take a new holding photo for this item. Click ← Back to return to the items list.</div>)}<div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
 
       case 'itemPhotos': return (
-        <CaptureStep
-          tx={tx}
-          upd={upd}
-          settings={settings}
-          onJumpToOffer={handlePartsOnlyJump}
-          onEndTransaction={handleEndTransaction}
-          onDecline={handleDeclineFromStep}
-        />
+        <div>
+          {tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — Photos & Condition</div>}
+          <CaptureStep
+            tx={tx}
+            upd={upd}
+            settings={settings}
+            onJumpToOffer={handlePartsOnlyJump}
+            onEndTransaction={handleEndTransaction}
+            onDecline={handleDeclineFromStep}
+          />
+        </div>
       );
 
-      case 'inspection': return (<InspectionStep tx={tx} upd={upd} />);
+      case 'inspection': return (<div>{tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — Inspection</div>}<InspectionStep tx={tx} upd={upd} /></div>);
 
       case 'aiValuation': return (<div>
-        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🧠 AI Analysis Engine</h3>
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🧠 AI Analysis Engine{tx.currentItemIndex > 0 ? ` — Item ${tx.currentItemIndex + 1}` : ''}</h3>
+        {tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — AI Valuation</div>}
 
         {tx.partsOnly ? (
           <div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>
@@ -6344,18 +6373,17 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       case 'itemsDone': {
         // All saved items (excluding the current one still in flat fields)
         const savedItems = tx.items || [];
-        const currentItemLabel = tx.aiItemType
-          ? `${tx.aiItemType}${tx.aiBrand ? ' — ' + tx.aiBrand : ''}${tx.aiModel ? ' ' + tx.aiModel : ''}`
-          : (tx.captureItemType || 'Item ' + (tx.currentItemIndex + 1));
+        const makeLabel = (item, fallbackIdx) =>
+          item.aiItemType
+            ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}${item.aiModel ? ' ' + item.aiModel : ''}`
+            : (item.captureItemType || `Item ${fallbackIdx + 1}`);
+        const currentItemLabel = makeLabel(tx, tx.currentItemIndex);
         const allItemsPreview = [
-          ...savedItems.map((item, idx) => ({
-            label: item.aiItemType ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}${item.aiModel ? ' ' + item.aiModel : ''}` : (item.captureItemType || `Item ${idx + 1}`),
-            estimatedValue: item.estimatedValue || 0,
-            idx,
-          })),
+          ...savedItems.map((item, idx) => ({ label: makeLabel(item, idx), estimatedValue: item.estimatedValue || 0, idx })),
           { label: currentItemLabel, estimatedValue: tx.estimatedValue || 0, idx: tx.currentItemIndex, isCurrent: true },
         ];
         const totalEV = allItemsPreview.reduce((s, i) => s + i.estimatedValue, 0);
+        const nextItemNum = allItemsPreview.length + 1;
         return (
           <div>
             <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📦 Items for this Loan</h3>
@@ -6364,12 +6392,13 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             </div>
             <div style={{ display: 'grid', gap: '10px', marginBottom: '16px' }}>
               {allItemsPreview.map((item) => (
-                <div key={item.idx} style={{ ...S.card, border: `2px solid ${item.isCurrent ? COLORS.primary : COLORS.border}`, background: item.isCurrent ? COLORS.primaryLight : '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div key={item.idx} style={{ ...S.card, marginBottom: 0, border: `2px solid ${item.isCurrent ? COLORS.primary : COLORS.border}`, background: item.isCurrent ? COLORS.primaryLight : '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
+                    <div style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '2px', fontWeight: 600 }}>Item {item.idx + 1}</div>
                     <div style={{ fontWeight: 700, fontSize: '14px' }}>{item.label}</div>
                     <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Estimated value: {fmtMoney(item.estimatedValue)}</div>
                   </div>
-                  {item.isCurrent && <span style={{ fontSize: '11px', background: COLORS.primary, color: '#fff', borderRadius: '6px', padding: '2px 8px', fontWeight: 700 }}>Current</span>}
+                  {item.isCurrent && <span style={{ fontSize: '11px', background: COLORS.primary, color: '#fff', borderRadius: '6px', padding: '2px 8px', fontWeight: 700, flexShrink: 0 }}>Current</span>}
                 </div>
               ))}
             </div>
@@ -6380,12 +6409,14 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             )}
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
               <button
+                type="button"
                 style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center' }}
                 onClick={handleAddAnotherItem}
               >
-                ➕ Add Another Item
+                ➕ Add Item {nextItemNum}
               </button>
               <button
+                type="button"
                 style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }}
                 onClick={handleProceedToOffer}
               >
@@ -6396,7 +6427,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         );
       }
 
-      case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
+      case 'screening': return (<div>{tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — Screening</div>}<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} /></div>);
 
       case 'offer': return (<div>
         {(() => {
@@ -6864,7 +6895,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', gap: '8px' }}>
-              {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
+              {step > 0 && <button style={S.btn('outline')} onClick={handleBack}>← Back</button>}
               <button style={S.btn('muted')} onClick={async () => { await saveDraftNow(); onCancel(); }}>Save Draft & Exit</button>
             </div>
             {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={async () => { await saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
