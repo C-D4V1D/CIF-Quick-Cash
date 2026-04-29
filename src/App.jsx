@@ -6019,6 +6019,19 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       setStep(WIZARD_STEPS.findIndex(s => s.id === 'itemsDone'));
       return;
     }
+    // Reverse handleProceedToOffer: restore current item from tx.items back to flat fields
+    // so that itemsDone doesn't show the item twice (once from tx.items, once from flat fields).
+    if (currentStepId === 'offer') {
+      const currentIdx = tx.currentItemIndex ?? 0;
+      const savedCurrent = tx.items?.[currentIdx];
+      if (savedCurrent) {
+        const restoredFields = {};
+        ITEM_FIELDS.forEach(f => { restoredFields[f] = savedCurrent[f] ?? EMPTY_TX[f]; });
+        restoredFields.itemPhotos = normalizeItemPhotos(savedCurrent.itemPhotos);
+        const updatedItems = (tx.items || []).slice(0, currentIdx);
+        setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems }));
+      }
+    }
     setStep(step - 1);
   };
 
