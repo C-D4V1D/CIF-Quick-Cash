@@ -5970,8 +5970,10 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   // custPhotos so staff can capture the next item's holding photo + data.
   const handleAddAnotherItem = () => {
     const newItem = buildCurrentItem();
-    const updatedItems = [...tx.items];
-    updatedItems[tx.currentItemIndex] = newItem;
+    const existingItems = Array.isArray(tx.items) ? tx.items : [];
+    const currentIdx = Number.isInteger(tx.currentItemIndex) ? tx.currentItemIndex : existingItems.length;
+    const updatedItems = [...existingItems];
+    updatedItems[currentIdx] = newItem;
     setTx(prev => ({
       ...prev,
       ...clearItemFields(),
@@ -5984,8 +5986,10 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   // Snapshots the current item into tx.items and advances to the offer step.
   const handleProceedToOffer = async () => {
     const newItem = buildCurrentItem();
-    const updatedItems = [...tx.items];
-    updatedItems[tx.currentItemIndex] = newItem;
+    const existingItems = Array.isArray(tx.items) ? tx.items : [];
+    const currentIdx = Number.isInteger(tx.currentItemIndex) ? tx.currentItemIndex : existingItems.length;
+    const updatedItems = [...existingItems];
+    updatedItems[currentIdx] = newItem;
     const newStep = WIZARD_STEPS.findIndex(s => s.id === 'offer');
     // Compute aggregate estimated value across all items for top-level field
     const totalEstimatedValue = updatedItems.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
