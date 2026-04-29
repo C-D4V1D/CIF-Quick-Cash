@@ -6018,6 +6018,26 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     setStep(WIZARD_STEPS.findIndex(s => s.id === 'custPhotos'));
   };
 
+  const handleRemoveItem = (targetIdx) => {
+    const currentIdx = tx.currentItemIndex ?? 0;
+    if (!window.confirm(`Remove Item ${targetIdx + 1}? All photos and AI analysis for this item will be lost.`)) return;
+    if (targetIdx === currentIdx) {
+      // Removing the current (flat-field) item — restore the last saved item in its place.
+      const savedItems = tx.items || [];
+      const lastIdx = savedItems.length - 1;
+      const lastItem = savedItems[lastIdx];
+      const restoredFields = {};
+      ITEM_FIELDS.forEach(f => { restoredFields[f] = lastItem?.[f] ?? EMPTY_TX[f]; });
+      restoredFields.itemPhotos = normalizeItemPhotos(lastItem?.itemPhotos);
+      setTx(prev => ({ ...prev, ...restoredFields, items: savedItems.slice(0, lastIdx), currentItemIndex: lastIdx }));
+    } else {
+      // Removing a saved item — filter it out and re-align currentItemIndex.
+      const updatedItems = (tx.items || []).filter((_, idx) => idx !== targetIdx);
+      const newCurrentIdx = targetIdx < currentIdx ? currentIdx - 1 : currentIdx;
+      setTx(prev => ({ ...prev, items: updatedItems, currentItemIndex: newCurrentIdx }));
+    }
+  };
+
   // Finish editing a saved item: save edits, restore the original live item to flat fields.
   const handleDoneEditing = () => {
     const editedItem = buildCurrentItem();
@@ -6456,6 +6476,8 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             <div style={{ display: 'grid', gap: '10px', marginBottom: '16px' }}>
               {allItemsPreview.map((item) => {
                 const canEdit = !isEditingMode && !item.isCurrent;
+                // Allow removal only when not editing and at least 2 items exist (so 1 remains).
+                const canRemove = !isEditingMode && allItemsPreview.length > 1;
                 return (
                   <div
                     key={item.idx}
@@ -6467,8 +6489,19 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
                       <div style={{ fontWeight: 700, fontSize: '14px' }}>{item.label}</div>
                       <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Estimated value: {fmtMoney(item.estimatedValue)}</div>
                     </div>
-                    {item.isCurrent && <span style={{ fontSize: '11px', background: COLORS.primary, color: '#fff', borderRadius: '6px', padding: '2px 8px', fontWeight: 700, flexShrink: 0 }}>Current</span>}
-                    {canEdit && <span style={{ fontSize: '11px', color: COLORS.textMuted, flexShrink: 0, marginLeft: '8px' }}>✏️ Edit</span>}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '4px', flexShrink: 0, marginLeft: '8px' }}>
+                      {item.isCurrent && <span style={{ fontSize: '11px', background: COLORS.primary, color: '#fff', borderRadius: '6px', padding: '2px 8px', fontWeight: 700 }}>Current</span>}
+                      {canEdit && <span style={{ fontSize: '11px', color: COLORS.textMuted }}>✏️ Edit</span>}
+                      {canRemove && (
+                        <button
+                          type="button"
+                          style={{ fontSize: '11px', color: '#dc2626', background: 'none', border: 'none', padding: '2px 0', cursor: 'pointer', fontWeight: 600 }}
+                          onClick={(e) => { e.stopPropagation(); handleRemoveItem(item.idx); }}
+                        >
+                          ✕ Remove
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
