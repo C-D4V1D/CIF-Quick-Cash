@@ -249,6 +249,29 @@ const getServiceFeeForAdvance = (settings = {}, advanceAmount = 0) => {
   return getFlatServiceFee(settings);
 };
 
+const normalizeInterestRateRanges = (settings = {}) => {
+  const ranges = Array.isArray(settings?.interestRateRanges) ? settings.interestRateRanges : [];
+  return ranges
+    .map((r, idx) => ({
+      id: r?.id || `irate-${idx}`,
+      min: Math.max(0, Number(r?.min) || 0),
+      max: r?.max === '' || r?.max === null || r?.max === undefined ? null : Math.max(0, Number(r?.max) || 0),
+      rate: Math.max(0, Number(r?.rate) || 0),
+    }))
+    .sort((a, b) => a.min - b.min);
+};
+
+const getInterestRateForAdvance = (settings = {}, advanceAmount = 0) => {
+  const amount = Math.max(0, Number(advanceAmount) || 0);
+  const ranges = normalizeInterestRateRanges(settings);
+  for (const r of ranges) {
+    const inMin = amount >= r.min;
+    const inMax = r.max === null ? true : amount <= r.max;
+    if (inMin && inMax) return r.rate;
+  }
+  return Math.max(0, Number(settings?.interestRate) || 1);
+};
+
 // Returns a short human-readable label for how far a date is from today (Nigeria time).
 // e.g. "Today", "Yesterday", "Tomorrow", "5 days ago", "In 10 days".
 const relativeDateLabel = (dateStr) => {
@@ -432,7 +455,7 @@ const DEFAULT_SETTINGS = {
   location: 'Aguleri Junction, Anambra State, Nigeria',
   cacRegNumber: '',
   // Loan Parameters
-  interestRate: 1, loanCapNoReceipt: 40, loanCapWithReceipt: 50,
+  interestRate: 1, interestRateRanges: [], loanCapNoReceipt: 40, loanCapWithReceipt: 50,
   graceDays: 3, serviceFee: 1000, serviceFeeRanges: [], maxLoanDays: 30,
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, outrightMinMarkupPct: 20, maxPartsOnlyAdvance: 5000,
@@ -3350,7 +3373,7 @@ function SalesPage({ onBack, settings }) {
 function ShopListingModal({ tx, settings, onClose, onSave }) {
   // Stable price reference values (computed from props, not state)
   const isOutright = tx.type === 'outright';
-  const dailyFee = Math.round((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+  const dailyFee = Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
   const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const outrightMinMarkupPct = settings.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct;
   const minPrice = isOutright
@@ -4674,6 +4697,38 @@ const normalizeItemPhotos = (ip) => {
   return [];
 };
 
+// Fields that belong to a specific collateral item (not the overall loan).
+const ITEM_FIELDS = [
+  'captureItemType', 'itemPowersOn', 'partsOnly', 'itemPhotos',
+  'photoCustomerHolding',
+  'screeningDuration', 'screeningDurationOther', 'screeningPurchaseLocation',
+  'screeningPurchaseLocationOther', 'screeningRegistered', 'screeningOthersUsing', 'screeningRedFlag',
+  'inspectionChecklist', 'inspectionNotes', 'conditionDescription',
+  'aiItemType', 'aiBrand', 'aiModel', 'aiColour', 'aiKeySpecs', 'aiConfidence', 'aiSpecsUnreadable',
+  'aiCondition', 'aiEstimatedValue', 'aiNewMarketPrice', 'aiPriceBasis',
+  'aiPriceRangeLow', 'aiPriceRangeHigh', 'aiValuationConfidence',
+  'aiVisionUsed', 'aiVisionLabels', 'aiModelVerified',
+  'aiRawResponse', 'aiRawResponse2', 'aiRawResponse3',
+  'aiRun1Done', 'aiRun2Done', 'aiRun3Done', 'aiManualMode',
+  'requiresIMEI', 'imei', 'imeiDigits', 'imeiOcrConfidence', 'imeiManualConfirmed', 'imeiPhoto', 'imeiModelMatch',
+  'serialNumber', 'serialOcrConfidence', 'serialManualConfirmed', 'serialNumberPhoto',
+  'hasReceipt', 'receiptPhoto',
+  'estimatedValue', 'loanCapPct',
+];
+
+// Converts a saved transaction (old flat-field format OR new items-array format) into the
+// normalised form that always has tx.items populated. Used by display code only — never
+// write back the synthesised items to the database.
+const normalizeTransactionItems = (tx) => {
+  if (!tx) return tx;
+  if (Array.isArray(tx.items) && tx.items.length > 0) return tx;
+  // Legacy record: synthesise a 1-element items array from flat top-level fields.
+  const singleItem = { itemId: 'legacy-item-0', itemCashAdvance: tx.cashAdvance || 0, redeemed: tx.status === 'closed' };
+  ITEM_FIELDS.forEach(f => { singleItem[f] = tx[f]; });
+  singleItem.itemPhotos = normalizeItemPhotos(tx.itemPhotos);
+  return { ...tx, items: [singleItem] };
+};
+
 const AI_PROMPT_IMEI = `Look at this image carefully. This is a photo of a device screen showing the IMEI number (typically displayed after dialing *#06#, or visible in Settings > About Device / About Phone / About Tablet). Extract the IMEI number. It is a 15-digit number made up entirely of digits.
 
 Reply in this exact format only:
@@ -5113,6 +5168,7 @@ const WIZARD_STEPS = [
   { id: 'itemPhotos', label: '6. Capture', icon: '📷' },
   { id: 'inspection', label: '7. Inspection', icon: '✅' },
   { id: 'aiValuation', label: '8. AI Value', icon: '🤖' },
+  { id: 'itemsDone', label: '8b. Items', icon: '📦' },
   { id: 'offer', label: '9. Offer', icon: '💰' },
   { id: 'agreement', label: '10. Agreement', icon: '📄' },
   { id: 'complete', label: '11. Complete', icon: '🏁' },
@@ -5142,6 +5198,10 @@ const EMPTY_TX = {
   salePrice: 0, saleDate: '', saleBuyer: '',
   amountRepaid: 0, dateRepaid: '', daysCharged: 0, totalFees: 0, itemReturned: false,
   contactLog: [], notes: '',
+  // Multi-item support: items[] accumulates each captured item; currentItemIndex tracks which
+  // item is being worked on. Flat item fields above still hold the current item's working data.
+  items: [],
+  currentItemIndex: 0,
 };
 
 function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, serpApiAiAccount, availableLendingCapital, totalCapital, capByName }) {
@@ -5688,9 +5748,19 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   };
 
 
+  // For multi-item loans, aggregate totals across all snapshotted items.
+  const allTxItems = tx.items && tx.items.length > 0 ? tx.items : null;
   const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
-  const maxAdvance = tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100);
-  const dailyFeeCalc = Math.round((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+  const maxAdvance = allTxItems
+    ? allTxItems.reduce((s, item) => {
+        const p = item.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
+        return s + (item.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((item.estimatedValue || 0) * p / 100));
+      }, 0)
+    : (tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100));
+  const totalEstimatedValueForOffer = allTxItems
+    ? allTxItems.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0)
+    : (tx.estimatedValue || 0);
+  const dailyFeeCalc = Math.round((tx.cashAdvance || 0) * getInterestRateForAdvance(settings, tx.cashAdvance) / 100);
 
   useEffect(() => {
     const stepId = WIZARD_STEPS[step]?.id;
@@ -5701,7 +5771,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     if (outrightOfferAutoFillRef.current || maxAdvance <= 0) return;
     if (!tx.cashAdvance) {
       upd('cashAdvance', maxAdvance);
-      upd('dailyFee', Math.round(maxAdvance * (settings.interestRate || 1) / 100));
+      upd('dailyFee', Math.round(maxAdvance * getInterestRateForAdvance(settings, maxAdvance) / 100));
     }
     outrightOfferAutoFillRef.current = true;
   }, [step, tx.type, tx.cashAdvance, maxAdvance, settings.interestRate, upd]);
@@ -5749,6 +5819,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         return true;
       }
       case 'aiValuation': return tx.partsOnly || !!(tx.aiItemType && tx.aiBrand && tx.estimatedValue > 0 && (tx.conditionDescription || tx.aiCondition));
+      case 'itemsDone': return false; // navigation handled by custom buttons in the step render
       case 'offer': return tx.cashAdvance > 0 && tx.dateGiven;
       case 'agreement': return !!tx.photoSigning && !!tx.termsConfirmed && (tx.type !== 'advance' || !!tx.sealedPackageConfirm);
       default: return true;
@@ -5877,8 +5948,100 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     });
   };
 
+  // Builds an item object from the current flat fields on tx.
+  const buildCurrentItem = () => {
+    const item = { itemId: `item-${Date.now()}-${Math.floor(Math.random() * 1000)}` };
+    ITEM_FIELDS.forEach(f => { item[f] = tx[f]; });
+    item.itemPhotos = normalizeItemPhotos(tx.itemPhotos);
+    return item;
+  };
+
+  // Clears all flat item fields back to EMPTY_TX defaults, ready for the next item.
+  const clearItemFields = () => {
+    const clear = {};
+    ITEM_FIELDS.forEach(f => { clear[f] = EMPTY_TX[f]; });
+    clear.itemPhotos = [];
+    clear.inspectionChecklist = {};
+    clear.imeiDigits = makeDigitStates('');
+    return clear;
+  };
+
+  // Snapshots the current item into tx.items, clears flat fields, and loops back to
+  // custPhotos so staff can capture the next item's holding photo + data.
+  const handleAddAnotherItem = () => {
+    const newItem = buildCurrentItem();
+    const updatedItems = [...(tx.items || [])];
+    const currentIdx = tx.currentItemIndex ?? 0;
+    updatedItems[currentIdx] = newItem;
+    const nextIndex = currentIdx + 1;
+    const custPhotosStep = WIZARD_STEPS.findIndex(s => s.id === 'custPhotos');
+    setTx(prev => ({
+      ...prev,
+      ...clearItemFields(),
+      items: updatedItems,
+      currentItemIndex: nextIndex,
+    }));
+    setStep(custPhotosStep);
+  };
+
+  // Snapshots the current item into tx.items and advances to the offer step.
+  // Navigate immediately so the UI responds; draft is saved in background.
+  const handleProceedToOffer = () => {
+    const newItem = buildCurrentItem();
+    const updatedItems = [...(tx.items || [])];
+    const currentIdx = tx.currentItemIndex ?? 0;
+    updatedItems[currentIdx] = newItem;
+    const newStep = WIZARD_STEPS.findIndex(s => s.id === 'offer');
+    const totalEstimatedValue = updatedItems.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
+    const updatedTx = { ...tx, items: updatedItems, estimatedValue: totalEstimatedValue };
+    setTx(() => updatedTx);
+    setStep(newStep);
+    // Background draft save (non-blocking — don't gate navigation on network)
+    API.post('drafts', { ...updatedTx, wizardStep: newStep }).catch(() => {});
+  };
+
+  // Back navigation that understands the multi-item capture loop.
+  // When staff is at the first per-item step (custPhotos) for item 2+, pressing Back should
+  // UNDO the "Add Another Item" action: restore the previous item to flat fields and return
+  // to the Items screen — rather than going backwards into the customer info steps.
+  const handleBack = () => {
+    const currentStepId = WIZARD_STEPS[step]?.id;
+    if (currentStepId === 'custPhotos' && tx.currentItemIndex > 0) {
+      const prevIndex = tx.currentItemIndex - 1;
+      const savedPrev = tx.items[prevIndex];
+      // Restore previous item's fields to the flat tx so it's "current" again
+      const restoredFields = {};
+      ITEM_FIELDS.forEach(f => { restoredFields[f] = savedPrev?.[f] ?? EMPTY_TX[f]; });
+      restoredFields.itemPhotos = normalizeItemPhotos(savedPrev?.itemPhotos);
+      // Remove the previous item from the saved array (it's now live in flat fields)
+      const updatedItems = (tx.items || []).slice(0, prevIndex);
+      setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems, currentItemIndex: prevIndex }));
+      setStep(WIZARD_STEPS.findIndex(s => s.id === 'itemsDone'));
+      return;
+    }
+    setStep(step - 1);
+  };
+
   const handleComplete = async () => {
-    const finalTx = { ...tx, status: tx.type === 'outright' ? 'for_sale' : 'active', wizardStep: null, completedBy: currentUser?.name || '', completedAt: new Date().toISOString(), serviceFeeAmount: tx.type === 'advance' && tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0 };
+    // Ensure items array is populated. For single-item transactions that went through the
+    // normal flow, items may still be empty if the staff never saw itemsDone — snapshot now.
+    const itemsToSave = (tx.items || []).length > 0 ? tx.items : [buildCurrentItem()];
+    const totalEstimatedValue = itemsToSave.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
+    const finalTx = {
+      ...tx,
+      items: itemsToSave,
+      estimatedValue: totalEstimatedValue,
+      // Shadow item[0] identification fields at top level for backward-compat displays/SMS/shop.
+      aiBrand: itemsToSave[0]?.aiBrand || tx.aiBrand || '',
+      aiModel: itemsToSave[0]?.aiModel || tx.aiModel || '',
+      aiItemType: itemsToSave[0]?.aiItemType || tx.aiItemType || '',
+      status: tx.type === 'outright' ? 'for_sale' : 'active',
+      wizardStep: null,
+      completedBy: currentUser?.name || '',
+      completedAt: new Date().toISOString(),
+      serviceFeeAmount: tx.type === 'advance' && tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0,
+      appliedInterestRate: getInterestRateForAdvance(settings, tx.cashAdvance),
+    };
     const saved = await API.post('transactions', finalTx);
     if (!saved?.success) return;
     await API.del(`drafts/${encodeURIComponent(tx.ref)}`);
@@ -6035,23 +6198,27 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
 
       case 'customer': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>👤 Customer Details</h3><div style={S.grid2}><Field label="Full Name" required><input style={S.input} value={tx.fullName} onChange={e => upd('fullName', e.target.value)} placeholder="e.g. David Ejimofor Chukwuemeka" /></Field><Field label="Address" required><input style={S.input} value={tx.address} onChange={e => upd('address', e.target.value)} placeholder="e.g. No. 5 Market Road, Aguleri" /></Field></div><div style={S.alert('info')}>📋 Ask the customer to call out all their phone numbers. <strong>Call at least Phone 1 immediately</strong> — the phone must ring in front of you — then click <strong>Mark Called</strong>. You cannot proceed until this is done.</div><div style={S.grid2}><Field label="Phone 1" required><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" maxLength={11} value={tx.phoneNumbers[0]} onChange={e => { const n = [...tx.phoneNumbers]; n[0] = e.target.value.replace(/\D/g, '').slice(0, 11); upd('phoneNumbers', n); }} placeholder="e.g. 08012345678" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[0] ? '#10b981' : '#6b7280', transition: 'background 0.2s' }} onClick={() => { const v = [...tx.phonesVerified]; v[0] = !v[0]; upd('phonesVerified', v); }}>{tx.phonesVerified[0] ? '✓ Called' : 'Mark Called'}</button></div>{tx.phoneNumbers[0] && tx.phoneNumbers[0].length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.phoneNumbers[0].length}/11)</div>}</Field><Field label="Phone 2 (optional)"><div style={{ display: 'flex', gap: '8px' }}><input style={{ ...S.input, flex: 1 }} inputMode="numeric" maxLength={11} value={tx.phoneNumbers[1]} onChange={e => { const val = e.target.value.replace(/\D/g, '').slice(0, 11); const n = [...tx.phoneNumbers]; n[1] = val; upd('phoneNumbers', n); if (!val) { const v = [...tx.phonesVerified]; v[1] = false; upd('phonesVerified', v); } }} placeholder="e.g. 09098765432" /><button style={{ ...S.btnSm('primary'), background: tx.phonesVerified[1] ? '#10b981' : '#6b7280', transition: 'background 0.2s', opacity: tx.phoneNumbers[1] ? 1 : 0.4, cursor: tx.phoneNumbers[1] ? 'pointer' : 'not-allowed' }} disabled={!tx.phoneNumbers[1]} onClick={() => { const v = [...tx.phonesVerified]; v[1] = !v[1]; upd('phonesVerified', v); }}>{tx.phonesVerified[1] ? '✓ Called' : 'Mark Called'}</button></div>{tx.phoneNumbers[1] && tx.phoneNumbers[1].length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.phoneNumbers[1].length}/11)</div>}</Field></div><div style={{ ...S.card, background: COLORS.bg, padding: '16px', marginTop: '4px' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '6px' }}>Family / Neighbour Contact</div><div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>📋 Ask for a family member or neighbour — must be a <strong>different person</strong> from the customer.</div><div style={S.grid3}><Field label="Name" required={tx.type !== 'outright'}><input style={S.input} value={tx.familyName} onChange={e => upd('familyName', e.target.value)} placeholder="e.g. Emma Okonkwo" /></Field><Field label="Phone" required={tx.type !== 'outright'}><input style={S.input} inputMode="numeric" maxLength={11} value={tx.familyPhone} onChange={e => upd('familyPhone', e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08099887766" />{tx.familyPhone && tx.familyPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Must be exactly 11 digits ({tx.familyPhone.length}/11)</div>}</Field><Field label="Relationship"><input style={S.input} value={tx.familyRelation} onChange={e => upd('familyRelation', e.target.value)} placeholder="e.g. Sister" /></Field></div></div></div>);
       
-      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos</h3><div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
+      case 'custPhotos': return (<div><h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📸 Customer Photos{tx.currentItemIndex > 0 ? ` — Item ${tx.currentItemIndex + 1}` : ''}</h3>{tx.currentItemIndex > 0 && (<div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}.</strong> Take a new holding photo for this item. Click ← Back to return to the items list.</div>)}<div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding the item</strong> — both the customer's face and the item must be clearly visible in one photo. <strong>This is mandatory.</strong></div><div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}><PhotoUpload label="Customer Holding Item" value={tx.photoCustomerHolding} onChange={v => upd('photoCustomerHolding', v)} required size={160} /><PhotoUpload label="Customer with ID (Optional)" value={tx.photoCustomerID} onChange={v => upd('photoCustomerID', v)} size={160} /></div><div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Customer refused photos or terms')}>Customer refused photos or terms</button></div></div></div>);
 
       case 'itemPhotos': return (
-        <CaptureStep
-          tx={tx}
-          upd={upd}
-          settings={settings}
-          onJumpToOffer={handlePartsOnlyJump}
-          onEndTransaction={handleEndTransaction}
-          onDecline={handleDeclineFromStep}
-        />
+        <div>
+          {tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — Photos & Condition</div>}
+          <CaptureStep
+            tx={tx}
+            upd={upd}
+            settings={settings}
+            onJumpToOffer={handlePartsOnlyJump}
+            onEndTransaction={handleEndTransaction}
+            onDecline={handleDeclineFromStep}
+          />
+        </div>
       );
 
-      case 'inspection': return (<InspectionStep tx={tx} upd={upd} />);
+      case 'inspection': return (<div>{tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — Inspection</div>}<InspectionStep tx={tx} upd={upd} /></div>);
 
       case 'aiValuation': return (<div>
-        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🧠 AI Analysis Engine</h3>
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>🧠 AI Analysis Engine{tx.currentItemIndex > 0 ? ` — Item ${tx.currentItemIndex + 1}` : ''}</h3>
+        {tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — AI Valuation</div>}
 
         {tx.partsOnly ? (
           <div style={S.alert('warning')}>⚠️ This is a <strong>Parts Only</strong> transaction. The item does not power on. The maximum offer is ₦5,000. Skip to the Offer step to set the amount.</div>
@@ -6205,8 +6372,64 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         </div>
       </div>);
 
+      case 'itemsDone': {
+        // All saved items (excluding the current one still in flat fields)
+        const savedItems = tx.items || [];
+        const makeLabel = (item, fallbackIdx) =>
+          item.aiItemType
+            ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}${item.aiModel ? ' ' + item.aiModel : ''}`
+            : (item.captureItemType || `Item ${fallbackIdx + 1}`);
+        const currentItemLabel = makeLabel(tx, tx.currentItemIndex);
+        const allItemsPreview = [
+          ...savedItems.map((item, idx) => ({ label: makeLabel(item, idx), estimatedValue: item.estimatedValue || 0, idx })),
+          { label: currentItemLabel, estimatedValue: tx.estimatedValue || 0, idx: tx.currentItemIndex, isCurrent: true },
+        ];
+        const totalEV = allItemsPreview.reduce((s, i) => s + i.estimatedValue, 0);
+        const nextItemNum = allItemsPreview.length + 1;
+        return (
+          <div>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📦 Items for this Loan</h3>
+            <div style={S.alert('info')}>
+              📋 Review the items captured below. Add another item if the customer is pledging more collateral, or proceed to set the cash advance offer.
+            </div>
+            <div style={{ display: 'grid', gap: '10px', marginBottom: '16px' }}>
+              {allItemsPreview.map((item) => (
+                <div key={item.idx} style={{ ...S.card, marginBottom: 0, border: `2px solid ${item.isCurrent ? COLORS.primary : COLORS.border}`, background: item.isCurrent ? COLORS.primaryLight : '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '2px', fontWeight: 600 }}>Item {item.idx + 1}</div>
+                    <div style={{ fontWeight: 700, fontSize: '14px' }}>{item.label}</div>
+                    <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Estimated value: {fmtMoney(item.estimatedValue)}</div>
+                  </div>
+                  {item.isCurrent && <span style={{ fontSize: '11px', background: COLORS.primary, color: '#fff', borderRadius: '6px', padding: '2px 8px', fontWeight: 700, flexShrink: 0 }}>Current</span>}
+                </div>
+              ))}
+            </div>
+            {totalEV > 0 && (
+              <div style={{ padding: '10px 14px', background: '#f0fdf4', border: `1px solid #86efac`, borderRadius: '8px', marginBottom: '16px', fontSize: '13px' }}>
+                <strong>Combined estimated value: {fmtMoney(totalEV)}</strong>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center' }}
+                onClick={handleAddAnotherItem}
+              >
+                ➕ Add Item {nextItemNum}
+              </button>
+              <button
+                type="button"
+                style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }}
+                onClick={handleProceedToOffer}
+              >
+                💰 Proceed to Offer →
+              </button>
+            </div>
+          </div>
+        );
+      }
 
-      case 'screening': return (<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} />);
+      case 'screening': return (<div>{tx.currentItemIndex > 0 && <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24', marginBottom: '12px' }}>📦 <strong>Capturing Item {tx.currentItemIndex + 1}</strong> — Screening</div>}<ScreeningStep tx={tx} upd={upd} onRedFlagExit={handleRedFlagExit} onDecline={handleDeclineFromStep} /></div>);
 
       case 'offer': return (<div>
         {(() => {
@@ -6348,7 +6571,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             </div>
           );
         })()}
-        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Resale Value<InfoIcon tip="What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number." /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(tx.estimatedValue)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max ({capPct}%)<InfoIcon tip={tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. It's ${tx.hasReceipt ? 'a bit higher because they brought a receipt' : 'lower because they have no receipt'}. Do not give more than this.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({settings.interestRate}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${settings.interestRate}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * (settings.interestRate || 1) / 100)); }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>{allTxItems && allTxItems.length > 1 ? 'Combined Resale Value' : 'Resale Value'}<InfoIcon tip={allTxItems && allTxItems.length > 1 ? 'Sum of all items\' estimated second-hand values. The max advance is based on this combined total.' : 'What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number.'} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalEstimatedValueForOffer)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max Advance{allTxItems && allTxItems.length <= 1 ? ` (${capPct}%)` : ''}<InfoIcon tip={allTxItems && allTxItems.length > 1 ? 'Sum of each item\'s maximum advance (40% or 50% of its value depending on receipt).' : (tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. Do not give more than this.`)} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({getInterestRateForAdvance(settings, tx.cashAdvance)}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${getInterestRateForAdvance(settings, tx.cashAdvance)}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * getInterestRateForAdvance(settings, v) / 100)); if (allTxItems && allTxItems.length > 0) { const totalEV = allTxItems.reduce((s, item) => s + (item.estimatedValue || 0), 0); upd('items', allTxItems.map(item => ({ ...item, itemCashAdvance: totalEV > 0 ? Math.round(v * (item.estimatedValue || 0) / totalEV) : Math.round(v / allTxItems.length) }))); } }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}{allTxItems && allTxItems.length > 1 && tx.cashAdvance > 0 && (<div style={{ marginTop: '12px', padding: '12px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>📦 Per-Item Advance Breakdown</div><div style={{ display: 'grid', gap: '6px' }}>{allTxItems.map((item, idx) => { const label = item.aiItemType ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}` : (item.captureItemType || `Item ${idx + 1}`); return (<div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', padding: '6px 8px', background: '#fff', borderRadius: '6px', border: `1px solid ${COLORS.border}` }}><span>{label}</span><strong>{fmtMoney(item.itemCashAdvance || 0)}</strong></div>); })}</div></div>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': {
         return (
@@ -6674,7 +6897,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
           )}
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', gap: '8px' }}>
-              {step > 0 && <button style={S.btn('outline')} onClick={() => setStep(step - 1)}>← Back</button>}
+              {step > 0 && <button style={S.btn('outline')} onClick={handleBack}>← Back</button>}
               <button style={S.btn('muted')} onClick={async () => { await saveDraftNow(); onCancel(); }}>Save Draft & Exit</button>
             </div>
             {step < WIZARD_STEPS.length - 1 && <button style={S.btn('primary')} onClick={async () => { await saveDraftNow(step + 1); setStep(step + 1); }} disabled={!canProceed()}>Next Step →</button>}
@@ -6855,7 +7078,7 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
 function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   const days = effectiveElapsedDays(tx, settings);
   const today = localISODate();
-  const dailyFee = Math.round((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+  const dailyFee = Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
   const totalFees = days * dailyFee;
   const totalDue = (tx.cashAdvance || 0) + totalFees;
   const [confirmed, setConfirmed] = useState(false);
@@ -6940,6 +7163,88 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   );
 }
 
+// ============================================================
+// REDEEM ITEM MODAL — partial redemption of one item from a multi-item loan
+// ============================================================
+function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser }) {
+  const item = tx.items[itemIndex];
+  const days = effectiveElapsedDays(tx, settings);
+  const today = localISODate();
+  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+  const itemAdvance = Number(item?.itemCashAdvance) || 0;
+  const dailyFee = Math.floor(itemAdvance * rate / 100);
+  const totalFees = days * dailyFee;
+  const totalDue = itemAdvance + totalFees;
+  const [confirmed, setConfirmed] = useState(false);
+  const [handoverPhoto, setHandoverPhoto] = useState(item?.handoverPhoto || null);
+  const [collectionNotes, setCollectionNotes] = useState(item?.collectionNotes || '');
+  if (!item) return null;
+  const itemLabel = item.aiItemType ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}${item.aiModel ? ' ' + item.aiModel : ''}` : (item.captureItemType || `Item ${itemIndex + 1}`);
+  const handleConfirm = () => {
+    const updatedItems = tx.items.map((it, idx) =>
+      idx === itemIndex
+        ? { ...it, redeemed: true, dateRedeemed: today, repaidBy: currentUser?.name || '', amountPaid: totalDue, daysCharged: days, feesCharged: totalFees, handoverPhoto, collectionNotes: collectionNotes.trim() }
+        : it
+    );
+    const allRedeemed = updatedItems.every(it => it.redeemed);
+    const totalAmountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
+    const totalFeesAll = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
+    onSave({
+      ...tx,
+      items: updatedItems,
+      status: allRedeemed ? 'closed' : 'active',
+      ...(allRedeemed ? {
+        amountRepaid: totalAmountRepaid,
+        dateRepaid: today,
+        daysCharged: days,
+        totalFees: totalFeesAll,
+        itemReturned: true,
+        repaidBy: currentUser?.name || '',
+      } : {}),
+    });
+  };
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px' }}>
+        <span style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '8px', background: '#fff7ed', border: '2px solid #f59e0b', color: '#b45309', fontSize: '16px', fontWeight: 800 }}>📦 Redeeming: {itemLabel}</span>
+      </div>
+      <div style={{ ...S.card, background: COLORS.bg }}>
+        <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '12px', color: COLORS.primaryDark }}>{tx.fullName}</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+          <div><span style={S.statLabel}>Item Advance</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(itemAdvance)}</strong></div>
+          <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
+          <div><span style={S.statLabel}>Item {itemIndex + 1} of {tx.items.length}</span><br /><strong>{tx.items.filter(i => !i.redeemed).length - 1} other item{tx.items.filter(i => !i.redeemed).length - 1 !== 1 ? 's' : ''} remain</strong></div>
+        </div>
+      </div>
+      <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
+        <div style={{ fontSize: '14px', fontWeight: 700 }}>Date Given: {fmtDate(tx.dateGiven)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}</div>
+        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Interest rate: {rate}%/day on this item's advance of {fmtMoney(itemAdvance)}.</div>
+      </div>
+      <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Amount Due for This Item</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
+      <div style={{ ...S.card, border: `2px dashed ${COLORS.accent}`, background: '#fffbeb' }}>
+        <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '8px', color: '#92400e' }}>📸 Handover Photo</div>
+        <div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding this specific item</strong> as proof of handover.</div>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <TimestampPhotoUpload label="Customer with Item" value={handoverPhoto} onChange={setHandoverPhoto} required size={160} />
+        </div>
+        {!handoverPhoto && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '10px', fontWeight: 600, textAlign: 'center' }}>⚠ This photo is required before you can confirm.</div>}
+      </div>
+      <div style={S.card}>
+        <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>📝 Staff Notes</div>
+        <textarea style={S.textarea} placeholder="e.g. Customer redeemed laptop only, generators to be collected later." value={collectionNotes} onChange={e => setCollectionNotes(e.target.value)} />
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}>
+        <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} />
+        <span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)} for this item; item handed over</span>
+      </label>
+      <div style={{ display: 'flex', gap: '12px' }}>
+        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !handoverPhoto) ? 0.5 : 1 }} disabled={!confirmed || !handoverPhoto} onClick={handleConfirm}>✅ Confirm Redemption</button>
+        <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 const SALE_CONDITIONS = [
   { value: 'Excellent', label: 'Excellent — Like new, no visible wear' },
   { value: 'Good',      label: 'Good — Minor cosmetic marks, fully functional' },
@@ -6952,7 +7257,7 @@ const SALE_CONDITION_VALUES = new Set(SALE_CONDITIONS.map(c => c.value));
 function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const isOutright = tx.type === 'outright';
   const outrightMinMarkupPct = settings.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct;
-  const dailyFee = Math.round((tx.cashAdvance || 0) * (settings.interestRate || 1) / 100);
+  const dailyFee = Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
   const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const minPrice = isOutright
     ? roundToNice(Math.floor((tx.cashAdvance || 0) * (1 + outrightMinMarkupPct / 100)))
@@ -7279,7 +7584,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const navigate = useNavigate();
   const timeline = tx.type === 'advance' ? getLoanTimeline(tx, settings) : null;
   const customerDaysLeft = tx.type === 'advance' ? getCustomerDaysLeft(tx) : null;
-  const dailyInterest = tx.cashAdvance ? Math.round((tx.cashAdvance * (settings.interestRate || 1)) / 100) : 0;
+  const dailyInterest = tx.cashAdvance ? Math.round((tx.cashAdvance * (tx.appliedInterestRate ?? settings.interestRate ?? 1)) / 100) : 0;
   const daysOut = timeline ? timeline.elapsedDays : 0;
   const amountDueToday = tx.cashAdvance ? tx.cashAdvance + effectiveElapsedDays(tx, settings) * dailyInterest : 0;
   const [smsLogs, setSmsLogs] = useState(null);
@@ -7434,24 +7739,33 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         {row('NIN Verification', tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠️ Attempted (placeholder data)' : '❌ Not attempted')}
         {row('Processed By', tx.completedBy || tx.createdBy)}
       </div>
-      <div style={S.card}>
-        <div style={S.cardTitle}>📦 Item</div>
-        {tx.captureItemType && row('Category', <>{tx.captureItemType}{tx.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
-        {row('Identified As', [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' '))}
-        {row('Colour', tx.aiColour)}
-        {tx.aiKeySpecs && row('Key Specs', tx.aiKeySpecs)}
-        {tx.aiConfidence && row('AI Confidence', tx.aiConfidence)}
-        {row('Condition', tx.aiCondition)}
-        {tx.imei && row('IMEI', <>{tx.imei}{tx.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: tx.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{tx.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
-        {tx.serialNumber && row('Serial No.', tx.serialNumber)}
-        {tx.inspectionNotes && row('Inspection Result', tx.inspectionNotes)}
-        {tx.hasReceipt != null && row('Receipt', tx.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
-        {tx.aiPriceBasis && row('Price Basis', tx.aiPriceBasis)}
-        {tx.aiNewMarketPrice && Number(tx.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(tx.aiNewMarketPrice)))}
-        {tx.aiPriceRangeLow && tx.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(tx.aiPriceRangeLow))} — ${fmtMoney(Number(tx.aiPriceRangeHigh))}`)}
-        {tx.aiValuationConfidence && row('Valuation Confidence', tx.aiValuationConfidence)}
-        {tx.aiVisionUsed && row('Google Lens', 'Used for identification')}
-      </div>
+      {normalizeTransactionItems(tx).items.map((item, idx, arr) => (
+        <div key={item.itemId || idx} style={S.card}>
+          <div style={{ ...S.cardTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>📦 {arr.length > 1 ? `Item ${idx + 1} of ${arr.length}` : 'Item'}</span>
+            {item.redeemed && <span style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primary, background: COLORS.primaryLight, padding: '3px 10px', borderRadius: '12px' }}>✅ Redeemed {fmtDate(item.dateRedeemed)}</span>}
+          </div>
+          {item.captureItemType && row('Category', <>{item.captureItemType}{item.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
+          {row('Identified As', [item.aiItemType, item.aiBrand, item.aiModel].filter(Boolean).join(' '))}
+          {row('Colour', item.aiColour)}
+          {item.aiKeySpecs && row('Key Specs', item.aiKeySpecs)}
+          {item.aiConfidence && row('AI Confidence', item.aiConfidence)}
+          {row('Condition', item.aiCondition)}
+          {item.imei && row('IMEI', <>{item.imei}{item.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: item.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{item.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
+          {item.serialNumber && row('Serial No.', item.serialNumber)}
+          {item.inspectionNotes && row('Inspection Result', item.inspectionNotes)}
+          {item.hasReceipt != null && row('Receipt', item.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
+          {item.aiPriceBasis && row('Price Basis', item.aiPriceBasis)}
+          {item.aiNewMarketPrice && Number(item.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(item.aiNewMarketPrice)))}
+          {item.aiPriceRangeLow && item.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(item.aiPriceRangeLow))} — ${fmtMoney(Number(item.aiPriceRangeHigh))}`)}
+          {item.aiValuationConfidence && row('Valuation Confidence', item.aiValuationConfidence)}
+          {item.aiVisionUsed && row('Google Lens', 'Used for identification')}
+          {arr.length > 1 && item.itemCashAdvance > 0 && row('Advance Allocation', fmtMoney(item.itemCashAdvance))}
+          {item.redeemed && item.amountPaid > 0 && row('Amount Paid', <strong style={{ color: COLORS.primary }}>{fmtMoney(item.amountPaid)}</strong>)}
+          {item.redeemed && item.daysCharged > 0 && row('Days Charged', `${item.daysCharged} day${item.daysCharged !== 1 ? 's' : ''}`)}
+          {item.redeemed && item.collectionNotes && row('Collection Notes', item.collectionNotes)}
+        </div>
+      ))}
     </div>
 
     {/* ── Financial Summary ── */}
@@ -7470,7 +7784,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       </div>
       {tx.type === 'advance' && (
         <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
-          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({settings.interestRate || 1}% of principal){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
+          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({tx.appliedInterestRate ?? settings.interestRate ?? 1}% of principal){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)}{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
@@ -8974,7 +9288,7 @@ export default function App() {
 
   // Redirect authenticated users from unknown paths to dashboard
   const knownAuthPaths = Object.values(PAGE_PATHS);
-  const txSubUrlMatch = location.pathname.match(/^\/transactions\/(?!new$)([^/]+)(\/collect|\/sell)?$/);
+  const txSubUrlMatch = location.pathname.match(/^\/transactions\/(?!new$)([^/]+)(\/collect(?:\/item\/\d+)?|\/sell)?$/);
   const isTxSubPageUrl = !!txSubUrlMatch;
   if (!knownAuthPaths.includes(location.pathname) && !isTxSubPageUrl) {
     return <Navigate to="/dashboard" replace />;
@@ -9072,6 +9386,53 @@ export default function App() {
       }
       if (subPage === '/collect') {
         if (!isStaff || tx.status !== 'active') return <Navigate to={txDetailPath(txRef)} replace />;
+        const normTx = normalizeTransactionItems(tx);
+        const unredeemedItems = normTx.items.filter(item => !item.redeemed);
+        const collectSave = async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); };
+        // Multi-item: show item selection panel; item-specific redemption is handled via sub-paths
+        const itemIndexMatch = subPage && subPage.match(/\/collect\/item\/(\d+)/);
+        const itemIndexParam = itemIndexMatch ? parseInt(itemIndexMatch[1], 10) : NaN;
+        if (!isNaN(itemIndexParam) && normTx.items[itemIndexParam] && !normTx.items[itemIndexParam].redeemed) {
+          return (
+            <div>
+              <div style={{ marginBottom: '20px' }}>
+                <button style={S.btn('outline')} onClick={() => navigate(txRepayPath(txRef))}>← Back to Items</button>
+                <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>📦 Redeem Item</h2>
+                <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong></div>
+              </div>
+              <RedeemItemModal tx={normTx} itemIndex={itemIndexParam} settings={settings} currentUser={currentUser} onClose={() => navigate(txRepayPath(txRef))} onSave={collectSave} />
+            </div>
+          );
+        }
+        if (normTx.items.length > 1 && unredeemedItems.length > 1) {
+          return (
+            <div>
+              <div style={{ marginBottom: '20px' }}>
+                <button style={S.btn('outline')} onClick={() => navigate(txDetailPath(txRef))}>← Back to Transaction</button>
+                <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>💰 Collect Repayment</h2>
+                <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong> — {unredeemedItems.length} items outstanding</div>
+              </div>
+              <div style={S.alert('info')}>📋 This loan has multiple collateral items. Choose to redeem one item at a time, or collect all remaining items at once.</div>
+              <div style={{ display: 'grid', gap: '10px', marginBottom: '20px' }}>
+                {normTx.items.map((item, idx) => {
+                  if (item.redeemed) return (<div key={idx} style={{ ...S.card, opacity: 0.6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}</span><span style={{ color: COLORS.primary, fontWeight: 700 }}>✅ Redeemed</span></div>);
+                  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+                  const days = effectiveElapsedDays(tx, settings);
+                  const fee = Math.floor((item.itemCashAdvance || 0) * rate / 100);
+                  const due = (item.itemCashAdvance || 0) + days * fee;
+                  return (<div key={idx} style={{ ...S.card, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <div><div style={{ fontWeight: 700 }}>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}{item.aiBrand ? ' — ' + item.aiBrand : ''}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>Amount due: {fmtMoney(due)}</div></div>
+                    <button style={S.btnSm('accent')} onClick={() => navigate(`${txRepayPath(txRef)}/item/${idx}`)}>Redeem this item</button>
+                  </div>);
+                })}
+              </div>
+              <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '16px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '10px', color: COLORS.textMuted }}>Or collect all remaining items at once:</div>
+                <RepaymentModal tx={tx} settings={settings} currentUser={currentUser} onClose={() => navigate(txDetailPath(txRef))} onSave={collectSave} />
+              </div>
+            </div>
+          );
+        }
         return (
           <div>
             <div style={{ marginBottom: '20px' }}>
@@ -9079,7 +9440,7 @@ export default function App() {
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>💰 Collect Repayment</h2>
               <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
             </div>
-            <RepaymentModal tx={tx} settings={settings} currentUser={currentUser} onClose={() => navigate(txDetailPath(txRef))} onSave={async (updatedTx) => { await saveTx(updatedTx); loadData(); navigate(txDetailPath(txRef)); }} />
+            <RepaymentModal tx={tx} settings={settings} currentUser={currentUser} onClose={() => navigate(txDetailPath(txRef))} onSave={collectSave} />
           </div>
         );
       }
@@ -9181,18 +9542,19 @@ export default function App() {
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Active Loans<InfoIcon tip="How many customers still have active loans — they took money but haven't come back yet." /></div><div style={S.statValue}>{activeTxs.length}</div></div>
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Gross Profit<InfoIcon tip="All-time profit earned: interest from repaid loans, margins from sold items (sale price minus cost), and service fees." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
           {(() => {
-            const rate = settings.interestRate || 1;
             const maxDays = Math.max(1, Number(settings.maxLoanDays) || 30);
             // Interest already accrued on active loans (what we'd collect if all repaid today)
             const accruedInterest = activeTxs.reduce((s, tx) => {
-              const fee = tx.dailyFee || Math.round((tx.cashAdvance || 0) * rate / 100);
+              const txRate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+              const fee = tx.dailyFee || Math.round((tx.cashAdvance || 0) * txRate / 100);
               return s + effectiveElapsedDays(tx, settings) * fee;
             }, 0);
             // Projected interest per loan = agreed term days, but never less than days already elapsed.
             // Overdue/grace-period loans (elapsed > loanDays) use elapsed so the projection stays
             // at or above the accrued amount — fees are already earned and won't shrink.
             const fullTermFees = activeTxs.reduce((s, tx) => {
-              const fee = tx.dailyFee || Math.round((tx.cashAdvance || 0) * rate / 100);
+              const txRate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+              const fee = tx.dailyFee || Math.round((tx.cashAdvance || 0) * txRate / 100);
               const loanDays = Math.max(1, Number(tx.loanDays) || maxDays);
               const elapsed = effectiveElapsedDays(tx, settings);
               return s + Math.max(loanDays, elapsed) * fee;
@@ -11637,6 +11999,7 @@ export default function App() {
       case 'settings': if (!isAdmin) return <Navigate to="/dashboard" replace />; {
         const es = pendingSettings ?? settings; // effective settings (pending or saved)
         const serviceFeeRanges = Array.isArray(es?.serviceFeeRanges) ? es.serviceFeeRanges : [];
+        const interestRateRanges = Array.isArray(es?.interestRateRanges) ? es.interestRateRanges : [];
         const hasUnsaved = pendingSettings !== null;
         const updateSettings = (s) => setPendingSettings(s);
         const distributableStaff = users.filter(u => u.active !== 0 && u.role === 'staff');
@@ -11795,6 +12158,78 @@ export default function App() {
                 })}
               >
                 + Add Range
+              </button>
+            </div>
+            <div style={{ marginTop: '14px', padding: '12px', borderRadius: '10px', border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
+              <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>Range-Based Daily Interest Rates (optional)</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '10px' }}>
+                Keep the flat Daily Interest Rate above as fallback. Add ranges below to charge different rates based on the cash advance amount. Rates are locked in at loan creation time — changing tiers won't affect existing loans.
+              </div>
+              <div style={{ display: 'grid', gap: '8px' }}>
+                {interestRateRanges.map((range, idx) => (
+                  <div key={range.id || `irate-${idx}`} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '8px', alignItems: 'end' }}>
+                    <Field label="Min Advance (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        value={range?.min ?? ''}
+                        onChange={e => {
+                          const next = [...interestRateRanges];
+                          const raw = e.target.value;
+                          next[idx] = { ...range, min: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, interestRateRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <Field label="Max Advance (₦)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        min="0"
+                        placeholder="No limit"
+                        value={range?.max ?? ''}
+                        onChange={e => {
+                          const raw = e.target.value;
+                          const next = [...interestRateRanges];
+                          next[idx] = { ...range, max: raw === '' ? null : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, interestRateRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <Field label="Rate (%)">
+                      <input
+                        style={S.input}
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        max="10"
+                        value={range?.rate ?? ''}
+                        onChange={e => {
+                          const next = [...interestRateRanges];
+                          const raw = e.target.value;
+                          next[idx] = { ...range, rate: raw === '' ? '' : Math.max(0, Number(raw) || 0) };
+                          updateSettings({ ...es, interestRateRanges: next });
+                        }}
+                      />
+                    </Field>
+                    <button
+                      style={{ ...S.btnSm('muted'), color: COLORS.danger, borderColor: COLORS.danger }}
+                      onClick={() => updateSettings({ ...es, interestRateRanges: interestRateRanges.filter((_, i) => i !== idx) })}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button
+                style={{ ...S.btnSm('primary'), marginTop: '10px' }}
+                onClick={() => updateSettings({
+                  ...es,
+                  interestRateRanges: [...interestRateRanges, { id: `irate-${Date.now()}`, min: 0, max: null, rate: Math.max(0, Number(es.interestRate) || 1) }],
+                })}
+              >
+                + Add Rate Tier
               </button>
             </div>
           </div>

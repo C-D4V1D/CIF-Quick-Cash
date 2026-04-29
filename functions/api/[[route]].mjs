@@ -1544,16 +1544,52 @@ export async function onRequest(context) {
       // Validate repayment fees — recompute server-side to prevent tampered submissions.
       // cashAdvance is read from the stored record, not the incoming payload, so it
       // cannot be downward-manipulated to reduce the expected fee.
-      if (tx.status === 'closed' && tx.type === 'advance') {
-        const cashAdvance = Number(existingData?.cashAdvance || 0);
-        const expectedDailyFee = Math.floor(cashAdvance * loanCfg.interestRate / 100);
-        const expectedTotalFees = (Number(tx.daysCharged) || 0) * expectedDailyFee;
-        if (Number(tx.totalFees) !== expectedTotalFees) {
-          return error(
-            `Fee mismatch: submitted ₦${tx.totalFees} but expected ₦${expectedTotalFees}` +
-            ` (${tx.daysCharged} day(s) × ₦${expectedDailyFee}/day on ₦${cashAdvance} advance at ${loanCfg.interestRate}%/day)`,
-            422
-          );
+      // appliedInterestRate is locked in at loan creation; fall back to current config for old records.
+      if (tx.type === 'advance' && (tx.status === 'closed' || tx.status === 'active')) {
+        const appliedRate = Number(existingData?.appliedInterestRate || loanCfg.interestRate);
+
+        if (Array.isArray(tx.items) && tx.items.length > 0) {
+          // Multi-item: validate each newly-redeemed item's fees independently.
+          const existingItems = Array.isArray(existingData?.items) ? existingData.items : [];
+          for (let i = 0; i < tx.items.length; i++) {
+            const item = tx.items[i];
+            const prevItem = existingItems[i];
+            // Only validate items that are newly redeemed in this update
+            if (!item.redeemed || prevItem?.redeemed) continue;
+            const itemAdvance = Number(item.itemCashAdvance || 0);
+            const expectedItemDailyFee = Math.floor(itemAdvance * appliedRate / 100);
+            const expectedItemFees = (Number(item.daysCharged) || 0) * expectedItemDailyFee;
+            if (Number(item.feesCharged) !== expectedItemFees) {
+              const label = item.aiItemType || item.captureItemType || `Item ${i + 1}`;
+              return error(
+                `Fee mismatch for "${label}": submitted ₦${item.feesCharged} but expected ₦${expectedItemFees}` +
+                ` (${item.daysCharged} day(s) × ₦${expectedItemDailyFee}/day on ₦${itemAdvance} at ${appliedRate}%/day)`,
+                422
+              );
+            }
+          }
+          // For full closure, also validate the aggregate totalFees on the transaction
+          if (tx.status === 'closed') {
+            const expectedAggregateFees = tx.items.reduce((s, item) => s + (Number(item.feesCharged) || 0), 0);
+            if (Number(tx.totalFees) !== expectedAggregateFees) {
+              return error(
+                `Aggregate fee mismatch: submitted ₦${tx.totalFees} but sum of item fees is ₦${expectedAggregateFees}`,
+                422
+              );
+            }
+          }
+        } else if (tx.status === 'closed') {
+          // Legacy single-item path
+          const cashAdvance = Number(existingData?.cashAdvance || 0);
+          const expectedDailyFee = Math.floor(cashAdvance * appliedRate / 100);
+          const expectedTotalFees = (Number(tx.daysCharged) || 0) * expectedDailyFee;
+          if (Number(tx.totalFees) !== expectedTotalFees) {
+            return error(
+              `Fee mismatch: submitted ₦${tx.totalFees} but expected ₦${expectedTotalFees}` +
+              ` (${tx.daysCharged} day(s) × ₦${expectedDailyFee}/day on ₦${cashAdvance} advance at ${appliedRate}%/day)`,
+              422
+            );
+          }
         }
       }
 
@@ -1571,12 +1607,24 @@ export async function onRequest(context) {
       const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
       let putAction, putDesc;
       if (tx.status === 'closed') {
-        putAction = 'repaid'; putDesc = `✅ Loan repaid — ${ref}: ${tx.fullName} — ₦${fmtNP(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
+        const itemCount = Array.isArray(tx.items) ? tx.items.length : 1;
+        putAction = 'repaid'; putDesc = `✅ Loan repaid — ${ref}: ${tx.fullName} (${itemCount} item${itemCount !== 1 ? 's' : ''}) — ₦${fmtNP(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
       } else if (tx.status === 'sold') {
         const profit = (tx.salePrice || 0) - (tx.cashAdvance || 0);
         putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})${tx.saleCondition ? ` — Condition: ${tx.saleCondition}` : ''}`;
       } else if (tx.status === 'for_sale') {
         putAction = 'update'; putDesc = `🏷 Marked for sale — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
+      } else if (tx.status === 'active' && tx.type === 'advance' && Array.isArray(tx.items)) {
+        // Check if this update includes a partial redemption
+        const existingItems = Array.isArray(existingData?.items) ? existingData.items : [];
+        const newlyRedeemed = tx.items.filter((item, i) => item.redeemed && !existingItems[i]?.redeemed);
+        if (newlyRedeemed.length > 0) {
+          const remaining = tx.items.filter(i => !i.redeemed).length;
+          putAction = 'partial_redemption';
+          putDesc = `🔄 Partial redemption — ${ref}: ${tx.fullName} — ${newlyRedeemed.length} item${newlyRedeemed.length !== 1 ? 's' : ''} redeemed, ${remaining} remaining`;
+        } else {
+          putAction = 'update'; putDesc = `🔄 Transaction updated — ${ref}`;
+        }
       } else {
         putAction = 'update'; putDesc = `🔄 Transaction updated — ${ref}`;
       }

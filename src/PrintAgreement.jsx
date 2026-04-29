@@ -24,11 +24,13 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const phones = (tx.phoneNumbers || []).filter(Boolean).join('     /     ');
   const familyLine = [tx.familyName, tx.familyRelation ? `(${tx.familyRelation})` : '', tx.familyPhone]
     .filter(Boolean).join('  —  ');
-  const itemLine = [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' / ');
+  const txItems = Array.isArray(tx.items) && tx.items.length > 0 ? tx.items : null;
+  const primaryItem = txItems ? txItems[0] : tx;
+  const itemLine = [primaryItem.aiItemType, primaryItem.aiBrand, primaryItem.aiModel].filter(Boolean).join(' / ');
   // Sanitize condition for HTML: strip newlines, escape HTML entities
-  const safeCondition = (tx.conditionDescription || '').replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/[<>"&]/g, c => ({'<':'&lt;','>':'&gt;','"':'&quot;','&':'&amp;'}[c]));
-  const colourCondition = [tx.aiColour, safeCondition].filter(Boolean).join('  —  ');
-  const serialImei = [tx.imei && `IMEI: ${tx.imei}`, tx.serialNumber && `S/N: ${tx.serialNumber}`]
+  const safeCondition = ((primaryItem.conditionDescription || tx.conditionDescription) || '').replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/[<>"&]/g, c => ({'<':'&lt;','>':'&gt;','"':'&quot;','&':'&amp;'}[c]));
+  const colourCondition = [(primaryItem.aiColour || tx.aiColour), safeCondition].filter(Boolean).join('  —  ');
+  const serialImei = [(primaryItem.imei || tx.imei) && `IMEI: ${primaryItem.imei || tx.imei}`, (primaryItem.serialNumber || tx.serialNumber) && `S/N: ${primaryItem.serialNumber || tx.serialNumber}`]
     .filter(Boolean).join('     ');
   const interestRate = settings.interestRate ?? 1;
   const dailyFee = tx.dailyFee ?? Math.round((tx.cashAdvance || 0) * Number(interestRate) / 100);
@@ -222,11 +224,38 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div class="hr-gold"></div>
 
     <div class="section-hdr">PART B — ITEM DETAILS</div>
+    ${txItems && txItems.length > 1 ? `
+    <table class="field-tbl" style="width:100%;border-collapse:collapse;margin-bottom:4px">
+      <thead>
+        <tr style="background:#f5f0e8">
+          <th style="text-align:left;padding:3px 5px;font-size:9pt;width:5%">#</th>
+          <th style="text-align:left;padding:3px 5px;font-size:9pt;width:40%">Item Type / Brand / Model</th>
+          <th style="text-align:left;padding:3px 5px;font-size:9pt;width:22%">Serial / IMEI</th>
+          <th style="text-align:right;padding:3px 5px;font-size:9pt;width:15%">Est. Value</th>
+          <th style="text-align:right;padding:3px 5px;font-size:9pt;width:18%">Advance Alloc.</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${txItems.map((itm, idx) => {
+          const iLine = [itm.aiItemType, itm.aiBrand, itm.aiModel].filter(Boolean).join(' / ');
+          const iSerial = [itm.imei && `IMEI: ${itm.imei}`, itm.serialNumber && `S/N: ${itm.serialNumber}`].filter(Boolean).join(' ');
+          return `<tr style="border-top:1px solid #ddd">
+            <td style="padding:3px 5px;font-size:9pt">${idx + 1}</td>
+            <td style="padding:3px 5px;font-size:9pt">${iLine || '—'}</td>
+            <td style="padding:3px 5px;font-size:9pt">${iSerial || '—'}</td>
+            <td style="padding:3px 5px;font-size:9pt;text-align:right">₦ ${(Number(itm.estimatedValue) || 0).toLocaleString()}</td>
+            <td style="padding:3px 5px;font-size:9pt;text-align:right">₦ ${(Number(itm.itemCashAdvance) || 0).toLocaleString()}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    ` : `
     <table class="field-tbl">
       <tr><td class="fl" style="width:28%"><b>Item Type / Brand / Model:</b></td><td class="fv">${itemLine || ''}</td></tr>
       <tr><td class="fl"><b>Colour &amp; Condition:</b></td><td class="fv">${colourCondition || ''}</td></tr>
       <tr><td class="fl"><b>Serial No / IMEI:</b></td><td class="fv">${serialImei || '—'}</td></tr>
     </table>
+    `}
     <div class="check-row">
       <b>Original receipt:</b>&nbsp;&nbsp;
       ${chk(hasReceipt)} Provided and filed &nbsp;&nbsp;&nbsp;
@@ -339,10 +368,12 @@ const buildOutrightCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const phones = (tx.phoneNumbers || []).filter(Boolean).join('     /     ');
   const familyLine = [tx.familyName, tx.familyRelation ? `(${tx.familyRelation})` : '', tx.familyPhone]
     .filter(Boolean).join('  —  ');
-  const itemLine = [tx.aiItemType, tx.aiBrand, tx.aiModel].filter(Boolean).join(' / ');
-  const safeCondition = (tx.conditionDescription || '').replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/[<>"&]/g, c => ({'<':'&lt;','>':'&gt;','"':'&quot;','&':'&amp;'}[c]));
-  const colourCondition = [tx.aiColour, safeCondition].filter(Boolean).join('  —  ');
-  const serialImei = [tx.imei && `IMEI: ${tx.imei}`, tx.serialNumber && `S/N: ${tx.serialNumber}`]
+  const txItems = Array.isArray(tx.items) && tx.items.length > 0 ? tx.items : null;
+  const primaryItem = txItems ? txItems[0] : tx;
+  const itemLine = [primaryItem.aiItemType, primaryItem.aiBrand, primaryItem.aiModel].filter(Boolean).join(' / ');
+  const safeCondition = ((primaryItem.conditionDescription || tx.conditionDescription) || '').replace(/[\n\r]+/g, ' ').replace(/\s{2,}/g, ' ').replace(/[<>"&]/g, c => ({'<':'&lt;','>':'&gt;','"':'&quot;','&':'&amp;'}[c]));
+  const colourCondition = [(primaryItem.aiColour || tx.aiColour), safeCondition].filter(Boolean).join('  —  ');
+  const serialImei = [(primaryItem.imei || tx.imei) && `IMEI: ${primaryItem.imei || tx.imei}`, (primaryItem.serialNumber || tx.serialNumber) && `S/N: ${primaryItem.serialNumber || tx.serialNumber}`]
     .filter(Boolean).join('     ');
   const p1Called = (tx.phonesVerified || [])[0];
   const p2Called = (tx.phonesVerified || [])[1];
