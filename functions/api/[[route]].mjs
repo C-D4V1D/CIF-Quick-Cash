@@ -1614,7 +1614,6 @@ export async function onRequest(context) {
         putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})${tx.saleCondition ? ` — Condition: ${tx.saleCondition}` : ''}`;
       } else if (tx.status === 'for_sale') {
         putAction = 'update'; putDesc = `🏷 Marked for sale — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
-      } else {
       } else if (tx.status === 'active' && tx.type === 'advance' && Array.isArray(tx.items)) {
         // Check if this update includes a partial redemption
         const existingItems = Array.isArray(existingData?.items) ? existingData.items : [];
