@@ -5970,9 +5970,10 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   // custPhotos so staff can capture the next item's holding photo + data.
   const handleAddAnotherItem = () => {
     const newItem = buildCurrentItem();
-    const updatedItems = [...tx.items];
-    updatedItems[tx.currentItemIndex] = newItem;
-    const nextIndex = tx.currentItemIndex + 1;
+    const updatedItems = [...(tx.items || [])];
+    const currentIdx = tx.currentItemIndex ?? 0;
+    updatedItems[currentIdx] = newItem;
+    const nextIndex = currentIdx + 1;
     const custPhotosStep = WIZARD_STEPS.findIndex(s => s.id === 'custPhotos');
     setTx(prev => ({
       ...prev,
@@ -5987,8 +5988,9 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   // Navigate immediately so the UI responds; draft is saved in background.
   const handleProceedToOffer = () => {
     const newItem = buildCurrentItem();
-    const updatedItems = [...tx.items];
-    updatedItems[tx.currentItemIndex] = newItem;
+    const updatedItems = [...(tx.items || [])];
+    const currentIdx = tx.currentItemIndex ?? 0;
+    updatedItems[currentIdx] = newItem;
     const newStep = WIZARD_STEPS.findIndex(s => s.id === 'offer');
     const totalEstimatedValue = updatedItems.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
     const updatedTx = { ...tx, items: updatedItems, estimatedValue: totalEstimatedValue };
@@ -6012,7 +6014,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       ITEM_FIELDS.forEach(f => { restoredFields[f] = savedPrev?.[f] ?? EMPTY_TX[f]; });
       restoredFields.itemPhotos = normalizeItemPhotos(savedPrev?.itemPhotos);
       // Remove the previous item from the saved array (it's now live in flat fields)
-      const updatedItems = tx.items.slice(0, prevIndex);
+      const updatedItems = (tx.items || []).slice(0, prevIndex);
       setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems, currentItemIndex: prevIndex }));
       setStep(WIZARD_STEPS.findIndex(s => s.id === 'itemsDone'));
       return;
@@ -6023,7 +6025,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   const handleComplete = async () => {
     // Ensure items array is populated. For single-item transactions that went through the
     // normal flow, items may still be empty if the staff never saw itemsDone — snapshot now.
-    const itemsToSave = tx.items.length > 0 ? tx.items : [buildCurrentItem()];
+    const itemsToSave = (tx.items || []).length > 0 ? tx.items : [buildCurrentItem()];
     const totalEstimatedValue = itemsToSave.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
     const finalTx = {
       ...tx,
