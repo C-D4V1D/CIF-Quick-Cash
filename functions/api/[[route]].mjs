@@ -3177,6 +3177,7 @@ export async function onRequest(context) {
       serpUrl.searchParams.set('q', query);
       serpUrl.searchParams.set('gl', 'ng');
       serpUrl.searchParams.set('hl', 'en');
+      serpUrl.searchParams.set('no_cache', 'true');
       serpUrl.searchParams.set('api_key', apiKey);
       const resp2 = await fetch(serpUrl.toString());
       const data2 = await resp2.json().catch(() => null);
