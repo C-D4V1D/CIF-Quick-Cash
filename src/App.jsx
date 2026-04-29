@@ -1472,10 +1472,23 @@ const callSerpApiGoogleAI = async (apiKey, query, trackFn = trackSerpApiAiCall) 
     const resp = await API.post('serpapi-ai', { query, apiKey });
     if (resp?.error) return { error: resp.error };
 
-    // google_ai_mode returns text_blocks: array of { snippet/content } objects
-    const blocks = (resp.text_blocks || [])
-      .map(b => b.snippet || b.content || b.text || '')
-      .filter(Boolean);
+    // google_ai_mode returns text_blocks: array of objects where prices often
+    // live inside nested `list` or `blocks` arrays rather than the top-level snippet
+    const extractBlock = (b) => {
+      const parts = [];
+      const top = b.snippet || b.content || b.text || '';
+      if (top) parts.push(top);
+      for (const key of ['list', 'blocks', 'items', 'snippets']) {
+        if (Array.isArray(b[key])) {
+          b[key].forEach(child => {
+            const t = child.snippet || child.content || child.text || '';
+            if (t) parts.push(t);
+          });
+        }
+      }
+      return parts;
+    };
+    const blocks = (resp.text_blocks || []).flatMap(extractBlock).filter(Boolean);
     const aiText = blocks.join('\n').substring(0, 2000);
 
     // Append source references for context
