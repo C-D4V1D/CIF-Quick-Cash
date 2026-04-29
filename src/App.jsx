@@ -5992,12 +5992,43 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     const currentIdx = tx.currentItemIndex ?? 0;
     updatedItems[currentIdx] = newItem;
     const newStep = WIZARD_STEPS.findIndex(s => s.id === 'offer');
-    const totalEstimatedValue = updatedItems.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
-    const updatedTx = { ...tx, items: updatedItems, estimatedValue: totalEstimatedValue };
+    const totalEstimatedValue = updatedItems.reduce((s, item) => s + (Number(item?.estimatedValue) || 0), 0);
+    const updatedTx = { ...tx, items: updatedItems, estimatedValue: totalEstimatedValue, _editingFromIdx: undefined };
     setTx(() => updatedTx);
     setStep(newStep);
     // Background draft save (non-blocking — don't gate navigation on network)
     API.post('drafts', { ...updatedTx, wizardStep: newStep }).catch(() => {});
+  };
+
+  // Load a saved item into flat fields for re-editing. Saves the current live item first.
+  const handleEditItem = (targetIdx) => {
+    const currentIdx = tx.currentItemIndex ?? 0;
+    if (targetIdx === currentIdx) {
+      setStep(WIZARD_STEPS.findIndex(s => s.id === 'custPhotos'));
+      return;
+    }
+    const currentItem = buildCurrentItem();
+    const updatedItems = [...(tx.items || [])];
+    updatedItems[currentIdx] = currentItem;
+    const targetItem = updatedItems[targetIdx];
+    const restoredFields = {};
+    ITEM_FIELDS.forEach(f => { restoredFields[f] = targetItem?.[f] ?? EMPTY_TX[f]; });
+    restoredFields.itemPhotos = normalizeItemPhotos(targetItem?.itemPhotos);
+    setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems, currentItemIndex: targetIdx, _editingFromIdx: currentIdx }));
+    setStep(WIZARD_STEPS.findIndex(s => s.id === 'custPhotos'));
+  };
+
+  // Finish editing a saved item: save edits, restore the original live item to flat fields.
+  const handleDoneEditing = () => {
+    const editedItem = buildCurrentItem();
+    const updatedItems = [...(tx.items || [])];
+    updatedItems[tx.currentItemIndex] = editedItem;
+    const originalIdx = tx._editingFromIdx;
+    const originalItem = updatedItems[originalIdx];
+    const restoredFields = {};
+    ITEM_FIELDS.forEach(f => { restoredFields[f] = originalItem?.[f] ?? EMPTY_TX[f]; });
+    restoredFields.itemPhotos = normalizeItemPhotos(originalItem?.itemPhotos);
+    setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems, currentItemIndex: originalIdx, _editingFromIdx: undefined }));
   };
 
   // Back navigation that understands the multi-item capture loop.
@@ -6006,21 +6037,26 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   // to the Items screen — rather than going backwards into the customer info steps.
   const handleBack = () => {
     const currentStepId = WIZARD_STEPS[step]?.id;
-    if (currentStepId === 'custPhotos' && tx.currentItemIndex > 0) {
-      const prevIndex = tx.currentItemIndex - 1;
-      const savedPrev = tx.items[prevIndex];
-      // Restore previous item's fields to the flat tx so it's "current" again
-      const restoredFields = {};
-      ITEM_FIELDS.forEach(f => { restoredFields[f] = savedPrev?.[f] ?? EMPTY_TX[f]; });
-      restoredFields.itemPhotos = normalizeItemPhotos(savedPrev?.itemPhotos);
-      // Remove the previous item from the saved array (it's now live in flat fields)
-      const updatedItems = (tx.items || []).slice(0, prevIndex);
-      setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems, currentItemIndex: prevIndex }));
-      setStep(WIZARD_STEPS.findIndex(s => s.id === 'itemsDone'));
-      return;
+    if (currentStepId === 'custPhotos') {
+      if (tx._editingFromIdx != null) {
+        // Editing a saved item — Back returns to the review screen without undoing the edit.
+        setStep(WIZARD_STEPS.findIndex(s => s.id === 'itemsDone'));
+        return;
+      }
+      if (tx.currentItemIndex > 0) {
+        const prevIndex = tx.currentItemIndex - 1;
+        const savedPrev = tx.items[prevIndex];
+        const restoredFields = {};
+        ITEM_FIELDS.forEach(f => { restoredFields[f] = savedPrev?.[f] ?? EMPTY_TX[f]; });
+        restoredFields.itemPhotos = normalizeItemPhotos(savedPrev?.itemPhotos);
+        const updatedItems = (tx.items || []).slice(0, prevIndex);
+        setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems, currentItemIndex: prevIndex }));
+        setStep(WIZARD_STEPS.findIndex(s => s.id === 'itemsDone'));
+        return;
+      }
     }
-    // Reverse handleProceedToOffer: restore current item from tx.items back to flat fields
-    // so that itemsDone doesn't show the item twice (once from tx.items, once from flat fields).
+    // When leaving the offer step, restore the current item back to flat fields.
+    // allItemsPreview filters tx.items[currentIdx] from display, so no dedup logic needed here.
     if (currentStepId === 'offer') {
       const currentIdx = tx.currentItemIndex ?? 0;
       const savedCurrent = tx.items?.[currentIdx];
@@ -6028,8 +6064,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
         const restoredFields = {};
         ITEM_FIELDS.forEach(f => { restoredFields[f] = savedCurrent[f] ?? EMPTY_TX[f]; });
         restoredFields.itemPhotos = normalizeItemPhotos(savedCurrent.itemPhotos);
-        const updatedItems = (tx.items || []).slice(0, currentIdx);
-        setTx(prev => ({ ...prev, ...restoredFields, items: updatedItems }));
+        setTx(prev => ({ ...prev, ...restoredFields }));
       }
     }
     setStep(step - 1);
@@ -6039,7 +6074,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     // Ensure items array is populated. For single-item transactions that went through the
     // normal flow, items may still be empty if the staff never saw itemsDone — snapshot now.
     const itemsToSave = (tx.items || []).length > 0 ? tx.items : [buildCurrentItem()];
-    const totalEstimatedValue = itemsToSave.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0);
+    const totalEstimatedValue = itemsToSave.reduce((s, item) => s + (Number(item?.estimatedValue) || 0), 0);
     const finalTx = {
       ...tx,
       items: itemsToSave,
@@ -6386,36 +6421,57 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
       </div>);
 
       case 'itemsDone': {
-        // All saved items (excluding the current one still in flat fields)
         const savedItems = tx.items || [];
+        const isEditingMode = tx._editingFromIdx != null;
         const makeLabel = (item, fallbackIdx) =>
           item.aiItemType
             ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}${item.aiModel ? ' ' + item.aiModel : ''}`
             : (item.captureItemType || `Item ${fallbackIdx + 1}`);
         const currentItemLabel = makeLabel(tx, tx.currentItemIndex);
+        // Always exclude tx.items[currentItemIndex] — that slot may hold stale data while the
+        // live version is in flat fields. Sort so items appear in index order regardless of
+        // whether we are editing a non-last item.
         const allItemsPreview = [
-          ...savedItems.map((item, idx) => ({ label: makeLabel(item, idx), estimatedValue: item.estimatedValue || 0, idx })),
+          ...savedItems
+            .map((item, idx) => (item != null && idx !== (tx.currentItemIndex ?? 0))
+              ? { label: makeLabel(item, idx), estimatedValue: item.estimatedValue || 0, idx }
+              : null)
+            .filter(Boolean),
           { label: currentItemLabel, estimatedValue: tx.estimatedValue || 0, idx: tx.currentItemIndex, isCurrent: true },
-        ];
+        ].sort((a, b) => a.idx - b.idx);
         const totalEV = allItemsPreview.reduce((s, i) => s + i.estimatedValue, 0);
         const nextItemNum = allItemsPreview.length + 1;
         return (
           <div>
             <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>📦 Items for this Loan</h3>
-            <div style={S.alert('info')}>
-              📋 Review the items captured below. Add another item if the customer is pledging more collateral, or proceed to set the cash advance offer.
-            </div>
+            {isEditingMode ? (
+              <div style={{ ...S.alert('info'), background: '#fef9c3', border: '1px solid #fbbf24' }}>
+                ✏️ <strong>Editing Item {(tx.currentItemIndex ?? 0) + 1}.</strong> Go through the steps to update this item, then tap <em>Done Editing</em> or <em>Proceed to Offer</em>.
+              </div>
+            ) : (
+              <div style={S.alert('info')}>
+                📋 Review the items captured below. Tap any item to edit it, add another item, or proceed to set the cash advance offer.
+              </div>
+            )}
             <div style={{ display: 'grid', gap: '10px', marginBottom: '16px' }}>
-              {allItemsPreview.map((item) => (
-                <div key={item.idx} style={{ ...S.card, marginBottom: 0, border: `2px solid ${item.isCurrent ? COLORS.primary : COLORS.border}`, background: item.isCurrent ? COLORS.primaryLight : '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '2px', fontWeight: 600 }}>Item {item.idx + 1}</div>
-                    <div style={{ fontWeight: 700, fontSize: '14px' }}>{item.label}</div>
-                    <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Estimated value: {fmtMoney(item.estimatedValue)}</div>
+              {allItemsPreview.map((item) => {
+                const canEdit = !isEditingMode && !item.isCurrent;
+                return (
+                  <div
+                    key={item.idx}
+                    onClick={canEdit ? () => handleEditItem(item.idx) : undefined}
+                    style={{ ...S.card, marginBottom: 0, border: `2px solid ${item.isCurrent ? COLORS.primary : COLORS.border}`, background: item.isCurrent ? COLORS.primaryLight : '#fff', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}
+                  >
+                    <div>
+                      <div style={{ fontSize: '11px', color: COLORS.textMuted, marginBottom: '2px', fontWeight: 600 }}>Item {item.idx + 1}</div>
+                      <div style={{ fontWeight: 700, fontSize: '14px' }}>{item.label}</div>
+                      <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Estimated value: {fmtMoney(item.estimatedValue)}</div>
+                    </div>
+                    {item.isCurrent && <span style={{ fontSize: '11px', background: COLORS.primary, color: '#fff', borderRadius: '6px', padding: '2px 8px', fontWeight: 700, flexShrink: 0 }}>Current</span>}
+                    {canEdit && <span style={{ fontSize: '11px', color: COLORS.textMuted, flexShrink: 0, marginLeft: '8px' }}>✏️ Edit</span>}
                   </div>
-                  {item.isCurrent && <span style={{ fontSize: '11px', background: COLORS.primary, color: '#fff', borderRadius: '6px', padding: '2px 8px', fontWeight: 700, flexShrink: 0 }}>Current</span>}
-                </div>
-              ))}
+                );
+              })}
             </div>
             {totalEV > 0 && (
               <div style={{ padding: '10px 14px', background: '#f0fdf4', border: `1px solid #86efac`, borderRadius: '8px', marginBottom: '16px', fontSize: '13px' }}>
@@ -6423,13 +6479,23 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               </div>
             )}
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center' }}
-                onClick={handleAddAnotherItem}
-              >
-                ➕ Add Item {nextItemNum}
-              </button>
+              {isEditingMode ? (
+                <button
+                  type="button"
+                  style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center' }}
+                  onClick={handleDoneEditing}
+                >
+                  ✅ Done Editing
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  style={{ ...S.btn('secondary'), flex: 1, justifyContent: 'center' }}
+                  onClick={handleAddAnotherItem}
+                >
+                  ➕ Add Item {nextItemNum}
+                </button>
+              )}
               <button
                 type="button"
                 style={{ ...S.btn('primary'), flex: 1, justifyContent: 'center' }}
