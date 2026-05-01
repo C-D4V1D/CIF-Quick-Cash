@@ -7718,6 +7718,8 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
   const [txPdfLoading, setTxPdfLoading] = useState(false);
+  const [currentItemIdx, setCurrentItemIdx] = useState(0);
+  const itemSwipeStartX = useRef(null);
   // Determine the most suitable pre-filled SMS template for this transaction's current state
   const pickSmsTemplate = () => {
     const fmtN = n => '₦' + Number(n || 0).toLocaleString('en-NG');
@@ -7866,33 +7868,113 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         {row('NIN Verification', tx.ninVerified ? '✅ Verified via API' : tx.ninVerificationAttempted ? '⚠️ Attempted (placeholder data)' : '❌ Not attempted')}
         {row('Processed By', tx.completedBy || tx.createdBy)}
       </div>
-      {normalizeTransactionItems(tx).items.map((item, idx, arr) => (
-        <div key={item.itemId || idx} style={S.card}>
-          <div style={{ ...S.cardTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>📦 {arr.length > 1 ? `Item ${idx + 1} of ${arr.length}` : 'Item'}</span>
-            {item.redeemed && <span style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primary, background: COLORS.primaryLight, padding: '3px 10px', borderRadius: '12px' }}>✅ Redeemed {fmtDate(item.dateRedeemed)}</span>}
+      {(() => {
+        const arr = normalizeTransactionItems(tx).items;
+        const total = arr.length;
+        const idx = Math.min(Math.max(currentItemIdx, 0), Math.max(total - 1, 0));
+        const item = arr[idx] || {};
+        const multi = total > 1;
+        const goPrev = () => setCurrentItemIdx(i => Math.max(0, i - 1));
+        const goNext = () => setCurrentItemIdx(i => Math.min(total - 1, i + 1));
+        const onTouchStart = e => { itemSwipeStartX.current = e.touches[0].clientX; };
+        const onTouchEnd = e => {
+          if (itemSwipeStartX.current == null) return;
+          const dx = e.changedTouches[0].clientX - itemSwipeStartX.current;
+          itemSwipeStartX.current = null;
+          if (Math.abs(dx) < 40) return;
+          if (dx > 0) goPrev(); else goNext();
+        };
+        const itemPhotos = [
+          item.photoCustomerHolding,
+          ...normalizeItemPhotos(item.itemPhotos),
+          item.imeiPhoto,
+          item.serialNumberPhoto,
+          item.receiptPhoto,
+        ].filter(Boolean);
+        return (
+          <div style={S.card} onTouchStart={multi ? onTouchStart : undefined} onTouchEnd={multi ? onTouchEnd : undefined}>
+            <div style={{ ...S.cardTitle, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+              {multi ? (
+                <button
+                  type="button"
+                  onClick={goPrev}
+                  disabled={idx === 0}
+                  aria-label="Previous item"
+                  style={{ border: `1px solid ${COLORS.border}`, background: '#fff', borderRadius: '50%', width: '30px', height: '30px', cursor: idx === 0 ? 'not-allowed' : 'pointer', opacity: idx === 0 ? 0.4 : 1, fontSize: '16px', lineHeight: 1, padding: 0, flexShrink: 0 }}
+                >‹</button>
+              ) : <span />}
+              <span style={{ flex: 1, textAlign: multi ? 'center' : 'left' }}>📦 {multi ? `Item ${idx + 1} of ${total}` : 'Item'}</span>
+              {multi ? (
+                <button
+                  type="button"
+                  onClick={goNext}
+                  disabled={idx === total - 1}
+                  aria-label="Next item"
+                  style={{ border: `1px solid ${COLORS.border}`, background: '#fff', borderRadius: '50%', width: '30px', height: '30px', cursor: idx === total - 1 ? 'not-allowed' : 'pointer', opacity: idx === total - 1 ? 0.4 : 1, fontSize: '16px', lineHeight: 1, padding: 0, flexShrink: 0 }}
+                >›</button>
+              ) : <span />}
+            </div>
+            {multi && (
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginBottom: '10px' }}>
+                {arr.map((_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setCurrentItemIdx(i)}
+                    aria-label={`Go to item ${i + 1}`}
+                    style={{ width: i === idx ? '20px' : '8px', height: '8px', borderRadius: '4px', border: 'none', background: i === idx ? COLORS.primary : COLORS.border, cursor: 'pointer', padding: 0, transition: 'width 0.15s' }}
+                  />
+                ))}
+              </div>
+            )}
+            {item.redeemed && <div style={{ marginBottom: '8px' }}><span style={{ fontSize: '12px', fontWeight: 700, color: COLORS.primary, background: COLORS.primaryLight, padding: '3px 10px', borderRadius: '12px' }}>✅ Redeemed {fmtDate(item.dateRedeemed)}</span></div>}
+            {item.captureItemType && row('Category', <>{item.captureItemType}{item.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
+            {row('Identified As', [item.aiItemType, item.aiBrand, item.aiModel].filter(Boolean).join(' '))}
+            {row('Colour', item.aiColour)}
+            {item.aiKeySpecs && row('Key Specs', item.aiKeySpecs)}
+            {item.aiConfidence && row('AI Confidence', item.aiConfidence)}
+            {row('Condition', item.aiCondition)}
+            {item.imei && row('IMEI', <>{item.imei}{item.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: item.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{item.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
+            {item.serialNumber && row('Serial No.', item.serialNumber)}
+            {item.inspectionNotes && row('Inspection Result', item.inspectionNotes)}
+            {item.hasReceipt != null && row('Receipt', item.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
+            {item.aiPriceBasis && row('Price Basis', item.aiPriceBasis)}
+            {item.aiNewMarketPrice && Number(item.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(item.aiNewMarketPrice)))}
+            {item.aiPriceRangeLow && item.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(item.aiPriceRangeLow))} — ${fmtMoney(Number(item.aiPriceRangeHigh))}`)}
+            {item.aiValuationConfidence && row('Valuation Confidence', item.aiValuationConfidence)}
+            {item.aiVisionUsed && row('Google Lens', 'Used for identification')}
+            {multi && item.itemCashAdvance > 0 && row('Advance Allocation', fmtMoney(item.itemCashAdvance))}
+            {item.redeemed && item.amountPaid > 0 && row('Amount Paid', <strong style={{ color: COLORS.primary }}>{fmtMoney(item.amountPaid)}</strong>)}
+            {item.redeemed && item.daysCharged > 0 && row('Days Charged', `${item.daysCharged} day${item.daysCharged !== 1 ? 's' : ''}`)}
+            {item.redeemed && item.collectionNotes && row('Collection Notes', item.collectionNotes)}
+            {itemPhotos.length > 0 && (
+              <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}>
+                <div style={{ fontSize: '11.5px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.3px', marginBottom: '8px' }}>📷 Photos for this item</div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {itemPhotos.map((p, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setZoomedPhoto(p)}
+                      style={{ border: 'none', padding: 0, background: 'transparent', cursor: 'zoom-in', borderRadius: '8px', overflow: 'hidden' }}
+                      title="Tap to view full image"
+                    >
+                      <img
+                        src={p}
+                        alt={`Item ${idx + 1} photo ${i + 1}`}
+                        style={{ width: '84px', height: '84px', borderRadius: '8px', objectFit: 'cover', display: 'block' }}
+                        onError={e => {
+                          e.currentTarget.onerror = null;
+                          e.currentTarget.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='84' height='84'%3E%3Crect width='84' height='84' fill='%23fee2e2'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-size='10' fill='%23dc2626'%3EPhoto%0Aunavailable%3C/text%3E%3C/svg%3E";
+                        }}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-          {item.captureItemType && row('Category', <>{item.captureItemType}{item.partsOnly && <span style={{ marginLeft: '6px', color: COLORS.danger, fontWeight: 700 }}>(Parts Only)</span>}</>)}
-          {row('Identified As', [item.aiItemType, item.aiBrand, item.aiModel].filter(Boolean).join(' '))}
-          {row('Colour', item.aiColour)}
-          {item.aiKeySpecs && row('Key Specs', item.aiKeySpecs)}
-          {item.aiConfidence && row('AI Confidence', item.aiConfidence)}
-          {row('Condition', item.aiCondition)}
-          {item.imei && row('IMEI', <>{item.imei}{item.imeiModelMatch !== undefined && <span style={{ marginLeft: '8px', fontSize: '12px', color: item.imeiModelMatch ? '#10b981' : '#f59e0b' }}>{item.imeiModelMatch ? '✅ Model matched' : '⚠ Not confirmed'}</span>}</>)}
-          {item.serialNumber && row('Serial No.', item.serialNumber)}
-          {item.inspectionNotes && row('Inspection Result', item.inspectionNotes)}
-          {item.hasReceipt != null && row('Receipt', item.hasReceipt === true ? '✅ Has receipt' : '❌ No receipt')}
-          {item.aiPriceBasis && row('Price Basis', item.aiPriceBasis)}
-          {item.aiNewMarketPrice && Number(item.aiNewMarketPrice) > 0 && row('New Market Price', fmtMoney(Number(item.aiNewMarketPrice)))}
-          {item.aiPriceRangeLow && item.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(item.aiPriceRangeLow))} — ${fmtMoney(Number(item.aiPriceRangeHigh))}`)}
-          {item.aiValuationConfidence && row('Valuation Confidence', item.aiValuationConfidence)}
-          {item.aiVisionUsed && row('Google Lens', 'Used for identification')}
-          {arr.length > 1 && item.itemCashAdvance > 0 && row('Advance Allocation', fmtMoney(item.itemCashAdvance))}
-          {item.redeemed && item.amountPaid > 0 && row('Amount Paid', <strong style={{ color: COLORS.primary }}>{fmtMoney(item.amountPaid)}</strong>)}
-          {item.redeemed && item.daysCharged > 0 && row('Days Charged', `${item.daysCharged} day${item.daysCharged !== 1 ? 's' : ''}`)}
-          {item.redeemed && item.collectionNotes && row('Collection Notes', item.collectionNotes)}
-        </div>
-      ))}
+        );
+      })()}
     </div>
 
     {/* ── Financial Summary ── */}
@@ -7983,22 +8065,20 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
     </div>
 
     {/* ── Photos ── */}
+    {(() => {
+      const txLevelPhotos = [
+        tx.ninPhoto,
+        tx.photoCustomerID,
+        tx.photoSigning,
+        tx.photoSealedPkg,
+        tx.photoCollectionHandover,
+      ].filter(Boolean);
+      if (txLevelPhotos.length === 0) return null;
+      return (
     <div style={S.card}>
-      <div style={S.cardTitle}>📸 Photos</div>
+      <div style={S.cardTitle}>📸 Customer & Handover Photos</div>
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        {[
-          tx.ninPhoto,
-          tx.photoCustomerHolding,
-          tx.photoCustomerID,
-          ...(normalizeItemPhotos(tx.itemPhotos)),
-          tx.imeiPhoto,
-          tx.serialNumberPhoto,
-          tx.receiptPhoto,
-          tx.photoSigning,
-          tx.photoSealedPkg,
-          tx.photoCollectionHandover,
-        ]
-          .filter(Boolean)
+        {txLevelPhotos
           .map((p, i) => (
             <button
               key={i}
@@ -8028,6 +8108,8 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       </div>
       <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>Tap any photo to zoom and download.</div>
     </div>
+      );
+    })()}
 
     {/* ── Business Copy PDF ── */}
     <div style={S.card}>
