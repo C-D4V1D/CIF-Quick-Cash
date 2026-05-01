@@ -11119,7 +11119,14 @@ export default function App() {
                         const parsed = Number(raw);
                         if (Number.isFinite(parsed)) setCapitalTopUpAmount(parsed);
                       }}
-                      onBlur={() => setCapitalTopUpDraft(null)}
+                      onBlur={() => {
+                        const raw = capitalTopUpDraft;
+                        if (raw !== null && raw.trim() !== '') {
+                          const parsed = Number(raw);
+                          if (Number.isFinite(parsed)) setCapitalTopUpAmount(Math.max(baseShortfallNeeded, parsed));
+                        }
+                        setCapitalTopUpDraft(null);
+                      }}
                       style={{ width: '140px', padding: '5px 8px', fontSize: '13px', border: `1px solid ${dividerClr}`, borderRadius: '6px', background: '#fff', color: '#1f2937' }}
                     />
                     {capitalTopUpAmount !== null && capitalTopUpAmount !== baseShortfallNeeded && (
