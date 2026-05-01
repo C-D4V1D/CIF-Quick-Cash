@@ -5276,7 +5276,7 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   }, []);
   const [wizardNotifyStatus, setWizardNotifyStatus] = useState(null); // null | 'sending' | { sent, failed, total }
   const wizardAutoSentRef = useRef(false);
-  const [wizardTopUpExtra, setWizardTopUpExtra] = useState(0);        // optional extra top-up above transaction shortfall
+  const [wizardTopUpAmount, setWizardTopUpAmount] = useState(null);        // null = auto-fill with baseShortfall; number = user-set total
   const [completedTxData, setCompletedTxData] = useState(null);       // set after wizard save — shows print-tag screen
 
   // Auto-send capital shortfall SMS when Offer step first shows a shortfall (once per wizard session)
@@ -6562,7 +6562,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
           const avail = availableLendingCapital != null ? availableLendingCapital : Infinity;
           if (offerAmount <= 0 || avail >= offerAmount) return null;
           const baseShortfall = Math.ceil(offerAmount - avail);
-          const totalTopUp = baseShortfall + (wizardTopUpExtra > 0 ? wizardTopUpExtra : 0);
+          const totalTopUp = wizardTopUpAmount !== null ? wizardTopUpAmount : baseShortfall;
           const ownershipTargets = settings.stakeholderOwnership || {};
           const { allocations, unallocated } = computeRealTimeShortfall(totalTopUp, capByName || [], totalCapital || 0, ownershipTargets);
           return (
@@ -6572,31 +6572,33 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
                 Available lending capital is <strong>{fmtMoney(avail < 0 ? 0 : avail)}</strong> but this transaction needs <strong>{fmtMoney(offerAmount)}</strong>.
                 A minimum top-up of <strong>{fmtMoney(baseShortfall)}</strong> is needed before this can proceed.
               </div>
-              {/* Optional extra top-up */}
+              {/* Amount needed to cover shortfall (autofilled, editable) */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
                 <label style={{ fontSize: '12px', fontWeight: 600, color: '#991b1b', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                  Top up extra above minimum (₦)
-                  <InfoIcon tip="Optionally plan a larger top-up beyond what this transaction strictly needs. Useful if you want to replenish reserves while stakeholders are already contributing." />
+                  Amount needed to cover shortfall (₦)
+                  <InfoIcon tip="The total top-up amount needed so this transaction can proceed. Auto-filled with the minimum required — edit to plan a larger top-up while stakeholders are already contributing." />
                   :
                 </label>
                 <input
                   type="number"
-                  min={0}
+                  min={baseShortfall}
                   step={1000}
-                  value={wizardTopUpExtra || ''}
-                  placeholder="0"
-                  onChange={e => setWizardTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
+                  value={wizardTopUpAmount !== null ? wizardTopUpAmount : baseShortfall}
+                  onChange={e => setWizardTopUpAmount(Math.max(baseShortfall, Number(e.target.value) || baseShortfall))}
                   style={{ width: '130px', padding: '5px 8px', fontSize: '13px', border: '1px solid #fca5a5', borderRadius: '6px', background: '#fff', color: '#1f2937' }}
                 />
-                {wizardTopUpExtra > 0 && (
-                  <span style={{ fontSize: '12px', color: '#991b1b' }}>
-                    Total: <strong>{fmtMoney(totalTopUp)}</strong>
-                  </span>
+                {wizardTopUpAmount !== null && wizardTopUpAmount !== baseShortfall && (
+                  <button
+                    onClick={() => setWizardTopUpAmount(null)}
+                    style={{ fontSize: '11px', color: '#991b1b', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
+                  >
+                    Reset to minimum
+                  </button>
                 )}
               </div>
               {allocations.length > 0 && (
                 <div>
-                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Expected contributions{wizardTopUpExtra > 0 ? ` (including ₦${wizardTopUpExtra.toLocaleString('en-NG')} extra)` : ''}</div>
+                  <div style={{ fontSize: '12px', fontWeight: 700, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Expected contributions — total {fmtMoney(totalTopUp)}</div>
                   <div style={{ overflowX: 'auto' }}>
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead>
