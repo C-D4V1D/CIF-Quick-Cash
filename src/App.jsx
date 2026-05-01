@@ -6562,7 +6562,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
           const avail = availableLendingCapital != null ? availableLendingCapital : Infinity;
           if (offerAmount <= 0 || avail >= offerAmount) return null;
           const baseShortfall = Math.ceil(offerAmount - avail);
-          const totalTopUp = wizardTopUpAmount !== null ? wizardTopUpAmount : baseShortfall;
+          const totalTopUp = wizardTopUpAmount !== null ? Math.max(baseShortfall, wizardTopUpAmount) : baseShortfall;
           const ownershipTargets = settings.stakeholderOwnership || {};
           const { allocations, unallocated } = computeRealTimeShortfall(totalTopUp, capByName || [], totalCapital || 0, ownershipTargets);
           return (
@@ -10976,7 +10976,7 @@ export default function App() {
               if (availableLendingCapital >= threshold) return null;
               const isNegative = availableLendingCapital < 0;
               const baseShortfallNeeded = isNegative ? Math.abs(availableLendingCapital) : (threshold - availableLendingCapital);
-              const shortfallNeeded = capitalTopUpAmount !== null ? capitalTopUpAmount : baseShortfallNeeded;
+              const shortfallNeeded = capitalTopUpAmount !== null ? Math.max(baseShortfallNeeded, capitalTopUpAmount) : baseShortfallNeeded;
               const ownershipCfg = settings.stakeholderOwnership || {};
               const { allocations, unallocated } = computeRealTimeShortfall(shortfallNeeded, capByName, totalCapital, ownershipCfg);
               const accentClr = isNegative ? '#991b1b' : '#92400e';
