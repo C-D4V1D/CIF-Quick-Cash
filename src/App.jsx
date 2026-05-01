@@ -8788,7 +8788,7 @@ export default function App() {
   const [capitalSmsSendState, setCapitalSmsSendState] = useState(null);     // null | 'sending' | { sent, failed, total }
   const [withdrawalSmsSendState, setWithdrawalSmsSendState] = useState(null);
   const capitalAutoSentRef = useRef({});  // tracks which auto-sends have fired today
-  const [capitalTopUpExtra, setCapitalTopUpExtra] = useState(0);            // optional extra top-up above the minimum
+  const [capitalTopUpAmount, setCapitalTopUpAmount] = useState(null);        // null = auto-fill with baseShortfallNeeded; number = user-set total
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
@@ -10974,7 +10974,7 @@ export default function App() {
               if (availableLendingCapital >= threshold) return null;
               const isNegative = availableLendingCapital < 0;
               const baseShortfallNeeded = isNegative ? Math.abs(availableLendingCapital) : (threshold - availableLendingCapital);
-              const shortfallNeeded = baseShortfallNeeded + (capitalTopUpExtra > 0 ? capitalTopUpExtra : 0);
+              const shortfallNeeded = capitalTopUpAmount !== null ? capitalTopUpAmount : baseShortfallNeeded;
               const ownershipCfg = settings.stakeholderOwnership || {};
               const { allocations, unallocated } = computeRealTimeShortfall(shortfallNeeded, capByName, totalCapital, ownershipCfg);
               const accentClr = isNegative ? '#991b1b' : '#92400e';
@@ -11011,32 +11011,34 @@ export default function App() {
                       : <>Available lending capital (<strong>{fmtMoney(availableLendingCapital)}</strong>) is below the alert threshold of <strong>{fmtMoney(threshold)}</strong>. A minimum of <strong>{fmtMoney(baseShortfallNeeded)}</strong> is needed to reach the threshold.</>
                     }
                   </div>
-                  {/* Optional extra top-up field */}
+                  {/* Amount needed to reach threshold (autofilled, editable) */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
                     <label style={{ fontSize: '12px', fontWeight: 600, color: accentClr, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                      Top up extra above minimum (₦)
-                      <InfoIcon tip="Optionally plan a larger top-up beyond the minimum. The contribution table below updates instantly to show each stakeholder's share of the larger total." />
+                      Amount needed to reach threshold (₦)
+                      <InfoIcon tip="The total top-up amount needed to restore capital to the alert threshold. Auto-filled with the minimum required — edit to plan a larger top-up." />
                       :
                     </label>
                     <input
                       type="number"
-                      min={0}
+                      min={baseShortfallNeeded}
                       step={5000}
-                      value={capitalTopUpExtra || ''}
-                      placeholder="0"
-                      onChange={e => setCapitalTopUpExtra(Math.max(0, Number(e.target.value) || 0))}
+                      value={capitalTopUpAmount !== null ? capitalTopUpAmount : baseShortfallNeeded}
+                      onChange={e => setCapitalTopUpAmount(Math.max(baseShortfallNeeded, Number(e.target.value) || baseShortfallNeeded))}
                       style={{ width: '140px', padding: '5px 8px', fontSize: '13px', border: `1px solid ${dividerClr}`, borderRadius: '6px', background: '#fff', color: '#1f2937' }}
                     />
-                    {capitalTopUpExtra > 0 && (
-                      <span style={{ fontSize: '12px', color: accentClr }}>
-                        Total: <strong>{fmtMoney(shortfallNeeded)}</strong>
-                      </span>
+                    {capitalTopUpAmount !== null && capitalTopUpAmount !== baseShortfallNeeded && (
+                      <button
+                        onClick={() => setCapitalTopUpAmount(null)}
+                        style={{ fontSize: '11px', color: accentClr, background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
+                      >
+                        Reset to minimum
+                      </button>
                     )}
                   </div>
                   {allocations.length > 0 && (
                     <div>
                       <div style={{ fontSize: '12px', fontWeight: 700, color: accentClr, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
-                        Expected contributions{capitalTopUpExtra > 0 ? ` — total ₦${shortfallNeeded.toLocaleString('en-NG')} (₦${capitalTopUpExtra.toLocaleString('en-NG')} extra)` : ' to restore capital'}
+                        Expected contributions — total {fmtMoney(shortfallNeeded)}
                       </div>
                       <div style={{ overflowX: 'auto' }}>
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginBottom: '14px' }}>
