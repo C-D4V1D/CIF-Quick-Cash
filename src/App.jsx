@@ -11112,7 +11112,7 @@ export default function App() {
                       onChange={e => {
                         const raw = e.target.value;
                         setCapitalTopUpDraft(raw);
-                        if (raw.trim() === '') {
+                        if (raw === '') {
                           setCapitalTopUpAmount(null);
                           return;
                         }
@@ -11121,7 +11121,9 @@ export default function App() {
                       }}
                       onBlur={() => {
                         const raw = capitalTopUpDraft;
-                        if (raw !== null && raw.trim() !== '') {
+                        if (raw === '') {
+                          setCapitalTopUpAmount(null);
+                        } else if (raw !== null) {
                           const parsed = Number(raw);
                           if (Number.isFinite(parsed)) setCapitalTopUpAmount(Math.max(baseShortfallNeeded, parsed));
                         }
