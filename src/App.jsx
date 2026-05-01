@@ -8873,6 +8873,7 @@ export default function App() {
   const [withdrawalSmsSendState, setWithdrawalSmsSendState] = useState(null);
   const capitalAutoSentRef = useRef({});  // tracks which auto-sends have fired today
   const [capitalTopUpAmount, setCapitalTopUpAmount] = useState(null);        // null = auto-fill with baseShortfallNeeded; number = user-set total
+  const [capitalTopUpDraft, setCapitalTopUpDraft] = useState(null);          // null = use computed display value; string = live input while typing
   const [showAddDeclined, setShowAddDeclined] = useState(false);
   const [declineDraftModal, setDeclineDraftModal] = useState(null); // holds draft object being declined
   const [showAddUser, setShowAddUser] = useState(false);
@@ -11106,13 +11107,24 @@ export default function App() {
                       type="number"
                       min={baseShortfallNeeded}
                       step={5000}
-                      value={capitalTopUpAmount !== null ? capitalTopUpAmount : baseShortfallNeeded}
-                      onChange={e => setCapitalTopUpAmount(Math.max(baseShortfallNeeded, Number(e.target.value) || baseShortfallNeeded))}
+                      value={capitalTopUpDraft !== null ? capitalTopUpDraft : String(capitalTopUpAmount !== null ? capitalTopUpAmount : baseShortfallNeeded)}
+                      onFocus={() => setCapitalTopUpDraft(String(capitalTopUpAmount !== null ? capitalTopUpAmount : baseShortfallNeeded))}
+                      onChange={e => {
+                        const raw = e.target.value;
+                        setCapitalTopUpDraft(raw);
+                        if (raw.trim() === '') {
+                          setCapitalTopUpAmount(null);
+                          return;
+                        }
+                        const parsed = Number(raw);
+                        if (Number.isFinite(parsed)) setCapitalTopUpAmount(parsed);
+                      }}
+                      onBlur={() => setCapitalTopUpDraft(null)}
                       style={{ width: '140px', padding: '5px 8px', fontSize: '13px', border: `1px solid ${dividerClr}`, borderRadius: '6px', background: '#fff', color: '#1f2937' }}
                     />
                     {capitalTopUpAmount !== null && capitalTopUpAmount !== baseShortfallNeeded && (
                       <button
-                        onClick={() => setCapitalTopUpAmount(null)}
+                        onClick={() => { setCapitalTopUpAmount(null); setCapitalTopUpDraft(null); }}
                         style={{ fontSize: '11px', color: accentClr, background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
                       >
                         Reset to minimum
