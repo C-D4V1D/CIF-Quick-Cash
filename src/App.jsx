@@ -477,7 +477,7 @@ const DEFAULT_SETTINGS = {
   ninRechargeAccountNumber: '',
   ninRechargeAccountName: '',
   // Item Categories
-  itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Other'],
+  itemCategories: ['Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank', 'Electric Fan', 'Flat-Screen TV', 'Generator', 'Gas Cylinder', 'Refrigerator/Freezer', 'Other'],
   // Expense Categories
   expenseCategories: ['Stationery & Printing', 'Mobile Data', 'Phone Calls', 'Packaging Materials', 'Transport', 'Miscellaneous'],
   // Business Contact & Hours
@@ -2398,6 +2398,7 @@ function ItemValuationPage({ onBack, settings }) {
     { label: 'Generator', value: 'Generator', emoji: '⚙️' },
     { label: 'Gas Cylinder', value: 'Gas Cylinder', emoji: '🛢' },
     { label: 'Motorcycle', value: 'Motorcycle', emoji: '🏍' },
+    { label: 'Fridge/Freezer', value: 'Refrigerator/Freezer', emoji: '🧊' },
     { label: 'Other Item', value: 'Other', emoji: '📦' },
   ];
 
@@ -4498,7 +4499,7 @@ function ScreeningStep({ tx, upd, onRedFlagExit, onDecline }) {
 const CAPTURE_ITEM_TYPES = [
   'Smartphone', 'Laptop', 'Tablet', 'Bluetooth Speaker', 'Power Bank',
   'Electric Fan (Standing)', 'Electric Fan (Table/Desk)', 'Flat-Screen TV',
-  'Generator', 'Gas Cylinder', 'Motorcycle', 'Other',
+  'Generator', 'Gas Cylinder', 'Motorcycle', 'Refrigerator/Freezer', 'Other',
 ];
 
 // Item types that require IMEI verification (not just serial number)
@@ -4565,6 +4566,14 @@ const ITEM_PHOTO_SLOTS = {
     'HDMI/AV Ports',
     'Remote Control',
     'Side Profile',
+  ],
+  'Refrigerator/Freezer': [
+    'Brand/Model Label',
+    'Full Unit Front (door closed)',
+    'Full Unit Back',
+    'Interior – Freezer Compartment',
+    'Interior – Fridge Compartment',
+    'Working (compressor running / cold air visible)',
   ],
 };
 const DEFAULT_PHOTO_SLOTS = ['Brand/Model Label', 'Front', 'Back', 'Left/Right Side', 'Top/Bottom', 'Working (Power ON)'];
@@ -4698,6 +4707,18 @@ const INSPECTION_CHECKLISTS = {
     'Seat is secure and not torn',
     'Registration plate is attached',
     'No visible frame cracks or bent forks',
+  ],
+  'Refrigerator/Freezer': [
+    'Powers on (compressor starts)',
+    'Compressor runs without unusual noise or vibration',
+    'Fridge compartment is cold (feel interior after a few minutes)',
+    'Freezer compartment freezes (if present)',
+    'Door seal is intact — no cracks, tears, or gaps',
+    'Interior light turns on when door opens (if fitted)',
+    'Temperature controls respond (turn dial/buttons up and down)',
+    'No unusual or foul smell inside',
+    'Shelves, drawers, and compartment dividers are present and unbroken',
+    'No excessive rust, dents, or damage to exterior body',
   ],
 };
 
