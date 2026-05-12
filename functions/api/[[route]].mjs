@@ -862,11 +862,9 @@ export async function onRequest(context) {
         const limit = Math.max(1, Math.min(200, Number.parseInt(url.searchParams.get('limit') || '100', 10) || 100));
         const offset = Math.max(0, Number.parseInt(url.searchParams.get('offset') || '0', 10) || 0);
 
-        // Draft visibility: admins see all; staff see only their own plus legacy rows with no created_by.
-        // In both cases, exclude drafts already saved as completed transactions (stale-draft guard).
-        const draftUserFilter = auth.user.role === 'admin'
-          ? { sql: 'NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref)', params: [] }
-          : { sql: 'NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref) AND (d.created_by = ? OR d.created_by IS NULL)', params: [auth.user.id] };
+        // All authenticated users see all drafts — staff collaborate on any customer's draft.
+        // Exclude drafts already saved as completed transactions (stale-draft guard).
+        const draftUserFilter = { sql: 'NOT EXISTS (SELECT 1 FROM transactions WHERE ref = d.ref)', params: [] };
 
         // Fetch transactions and settings unconditionally — these must never fail for staff.
         // Drafts queries are run separately so that a schema error (e.g. missing created_by
@@ -1853,10 +1851,8 @@ export async function onRequest(context) {
     if (path === 'drafts' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      // Admins see all drafts; staff see only their own (plus legacy rows with no created_by).
-      const { results } = auth.user.role === 'admin'
-        ? await db.prepare('SELECT ref, data FROM drafts ORDER BY updated_at DESC').all()
-        : await db.prepare('SELECT ref, data FROM drafts WHERE created_by = ? OR created_by IS NULL ORDER BY updated_at DESC').bind(auth.user.id).all();
+      // All authenticated users see all drafts — staff collaborate on any customer's draft.
+      const { results } = await db.prepare('SELECT ref, data FROM drafts ORDER BY updated_at DESC').all();
       return json(results.map((r) => ({ ...JSON.parse(r.data), ref: r.ref })));
     }
     if (path === 'drafts' && method === 'POST') {
