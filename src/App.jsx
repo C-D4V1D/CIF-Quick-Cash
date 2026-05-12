@@ -6452,7 +6452,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             )}
 
             <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Estimated Resale Value (₦)<InfoIcon tip="How much this item would realistically sell for second-hand around Aguleri. The max cash we can give is based on this number. Staff can adjust but cannot set above the highest realistic price." /></span>} required>
-              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue || tx.aiEstimatedValue || ''} onChange={e => {
+              <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.estimatedValue > 0 ? tx.estimatedValue : ''} onChange={e => {
                 let val = Number(e.target.value) || 0;
                 const maxPrice = Number(tx.aiPriceRangeHigh) || 0;
                 if (maxPrice > 0 && val > maxPrice) val = maxPrice;
