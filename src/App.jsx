@@ -557,11 +557,16 @@ const DEFAULT_SETTINGS = {
   receiptFooter: 'Thank you for your patronage!',
   // Profit Sharing — legacy global staff share (kept for backward-compat / migration default)
   staffSharePct: 10,
-  // Per-stakeholder cuts are stored inside stakeholderOwnership[name]
-  // (fields: staffCutPct, platformCutPct). Defaults below are pre-filled when
-  // adding a new stakeholder — never applied retroactively.
-  defaultStaffCutPct: 10,
-  defaultPlatformCutPct: 5,
+  // Per-stakeholder TOTAL cut % (staff + possessor + platform combined) is stored
+  // inside stakeholderOwnership[name].totalCutPct. The default below is the
+  // pre-fill value when adding a new stakeholder. Set to 0 on any stakeholder
+  // to fully exempt them (e.g. yourself as admin, your COO/main staff).
+  defaultTotalCutPct: 15,
+  // Global split of the aggregated total cut into three pools. Must sum to 100.
+  // Staff Pool   → split among staffPoolRecipientIds proportional to step points
+  // Possessor    → split among per-transaction possessors by item revenue
+  // Platform Fee → folded into platformRecipientUserId's stakeholder line
+  cutSplit: { staffPct: 50, possessorPct: 15, platformPct: 35 },
   platformCutLabel: 'Platform / License Fee',
   platformRecipientUserId: 'admin',
   // Users eligible to receive shares of the Staff Pool. Admin is included by
@@ -5248,7 +5253,7 @@ const EMPTY_TX = {
   currentItemIndex: 0,
 };
 
-function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, serpApiAiAccount, availableLendingCapital, totalCapital, capByName }) {
+function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, serpApiAiAccount, availableLendingCapital, totalCapital, capByName, users }) {
   const [step, setStep] = useState(draft?.wizardStep || 0);
   const [tx, setTx] = useState(() => {
     const base = draft || { ...EMPTY_TX, ref: genRef(), createdBy: currentUser?.name || '', createdAt: new Date().toISOString() };
@@ -7006,6 +7011,35 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
                   />
                 </>
               )
+            ))}
+
+            {/* Step — Item Possessor */}
+            {stepBox(isAdvance ? 5 : 3, 'Who Will Be in Possession of the Item?', COLORS.primary, (
+              <>
+                <p style={{ margin: '0 0 10px', fontSize: '13px' }}>
+                  Select the person who will physically hold / store this item. If the item stays with the customer, choose <strong>Customer (self-custody)</strong>.
+                </p>
+                <select
+                  value={tx.possessorUserId || 'customer'}
+                  onChange={e => upd('possessorUserId', e.target.value)}
+                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', fontWeight: 600 }}
+                >
+                  <option value="customer">👤 Customer (self-custody)</option>
+                  {(users || []).filter(u => u.active !== 0).map(u => (
+                    <option key={u.id} value={u.id}>{u.name} (@{u.username})</option>
+                  ))}
+                </select>
+                {(tx.possessorUserId && tx.possessorUserId !== 'customer') && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#16a34a', fontWeight: 600 }}>
+                    ✅ Item will be held by {(users || []).find(u => u.id === tx.possessorUserId)?.name || tx.possessorUserId}
+                  </div>
+                )}
+                {(!tx.possessorUserId || tx.possessorUserId === 'customer') && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>
+                    ℹ️ Customer-held — the possessor share of the profit cut will be redirected to the Staff Pool.
+                  </div>
+                )}
+              </>
             ))}
 
             <button
@@ -9578,7 +9612,7 @@ export default function App() {
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
-        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} serpApiAiAccount={serpApiAiAccount} availableLendingCapital={availableLendingCapital} totalCapital={totalCapital} capByName={capitalPrediction?.capByName || []} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
+        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} serpApiAiAccount={serpApiAiAccount} availableLendingCapital={availableLendingCapital} totalCapital={totalCapital} capByName={capitalPrediction?.capByName || []} users={users} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
       </div>
     </div>
   );
@@ -10601,14 +10635,11 @@ export default function App() {
         const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
-        // Legacy global staff share — kept for the per-period card displays.
-        // The actual staff and platform pools are computed per-stakeholder
-        // below using each stakeholder's own staffCutPct / platformCutPct.
-        const staffSharePct = settings.staffSharePct ?? 10;
         const platformCutLabel = settings.platformCutLabel || 'Platform / License Fee';
-        // Placeholders — overwritten by per-stakeholder math after rStakeholders is built.
-        let rStaff = 0;
-        let rPlatform = 0;
+        // Pool placeholders — overwritten by the per-stakeholder math below.
+        let rStaff = 0;       // Staff Pool (includes possessor amounts redirected from customer-held items)
+        let rPossessor = 0;   // Possessor Pool (distributed by item revenue)
+        let rPlatform = 0;    // Platform / License Fee Pool
         let rStakeholder = rProfit;
         const rCapitalDeployed = rNewTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
         const rCapitalReturned = rClosed.reduce((s, t) => s + (t.cashAdvance || 0), 0);
@@ -10646,34 +10677,81 @@ export default function App() {
           }
           const arr = Object.values(byStakeholder);
           const totalCapitalDays = arr.reduce((s, x) => s + x.capitalDays, 0);
-          // Per-stakeholder cuts (set 0/0 on any stakeholder to fully exempt).
+          // Per-stakeholder TOTAL cut % (combined staff + possessor + platform).
+          // Set to 0% to fully exempt a stakeholder (e.g. admin, COO).
           const ownershipCfg = settings.stakeholderOwnership || {};
-          const defStaff = Number(settings.defaultStaffCutPct ?? settings.staffSharePct ?? 10);
-          const defPlatform = Number(settings.defaultPlatformCutPct ?? 0);
+          const defTotal = Number(settings.defaultTotalCutPct ?? 15);
           return arr.map(s => {
             const pct = totalCapitalDays > 0 ? (s.capitalDays / totalCapitalDays * 100) : 0;
             const avgActiveDays = s.total > 0 ? Math.round(s.capitalDays / s.total * 10) / 10 : 0;
             const own = ownershipCfg[s.name] || {};
-            const staffCutPct = Number(own.staffCutPct ?? defStaff) || 0;
-            const platformCutPct = Number(own.platformCutPct ?? defPlatform) || 0;
+            // Migration: if a stakeholder still has the old staffCutPct/platformCutPct
+            // fields and no totalCutPct, sum them as a one-time fallback so existing
+            // configs don't silently zero out.
+            let totalCutPct;
+            if (own.totalCutPct != null) totalCutPct = Number(own.totalCutPct);
+            else if (own.staffCutPct != null || own.platformCutPct != null) totalCutPct = Number(own.staffCutPct || 0) + Number(own.platformCutPct || 0);
+            else totalCutPct = defTotal;
+            totalCutPct = Math.max(0, Math.min(100, totalCutPct));
             const grossShare = Math.max(0, Math.floor(rProfit * pct / 100));
-            const staffCut = Math.max(0, Math.floor(grossShare * staffCutPct / 100));
-            const platformCut = Math.max(0, Math.floor(grossShare * platformCutPct / 100));
-            const share = Math.max(0, grossShare - staffCut - platformCut);
-            return { ...s, pct, grossShare, staffCut, platformCut, staffCutPct, platformCutPct, share, effectiveDays: periodDays, totalCapitalDays, avgActiveDays };
+            const totalCut = Math.max(0, Math.floor(grossShare * totalCutPct / 100));
+            const share = Math.max(0, grossShare - totalCut);
+            return { ...s, pct, grossShare, totalCut, totalCutPct, share, effectiveDays: periodDays, totalCapitalDays, avgActiveDays };
           });
         })();
-        // Aggregate the per-stakeholder cuts into the global Staff and Platform pools.
-        rStaff = rStakeholders.reduce((s, x) => s + (x.staffCut || 0), 0);
-        rPlatform = rStakeholders.reduce((s, x) => s + (x.platformCut || 0), 0);
+        // Global split of the aggregated total cut pool into staff / possessor / platform.
+        const cutSplitCfg = settings.cutSplit || DEFAULT_SETTINGS.cutSplit;
+        const splitStaffPct = Math.max(0, Number(cutSplitCfg.staffPct ?? 50));
+        const splitPossessorPct = Math.max(0, Number(cutSplitCfg.possessorPct ?? 15));
+        const splitPlatformPct = Math.max(0, Number(cutSplitCfg.platformPct ?? 35));
+        const splitTotal = splitStaffPct + splitPossessorPct + splitPlatformPct || 1;
+        const totalCutPool = rStakeholders.reduce((s, x) => s + (x.totalCut || 0), 0);
+        rStaff = Math.floor(totalCutPool * splitStaffPct / splitTotal);
+        rPossessor = Math.floor(totalCutPool * splitPossessorPct / splitTotal);
+        rPlatform = totalCutPool - rStaff - rPossessor; // any rounding remainder lands in platform
         rStakeholder = rStakeholders.reduce((s, x) => s + (x.share || 0), 0);
-        // Platform Fee is folded into the configured recipient's stakeholder
-        // line for display so it shows as "money in your pocket" alongside
-        // your investor share. Match by user_id if available, otherwise by
-        // name 'Administrator' / 'admin' as a fallback.
+        // Possessor pool attribution by item revenue. Items "held by customer"
+        // (possessorUserId === 'customer' or unset/historical) redirect their
+        // share to the Staff Pool.
+        const revContribOfTx = (tx) => {
+          if (tx.status === 'closed') return Math.max(0, Number(tx.totalFees) || 0);
+          if (tx.status === 'sold') return Math.max(0, (tx.salePrice || 0) - (tx.cashAdvance || 0));
+          if (tx.type !== 'outright') {
+            const fee = tx.serviceFeeAmount ?? (tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0);
+            return Math.max(0, Number(fee) || 0);
+          }
+          return 0;
+        };
+        const revByPossessor = {}; // user_id → revenue
+        let revCustomerHeld = 0;
+        let revTotalForPossessor = 0;
+        const inPeriodAny = (tx) => inPeriod(tx.dateRepaid || tx.saleDate || tx.created_at || tx.updated_at);
+        transactions.forEach(tx => {
+          if (!inPeriodAny(tx)) return;
+          const rev = revContribOfTx(tx);
+          if (rev <= 0) return;
+          revTotalForPossessor += rev;
+          const possessor = tx.possessorUserId || 'customer';
+          if (possessor === 'customer') revCustomerHeld += rev;
+          else revByPossessor[possessor] = (revByPossessor[possessor] || 0) + rev;
+        });
+        // Customer-held portion of the Possessor pool is folded into Staff Pool.
+        let possessorToStaff = 0;
+        if (revTotalForPossessor > 0 && revCustomerHeld > 0) {
+          possessorToStaff = Math.floor(rPossessor * revCustomerHeld / revTotalForPossessor);
+          rStaff += possessorToStaff;
+          rPossessor -= possessorToStaff;
+        }
+        // Possessor Pool distribution among internal users by item revenue.
+        const possessorRevTotal = Object.values(revByPossessor).reduce((s, v) => s + v, 0);
+        const rPossessorByUser = Object.entries(revByPossessor).map(([userId, rev]) => {
+          const u = (users || []).find(x => x && x.id === userId);
+          const share = possessorRevTotal > 0 ? Math.floor(rPossessor * rev / possessorRevTotal) : 0;
+          return { userId, name: u?.name || userId, rev, share };
+        }).sort((a, b) => b.share - a.share);
+        // Platform Fee is folded into the configured recipient's stakeholder line.
         const platformRecipientId = settings.platformRecipientUserId || 'admin';
         const platformRecipient = rStakeholders.find(s => {
-          // capital entries store user_id on each row; rebuild a quick lookup
           const cap = capital.find(c => c.name === s.name && c.user_id);
           return cap && cap.user_id === platformRecipientId;
         }) || rStakeholders.find(s => /admin|administrator/i.test(s.name));
@@ -10829,6 +10907,7 @@ export default function App() {
             `Expenses,${rExpTotal}`,
             `Net Profit,${rProfit}`,
             `Staff Pool,${rStaff}`,
+            `Possessor Pool,${rPossessor}`,
             `${platformCutLabel},${rPlatform}`,
             `Stakeholders (net),${rStakeholder}`,
             '',
@@ -10928,19 +11007,26 @@ export default function App() {
             </div>
 
             {/* Profit distribution */}
-            <div style={rPlatform > 0 ? S.grid3 : S.grid2}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
               <div style={S.card}>
-                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Staff Pool<InfoIcon tip={`The staff's collective share — collected per-stakeholder using each stakeholder's own staff cut %. Split among eligible recipients (settings → Profit Sharing) proportional to fractional step points earned this period.`} /></div>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Staff Pool<InfoIcon tip={`The staff cut share of the total cut pool (${splitStaffPct}% of total cut), plus any possessor share redirected from customer-held items. Split among eligible recipients proportional to fractional step points earned this period.`} /></div>
                 <div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rStaff)}</div>
+                {possessorToStaff > 0 && <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>incl. {fmtMoney(possessorToStaff)} from customer-held items</div>}
               </div>
+              {(rPossessor > 0) && (
+                <div style={S.card}>
+                  <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Possessor Pool<InfoIcon tip={`The possessor share of the total cut pool (${splitPossessorPct}% of total cut, less any redirected to Staff for customer-held items). Split among users who physically held items, weighted by item revenue.`} /></div>
+                  <div style={{ fontSize: '24px', fontWeight: 800, color: '#10b981' }}>{fmtMoney(rPossessor)}</div>
+                </div>
+              )}
               {rPlatform > 0 && (
                 <div style={S.card}>
-                  <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>{platformCutLabel}<InfoIcon tip={`Founder / platform fee — collected per-stakeholder using each stakeholder's own platform cut %. Folded into the configured recipient's stakeholder line (default: admin).`} /></div>
+                  <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>{platformCutLabel}<InfoIcon tip={`The platform share of the total cut pool (${splitPlatformPct}% of total cut). Folded into the configured recipient's stakeholder line.`} /></div>
                   <div style={{ fontSize: '24px', fontWeight: 800, color: '#8b5cf6' }}>{fmtMoney(rPlatform)}</div>
                 </div>
               )}
               <div style={S.card}>
-                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders (net)<InfoIcon tip={`Each stakeholder's gross profit (by capital-days) minus their own staff cut and platform cut %. Set both to 0% for any stakeholder you want fully exempt (e.g. yourself and your COO/main staff).`} /></div>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders (net)<InfoIcon tip={`Each stakeholder's gross profit (by capital-days) minus their own total cut %. Set to 0% for any stakeholder you want fully exempt (e.g. yourself and your COO/main staff).`} /></div>
                 <div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div>
               </div>
             </div>
@@ -10992,11 +11078,10 @@ export default function App() {
                       <tr>
                         <th style={S.th}>Stakeholder</th>
                         <th style={S.th}>Capital</th>
-                        <th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Avg Active Days<InfoIcon tip="The average number of days your money was working during the report period. If you deposited ₦500k on Day 1 of a 30-day month, it's 30 days. If deposited on Day 20, it's 11 days. Multiple deposits are averaged by amount." /></div></th>
+                        <th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Avg Active Days<InfoIcon tip="The average number of days your money was working during the report period. If you deposited ₦500k on Day 1 of a 30-day month, it's 30 days." /></div></th>
                         <th style={S.th}>Share %</th>
                         <th style={S.th}>Gross</th>
-                        <th style={S.th}>Staff Cut</th>
-                        <th style={S.th}>{platformCutLabel}</th>
+                        <th style={S.th}>Total Cut</th>
                         <th style={S.th}>Net Profit</th>
                       </tr>
                     </thead>
@@ -11008,8 +11093,7 @@ export default function App() {
                           <td style={{ ...S.td, textAlign: 'center' }}>{s.avgActiveDays}</td>
                           <td style={{ ...S.td, textAlign: 'center' }}>{s.pct.toFixed(1)}%</td>
                           <td style={{ ...S.td }}>{fmtMoney(s.grossShare)}</td>
-                          <td style={{ ...S.td, color: (s.staffCut || 0) > 0 ? COLORS.danger : COLORS.textMuted }}>{(s.staffCutPct || 0) === 0 ? '— (exempt)' : `−${fmtMoney(s.staffCut || 0)} (${s.staffCutPct}%)`}</td>
-                          <td style={{ ...S.td, color: (s.platformCut || 0) > 0 ? COLORS.danger : COLORS.textMuted }}>{(s.platformCutPct || 0) === 0 ? '— (exempt)' : `−${fmtMoney(s.platformCut || 0)} (${s.platformCutPct}%)`}</td>
+                          <td style={{ ...S.td, color: (s.totalCut || 0) > 0 ? COLORS.danger : COLORS.textMuted }}>{(s.totalCutPct || 0) === 0 ? '— (exempt)' : `−${fmtMoney(s.totalCut || 0)} (${s.totalCutPct}%)`}</td>
                           <td style={{ ...S.td, fontWeight: 700, color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>
                             {fmtMoney(s.share)}
                             {s.platformBonus ? <div style={{ fontSize: 10, color: '#8b5cf6', marginTop: 2 }}>incl. {platformCutLabel}: +{fmtMoney(s.platformBonus)}</div> : null}
@@ -11023,6 +11107,29 @@ export default function App() {
                 <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>
               )}
             </div>
+            {rPossessor > 0 || possessorToStaff > 0 ? (
+              <div style={S.card}>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📦 Item Custodian (Possessor) Distribution<InfoIcon tip="The possessor pool is split among users who physically held items, proportional to the revenue those items produced. Items held by the customer redirect their share to the Staff Pool." /></div>
+                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>
+                  Pool to internal possessors: <strong>{fmtMoney(rPossessor)}</strong>
+                  {possessorToStaff > 0 && <> · Redirected to Staff Pool (customer-held items): <strong>{fmtMoney(possessorToStaff)}</strong></>}
+                </div>
+                {rPossessorByUser.length > 0 ? (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ ...S.table, fontSize: '12px' }}>
+                      <thead><tr><th style={S.th}>Possessor</th><th style={S.th}>Item Revenue Held</th><th style={S.th}>Share</th></tr></thead>
+                      <tbody>
+                        {rPossessorByUser.map(p => (
+                          <tr key={p.userId}><td style={{ ...S.td, fontWeight: 700 }}>{p.name}</td><td style={S.td}>{fmtMoney(p.rev)}</td><td style={{ ...S.td, fontWeight: 700, color: COLORS.primary }}>{fmtMoney(p.share)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p style={{ color: COLORS.textMuted, fontSize: 13 }}>No items held by internal users this period — the full possessor pool is redirected to the Staff Pool above.</p>
+                )}
+              </div>
+            ) : null}
 
             {/* Repayments detail */}
             {rClosed.length > 0 && (
@@ -11536,9 +11643,14 @@ export default function App() {
                     const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
                     const profit = rev - expT;
                     if (profit <= 0) { alert(`No profit for ${distDecisionPeriod} (profit: ${fmtMoney(profit)}). Cannot generate decisions.`); return; }
-                    // Per-stakeholder cuts (set 0/0 to exempt any stakeholder).
-                    const defStaff = Number(settings.defaultStaffCutPct ?? settings.staffSharePct ?? 10);
-                    const defPlatform = Number(settings.defaultPlatformCutPct ?? 0);
+                    // Per-stakeholder TOTAL cut % (set 0% to exempt). Pool is then
+                    // split by global cutSplit and the platform recipient receives
+                    // the platform component on their stakeholder line.
+                    const defTotal = Number(settings.defaultTotalCutPct ?? 15);
+                    const cutSplitC = settings.cutSplit || DEFAULT_SETTINGS.cutSplit;
+                    const sStaff = Number(cutSplitC.staffPct ?? 50);
+                    const sPlatform = Number(cutSplitC.platformPct ?? 35);
+                    const sTotal = sStaff + Number(cutSplitC.possessorPct ?? 15) + sPlatform || 1;
                     const platformRecipientId = settings.platformRecipientUserId || 'admin';
 
                     // Detect capital surplus using capitalPrediction
@@ -11563,31 +11675,33 @@ export default function App() {
                     const expectedByName = {};
                     for (const a of allocations) expectedByName[a.name] = Math.round(a.suggested || 0);
 
-                    // Per-stakeholder cut math: each stakeholder is charged their
-                    // own cuts on their gross capital-days allocation. The
-                    // platform recipient gets the aggregated platform pool
-                    // folded into their profit line.
-                    let staffPoolAmount = 0;
-                    let platformPoolAmount = 0;
+                    // Per-stakeholder TOTAL cut math: each stakeholder is charged
+                    // a single total cut % on their gross capital-days allocation.
+                    // The aggregated total cut is then split globally into Staff /
+                    // Possessor / Platform pools (cutSplit). The platform recipient
+                    // receives the platform component folded into their stake line.
+                    let totalCutPoolAmount = 0;
                     const preStake = arr.filter(s => s.user_id).map(s => {
                       const own = ownershipCfg[s.name] || {};
-                      const staffPct = Number(own.staffCutPct ?? defStaff) || 0;
-                      const platformPct = Number(own.platformCutPct ?? defPlatform) || 0;
+                      let totalCutPct;
+                      if (own.totalCutPct != null) totalCutPct = Number(own.totalCutPct);
+                      else if (own.staffCutPct != null || own.platformCutPct != null) totalCutPct = Number(own.staffCutPct || 0) + Number(own.platformCutPct || 0);
+                      else totalCutPct = defTotal;
+                      totalCutPct = Math.max(0, Math.min(100, totalCutPct));
                       const grossProfit = Math.floor(profit * (s.capitalDays / totalCD));
-                      const staffCut = Math.max(0, Math.floor(grossProfit * staffPct / 100));
-                      const platformCut = Math.max(0, Math.floor(grossProfit * platformPct / 100));
-                      const netProfit = Math.max(0, grossProfit - staffCut - platformCut);
-                      staffPoolAmount += staffCut;
-                      platformPoolAmount += platformCut;
-                      return { ...s, grossProfit, staffCut, platformCut, netProfit, staffPct, platformPct };
+                      const totalCut = Math.max(0, Math.floor(grossProfit * totalCutPct / 100));
+                      const netProfit = Math.max(0, grossProfit - totalCut);
+                      totalCutPoolAmount += totalCut;
+                      return { ...s, grossProfit, totalCut, netProfit, totalCutPct };
                     });
+                    const platformPoolAmount = Math.floor(totalCutPoolAmount * sPlatform / sTotal);
                     const stakeData = preStake.map(s => {
                       const profitAmount = s.netProfit + (s.user_id === platformRecipientId ? platformPoolAmount : 0);
                       const expectedContrib = expectedByName[s.name] || 0;
                       const reinvestAmount = isSurplus ? 0 : Math.min(profitAmount, expectedContrib);
                       const distributeAmount = profitAmount - reinvestAmount;
-                      const cutLine = (s.staffCut > 0 || s.platformCut > 0)
-                        ? ` Gross ${fmtMoney(s.grossProfit)} − staff ${fmtMoney(s.staffCut)} (${s.staffPct}%) − ${settings.platformCutLabel || 'platform'} ${fmtMoney(s.platformCut)} (${s.platformPct}%) = ${fmtMoney(s.netProfit)}.`
+                      const cutLine = s.totalCut > 0
+                        ? ` Gross ${fmtMoney(s.grossProfit)} − total cut ${fmtMoney(s.totalCut)} (${s.totalCutPct}%) = ${fmtMoney(s.netProfit)}.`
                         : '';
                       const platformLine = (s.user_id === platformRecipientId && platformPoolAmount > 0)
                         ? ` ${settings.platformCutLabel || 'Platform / License Fee'} pool of ${fmtMoney(platformPoolAmount)} added to your line.`
@@ -11603,10 +11717,13 @@ export default function App() {
                         capitalSurplus: isSurplus ? 1 : 0, systemNote: baseNote + cutLine + platformLine,
                       };
                     }).filter(s => s.profitAmount > 0);
-                    if (stakeData.length === 0 && staffPoolAmount <= 0) { alert('No stakeholders with positive profit and no staff pool. Check capital entries and per-stakeholder cuts in settings.'); return; }
+                    if (stakeData.length === 0 && totalCutPoolAmount <= 0) { alert('No stakeholders with positive profit and no cut pool. Check capital entries and per-stakeholder cuts in settings.'); return; }
+                    const staffPoolAmount = Math.floor(totalCutPoolAmount * sStaff / sTotal);
+                    const possessorPoolAmount = totalCutPoolAmount - staffPoolAmount - platformPoolAmount;
                     const confirmMsg = `Generate distribution decisions for ${distDecisionPeriod}?\n\n` +
                       (isSurplus ? '✅ Capital is in SURPLUS — all profit will be collected.\n\n' : shortfallAmount > 0 ? `⚠️ Capital shortfall: ${fmtMoney(shortfallAmount)} — reinvestment amounts calculated per expected contributions.\n\n` : '') +
-                      `Net profit: ${fmtMoney(profit)} · Staff pool: ${fmtMoney(staffPoolAmount)} · ${settings.platformCutLabel || 'Platform fee'}: ${fmtMoney(platformPoolAmount)}\n` +
+                      `Net profit: ${fmtMoney(profit)} · Total cut pool: ${fmtMoney(totalCutPoolAmount)}\n` +
+                      `  → Staff: ${fmtMoney(staffPoolAmount)} · Possessor: ${fmtMoney(possessorPoolAmount)} · ${settings.platformCutLabel || 'Platform'}: ${fmtMoney(platformPoolAmount)}\n` +
                       stakeData.map(s => `  ${s.name}: ${fmtMoney(s.profitAmount)} (reinvest ${fmtMoney(s.reinvestAmount)}, collect ${fmtMoney(s.distributeAmount)})`).join('\n') +
                       '\n\nSend SMS notifications?';
                     if (!window.confirm(confirmMsg)) return;
@@ -12823,8 +12940,7 @@ export default function App() {
                   <thead>
                     <tr>
                       <th style={thStyle}>Stakeholder</th>
-                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Cut %<InfoIcon tip="The % of this stakeholder's gross profit allocated to the Staff Pool. Set to 0% to fully exempt this stakeholder. Typical: 0% for the admin (you) and your main staff/COO; 10% (or your chosen rate) for outside investors." /></span></th>
-                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>{(es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel)} %<InfoIcon tip="The % of this stakeholder's gross profit allocated to your founder/platform fee. Set to 0% to fully exempt this stakeholder. The aggregated amount is added to the configured recipient's stakeholder line each period." /></span></th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Total Cut %<InfoIcon tip="The single combined % of this stakeholder's gross profit allocated to the Staff/Possessor/Platform pool. Set to 0% to fully exempt this stakeholder. The aggregated amount is then split globally per the cut split ratio above." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Min %<InfoIcon tip="The minimum ownership percentage this stakeholder should hold. Used as a soft floor when computing contribution expectations." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Target %<InfoIcon tip="The ideal ownership percentage for this stakeholder. Contribution expectations are calculated so that their share reaches this target." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Max %<InfoIcon tip="The maximum ownership percentage this stakeholder should hold. Stakeholders above their max get a higher share of any recommended withdrawal." /></span></th>
@@ -12839,27 +12955,22 @@ export default function App() {
                     {stakeNames.map(name => {
                       const tgt = ownership[name] || {};
                       const setTgt = (patch) => updateSettings({ ...es, stakeholderOwnership: { ...ownership, [name]: { ...tgt, ...patch } } });
-                      const defStaffCut = es.defaultStaffCutPct ?? DEFAULT_SETTINGS.defaultStaffCutPct;
-                      const defPlatformCut = es.defaultPlatformCutPct ?? DEFAULT_SETTINGS.defaultPlatformCutPct;
+                      const defTotalCut = es.defaultTotalCutPct ?? DEFAULT_SETTINGS.defaultTotalCutPct;
+                      // Backfill display from legacy fields if user hasn't migrated yet
+                      const effectiveTotalCut = tgt.totalCutPct != null ? tgt.totalCutPct
+                        : (tgt.staffCutPct != null || tgt.platformCutPct != null)
+                          ? Number(tgt.staffCutPct || 0) + Number(tgt.platformCutPct || 0)
+                          : null;
                       return (
                         <tr key={name}>
                           <td style={S.td}><strong>{name}</strong></td>
                           <td style={S.td}>
                             <input
-                              style={{ ...S.input, width: '80px', background: (Number(tgt.staffCutPct ?? defStaffCut) === 0) ? '#fee2e2' : undefined }}
+                              style={{ ...S.input, width: '90px', background: (Number(effectiveTotalCut ?? defTotalCut) === 0) ? '#fee2e2' : undefined }}
                               type="number" min="0" max="100" step="0.5"
-                              placeholder={String(defStaffCut)}
-                              value={tgt.staffCutPct ?? ''}
-                              onChange={e => setTgt({ staffCutPct: e.target.value === '' ? null : Number(e.target.value) })}
-                            />
-                          </td>
-                          <td style={S.td}>
-                            <input
-                              style={{ ...S.input, width: '80px', background: (Number(tgt.platformCutPct ?? defPlatformCut) === 0) ? '#fee2e2' : undefined }}
-                              type="number" min="0" max="100" step="0.5"
-                              placeholder={String(defPlatformCut)}
-                              value={tgt.platformCutPct ?? ''}
-                              onChange={e => setTgt({ platformCutPct: e.target.value === '' ? null : Number(e.target.value) })}
+                              placeholder={String(defTotalCut)}
+                              value={effectiveTotalCut ?? ''}
+                              onChange={e => setTgt({ totalCutPct: e.target.value === '' ? null : Number(e.target.value), staffCutPct: null, platformCutPct: null })}
                             />
                           </td>
                           <td style={S.td}>
@@ -13403,10 +13514,37 @@ export default function App() {
           <div style={S.card}>
             <div style={S.cardTitle}>💼 Profit Sharing</div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
-              Each stakeholder is charged their own <strong>Staff Cut %</strong> and <strong>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} %</strong> on their gross profit share. Set both to <strong>0%</strong> for any stakeholder you want fully exempt — typically yourself (admin) and your main staff/COO when they are also a stakeholder. Per-stakeholder rates live in the <em>Stakeholder Ownership Targets</em> table below.
+              Each stakeholder is charged a single <strong>Total Cut %</strong> on their gross profit share (set in the Stakeholder Ownership Targets table below). Set to <strong>0%</strong> for anyone you want fully exempt — typically yourself (admin) and your main staff/COO when they're also a stakeholder. The aggregated cut pool is then split below into Staff Pool / Possessor Pool / {es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel}.
             </div>
+            {(() => {
+              const split = es.cutSplit || DEFAULT_SETTINGS.cutSplit;
+              const sStaff = Number(split.staffPct ?? 50);
+              const sPoss = Number(split.possessorPct ?? 15);
+              const sPlat = Number(split.platformPct ?? 35);
+              const sum = sStaff + sPoss + sPlat;
+              const setSplit = (patch) => updateSettings({ ...es, cutSplit: { staffPct: sStaff, possessorPct: sPoss, platformPct: sPlat, ...patch } });
+              return (
+                <div style={{ marginBottom: 14, padding: 12, background: COLORS.bg, borderRadius: 8, border: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Cut Pool Split (must sum to 100%)</div>
+                  <div style={S.grid3}>
+                    <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff %<InfoIcon tip="Portion of the total cut pool paid into the Staff Pool, split among Staff Pool Recipients proportional to fractional step points." /></span>}>
+                      <input style={S.input} type="number" min="0" max="100" step="1" value={sStaff} onChange={e => setSplit({ staffPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+                    </Field>
+                    <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Possessor %<InfoIcon tip="Portion paid to whichever user is set as Possessor on each transaction (last wizard step). Split by item revenue; customer-held items redirect their share to the Staff Pool." /></span>}>
+                      <input style={S.input} type="number" min="0" max="100" step="1" value={sPoss} onChange={e => setSplit({ possessorPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+                    </Field>
+                    <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} %<InfoIcon tip="Portion paid to the platform/license-fee recipient, folded into their stakeholder profit line." /></span>}>
+                      <input style={S.input} type="number" min="0" max="100" step="1" value={sPlat} onChange={e => setSplit({ platformPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+                    </Field>
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 6, fontWeight: 700, color: sum === 100 ? COLORS.primary : COLORS.danger }}>
+                    {sum === 100 ? '✓ Splits sum to 100%' : `⚠ Splits sum to ${sum}% — adjust to 100%`}
+                  </div>
+                </div>
+              );
+            })()}
             <div style={S.grid2}>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} label<InfoIcon tip="What to call your founder/owner fee on reports and settings. Suggestions: Founder's Fee, Platform Fee, License Fee, Management Fee. This is purely cosmetic." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} label<InfoIcon tip="What to call your founder/owner fee on reports and settings. Purely cosmetic." /></span>}>
                 <input style={S.input} type="text" value={es.platformCutLabel ?? DEFAULT_SETTINGS.platformCutLabel} onChange={e => updateSettings({ ...es, platformCutLabel: e.target.value })} placeholder="Platform / License Fee" />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} recipient<InfoIcon tip="Whose profit line the aggregated platform fee gets added to each period. Default: admin." /></span>}>
@@ -13414,13 +13552,10 @@ export default function App() {
                   {(users || []).map(u => <option key={u.id} value={u.id}>{u.name} (@{u.username})</option>)}
                 </select>
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Default Staff Cut % (new stakeholders)<InfoIcon tip="Pre-fills the per-stakeholder Staff Cut % when adding a new stakeholder. Existing stakeholders keep their own values." /></span>}>
-                <input style={S.input} type="number" min="0" max="100" step="0.5" value={es.defaultStaffCutPct ?? DEFAULT_SETTINGS.defaultStaffCutPct} onChange={e => updateSettings({ ...es, defaultStaffCutPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Default Total Cut % (new stakeholders)<InfoIcon tip="Pre-fills the per-stakeholder Total Cut % when adding a new stakeholder. Existing stakeholders keep their own value." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" step="0.5" value={es.defaultTotalCutPct ?? DEFAULT_SETTINGS.defaultTotalCutPct} onChange={e => updateSettings({ ...es, defaultTotalCutPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Default {es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} % (new stakeholders)<InfoIcon tip="Pre-fills the per-stakeholder platform/license fee % when adding a new stakeholder. Existing stakeholders keep their own values." /></span>}>
-                <input style={S.input} type="number" min="0" max="100" step="0.5" value={es.defaultPlatformCutPct ?? DEFAULT_SETTINGS.defaultPlatformCutPct} onChange={e => updateSettings({ ...es, defaultPlatformCutPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
-              </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Pool Recipients<InfoIcon tip="Users eligible to receive a share of the aggregated Staff Pool each period. Each recipient's share is proportional to their fractional step points. Admin can be included so they earn from the pool when personally doing staff work." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Pool Recipients<InfoIcon tip="Users eligible to receive a share of the Staff Pool each period. Each recipient's share is proportional to their fractional step points. Admin can be included so they earn from the pool when personally doing staff work." /></span>}>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                   {(users || []).map(u => {
                     const ids = Array.isArray(es.staffPoolRecipientIds) ? es.staffPoolRecipientIds : (DEFAULT_SETTINGS.staffPoolRecipientIds || []);
@@ -13440,12 +13575,12 @@ export default function App() {
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sale Deadline (days)<InfoIcon tip="Adds extra days after the max loan and grace window to set each item's target sale date. Staff earn a bonus point when the item sells on or before that intake-anchored target date. Default: 14 days." /></span>}>
                 <input style={S.input} type="number" min="1" max="365" value={es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} onChange={e => updateSettings({ ...es, targetSaleDeadlineDays: Number(e.target.value) })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Monthly Target (loans)<InfoIcon tip="The number of transactions a staff member is expected to handle per month. This is used as the target on the donut chart in each staff member's Profile page. Default: 20." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Monthly Target (loans)<InfoIcon tip="The number of transactions a staff member is expected to handle per month. Default: 20." /></span>}>
                 <input style={S.input} type="number" min="1" max="9999" step="1" value={es.staffMonthlyTarget ?? DEFAULT_SETTINGS.staffMonthlyTarget} onChange={e => updateSettings({ ...es, staffMonthlyTarget: Math.max(1, Number(e.target.value)) })} />
               </Field>
             </div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '12px', padding: '10px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
-              <strong>Fractional staff points:</strong> A transaction's lifecycle is split into weighted steps (intake, ID verify, photos, appraisal, agreement, cash disbursement, repayment collection, listing, sale). The user who actually performed each step is credited that step's weight — so if one staff drafts a loan through step 3 and another finishes it, both get fair fractional credit. Non-transaction work (expense entry, customer follow-up, SMS, inventory updates) also earns smaller credits. The Staff Pool collected from non-exempt stakeholders is split proportionally to these fractional points among the recipients above.
+              <strong>How it works:</strong> Each non-exempt stakeholder pays their Total Cut % into a single pool. That pool is then split — Staff %, Possessor %, {es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} % — using the global ratio above. Staff Pool is split among recipients by fractional step points. Possessor Pool is split by item revenue across whoever is set as the item's possessor on the last wizard step; items left with the customer redirect their possessor share back into the Staff Pool.
             </div>
           </div>
 

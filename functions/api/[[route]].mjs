@@ -3530,12 +3530,16 @@ export async function onRequest(context) {
         const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
 
         const profit = rev - expT;
-        // Per-stakeholder cuts: each stakeholder's gross profit (allocated by
-        // capital-days) is charged their own staffCutPct and platformCutPct
-        // configured under stakeholderOwnership[name]. Setting both to 0% for
-        // a stakeholder fully exempts them (e.g. admin, main staff).
-        const defaultStaffCutPct = Number(cfg.defaultStaffCutPct ?? cfg.staffSharePct ?? 10);
-        const defaultPlatformCutPct = Number(cfg.defaultPlatformCutPct ?? 0);
+        // Per-stakeholder TOTAL cut % (combined staff + possessor + platform).
+        // Setting 0% on any stakeholder fully exempts them. The aggregated cut
+        // pool is then split globally by cfg.cutSplit into Staff / Possessor /
+        // Platform pools (see below).
+        const defaultTotalCutPct = Number(cfg.defaultTotalCutPct ?? 15);
+        const cutSplitCfg = cfg.cutSplit || { staffPct: 50, possessorPct: 15, platformPct: 35 };
+        const sStaff = Number(cutSplitCfg.staffPct ?? 50);
+        const sPoss = Number(cutSplitCfg.possessorPct ?? 15);
+        const sPlat = Number(cutSplitCfg.platformPct ?? 35);
+        const sTotal = sStaff + sPoss + sPlat || 1;
         if (profit <= 0) return json({ ok: true, skipped: true, reason: `No profit for ${period} (profit: ${profit})` });
 
         // Determine capital surplus — simplified: available lending capital > total capital needed
@@ -3580,36 +3584,38 @@ export async function onRequest(context) {
           }
         }
 
-        // Build stakeholder data — per-stakeholder cuts applied to each gross
-        // profit allocation before reinvest/distribute is computed.
+        // Build stakeholder data — per-stakeholder TOTAL cut % applied to each
+        // gross profit allocation, then the aggregated cut pool is split by
+        // cutSplit into Staff / Possessor / Platform pools.
         const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
         const platformRecipientUserId = (cfg.platformRecipientUserId || 'admin');
-        let staffPoolAmount = 0;
-        let platformPoolAmount = 0;
+        let totalCutPoolAmount = 0;
         const preStake = arr.map(s => {
           const own = ownershipCfg[s.name] || {};
-          const staffPct = Number(own.staffCutPct ?? defaultStaffCutPct) || 0;
-          const platformPct = Number(own.platformCutPct ?? defaultPlatformCutPct) || 0;
+          let totalCutPct;
+          if (own.totalCutPct != null) totalCutPct = Number(own.totalCutPct);
+          else if (own.staffCutPct != null || own.platformCutPct != null) totalCutPct = Number(own.staffCutPct || 0) + Number(own.platformCutPct || 0);
+          else totalCutPct = defaultTotalCutPct;
+          totalCutPct = Math.max(0, Math.min(100, totalCutPct));
           const grossProfit = Math.floor(profit * (s.capitalDays / totalCD));
-          const staffCut = Math.max(0, Math.floor(grossProfit * staffPct / 100));
-          const platformCut = Math.max(0, Math.floor(grossProfit * platformPct / 100));
-          const netProfit = Math.max(0, grossProfit - staffCut - platformCut);
-          staffPoolAmount += staffCut;
-          platformPoolAmount += platformCut;
-          return { ...s, grossProfit, staffCut, platformCut, netProfit, staffPct, platformPct };
+          const totalCut = Math.max(0, Math.floor(grossProfit * totalCutPct / 100));
+          const netProfit = Math.max(0, grossProfit - totalCut);
+          totalCutPoolAmount += totalCut;
+          return { ...s, grossProfit, totalCut, netProfit, totalCutPct };
         });
+        const staffPoolAmount = Math.floor(totalCutPoolAmount * sStaff / sTotal);
+        const platformPoolAmount = Math.floor(totalCutPoolAmount * sPlat / sTotal);
+        const possessorPoolAmount = Math.max(0, totalCutPoolAmount - staffPoolAmount - platformPoolAmount);
 
-        // Platform fee is folded into the configured recipient's stakeholder
-        // profit line (default: admin). If the recipient is not among the
-        // current stakeholders, the fee is dropped (admin can reconfigure).
+        // Platform fee is folded into the configured recipient's stakeholder line.
         const stakeData = preStake.map(s => {
           const profitAmount = s.netProfit + (s.user_id === platformRecipientUserId ? platformPoolAmount : 0);
           const platformComponent = s.user_id === platformRecipientUserId ? platformPoolAmount : 0;
           const expectedContrib = expectedByName[s.name] || 0;
           const reinvestAmount = isSurplus ? 0 : Math.min(profitAmount, expectedContrib);
           const distributeAmount = profitAmount - reinvestAmount;
-          const cutLine = (s.staffCut > 0 || s.platformCut > 0)
-            ? ` Gross ${fmtN(s.grossProfit)} − staff ${fmtN(s.staffCut)} (${s.staffPct}%) − ${cfg.platformCutLabel || 'platform'} ${fmtN(s.platformCut)} (${s.platformPct}%) = ${fmtN(s.netProfit)}.`
+          const cutLine = s.totalCut > 0
+            ? ` Gross ${fmtN(s.grossProfit)} − total cut ${fmtN(s.totalCut)} (${s.totalCutPct}%) = ${fmtN(s.netProfit)}.`
             : '';
           const platformLine = platformComponent > 0
             ? ` ${cfg.platformCutLabel || 'Platform / License Fee'} pool of ${fmtN(platformComponent)} is added to your line as recipient.`
@@ -3626,8 +3632,8 @@ export async function onRequest(context) {
           };
         }).filter(s => s.profitAmount > 0);
 
-        if (stakeData.length === 0 && staffPoolAmount <= 0) {
-          return json({ ok: true, skipped: true, reason: 'No stakeholders with positive profit and no staff pool' });
+        if (stakeData.length === 0 && totalCutPoolAmount <= 0) {
+          return json({ ok: true, skipped: true, reason: 'No stakeholders with positive profit and no cut pool' });
         }
 
         // Insert decisions
