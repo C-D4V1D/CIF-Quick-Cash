@@ -226,3 +226,30 @@ CREATE INDEX IF NOT EXISTS idx_pvr_ip ON public_valuation_requests (ip, created_
 -- Migration for existing databases (run once against live D1):
 -- CREATE TABLE IF NOT EXISTS public_valuation_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, ip TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
 -- CREATE INDEX IF NOT EXISTS idx_pvr_ip ON public_valuation_requests (ip, created_at DESC);
+
+-- ============================================================
+-- Staff points — fractional credit per step/task action.
+-- Each row credits one user for performing one step of work,
+-- weighted so that handoffs (one staff starts, another finishes)
+-- share credit fairly. Aggregated for performance reporting and
+-- for splitting the Staff Pool of the monthly profit.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS staff_points (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         TEXT    NOT NULL,
+  entity_ref      TEXT    NOT NULL,        -- e.g. 'tx:REF', 'expense:42', 'sms:1234'
+  step_key        TEXT    NOT NULL,        -- e.g. 'customer_intake', 'cash_disbursement', 'expense_entry'
+  weight          REAL    NOT NULL,
+  awarded_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, entity_ref, step_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_points_user_time ON staff_points (user_id, awarded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_staff_points_entity ON staff_points (entity_ref);
+CREATE INDEX IF NOT EXISTS idx_staff_points_awarded_at ON staff_points (awarded_at DESC);
+
+-- Migration for existing databases (run once against live D1):
+-- CREATE TABLE IF NOT EXISTS staff_points (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, entity_ref TEXT NOT NULL, step_key TEXT NOT NULL, weight REAL NOT NULL, awarded_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(user_id, entity_ref, step_key));
+-- CREATE INDEX IF NOT EXISTS idx_staff_points_user_time ON staff_points (user_id, awarded_at DESC);
+-- CREATE INDEX IF NOT EXISTS idx_staff_points_entity ON staff_points (entity_ref);
+-- CREATE INDEX IF NOT EXISTS idx_staff_points_awarded_at ON staff_points (awarded_at DESC);
