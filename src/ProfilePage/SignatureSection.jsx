@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { COLORS } from '../theme';
-import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT } from '../utils/signatureRefine';
+import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT, parseSignatureBbox, parseSignatureMeta, cropImageToBbox } from '../utils/signatureRefine';
 
 const API_BASE = '/api';
 
@@ -75,7 +75,9 @@ export default function SignatureSection({ currentUser, settings = {}, callGemin
     setError('');
     setAiNote('');
     try {
-      // Optional AI verification (only if an API key is configured)
+      // Optional AI verification + bounding-box crop. AI returns a tight bbox
+      // around the ink so distracting text/background is removed before refinement.
+      let preCropped = rawData;
       if (callGeminiAI && settings.geminiApiKey) {
         const result = await callGeminiAI(
           settings.geminiApiKey,
@@ -87,16 +89,17 @@ export default function SignatureSection({ currentUser, settings = {}, callGemin
         );
         if (result?.text) {
           const text = result.text;
-          const isSig = /IS_SIGNATURE:\s*yes/i.test(text);
-          const noteMatch = text.match(/NOTE:\s*(.+)/i);
-          if (noteMatch) setAiNote(noteMatch[1].trim());
-          if (!isSig) {
+          const { isSignature, note } = parseSignatureMeta(text);
+          if (note) setAiNote(note);
+          if (isSignature === false) {
             setError('AI could not confirm a handwritten signature in this photo. You can still continue if you are sure.');
           }
+          const bbox = parseSignatureBbox(text);
+          if (bbox) preCropped = await cropImageToBbox(rawData, bbox);
         }
         // Ignore AI errors silently — refinement still works without AI.
       }
-      const refined = await refineSignatureImage(rawData);
+      const refined = await refineSignatureImage(preCropped);
       setRefinedData(refined);
       setStage('refined');
     } catch (err) {

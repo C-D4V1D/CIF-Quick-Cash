@@ -495,11 +495,29 @@ const withLoanTimeline = (r, loanCfg = {}) => {
 // all tables are created automatically so no manual migration step is needed.
 let _schemaReady = false;
 
+async function ensureStaffPointsTable(db) {
+  try {
+    await db.batch([
+      db.prepare(`CREATE TABLE IF NOT EXISTS staff_points (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, entity_ref TEXT NOT NULL, step_key TEXT NOT NULL, weight REAL NOT NULL, awarded_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(user_id, entity_ref, step_key))`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_staff_points_user_time ON staff_points (user_id, awarded_at DESC)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_staff_points_entity ON staff_points (entity_ref)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_staff_points_awarded_at ON staff_points (awarded_at DESC)`),
+    ]);
+  } catch (e) {
+    console.error('[ensureStaffPointsTable] failed:', e?.message ?? e);
+  }
+}
+
 async function ensureSchema(db) {
   if (_schemaReady) return;
   try {
     const row = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").first();
-    if (row) { _schemaReady = true; return; }
+    if (row) {
+      // Fast-path migrations for tables added after the initial schema was deployed.
+      await ensureStaffPointsTable(db);
+      _schemaReady = true;
+      return;
+    }
 
     // db.batch() is the reliable D1 API for multiple DDL + DML statements.
     await db.batch([
@@ -534,6 +552,10 @@ async function ensureSchema(db) {
       db.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_push_subs_user_id ON push_subscriptions (user_id)`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_users_name_role ON users (name, role)`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS staff_points (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, entity_ref TEXT NOT NULL, step_key TEXT NOT NULL, weight REAL NOT NULL, awarded_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(user_id, entity_ref, step_key))`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_staff_points_user_time ON staff_points (user_id, awarded_at DESC)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_staff_points_entity ON staff_points (entity_ref)`),
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_staff_points_awarded_at ON staff_points (awarded_at DESC)`),
     ]);
 
     _schemaReady = true;
@@ -565,6 +587,76 @@ export async function onRequest(context) {
       .prepare('INSERT INTO activity_logs (user_id, username, user_role, action, entity_type, entity_id, description) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .bind(user.id, user.username, user.role, action, entityType, entityId || null, description)
       .run();
+  };
+
+  // ── Staff points helpers ─────────────────────────────────────────────
+  // Default weights for transaction-lifecycle steps. Admin can override the
+  // entire map per stakeholder via config.stepWeights. Weights for steps
+  // that don't apply to a given transaction are simply never awarded.
+  const DEFAULT_STEP_WEIGHTS = {
+    customer_intake: 0.08,
+    id_verification: 0.15,
+    item_photo: 0.10,
+    item_appraisal: 0.10,
+    agreement_print: 0.05,
+    cash_disbursement: 0.27,
+    repayment_collection: 0.20,
+    default_handling_listing: 0.03,
+    sale_completion: 0.02,
+  };
+  // Default weights for non-transaction operational tasks (staff-eligible only;
+  // admin-only governance actions are intentionally absent and award zero).
+  const DEFAULT_TASK_WEIGHTS = {
+    expense_entry: 0.05,
+    sms_send: 0.01,
+    agreement_reprint: 0.01,
+    customer_followup_log: 0.02,
+    inventory_update: 0.02,
+  };
+
+  const loadPointsConfig = async () => {
+    const row = await db.prepare("SELECT value FROM settings WHERE key = 'config'").first().catch(() => null);
+    const cfg = row ? JSON.parse(row.value || '{}') : {};
+    return {
+      stepWeights: { ...DEFAULT_STEP_WEIGHTS, ...(cfg.stepWeights || {}) },
+      taskWeights: { ...DEFAULT_TASK_WEIGHTS, ...(cfg.taskWeights || {}) },
+    };
+  };
+
+  // Award fractional points for one (user, entity_ref, step_key). Idempotent:
+  // the UNIQUE constraint means re-saving a draft / re-doing the same step by
+  // the same user does NOT double-credit.
+  const awardPoints = async ({ userId, entityRef, stepKey, weight }) => {
+    if (!userId || !entityRef || !stepKey || !Number.isFinite(weight) || weight <= 0) return;
+    try {
+      await db
+        .prepare('INSERT OR IGNORE INTO staff_points (user_id, entity_ref, step_key, weight) VALUES (?, ?, ?, ?)')
+        .bind(userId, entityRef, stepKey, weight)
+        .run();
+    } catch (e) {
+      console.error('[awardPoints] failed:', e?.message ?? e);
+    }
+  };
+
+  // Fan out points for a list of (userId, stepKey) pairs against one entity_ref
+  // using the configured stepWeights. Pairs with no user_id are skipped.
+  const awardStepPoints = async (entityRef, pairs) => {
+    if (!entityRef || !Array.isArray(pairs) || pairs.length === 0) return;
+    const { stepWeights } = await loadPointsConfig();
+    for (const { userId, stepKey } of pairs) {
+      const weight = stepWeights[stepKey];
+      if (!weight) continue;
+      await awardPoints({ userId, entityRef, stepKey, weight });
+    }
+  };
+
+  // Award task points for a single non-transaction action (expense, sms, etc.).
+  const awardTaskPoints = async ({ user, taskKey, entityRef }) => {
+    if (!user || !taskKey || !entityRef) return;
+    const { taskWeights } = await loadPointsConfig();
+    const weight = taskWeights[taskKey];
+    if (!weight) return;
+    await awardPoints({ userId: user.id, entityRef, stepKey: taskKey, weight });
   };
 
   // Helper: Normalize Termii delivery status to standard format
@@ -1361,6 +1453,29 @@ export async function onRequest(context) {
       }
       await logActivity({ user: auth.user, action: txAction, entityType: 'transaction', entityId: tx.ref, description: txDesc });
 
+      // ── Award staff points for transaction creation ──
+      // stepActors is a map { step_key: { userId } } populated by the wizard as
+      // each step is saved (see drafts POST). The user who performed the final
+      // cash_disbursement (POST /transactions) is whoever is authenticated now.
+      // Idempotency on (user_id, entity_ref, step_key) makes re-saves safe.
+      try {
+        const entityRef = 'tx:' + tx.ref;
+        const stepActors = tx.stepActors || {};
+        const pairs = Object.entries(stepActors)
+          .map(([stepKey, info]) => ({ stepKey, userId: info && info.userId }))
+          .filter(p => p.userId);
+        if (tx.type === 'outright' || tx.status === 'for_sale') {
+          // Outright purchases skip the loan/cash_disbursement step — credit
+          // sale_completion to the finalizer instead.
+          pairs.push({ userId: auth.user.id, stepKey: 'sale_completion' });
+        } else {
+          pairs.push({ userId: auth.user.id, stepKey: 'cash_disbursement' });
+        }
+        await awardStepPoints(entityRef, pairs);
+      } catch (e) {
+        console.error('[staff_points POST transactions] failed:', e?.message ?? e);
+      }
+
       // ── Immediate outright-purchase confirmation SMS ──
       // Sent right when the transaction is created, not via the nightly cron.
       if (tx.type === 'outright') {
@@ -1628,6 +1743,23 @@ export async function onRequest(context) {
       }
       await logActivity({ user: auth.user, action: putAction, entityType: 'transaction', entityId: ref, description: putDesc });
 
+      // ── Award staff points for transaction PUT actions ──
+      try {
+        const entityRef = 'tx:' + ref;
+        const putStepKey = putAction === 'repaid' || putAction === 'partial_redemption'
+          ? 'repayment_collection'
+          : putAction === 'sold'
+            ? 'sale_completion'
+            : (tx.status === 'for_sale' || tx.status === 'ready_to_sell')
+              ? 'default_handling_listing'
+              : null;
+        if (putStepKey) {
+          await awardStepPoints(entityRef, [{ userId: auth.user.id, stepKey: putStepKey }]);
+        }
+      } catch (e) {
+        console.error('[staff_points PUT transactions] failed:', e?.message ?? e);
+      }
+
       // ── Redemption/full repayment confirmation SMS ──
       // Sent immediately when a customer repays in full and collects their item.
       // Transition guard: only fire on the active→closed transition so that re-saving
@@ -1864,11 +1996,36 @@ export async function onRequest(context) {
         await db.prepare('DELETE FROM drafts WHERE ref = ?').bind(draft.ref).run();
         return json({ success: false, skipped: true, reason: 'Drafts before identity verification are not persisted.' });
       }
+      // Record the acting user as the actor for whichever step keys the wizard
+      // reports have just been completed. The client sends `completedStepKeys`
+      // as a hint (an array of step_key strings). For backward-compat we also
+      // infer from `wizardStep` / verification flags if `completedStepKeys` is
+      // missing. The stored draft.stepActors keeps a per-step actor map; the
+      // ORIGINAL actor of a step is preserved on re-save by another user
+      // (idempotent + first-writer-wins on each step_key).
+      const incomingStepActors = (draft && typeof draft.stepActors === 'object' && draft.stepActors) || {};
+      const claimed = Array.isArray(draft?.completedStepKeys) ? draft.completedStepKeys : [];
+      // Implicit signals that cover the legacy wizard until the client is updated
+      const implicit = [];
+      if (Number(draft?.wizardStep ?? 0) >= 1 && (draft?.ninVerified || draft?.ninVerificationAttempted)) implicit.push('id_verification');
+      if (Number(draft?.wizardStep ?? 0) >= 2 && draft?.fullName) implicit.push('customer_intake');
+      if (Array.isArray(draft?.itemPhotos) && draft.itemPhotos.length > 0) implicit.push('item_photo');
+      if (Number(draft?.aiEstimatedValue) > 0 || Number(draft?.estimatedValue) > 0) implicit.push('item_appraisal');
+      const mergedSteps = Array.from(new Set([...claimed, ...implicit]));
+      const stepActors = { ...incomingStepActors };
+      for (const stepKey of mergedSteps) {
+        if (!stepActors[stepKey]) {
+          stepActors[stepKey] = { userId: auth.user.id, at: new Date().toISOString() };
+        }
+      }
+      // Strip the transient hint and re-attach the consolidated actor map.
+      const persistDraft = { ...draft, stepActors };
+      delete persistDraft.completedStepKeys;
       await db
         // created_by is set on first insert and intentionally not changed on updates
         // so the original creator retains ownership even if another user resumes the draft.
         .prepare("INSERT INTO drafts (ref, data, updated_at, created_by) VALUES (?, ?, datetime('now'), ?) ON CONFLICT (ref) DO UPDATE SET data = excluded.data, updated_at = datetime('now')")
-        .bind(draft.ref, JSON.stringify(draft), auth.user.id)
+        .bind(draft.ref, JSON.stringify(persistDraft), auth.user.id)
         .run();
       return json({ success: true });
     }
@@ -1915,6 +2072,7 @@ export async function onRequest(context) {
         .bind(date, category, description, amount, registeredBy)
         .run();
       await logActivity({ user: auth.user, action: 'entry', entityType: 'expense', entityId: String(inserted.meta.last_row_id), description: `🧾 Expense recorded — ${category}${description ? ': ' + description : ''} — ₦${Number(amount).toLocaleString('en-NG')}` });
+      await awardTaskPoints({ user: auth.user, taskKey: 'expense_entry', entityRef: 'expense:' + String(inserted.meta.last_row_id) });
       return json({ success: true });
     }
     if (path.startsWith('expenses/') && method === 'DELETE') {
@@ -3372,9 +3530,17 @@ export async function onRequest(context) {
         const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
 
         const profit = rev - expT;
-        const sPct = cfg.staffSharePct ?? 10;
-        const stakeholderPool = profit - Math.floor(profit * sPct / 100);
-        if (stakeholderPool <= 0) return json({ ok: true, skipped: true, reason: `No stakeholder profit for ${period} (pool: ${stakeholderPool})` });
+        // Per-stakeholder TOTAL cut % (combined staff + possessor + platform).
+        // Setting 0% on any stakeholder fully exempts them. The aggregated cut
+        // pool is then split globally by cfg.cutSplit into Staff / Possessor /
+        // Platform pools (see below).
+        const defaultTotalCutPct = Number(cfg.defaultTotalCutPct ?? 15);
+        const cutSplitCfg = cfg.cutSplit || { staffPct: 50, possessorPct: 15, platformPct: 35 };
+        const sStaff = Number(cutSplitCfg.staffPct ?? 50);
+        const sPoss = Number(cutSplitCfg.possessorPct ?? 15);
+        const sPlat = Number(cutSplitCfg.platformPct ?? 35);
+        const sTotal = sStaff + sPoss + sPlat || 1;
+        if (profit <= 0) return json({ ok: true, skipped: true, reason: `No profit for ${period} (profit: ${profit})` });
 
         // Determine capital surplus — simplified: available lending capital > total capital needed
         const totalCapital = capitalEntries.reduce((s, c) => s + (c.amount || 0), 0);
@@ -3418,14 +3584,43 @@ export async function onRequest(context) {
           }
         }
 
-        // Build stakeholder data
+        // Build stakeholder data — per-stakeholder TOTAL cut % applied to each
+        // gross profit allocation, then the aggregated cut pool is split by
+        // cutSplit into Staff / Possessor / Platform pools.
         const fmtN = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
-        const stakeData = arr.map(s => {
-          const profitAmount = Math.floor(stakeholderPool * (s.capitalDays / totalCD));
+        const platformRecipientUserId = (cfg.platformRecipientUserId || 'admin');
+        let totalCutPoolAmount = 0;
+        const preStake = arr.map(s => {
+          const own = ownershipCfg[s.name] || {};
+          let totalCutPct;
+          if (own.totalCutPct != null) totalCutPct = Number(own.totalCutPct);
+          else if (own.staffCutPct != null || own.platformCutPct != null) totalCutPct = Number(own.staffCutPct || 0) + Number(own.platformCutPct || 0);
+          else totalCutPct = defaultTotalCutPct;
+          totalCutPct = Math.max(0, Math.min(100, totalCutPct));
+          const grossProfit = Math.floor(profit * (s.capitalDays / totalCD));
+          const totalCut = Math.max(0, Math.floor(grossProfit * totalCutPct / 100));
+          const netProfit = Math.max(0, grossProfit - totalCut);
+          totalCutPoolAmount += totalCut;
+          return { ...s, grossProfit, totalCut, netProfit, totalCutPct };
+        });
+        const staffPoolAmount = Math.floor(totalCutPoolAmount * sStaff / sTotal);
+        const platformPoolAmount = Math.floor(totalCutPoolAmount * sPlat / sTotal);
+        const possessorPoolAmount = Math.max(0, totalCutPoolAmount - staffPoolAmount - platformPoolAmount);
+
+        // Platform fee is folded into the configured recipient's stakeholder line.
+        const stakeData = preStake.map(s => {
+          const profitAmount = s.netProfit + (s.user_id === platformRecipientUserId ? platformPoolAmount : 0);
+          const platformComponent = s.user_id === platformRecipientUserId ? platformPoolAmount : 0;
           const expectedContrib = expectedByName[s.name] || 0;
           const reinvestAmount = isSurplus ? 0 : Math.min(profitAmount, expectedContrib);
           const distributeAmount = profitAmount - reinvestAmount;
-          const systemNote = isSurplus
+          const cutLine = s.totalCut > 0
+            ? ` Gross ${fmtN(s.grossProfit)} − total cut ${fmtN(s.totalCut)} (${s.totalCutPct}%) = ${fmtN(s.netProfit)}.`
+            : '';
+          const platformLine = platformComponent > 0
+            ? ` ${cfg.platformCutLabel || 'Platform / License Fee'} pool of ${fmtN(platformComponent)} is added to your line as recipient.`
+            : '';
+          const baseNote = isSurplus
             ? 'Capital is in surplus — you collect your full profit.'
             : reinvestAmount > 0
               ? `Business needs capital. ${fmtN(reinvestAmount)} will be reinvested (your expected contribution), you collect ${fmtN(distributeAmount)}.`
@@ -3433,11 +3628,13 @@ export async function onRequest(context) {
           return {
             user_id: s.user_id, name: s.name, capitalDays: s.capitalDays, totalCapitalDays: totalCD,
             profitAmount, reinvestAmount, distributeAmount,
-            capitalSurplus: isSurplus ? 1 : 0, systemNote,
+            capitalSurplus: isSurplus ? 1 : 0, systemNote: baseNote + cutLine + platformLine,
           };
         }).filter(s => s.profitAmount > 0);
 
-        if (stakeData.length === 0) return json({ ok: true, skipped: true, reason: 'No stakeholders with positive profit' });
+        if (stakeData.length === 0 && totalCutPoolAmount <= 0) {
+          return json({ ok: true, skipped: true, reason: 'No stakeholders with positive profit and no cut pool' });
+        }
 
         // Insert decisions
         const deadlineDays = Math.max(1, Number(cfg.distributionDeadlineDays) || 3);
@@ -3489,12 +3686,18 @@ export async function onRequest(context) {
           }
         }
 
+        const netStakeholderTotal = stakeData.reduce((s, x) => s + x.profitAmount, 0);
         await logActivity({
           user: auth.user, action: 'create', entityType: 'distribution_decisions', entityId: period,
-          description: `Auto-generated profit decisions for ${period} — ${stakeData.length} stakeholder(s), pool ${fmtN(stakeholderPool)}${isSurplus ? ' (surplus)' : ''}`,
+          description: `Auto-generated profit decisions for ${period} — ${stakeData.length} stakeholder(s), net ${fmtN(netStakeholderTotal)}, staff pool ${fmtN(staffPoolAmount)}, ${cfg.platformCutLabel || 'platform'} ${fmtN(platformPoolAmount)}${isSurplus ? ' (surplus)' : ''}`,
         });
 
-        return json({ ok: true, period, deadline, count: stakeData.length, smsResults, autoGenerated: true });
+        return json({
+          ok: true, period, deadline,
+          count: stakeData.length,
+          profit, staffPoolAmount, platformPoolAmount, netStakeholderTotal,
+          smsResults, autoGenerated: true,
+        });
       } catch (e) {
         return error('auto-generate failed: ' + (e?.message || String(e)), 500);
       }
@@ -3892,6 +4095,128 @@ VALUATION_CONFIDENCE: [your confidence as a percentage, e.g. 85% — higher if y
         console.error('Public valuation error:', e);
         return json({ error: 'Something went wrong. Please try again later or call us directly.' }, 500);
       }
+    }
+
+    // ── GET /api/staff-points — aggregated fractional points ─────────────
+    // Optional filters:
+    //   ?from=YYYY-MM-DD&to=YYYY-MM-DD  (date range, inclusive)
+    //   ?period=YYYY-MM                 (single month, server local time)
+    //   ?user_id=...                    (limit to one user)
+    //   ?detail=1                       (return per-step breakdown rows)
+    if (path === 'staff-points' && method === 'GET') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const qs = url.searchParams;
+      const userIdFilter = qs.get('user_id');
+      const detail = qs.get('detail') === '1';
+      let from = qs.get('from');
+      let to = qs.get('to');
+      const period = qs.get('period');
+      if (period && /^\d{4}-\d{2}$/.test(period)) {
+        const [yy, mm] = period.split('-').map(Number);
+        from = `${period}-01`;
+        const last = new Date(Date.UTC(yy, mm, 0)).getUTCDate();
+        to = `${period}-${String(last).padStart(2, '0')}`;
+      }
+      const conds = [];
+      const binds = [];
+      if (from) { conds.push("date(awarded_at) >= date(?)"); binds.push(from); }
+      if (to)   { conds.push("date(awarded_at) <= date(?)"); binds.push(to); }
+      if (userIdFilter) { conds.push('user_id = ?'); binds.push(userIdFilter); }
+      const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
+      if (detail) {
+        const rows = await db.prepare(`SELECT user_id, step_key, SUM(weight) AS points, COUNT(*) AS events FROM staff_points ${where} GROUP BY user_id, step_key ORDER BY user_id, step_key`).bind(...binds).all();
+        return json(rows.results || []);
+      }
+      const rows = await db.prepare(`SELECT user_id, SUM(weight) AS points, COUNT(*) AS events FROM staff_points ${where} GROUP BY user_id ORDER BY points DESC`).bind(...binds).all();
+      return json(rows.results || []);
+    }
+
+    // ── POST /api/staff-points/backfill — credit historical data ──────────
+    // Admin-only. One-time migration. Idempotent: re-running adds no rows
+    // thanks to the UNIQUE constraint on (user_id, entity_ref, step_key).
+    // Maps existing transaction createdBy/completedBy/repaidBy/soldBy and
+    // activity_logs entries to fractional points using configured weights.
+    if (path === 'staff-points/backfill' && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      if (auth.user.role !== 'admin') return error('Admin only', 403);
+      const { stepWeights, taskWeights } = await loadPointsConfig();
+
+      // Build a name → user_id map so we can resolve the legacy "by" fields
+      // (which store names rather than IDs).
+      const usersRes = await db.prepare('SELECT id, name, username FROM users').all();
+      const nameToId = new Map();
+      for (const u of (usersRes.results || [])) {
+        if (u.name) nameToId.set(String(u.name).trim().toLowerCase(), u.id);
+        if (u.username) nameToId.set(String(u.username).trim().toLowerCase(), u.id);
+      }
+      const resolve = (nameOrId) => {
+        if (!nameOrId) return null;
+        const key = String(nameOrId).trim().toLowerCase();
+        return nameToId.get(key) || null;
+      };
+
+      let credited = 0;
+      let skipped = 0;
+
+      // Transactions
+      const txRes = await db.prepare('SELECT ref, data, status FROM transactions').all();
+      for (const r of (txRes.results || [])) {
+        let d;
+        try { d = JSON.parse(r.data); } catch { skipped++; continue; }
+        const entityRef = 'tx:' + r.ref;
+        const creatorId = resolve(d.createdBy);
+        const completerId = resolve(d.completedBy);
+        const repaidId = resolve(d.repaidBy);
+        const soldId = resolve(d.soldBy);
+
+        // Pre-completion bundle — credited to the original creator (drafted)
+        // when no granular stepActors are present.
+        const actors = (d.stepActors && typeof d.stepActors === 'object') ? d.stepActors : {};
+        const preSteps = ['customer_intake','id_verification','item_photo','item_appraisal','agreement_print'];
+        for (const stepKey of preSteps) {
+          const uid = (actors[stepKey] && actors[stepKey].userId) || creatorId;
+          if (!uid) continue;
+          await awardPoints({ userId: uid, entityRef, stepKey, weight: stepWeights[stepKey] });
+          credited++;
+        }
+        // Cash disbursement / sale_completion based on type
+        if (d.type === 'outright' || r.status === 'for_sale' || r.status === 'sold') {
+          if (completerId || soldId) {
+            await awardPoints({ userId: soldId || completerId, entityRef, stepKey: 'sale_completion', weight: stepWeights.sale_completion });
+            credited++;
+          }
+        } else if (completerId) {
+          await awardPoints({ userId: completerId, entityRef, stepKey: 'cash_disbursement', weight: stepWeights.cash_disbursement });
+          credited++;
+        }
+        // Repayment
+        if (r.status === 'closed' && (repaidId || completerId)) {
+          await awardPoints({ userId: repaidId || completerId, entityRef, stepKey: 'repayment_collection', weight: stepWeights.repayment_collection });
+          credited++;
+        }
+        // Listing for sale (only if currently for_sale; we don't have a separate timestamp)
+        if ((r.status === 'for_sale' || r.status === 'ready_to_sell' || r.status === 'sold') && d.type === 'advance') {
+          const listerId = completerId || resolve(d.listedBy) || null;
+          if (listerId) {
+            await awardPoints({ userId: listerId, entityRef, stepKey: 'default_handling_listing', weight: stepWeights.default_handling_listing });
+            credited++;
+          }
+        }
+      }
+
+      // Expenses (task_entry)
+      const expRes = await db.prepare('SELECT id, registered_by FROM expenses').all();
+      for (const e of (expRes.results || [])) {
+        const uid = resolve(e.registered_by);
+        if (!uid) { skipped++; continue; }
+        await awardPoints({ userId: uid, entityRef: 'expense:' + e.id, stepKey: 'expense_entry', weight: taskWeights.expense_entry });
+        credited++;
+      }
+
+      await logActivity({ user: auth.user, action: 'create', entityType: 'staff_points', entityId: 'backfill', description: `Backfilled staff points — ${credited} credit(s), ${skipped} skipped` });
+      return json({ ok: true, credited, skipped });
     }
 
     return error('Not found', 404);

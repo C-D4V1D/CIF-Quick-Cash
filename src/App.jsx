@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
-import { viewAgreementPDF, downloadAgreementPDF, viewBusinessCopyPDF, downloadBusinessCopyPDF } from './PrintAgreement.jsx';
+import { viewAgreementPDF, downloadAgreementPDF, viewBusinessCopyPDF, downloadBusinessCopyPDF, viewCustomerCopyPDF, downloadCustomerCopyPDF } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
 import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
 import { buildNotifications, getReadIds, seedReadIds } from './ProfilePage/NotificationsPanel.jsx';
-import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT } from './utils/signatureRefine';
+import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT, parseSignatureBbox, parseSignatureMeta, cropImageToBbox } from './utils/signatureRefine';
 import {
   ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area,
@@ -555,8 +555,23 @@ const DEFAULT_SETTINGS = {
   // Receipt & Agreement
   agreementTermsExtra: '',
   receiptFooter: 'Thank you for your patronage!',
-  // Profit Sharing
+  // Profit Sharing — legacy global staff share (kept for backward-compat / migration default)
   staffSharePct: 10,
+  // Per-stakeholder TOTAL cut % (staff + possessor + platform combined) is stored
+  // inside stakeholderOwnership[name].totalCutPct. The default below is the
+  // pre-fill value when adding a new stakeholder. Set to 0 on any stakeholder
+  // to fully exempt them (e.g. yourself as admin, your COO/main staff).
+  defaultTotalCutPct: 15,
+  // Global split of the aggregated total cut into three pools. Must sum to 100.
+  // Staff Pool   → split among staffPoolRecipientIds proportional to step points
+  // Possessor    → split among per-transaction possessors by item revenue
+  // Platform Fee → folded into platformRecipientUserId's stakeholder line
+  cutSplit: { staffPct: 50, possessorPct: 15, platformPct: 35 },
+  platformCutLabel: 'Platform / License Fee',
+  platformRecipientUserId: 'admin',
+  // Users eligible to receive shares of the Staff Pool. Admin is included by
+  // default so they can earn from the pool when they personally do staff work.
+  staffPoolRecipientIds: ['admin'],
   targetSaleDeadlineDays: 14,
   // Data Management
   activityLogRetentionDays: 90,
@@ -1802,7 +1817,10 @@ function SignatureCapture({ label, value, onChange, settings, required, size = 1
     try {
       const b64 = await compressToDataUrl(file);
       setRawData(b64);
-      // Optional AI verification (only if an API key is configured)
+      // Optional AI verification + bounding-box crop (only if an API key is configured).
+      // The AI returns a tight bbox around the signature ink so we can crop out
+      // any printed agreement text or other distractions before refinement.
+      let preCropped = b64;
       if (settings?.geminiApiKey) {
         try {
           const result = await callGeminiAI(
@@ -1814,15 +1832,21 @@ function SignatureCapture({ label, value, onChange, settings, required, size = 1
             settings.geminiTemperature,
           );
           if (result?.text) {
-            const noteMatch = result.text.match(/NOTE:\s*(.+)/i);
-            if (noteMatch) setAiNote(noteMatch[1].trim());
-            if (!/IS_SIGNATURE:\s*yes/i.test(result.text)) {
+            // eslint-disable-next-line no-console
+            console.log('[signature AI]', result.text);
+            const { isSignature, note } = parseSignatureMeta(result.text);
+            if (note) setAiNote(note);
+            if (isSignature === false) {
               setError('AI could not clearly see a signature — retake if needed.');
             }
+            const bbox = parseSignatureBbox(result.text);
+            // eslint-disable-next-line no-console
+            console.log('[signature bbox]', bbox);
+            if (bbox) preCropped = await cropImageToBbox(b64, bbox);
           }
-        } catch { /* AI is optional — proceed to refinement */ }
+        } catch { /* AI is optional — proceed to refinement on the uncropped image */ }
       }
-      const refined = await refineSignatureImage(b64);
+      const refined = await refineSignatureImage(preCropped);
       setRefinedData(refined);
       setStage('confirm');
     } catch (err) {
@@ -5238,7 +5262,7 @@ const EMPTY_TX = {
   currentItemIndex: 0,
 };
 
-function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, serpApiAiAccount, availableLendingCapital, totalCapital, capByName }) {
+function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, serpApiAccount, serpApiAiAccount, availableLendingCapital, totalCapital, capByName, users }) {
   const [step, setStep] = useState(draft?.wizardStep || 0);
   const [tx, setTx] = useState(() => {
     const base = draft || { ...EMPTY_TX, ref: genRef(), createdBy: currentUser?.name || '', createdAt: new Date().toISOString() };
@@ -5284,13 +5308,17 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const canPersistDraft = step > 1 || tx.ninVerified || tx.ninVerificationAttempted;
-    pendingDraftRef.current = canPersistDraft ? { ...tx, wizardStep: step } : null;
+    // Include the keys of every step completed up to (but not including)
+    // the current step — the user is still working on `step` itself.
+    const completedStepKeys = canPersistDraft ? collectCompletedStepKeys(Math.max(0, step - 1)) : [];
+    pendingDraftRef.current = canPersistDraft ? { ...tx, wizardStep: step, completedStepKeys } : null;
     saveTimer.current = setTimeout(() => {
-      if (canPersistDraft) API.post('drafts', { ...tx, wizardStep: step });
+      if (canPersistDraft) API.post('drafts', { ...tx, wizardStep: step, completedStepKeys });
       else API.del(`drafts/${encodeURIComponent(tx.ref)}`);
       pendingDraftRef.current = null;
     }, 3000);
     return () => clearTimeout(saveTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tx, step]);
   useEffect(() => {
     return () => { if (pendingDraftRef.current) API.post('drafts', pendingDraftRef.current); };
@@ -5339,12 +5367,44 @@ function TransactionWizard({ settings, onSave, onCancel, draft, currentUser, ser
     }).finally(() => setNinCreditsLoading(false));
   }, [step, settings.ninApiKey]);
 
+  // Map wizard step IDs (the ones in WIZARD_STEPS) to the staff-point step_key
+  // they should claim when the user advances past them. Only steps that
+  // correspond to real work performed by the acting user are listed; the AI
+  // valuation / inspection forms are part of the "appraisal" bundle.
+  const WIZARD_STEP_TO_POINT_KEY = {
+    customer: 'customer_intake',
+    nin: 'id_verification',
+    custPhotos: 'item_photo',
+    itemPhotos: 'item_photo',
+    inspection: 'item_appraisal',
+    aiValuation: 'item_appraisal',
+    itemsDone: 'item_appraisal',
+    agreement: 'agreement_print',
+  };
+  // Build the list of step_keys completed by the time the wizard reaches
+  // `currentStepIdx`. Includes every prior step's key plus the current one
+  // if it represents work already done at this point.
+  const collectCompletedStepKeys = (currentStepIdx) => {
+    const keys = new Set();
+    for (let i = 0; i <= currentStepIdx; i++) {
+      const id = WIZARD_STEPS[i]?.id;
+      const k = WIZARD_STEP_TO_POINT_KEY[id];
+      if (k) keys.add(k);
+    }
+    return Array.from(keys);
+  };
+
   // Immediate (non-debounced) draft save — call before navigating away or advancing steps.
   const saveDraftNow = async (nextStep) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     const stepToSave = nextStep !== undefined ? nextStep : step;
     const canPersistDraft = stepToSave > 1 || tx.ninVerified || tx.ninVerificationAttempted;
-    if (canPersistDraft) await API.post('drafts', { ...tx, wizardStep: stepToSave });
+    if (canPersistDraft) {
+      // Send the steps just completed so the server can record the acting
+      // user as the actor for each one (first-writer-wins).
+      const completedStepKeys = collectCompletedStepKeys(Math.max(0, stepToSave - 1));
+      await API.post('drafts', { ...tx, wizardStep: stepToSave, completedStepKeys });
+    }
   };
 
  // NIN/BVN Verification
@@ -6753,24 +6813,26 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               </>
             ))}
 
-            {/* Step 2 — Generate & print */}
+            {/* Step 2 — Generate & print (customer copy only — the business copy is
+                always available later from the transaction details view) */}
             {stepBox(2, 'Generate & Print the PDF', '#0891b2', (
               <>
-                <p style={{ margin: '0 0 10px' }}>Click the button to open or download the {tx.type === 'outright' ? 'receipt' : 'agreement'} PDF. Print it on <strong>A4 paper</strong>. You will get two copies — one for the business and one for the {tx.type === 'outright' ? 'seller' : 'customer'}.</p>
+                <p style={{ margin: '0 0 10px' }}>Click the button to open or download the <strong>{tx.type === 'outright' ? 'seller' : 'customer'} copy</strong> of the {tx.type === 'outright' ? 'receipt' : 'agreement'}. Print it on <strong>A4 paper</strong> and hand it to the {tx.type === 'outright' ? 'seller' : 'customer'}.</p>
+                <p style={{ margin: '0 0 10px', fontSize: '12px', color: COLORS.textMuted }}>ℹ️ The business copy is available anytime later from the transaction details view.</p>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   <button
                     style={{ ...S.btn('accent'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
                     disabled={pdfLoading}
-                    onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
+                    onClick={async () => { setPdfLoading(true); try { await viewCustomerCopyPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
                   >
-                    {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
+                    {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 View ${tx.type === 'outright' ? 'Seller' : 'Customer'} Copy`}
                   </button>
                   <button
                     style={{ ...S.btn('outline'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
                     disabled={pdfLoading}
-                    onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
+                    onClick={async () => { setPdfLoading(true); try { await downloadCustomerCopyPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
                   >
-                    ⬇ Download PDF
+                    ⬇ Download {tx.type === 'outright' ? 'Seller' : 'Customer'} Copy
                   </button>
                 </div>
               </>
@@ -6802,11 +6864,11 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             ))}
 
             {/* Step 5 — Sign & thumbprint */}
-            {stepBox(5, 'Sign & Thumbprint Both Copies', '#d97706', (
+            {stepBox(5, `Sign & Thumbprint the ${tx.type === 'outright' ? 'Seller' : 'Customer'} Copy`, '#d97706', (
               <ul style={{ margin: 0, paddingLeft: '18px' }}>
                 <li>Ask them to write their signature on the signature line.</li>
                 <li>Ask them to press their right thumb on the thumbprint box.</li>
-                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} one copy and keep one copy for the business.</li>
+                <li>Hand the signed copy to the {tx.type === 'outright' ? 'seller' : 'customer'} to take home.</li>
               </ul>
             ))}
 
@@ -6960,6 +7022,35 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
                   />
                 </>
               )
+            ))}
+
+            {/* Step — Item Possessor */}
+            {stepBox(isAdvance ? 5 : 3, 'Who Will Be in Possession of the Item?', COLORS.primary, (
+              <>
+                <p style={{ margin: '0 0 10px', fontSize: '13px' }}>
+                  Select the person who will physically hold / store this item. If the item stays with the customer, choose <strong>Customer (self-custody)</strong>.
+                </p>
+                <select
+                  value={tx.possessorUserId || 'customer'}
+                  onChange={e => upd('possessorUserId', e.target.value)}
+                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: `1.5px solid ${COLORS.border}`, fontSize: '14px', fontWeight: 600 }}
+                >
+                  <option value="customer">👤 Customer (self-custody)</option>
+                  {(users || []).filter(u => u.active !== 0).map(u => (
+                    <option key={u.id} value={u.id}>{u.name} (@{u.username})</option>
+                  ))}
+                </select>
+                {(tx.possessorUserId && tx.possessorUserId !== 'customer') && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#16a34a', fontWeight: 600 }}>
+                    ✅ Item will be held by {(users || []).find(u => u.id === tx.possessorUserId)?.name || tx.possessorUserId}
+                  </div>
+                )}
+                {(!tx.possessorUserId || tx.possessorUserId === 'customer') && (
+                  <div style={{ marginTop: '8px', fontSize: '12px', color: COLORS.textMuted }}>
+                    ℹ️ Customer-held — the possessor share of the profit cut will be redirected to the Staff Pool.
+                  </div>
+                )}
+              </>
             ))}
 
             <button
@@ -9532,7 +9623,7 @@ export default function App() {
         <button style={S.btnSm('danger')} onClick={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }}>✕ {isMobile ? '' : 'Exit'}</button>
       </div>
       <div style={{ padding: isMobile ? '12px' : '20px', maxWidth: '900px', margin: '0 auto' }}>
-        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} serpApiAiAccount={serpApiAiAccount} availableLendingCapital={availableLendingCapital} totalCapital={totalCapital} capByName={capitalPrediction?.capByName || []} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
+        <TransactionWizard settings={settings} draft={editingTx === 'new' ? null : editingTx} currentUser={currentUser} serpApiAccount={serpApiAccount} serpApiAiAccount={serpApiAiAccount} availableLendingCapital={availableLendingCapital} totalCapital={totalCapital} capByName={capitalPrediction?.capByName || []} users={users} onSave={(tx) => { saveTx(tx); setEditingTx(null); loadData(); navigate('/dashboard', { replace: true }); }} onCancel={() => { setEditingTx(null); navigate('/dashboard', { replace: true }); loadData(); }} />
       </div>
     </div>
   );
@@ -10555,9 +10646,12 @@ export default function App() {
         const rRevenue = rRepaymentFees + rSalesRevenue + rServiceFees;
         const rExpTotal = rExpenses.reduce((s, e) => s + (e.amount || 0), 0);
         const rProfit = rRevenue - rExpTotal;
-        const staffSharePct = settings.staffSharePct ?? 10;
-        const rStaff = Math.floor(rProfit * staffSharePct / 100);
-        const rStakeholder = rProfit - rStaff;
+        const platformCutLabel = settings.platformCutLabel || 'Platform / License Fee';
+        // Pool placeholders — overwritten by the per-stakeholder math below.
+        let rStaff = 0;       // Staff Pool (includes possessor amounts redirected from customer-held items)
+        let rPossessor = 0;   // Possessor Pool (distributed by item revenue)
+        let rPlatform = 0;    // Platform / License Fee Pool
+        let rStakeholder = rProfit;
         const rCapitalDeployed = rNewTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
         const rCapitalReturned = rClosed.reduce((s, t) => s + (t.cashAdvance || 0), 0);
         const expByCategory = rExpenses.reduce((acc, e) => {
@@ -10594,70 +10688,208 @@ export default function App() {
           }
           const arr = Object.values(byStakeholder);
           const totalCapitalDays = arr.reduce((s, x) => s + x.capitalDays, 0);
+          // Per-stakeholder TOTAL cut % (combined staff + possessor + platform).
+          // Set to 0% to fully exempt a stakeholder (e.g. admin, COO).
+          const ownershipCfg = settings.stakeholderOwnership || {};
+          const defTotal = Number(settings.defaultTotalCutPct ?? 15);
           return arr.map(s => {
             const pct = totalCapitalDays > 0 ? (s.capitalDays / totalCapitalDays * 100) : 0;
             const avgActiveDays = s.total > 0 ? Math.round(s.capitalDays / s.total * 10) / 10 : 0;
-            return { ...s, pct, share: Math.floor(rStakeholder * pct / 100), effectiveDays: periodDays, totalCapitalDays, avgActiveDays };
+            const own = ownershipCfg[s.name] || {};
+            // Migration: if a stakeholder still has the old staffCutPct/platformCutPct
+            // fields and no totalCutPct, sum them as a one-time fallback so existing
+            // configs don't silently zero out.
+            let totalCutPct;
+            if (own.totalCutPct != null) totalCutPct = Number(own.totalCutPct);
+            else if (own.staffCutPct != null || own.platformCutPct != null) totalCutPct = Number(own.staffCutPct || 0) + Number(own.platformCutPct || 0);
+            else totalCutPct = defTotal;
+            totalCutPct = Math.max(0, Math.min(100, totalCutPct));
+            const grossShare = Math.max(0, Math.floor(rProfit * pct / 100));
+            const totalCut = Math.max(0, Math.floor(grossShare * totalCutPct / 100));
+            const share = Math.max(0, grossShare - totalCut);
+            return { ...s, pct, grossShare, totalCut, totalCutPct, share, effectiveDays: periodDays, totalCapitalDays, avgActiveDays };
           });
         })();
-        // ── TASK-BASED STAFF SCORING ──
-        // Points per task (all tasks weighted equally at 1 point each):
-        // 1. Loan Intake      – completing a new cash advance or outright purchase (completedBy)
-        // 2. Repayment        – processing a customer repayment (repaidBy)
-        // 3. Sale             – recording an item sale (soldBy)
-        // 4. Contact Logged   – logging a contact attempt on an overdue/at-risk loan (loggedBy)
-        // 5. Sold at Target   – item sold at/above targetSellPct% of estimated value (completedBy of intake)
-        // 6. Sold On Time     – item sold on or before the target sale date anchored to intake (completedBy of intake)
+        // Global split of the aggregated total cut pool into staff / possessor / platform.
+        const cutSplitCfg = settings.cutSplit || DEFAULT_SETTINGS.cutSplit;
+        const splitStaffPct = Math.max(0, Number(cutSplitCfg.staffPct ?? 50));
+        const splitPossessorPct = Math.max(0, Number(cutSplitCfg.possessorPct ?? 15));
+        const splitPlatformPct = Math.max(0, Number(cutSplitCfg.platformPct ?? 35));
+        const splitTotal = splitStaffPct + splitPossessorPct + splitPlatformPct || 1;
+        const totalCutPool = rStakeholders.reduce((s, x) => s + (x.totalCut || 0), 0);
+        rStaff = Math.floor(totalCutPool * splitStaffPct / splitTotal);
+        rPossessor = Math.floor(totalCutPool * splitPossessorPct / splitTotal);
+        rPlatform = totalCutPool - rStaff - rPossessor; // any rounding remainder lands in platform
+        rStakeholder = rStakeholders.reduce((s, x) => s + (x.share || 0), 0);
+        // Possessor pool attribution by item revenue. Items "held by customer"
+        // (possessorUserId === 'customer' or unset/historical) redirect their
+        // share to the Staff Pool.
+        const revContribOfTx = (tx) => {
+          if (tx.status === 'closed') return Math.max(0, Number(tx.totalFees) || 0);
+          if (tx.status === 'sold') return Math.max(0, (tx.salePrice || 0) - (tx.cashAdvance || 0));
+          if (tx.type !== 'outright') {
+            const fee = tx.serviceFeeAmount ?? (tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0);
+            return Math.max(0, Number(fee) || 0);
+          }
+          return 0;
+        };
+        const revByPossessor = {}; // user_id → revenue
+        let revCustomerHeld = 0;
+        let revTotalForPossessor = 0;
+        const inPeriodAny = (tx) => inPeriod(tx.dateRepaid || tx.saleDate || tx.created_at || tx.updated_at);
+        transactions.forEach(tx => {
+          if (!inPeriodAny(tx)) return;
+          const rev = revContribOfTx(tx);
+          if (rev <= 0) return;
+          revTotalForPossessor += rev;
+          const possessor = tx.possessorUserId || 'customer';
+          if (possessor === 'customer') revCustomerHeld += rev;
+          else revByPossessor[possessor] = (revByPossessor[possessor] || 0) + rev;
+        });
+        // Customer-held portion of the Possessor pool is folded into Staff Pool.
+        let possessorToStaff = 0;
+        if (revTotalForPossessor > 0 && revCustomerHeld > 0) {
+          possessorToStaff = Math.floor(rPossessor * revCustomerHeld / revTotalForPossessor);
+          rStaff += possessorToStaff;
+          rPossessor -= possessorToStaff;
+        }
+        // Possessor Pool distribution among internal users by item revenue.
+        const possessorRevTotal = Object.values(revByPossessor).reduce((s, v) => s + v, 0);
+        const rPossessorByUser = Object.entries(revByPossessor).map(([userId, rev]) => {
+          const u = (users || []).find(x => x && x.id === userId);
+          const share = possessorRevTotal > 0 ? Math.floor(rPossessor * rev / possessorRevTotal) : 0;
+          return { userId, name: u?.name || userId, rev, share };
+        }).sort((a, b) => b.share - a.share);
+        // Platform Fee is folded into the configured recipient's stakeholder line.
+        const platformRecipientId = settings.platformRecipientUserId || 'admin';
+        const platformRecipient = rStakeholders.find(s => {
+          const cap = capital.find(c => c.name === s.name && c.user_id);
+          return cap && cap.user_id === platformRecipientId;
+        }) || rStakeholders.find(s => /admin|administrator/i.test(s.name));
+        if (platformRecipient && rPlatform > 0) {
+          platformRecipient.platformBonus = rPlatform;
+          platformRecipient.share = (platformRecipient.share || 0) + rPlatform;
+          rStakeholder += rPlatform;
+        }
+        // ── FRACTIONAL STEP-BASED STAFF SCORING ──
+        // Each transaction action is now broken into weighted steps. When a
+        // transaction is started by one staff and finished by another, both
+        // earn credit proportional to the work they did, not just the
+        // finalizer. Weights are admin-configurable via settings.stepWeights
+        // (defaults match the server's DEFAULT_STEP_WEIGHTS).
+        const DEFAULT_STEP_WEIGHTS = {
+          customer_intake: 0.08, id_verification: 0.15, item_photo: 0.10,
+          item_appraisal: 0.10, agreement_print: 0.05, cash_disbursement: 0.27,
+          repayment_collection: 0.20, default_handling_listing: 0.03, sale_completion: 0.02,
+        };
+        const DEFAULT_TASK_WEIGHTS = {
+          expense_entry: 0.05, sms_send: 0.01, agreement_reprint: 0.01,
+          customer_followup_log: 0.02, inventory_update: 0.02,
+        };
+        const stepWeights = { ...DEFAULT_STEP_WEIGHTS, ...(settings.stepWeights || {}) };
+        const taskWeights = { ...DEFAULT_TASK_WEIGHTS, ...(settings.taskWeights || {}) };
         const targetSalePct = settings.targetSellPct ?? DEFAULT_SETTINGS.targetSellPct;
-        const taskDefs = ['loan_intake', 'repayment', 'sale', 'contact', 'sold_at_target', 'sold_on_time'];
-        const taskLabels = { loan_intake: 'Loan Intake', repayment: 'Repayment', sale: 'Sale', contact: 'Contact Logged', sold_at_target: 'Sold at Target Price', sold_on_time: 'Sold Within Deadline' };
-        const scoreMap = {}; // { staffName: { loan_intake:N, repayment:N, ... } }
-        const addScore = (name, type) => {
-          if (!name?.trim()) return;
+        const taskDefs = [
+          'customer_intake', 'id_verification', 'item_photo', 'item_appraisal',
+          'agreement_print', 'cash_disbursement', 'repayment_collection',
+          'default_handling_listing', 'sale_completion',
+          'customer_followup_log', 'expense_entry', 'sold_at_target', 'sold_on_time',
+        ];
+        const taskLabels = {
+          customer_intake: 'Customer Intake', id_verification: 'ID Verification',
+          item_photo: 'Item Photo', item_appraisal: 'Item Appraisal',
+          agreement_print: 'Agreement Print', cash_disbursement: 'Cash Disbursement',
+          repayment_collection: 'Repayment Collection',
+          default_handling_listing: 'Listed for Sale', sale_completion: 'Sale Completed',
+          customer_followup_log: 'Customer Follow-up', expense_entry: 'Expense Logged',
+          sold_at_target: 'Sold at Target Price', sold_on_time: 'Sold Within Deadline',
+        };
+        // Bonus weights (kept on the legacy scale of 1 task = 1 point so they
+        // remain visible alongside fractional step credit).
+        const BONUS_WEIGHT = 0.10;
+        const scoreMap = {};
+        const addScore = (name, type, weight) => {
+          if (!name?.trim() || !Number.isFinite(weight) || weight <= 0) return;
           const k = name.trim();
           if (!scoreMap[k]) scoreMap[k] = Object.fromEntries(taskDefs.map(d => [d, 0]));
-          scoreMap[k][type] = (scoreMap[k][type] || 0) + 1;
+          scoreMap[k][type] = (scoreMap[k][type] || 0) + weight;
         };
-        // Task 1: New loan intake
-        rNewTxs.forEach(tx => { if (tx.completedBy) addScore(tx.completedBy, 'loan_intake'); });
-        // Task 2: Repayment processed
-        rClosed.forEach(tx => { if (tx.repaidBy) addScore(tx.repaidBy, 'repayment'); });
-        // Task 3: Sale completed
-        rSold.forEach(tx => { if (tx.soldBy) addScore(tx.soldBy, 'sale'); });
-        // Task 4: Contact attempts logged in period — max 1 point per transaction per staff member
+        // Helper: credit pre-completion steps from stepActors (if present) else
+        // fall back to createdBy / completedBy on the transaction.
+        const creditPreSteps = (tx) => {
+          const actors = (tx.stepActors && typeof tx.stepActors === 'object') ? tx.stepActors : {};
+          const fallback = tx.createdBy || tx.completedBy;
+          const preSteps = ['customer_intake','id_verification','item_photo','item_appraisal','agreement_print'];
+          preSteps.forEach(stepKey => {
+            const name = (actors[stepKey] && (actors[stepKey].userName || actors[stepKey].name)) || fallback;
+            addScore(name, stepKey, stepWeights[stepKey]);
+          });
+        };
+        // 1) New transactions in period → pre-completion + cash_disbursement
+        rNewTxs.forEach(tx => {
+          creditPreSteps(tx);
+          if (tx.type === 'outright' || tx.status === 'for_sale') {
+            addScore(tx.completedBy, 'sale_completion', stepWeights.sale_completion);
+          } else {
+            addScore(tx.completedBy, 'cash_disbursement', stepWeights.cash_disbursement);
+          }
+        });
+        // 2) Closed (repaid) in period
+        rClosed.forEach(tx => { addScore(tx.repaidBy || tx.completedBy, 'repayment_collection', stepWeights.repayment_collection); });
+        // 3) Sold in period
+        rSold.forEach(tx => { addScore(tx.soldBy || tx.completedBy, 'sale_completion', stepWeights.sale_completion); });
+        // 4) Contact follow-ups logged in period — max 1 credit per tx per user
         transactions.forEach(tx => {
           if (!Array.isArray(tx.contactLog)) return;
           const seenStaff = new Set();
           tx.contactLog.forEach(log => {
             if (log.loggedBy && inPeriod(log.loggedAt || log.date) && !seenStaff.has(log.loggedBy)) {
               seenStaff.add(log.loggedBy);
-              addScore(log.loggedBy, 'contact');
+              addScore(log.loggedBy, 'customer_followup_log', taskWeights.customer_followup_log);
             }
           });
         });
-        // Task 5 & 6: Bonus tasks attributed to the person who originally accepted the item
+        // 5) Expense entries in period
+        rExpenses.forEach(e => { if (e.registered_by) addScore(e.registered_by, 'expense_entry', taskWeights.expense_entry); });
+        // 6) Bonus credits (kept attributed to the original completer/seller)
         rSold.forEach(tx => {
-          if (!tx.completedBy) return;
-          // Task 5: sold at/above target price
+          const owner = tx.completedBy;
+          if (!owner) return;
           if (tx.estimatedValue && tx.salePrice && (tx.salePrice / tx.estimatedValue) * 100 >= targetSalePct) {
-            addScore(tx.completedBy, 'sold_at_target');
+            addScore(owner, 'sold_at_target', BONUS_WEIGHT);
           }
-          // Task 6: sold on or before the target sale date anchored to intake
           if (tx.dateGiven && tx.saleDate) {
             const targetSaleDate = getTargetSaleDate(tx, settings);
-            if (targetSaleDate && tx.saleDate <= targetSaleDate) addScore(tx.completedBy, 'sold_on_time');
+            if (targetSaleDate && tx.saleDate <= targetSaleDate) addScore(owner, 'sold_on_time', BONUS_WEIGHT);
           }
         });
         const rStaffScores = Object.entries(scoreMap).map(([name, scores]) => {
-          const total = taskDefs.reduce((s, d) => s + scores[d], 0);
-          return { name, scores, total };
+          const total = taskDefs.reduce((s, d) => s + (scores[d] || 0), 0);
+          return { name, scores, total: Math.round(total * 100) / 100 };
         }).sort((a, b) => b.total - a.total);
         const totalTaskPoints = rStaffScores.reduce((s, v) => s + v.total, 0);
-        const rStaffByTask = rStaffScores.map(s => ({
-          ...s,
-          pct: totalTaskPoints > 0 ? (s.total / totalTaskPoints * 100) : 0,
-          share: totalTaskPoints > 0 ? Math.floor(rStaff * s.total / totalTaskPoints) : 0,
-        }));
+        // Staff Pool is only paid to admin-configured recipients
+        // (settings.staffPoolRecipientIds). Each eligible recipient's share =
+        // (their points / total eligible points) × rStaff. When the recipient
+        // list is empty, fall back to "everyone with any points".
+        const recipientIds = Array.isArray(settings.staffPoolRecipientIds) ? settings.staffPoolRecipientIds : null;
+        const nameToUserId = (n) => {
+          if (!n) return null;
+          const u = (users || []).find(x => x && (x.name === n || x.username === n));
+          return u ? u.id : null;
+        };
+        const isEligible = (name) => {
+          if (!recipientIds || recipientIds.length === 0) return true;
+          const uid = nameToUserId(name);
+          return uid ? recipientIds.includes(uid) : false;
+        };
+        const eligiblePoints = rStaffScores.reduce((s, v) => s + (isEligible(v.name) ? v.total : 0), 0);
+        const rStaffByTask = rStaffScores.map(s => {
+          const eligible = isEligible(s.name);
+          const pct = totalTaskPoints > 0 ? (s.total / totalTaskPoints * 100) : 0;
+          const share = (eligible && eligiblePoints > 0) ? Math.floor(rStaff * s.total / eligiblePoints) : 0;
+          return { ...s, pct, share, eligible };
+        });
 
         const handlePrintReport = () => printMonthReport({
           periodLabel,
@@ -10685,8 +10917,10 @@ export default function App() {
             `Revenue,${rRevenue}`,
             `Expenses,${rExpTotal}`,
             `Net Profit,${rProfit}`,
-            `Staff Share (${staffSharePct}%),${rStaff}`,
-            `Stakeholders,${rStakeholder}`,
+            `Staff Pool,${rStaff}`,
+            `Possessor Pool,${rPossessor}`,
+            `${platformCutLabel},${rPlatform}`,
+            `Stakeholders (net),${rStakeholder}`,
             '',
             'STAFF PERFORMANCE',
             toCSV(['Staff','Loan Intake','Repayment','Sale','Contact Logged','Sold at Target','Sold On Time','Total Points','Share %','Amount'],
@@ -10784,15 +11018,34 @@ export default function App() {
             </div>
 
             {/* Profit distribution */}
-            <div style={S.grid2}>
-              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Staff Share ({staffSharePct}%)<InfoIcon tip={`The staff's collective share for running the business — ${staffSharePct}% of the net profit, split equally among all active staff members.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rStaff)}</div></div>
-              <div style={S.card}><div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders ({100 - staffSharePct}%)<InfoIcon tip={`The investors' share of the profit — ${100 - staffSharePct}% split among them based on how much each person put in AND how long it was active during the period. Money invested longer earns a bigger share.`} /></div><div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div></div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+              <div style={S.card}>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Staff Pool<InfoIcon tip={`The staff cut share of the total cut pool (${splitStaffPct}% of total cut), plus any possessor share redirected from customer-held items. Split among eligible recipients proportional to fractional step points earned this period.`} /></div>
+                <div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(rStaff)}</div>
+                {possessorToStaff > 0 && <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>incl. {fmtMoney(possessorToStaff)} from customer-held items</div>}
+              </div>
+              {(rPossessor > 0) && (
+                <div style={S.card}>
+                  <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Possessor Pool<InfoIcon tip={`The possessor share of the total cut pool (${splitPossessorPct}% of total cut, less any redirected to Staff for customer-held items). Split among users who physically held items, weighted by item revenue.`} /></div>
+                  <div style={{ fontSize: '24px', fontWeight: 800, color: '#10b981' }}>{fmtMoney(rPossessor)}</div>
+                </div>
+              )}
+              {rPlatform > 0 && (
+                <div style={S.card}>
+                  <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>{platformCutLabel}<InfoIcon tip={`The platform share of the total cut pool (${splitPlatformPct}% of total cut). Folded into the configured recipient's stakeholder line.`} /></div>
+                  <div style={{ fontSize: '24px', fontWeight: 800, color: '#8b5cf6' }}>{fmtMoney(rPlatform)}</div>
+                </div>
+              )}
+              <div style={S.card}>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>Stakeholders (net)<InfoIcon tip={`Each stakeholder's gross profit (by capital-days) minus their own total cut %. Set to 0% for any stakeholder you want fully exempt (e.g. yourself and your COO/main staff).`} /></div>
+                <div style={{ fontSize: '24px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(rStakeholder)}</div>
+              </div>
             </div>
             <div style={S.card}>
               <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>👥 Staff Performance & Distribution<InfoIcon tip="Each staff member's profit share is based on task points earned in this period. Points are earned for: new loans, repayments, sales, contact attempts, selling at target price, and selling within the deadline." /></div>
               {rStaffByTask.length > 0 ? (
                 <>
-                  <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Total task points this period: <strong>{totalTaskPoints}</strong></div>
+                  <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '12px' }}>Total step points this period: <strong>{totalTaskPoints.toFixed(2)}</strong> · Eligible recipients earn proportional shares of the Staff Pool</div>
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ ...S.table, fontSize: '12px' }}>
                       <thead>
@@ -10806,14 +11059,14 @@ export default function App() {
                       </thead>
                       <tbody>
                         {rStaffByTask.map(s => (
-                          <tr key={s.name}>
-                            <td style={{ ...S.td, fontWeight: 700 }}>{s.name}</td>
+                          <tr key={s.name} style={{ opacity: s.eligible ? 1 : 0.55 }}>
+                            <td style={{ ...S.td, fontWeight: 700 }}>{s.name}{!s.eligible && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: COLORS.textMuted }}>(not in pool)</span>}</td>
                             {taskDefs.map(d => (
-                              <td key={d} style={{ ...S.td, textAlign: 'center', color: s.scores[d] > 0 ? COLORS.primary : COLORS.textMuted }}>
-                                {s.scores[d] || '—'}
+                              <td key={d} style={{ ...S.td, textAlign: 'center', color: (s.scores[d] || 0) > 0 ? COLORS.primary : COLORS.textMuted }}>
+                                {(s.scores[d] || 0) > 0 ? (s.scores[d]).toFixed(2) : '—'}
                               </td>
                             ))}
-                            <td style={{ ...S.td, fontWeight: 700, textAlign: 'center' }}>{s.total}</td>
+                            <td style={{ ...S.td, fontWeight: 700, textAlign: 'center' }}>{s.total.toFixed(2)}</td>
                             <td style={{ ...S.td, textAlign: 'center' }}>{s.pct.toFixed(1)}%</td>
                             <td style={{ ...S.td, fontWeight: 700, color: rStaff >= 0 ? COLORS.accent : COLORS.danger }}>{fmtMoney(s.share)}</td>
                           </tr>
@@ -10836,9 +11089,11 @@ export default function App() {
                       <tr>
                         <th style={S.th}>Stakeholder</th>
                         <th style={S.th}>Capital</th>
-                        <th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Avg Active Days<InfoIcon tip="The average number of days your money was working during the report period. If you deposited ₦500k on Day 1 of a 30-day month, it's 30 days. If deposited on Day 20, it's 11 days. Multiple deposits are averaged by amount." /></div></th>
+                        <th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Avg Active Days<InfoIcon tip="The average number of days your money was working during the report period. If you deposited ₦500k on Day 1 of a 30-day month, it's 30 days." /></div></th>
                         <th style={S.th}>Share %</th>
-                        <th style={S.th}>Profit</th>
+                        <th style={S.th}>Gross</th>
+                        <th style={S.th}>Total Cut</th>
+                        <th style={S.th}>Net Profit</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -10848,7 +11103,12 @@ export default function App() {
                           <td style={S.td}>{fmtMoney(s.total)}</td>
                           <td style={{ ...S.td, textAlign: 'center' }}>{s.avgActiveDays}</td>
                           <td style={{ ...S.td, textAlign: 'center' }}>{s.pct.toFixed(1)}%</td>
-                          <td style={{ ...S.td, fontWeight: 700, color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>{fmtMoney(s.share)}</td>
+                          <td style={{ ...S.td }}>{fmtMoney(s.grossShare)}</td>
+                          <td style={{ ...S.td, color: (s.totalCut || 0) > 0 ? COLORS.danger : COLORS.textMuted }}>{(s.totalCutPct || 0) === 0 ? '— (exempt)' : `−${fmtMoney(s.totalCut || 0)} (${s.totalCutPct}%)`}</td>
+                          <td style={{ ...S.td, fontWeight: 700, color: rStakeholder >= 0 ? COLORS.primary : COLORS.danger }}>
+                            {fmtMoney(s.share)}
+                            {s.platformBonus ? <div style={{ fontSize: 10, color: '#8b5cf6', marginTop: 2 }}>incl. {platformCutLabel}: +{fmtMoney(s.platformBonus)}</div> : null}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -10858,6 +11118,29 @@ export default function App() {
                 <p style={{ color: COLORS.textMuted }}>No capital recorded yet.</p>
               )}
             </div>
+            {rPossessor > 0 || possessorToStaff > 0 ? (
+              <div style={S.card}>
+                <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📦 Item Custodian (Possessor) Distribution<InfoIcon tip="The possessor pool is split among users who physically held items, proportional to the revenue those items produced. Items held by the customer redirect their share to the Staff Pool." /></div>
+                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>
+                  Pool to internal possessors: <strong>{fmtMoney(rPossessor)}</strong>
+                  {possessorToStaff > 0 && <> · Redirected to Staff Pool (customer-held items): <strong>{fmtMoney(possessorToStaff)}</strong></>}
+                </div>
+                {rPossessorByUser.length > 0 ? (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ ...S.table, fontSize: '12px' }}>
+                      <thead><tr><th style={S.th}>Possessor</th><th style={S.th}>Item Revenue Held</th><th style={S.th}>Share</th></tr></thead>
+                      <tbody>
+                        {rPossessorByUser.map(p => (
+                          <tr key={p.userId}><td style={{ ...S.td, fontWeight: 700 }}>{p.name}</td><td style={S.td}>{fmtMoney(p.rev)}</td><td style={{ ...S.td, fontWeight: 700, color: COLORS.primary }}>{fmtMoney(p.share)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p style={{ color: COLORS.textMuted, fontSize: 13 }}>No items held by internal users this period — the full possessor pool is redirected to the Staff Pool above.</p>
+                )}
+              </div>
+            ) : null}
 
             {/* Repayments detail */}
             {rClosed.length > 0 && (
@@ -11026,8 +11309,9 @@ export default function App() {
                   ['Margin (on sales)', 'The extra money made above the cash advance when an item is sold. E.g. if ₦5,000 was advanced and item sold for ₦7,000, margin is ₦2,000.'],
                   ['Capital Deployed', 'Total advance money given out as new loans this period. This money is out in the field.'],
                   ['Capital Returned', 'Total advance money recovered from customers who paid back their loans this period.'],
-                  [`Staff Share (${staffSharePct}%)`, `The staff's collective management share — ${staffSharePct}% of the net profit divided among staff based on their task performance. Each person's portion equals their task points ÷ total team task points.`],
-                  [`Stakeholders (${100 - staffSharePct}%)`, `The remaining ${100 - staffSharePct}% of profit is shared among investors. Each investor's share is based on how much capital they put in AND how long it was active during the period.`],
+                  ['Staff Pool', `The staff's collective share — collected per-stakeholder using each stakeholder's own staff cut %. Split among the eligible recipients (configured in Settings → Profit Sharing) proportional to fractional step points earned this period.`],
+                  [platformCutLabel, `Founder / platform fee — collected per-stakeholder using each stakeholder's own platform cut %. Folded into the configured recipient's stakeholder line.`],
+                  ['Stakeholders (net)', `Each stakeholder's gross profit (by capital-days) minus their own staff cut and platform cut percentages. Setting both to 0% for a stakeholder fully exempts them — e.g. yourself as admin and your COO/main staff.`],
                   ['Avg Active Days', 'The average number of days your money was working during the report period. If you deposited ₦500k on Day 1 of a 30-day month, your average active days = 30. If you deposited on Day 20, it\'s 11 days. More active days means your money was at work longer, so you get a bigger share of the profit.'],
                   ['Stakeholder % Share', 'Each stakeholder\'s percentage is calculated from how much they invested and for how long. More capital invested for longer = higher share.'],
                 ].map(([term, def]) => (
@@ -11369,9 +11653,16 @@ export default function App() {
                     const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
                     const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
                     const profit = rev - expT;
-                    const sPct = settings.staffSharePct ?? 10;
-                    const stakeholderPool = profit - Math.floor(profit * sPct / 100);
-                    if (stakeholderPool <= 0) { alert(`No stakeholder profit for ${distDecisionPeriod} (pool: ${fmtMoney(stakeholderPool)}). Cannot generate decisions.`); return; }
+                    if (profit <= 0) { alert(`No profit for ${distDecisionPeriod} (profit: ${fmtMoney(profit)}). Cannot generate decisions.`); return; }
+                    // Per-stakeholder TOTAL cut % (set 0% to exempt). Pool is then
+                    // split by global cutSplit and the platform recipient receives
+                    // the platform component on their stakeholder line.
+                    const defTotal = Number(settings.defaultTotalCutPct ?? 15);
+                    const cutSplitC = settings.cutSplit || DEFAULT_SETTINGS.cutSplit;
+                    const sStaff = Number(cutSplitC.staffPct ?? 50);
+                    const sPlatform = Number(cutSplitC.platformPct ?? 35);
+                    const sTotal = sStaff + Number(cutSplitC.possessorPct ?? 15) + sPlatform || 1;
+                    const platformRecipientId = settings.platformRecipientUserId || 'admin';
 
                     // Detect capital surplus using capitalPrediction
                     const isSurplus = capitalPrediction?.streakMet && capitalPrediction?.safeWithdrawal > 0;
@@ -11395,13 +11686,38 @@ export default function App() {
                     const expectedByName = {};
                     for (const a of allocations) expectedByName[a.name] = Math.round(a.suggested || 0);
 
-                    const stakeData = arr.filter(s => s.user_id).map(s => {
-                      const profitAmount = Math.floor(stakeholderPool * (s.capitalDays / totalCD));
+                    // Per-stakeholder TOTAL cut math: each stakeholder is charged
+                    // a single total cut % on their gross capital-days allocation.
+                    // The aggregated total cut is then split globally into Staff /
+                    // Possessor / Platform pools (cutSplit). The platform recipient
+                    // receives the platform component folded into their stake line.
+                    let totalCutPoolAmount = 0;
+                    const preStake = arr.filter(s => s.user_id).map(s => {
+                      const own = ownershipCfg[s.name] || {};
+                      let totalCutPct;
+                      if (own.totalCutPct != null) totalCutPct = Number(own.totalCutPct);
+                      else if (own.staffCutPct != null || own.platformCutPct != null) totalCutPct = Number(own.staffCutPct || 0) + Number(own.platformCutPct || 0);
+                      else totalCutPct = defTotal;
+                      totalCutPct = Math.max(0, Math.min(100, totalCutPct));
+                      const grossProfit = Math.floor(profit * (s.capitalDays / totalCD));
+                      const totalCut = Math.max(0, Math.floor(grossProfit * totalCutPct / 100));
+                      const netProfit = Math.max(0, grossProfit - totalCut);
+                      totalCutPoolAmount += totalCut;
+                      return { ...s, grossProfit, totalCut, netProfit, totalCutPct };
+                    });
+                    const platformPoolAmount = Math.floor(totalCutPoolAmount * sPlatform / sTotal);
+                    const stakeData = preStake.map(s => {
+                      const profitAmount = s.netProfit + (s.user_id === platformRecipientId ? platformPoolAmount : 0);
                       const expectedContrib = expectedByName[s.name] || 0;
-                      // Reinvest amount = min(profit, expected contribution). 0 if surplus.
                       const reinvestAmount = isSurplus ? 0 : Math.min(profitAmount, expectedContrib);
                       const distributeAmount = profitAmount - reinvestAmount;
-                      const systemNote = isSurplus
+                      const cutLine = s.totalCut > 0
+                        ? ` Gross ${fmtMoney(s.grossProfit)} − total cut ${fmtMoney(s.totalCut)} (${s.totalCutPct}%) = ${fmtMoney(s.netProfit)}.`
+                        : '';
+                      const platformLine = (s.user_id === platformRecipientId && platformPoolAmount > 0)
+                        ? ` ${settings.platformCutLabel || 'Platform / License Fee'} pool of ${fmtMoney(platformPoolAmount)} added to your line.`
+                        : '';
+                      const baseNote = isSurplus
                         ? 'Capital is in surplus — you collect your full profit.'
                         : reinvestAmount > 0
                           ? `Business needs capital. ${fmtMoney(reinvestAmount)} will be reinvested (your expected contribution), you collect ${fmtMoney(distributeAmount)}.`
@@ -11409,13 +11725,16 @@ export default function App() {
                       return {
                         user_id: s.user_id, name: s.name, capitalDays: s.capitalDays, totalCapitalDays: totalCD,
                         profitAmount, reinvestAmount, distributeAmount,
-                        capitalSurplus: isSurplus ? 1 : 0, systemNote,
+                        capitalSurplus: isSurplus ? 1 : 0, systemNote: baseNote + cutLine + platformLine,
                       };
-                    });
-                    if (stakeData.length === 0) { alert('No stakeholders with linked user accounts found. Link users to capital entries in Capital settings.'); return; }
+                    }).filter(s => s.profitAmount > 0);
+                    if (stakeData.length === 0 && totalCutPoolAmount <= 0) { alert('No stakeholders with positive profit and no cut pool. Check capital entries and per-stakeholder cuts in settings.'); return; }
+                    const staffPoolAmount = Math.floor(totalCutPoolAmount * sStaff / sTotal);
+                    const possessorPoolAmount = totalCutPoolAmount - staffPoolAmount - platformPoolAmount;
                     const confirmMsg = `Generate distribution decisions for ${distDecisionPeriod}?\n\n` +
                       (isSurplus ? '✅ Capital is in SURPLUS — all profit will be collected.\n\n' : shortfallAmount > 0 ? `⚠️ Capital shortfall: ${fmtMoney(shortfallAmount)} — reinvestment amounts calculated per expected contributions.\n\n` : '') +
-                      `Stakeholder profit pool: ${fmtMoney(stakeholderPool)}\n` +
+                      `Net profit: ${fmtMoney(profit)} · Total cut pool: ${fmtMoney(totalCutPoolAmount)}\n` +
+                      `  → Staff: ${fmtMoney(staffPoolAmount)} · Possessor: ${fmtMoney(possessorPoolAmount)} · ${settings.platformCutLabel || 'Platform'}: ${fmtMoney(platformPoolAmount)}\n` +
                       stakeData.map(s => `  ${s.name}: ${fmtMoney(s.profitAmount)} (reinvest ${fmtMoney(s.reinvestAmount)}, collect ${fmtMoney(s.distributeAmount)})`).join('\n') +
                       '\n\nSend SMS notifications?';
                     if (!window.confirm(confirmMsg)) return;
@@ -12632,6 +12951,7 @@ export default function App() {
                   <thead>
                     <tr>
                       <th style={thStyle}>Stakeholder</th>
+                      <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Total Cut %<InfoIcon tip="The single combined % of this stakeholder's gross profit allocated to the Staff/Possessor/Platform pool. Set to 0% to fully exempt this stakeholder. The aggregated amount is then split globally per the cut split ratio above." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Min %<InfoIcon tip="The minimum ownership percentage this stakeholder should hold. Used as a soft floor when computing contribution expectations." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Target %<InfoIcon tip="The ideal ownership percentage for this stakeholder. Contribution expectations are calculated so that their share reaches this target." /></span></th>
                       <th style={thStyle}><span style={{ display: 'inline-flex', alignItems: 'center' }}>Max %<InfoIcon tip="The maximum ownership percentage this stakeholder should hold. Stakeholders above their max get a higher share of any recommended withdrawal." /></span></th>
@@ -12646,9 +12966,24 @@ export default function App() {
                     {stakeNames.map(name => {
                       const tgt = ownership[name] || {};
                       const setTgt = (patch) => updateSettings({ ...es, stakeholderOwnership: { ...ownership, [name]: { ...tgt, ...patch } } });
+                      const defTotalCut = es.defaultTotalCutPct ?? DEFAULT_SETTINGS.defaultTotalCutPct;
+                      // Backfill display from legacy fields if user hasn't migrated yet
+                      const effectiveTotalCut = tgt.totalCutPct != null ? tgt.totalCutPct
+                        : (tgt.staffCutPct != null || tgt.platformCutPct != null)
+                          ? Number(tgt.staffCutPct || 0) + Number(tgt.platformCutPct || 0)
+                          : null;
                       return (
                         <tr key={name}>
                           <td style={S.td}><strong>{name}</strong></td>
+                          <td style={S.td}>
+                            <input
+                              style={{ ...S.input, width: '90px', background: (Number(effectiveTotalCut ?? defTotalCut) === 0) ? '#fee2e2' : undefined }}
+                              type="number" min="0" max="100" step="0.5"
+                              placeholder={String(defTotalCut)}
+                              value={effectiveTotalCut ?? ''}
+                              onChange={e => setTgt({ totalCutPct: e.target.value === '' ? null : Number(e.target.value), staffCutPct: null, platformCutPct: null })}
+                            />
+                          </td>
                           <td style={S.td}>
                             <input
                               style={{ ...S.input, width: '80px' }}
@@ -13189,21 +13524,74 @@ export default function App() {
           {/* ── 13. PROFIT SHARING ── */}
           <div style={S.card}>
             <div style={S.cardTitle}>💼 Profit Sharing</div>
-            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>Configure how net profit is split between staff and investors. The remainder after the staff share goes to stakeholders.</div>
+            <div style={{ fontSize: '13px', color: COLORS.textMuted, marginBottom: '14px' }}>
+              Each stakeholder is charged a single <strong>Total Cut %</strong> on their gross profit share (set in the Stakeholder Ownership Targets table below). Set to <strong>0%</strong> for anyone you want fully exempt — typically yourself (admin) and your main staff/COO when they're also a stakeholder. The aggregated cut pool is then split below into Staff Pool / Possessor Pool / {es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel}.
+            </div>
+            {(() => {
+              const split = es.cutSplit || DEFAULT_SETTINGS.cutSplit;
+              const sStaff = Number(split.staffPct ?? 50);
+              const sPoss = Number(split.possessorPct ?? 15);
+              const sPlat = Number(split.platformPct ?? 35);
+              const sum = sStaff + sPoss + sPlat;
+              const setSplit = (patch) => updateSettings({ ...es, cutSplit: { staffPct: sStaff, possessorPct: sPoss, platformPct: sPlat, ...patch } });
+              return (
+                <div style={{ marginBottom: 14, padding: 12, background: COLORS.bg, borderRadius: 8, border: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Cut Pool Split (must sum to 100%)</div>
+                  <div style={S.grid3}>
+                    <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff %<InfoIcon tip="Portion of the total cut pool paid into the Staff Pool, split among Staff Pool Recipients proportional to fractional step points." /></span>}>
+                      <input style={S.input} type="number" min="0" max="100" step="1" value={sStaff} onChange={e => setSplit({ staffPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+                    </Field>
+                    <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Possessor %<InfoIcon tip="Portion paid to whichever user is set as Possessor on each transaction (last wizard step). Split by item revenue; customer-held items redirect their share to the Staff Pool." /></span>}>
+                      <input style={S.input} type="number" min="0" max="100" step="1" value={sPoss} onChange={e => setSplit({ possessorPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+                    </Field>
+                    <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} %<InfoIcon tip="Portion paid to the platform/license-fee recipient, folded into their stakeholder profit line." /></span>}>
+                      <input style={S.input} type="number" min="0" max="100" step="1" value={sPlat} onChange={e => setSplit({ platformPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+                    </Field>
+                  </div>
+                  <div style={{ fontSize: 12, marginTop: 6, fontWeight: 700, color: sum === 100 ? COLORS.primary : COLORS.danger }}>
+                    {sum === 100 ? '✓ Splits sum to 100%' : `⚠ Splits sum to ${sum}% — adjust to 100%`}
+                  </div>
+                </div>
+              );
+            })()}
             <div style={S.grid2}>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Share (%)<InfoIcon tip="The percentage of net profit shared equally among all active staff members. The remaining percentage goes to stakeholders based on their capital contributions. Default is 10%." /></span>}>
-                <input style={S.input} type="number" min="0" max="100" step="1" value={es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct} onChange={e => updateSettings({ ...es, staffSharePct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
-                <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Stakeholders receive the remaining <strong>{100 - (es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct)}%</strong>.</div>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} label<InfoIcon tip="What to call your founder/owner fee on reports and settings. Purely cosmetic." /></span>}>
+                <input style={S.input} type="text" value={es.platformCutLabel ?? DEFAULT_SETTINGS.platformCutLabel} onChange={e => updateSettings({ ...es, platformCutLabel: e.target.value })} placeholder="Platform / License Fee" />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sale Deadline (days)<InfoIcon tip="Adds extra days after the max loan and grace window to set each item's target sale date. Staff earn a bonus task point when the item sells on or before that intake-anchored target date. Default: 14 days." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>{es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} recipient<InfoIcon tip="Whose profit line the aggregated platform fee gets added to each period. Default: admin." /></span>}>
+                <select style={S.input} value={es.platformRecipientUserId ?? DEFAULT_SETTINGS.platformRecipientUserId} onChange={e => updateSettings({ ...es, platformRecipientUserId: e.target.value })}>
+                  {(users || []).map(u => <option key={u.id} value={u.id}>{u.name} (@{u.username})</option>)}
+                </select>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Default Total Cut % (new stakeholders)<InfoIcon tip="Pre-fills the per-stakeholder Total Cut % when adding a new stakeholder. Existing stakeholders keep their own value." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" step="0.5" value={es.defaultTotalCutPct ?? DEFAULT_SETTINGS.defaultTotalCutPct} onChange={e => updateSettings({ ...es, defaultTotalCutPct: Math.min(100, Math.max(0, Number(e.target.value))) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Pool Recipients<InfoIcon tip="Users eligible to receive a share of the Staff Pool each period. Each recipient's share is proportional to their fractional step points. Admin can be included so they earn from the pool when personally doing staff work." /></span>}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                  {(users || []).map(u => {
+                    const ids = Array.isArray(es.staffPoolRecipientIds) ? es.staffPoolRecipientIds : (DEFAULT_SETTINGS.staffPoolRecipientIds || []);
+                    const checked = ids.includes(u.id);
+                    return (
+                      <label key={u.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 8, border: `1px solid ${checked ? COLORS.primary : COLORS.border}`, background: checked ? COLORS.primaryLight : '#fff', fontSize: 12, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={checked} onChange={e => {
+                          const next = e.target.checked ? Array.from(new Set([...ids, u.id])) : ids.filter(x => x !== u.id);
+                          updateSettings({ ...es, staffPoolRecipientIds: next });
+                        }} />
+                        {u.name} <span style={{ color: COLORS.textMuted }}>(@{u.username})</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Target Sale Deadline (days)<InfoIcon tip="Adds extra days after the max loan and grace window to set each item's target sale date. Staff earn a bonus point when the item sells on or before that intake-anchored target date. Default: 14 days." /></span>}>
                 <input style={S.input} type="number" min="1" max="365" value={es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} onChange={e => updateSettings({ ...es, targetSaleDeadlineDays: Number(e.target.value) })} />
               </Field>
-              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Monthly Target (loans)<InfoIcon tip="The number of transactions a staff member is expected to handle per month. This is used as the target on the donut chart in each staff member's Profile page. Default: 20." /></span>}>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Staff Monthly Target (loans)<InfoIcon tip="The number of transactions a staff member is expected to handle per month. Default: 20." /></span>}>
                 <input style={S.input} type="number" min="1" max="9999" step="1" value={es.staffMonthlyTarget ?? DEFAULT_SETTINGS.staffMonthlyTarget} onChange={e => updateSettings({ ...es, staffMonthlyTarget: Math.max(1, Number(e.target.value)) })} />
               </Field>
             </div>
             <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '12px', padding: '10px 14px', background: COLORS.bg, borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
-              <strong>How staff shares are calculated:</strong> Each period, the staff pool ({es.staffSharePct ?? DEFAULT_SETTINGS.staffSharePct}% of net profit) is divided based on task points. Points are earned for: completing a new loan intake (+1), processing a repayment (+1), completing a sale (+1), logging a contact attempt on an overdue loan (+1), selling at or above the target price (+1 bonus), and selling on or before the intake-anchored target sale date ({es.targetSaleDeadlineDays ?? DEFAULT_SETTINGS.targetSaleDeadlineDays} days after the max loan and grace window) (+1 bonus). Each staff member's share = their points ÷ total points.
+              <strong>How it works:</strong> Each non-exempt stakeholder pays their Total Cut % into a single pool. That pool is then split — Staff %, Possessor %, {es.platformCutLabel || DEFAULT_SETTINGS.platformCutLabel} % — using the global ratio above. Staff Pool is split among recipients by fractional step points. Possessor Pool is split by item revenue across whoever is set as the item's possessor on the last wizard step; items left with the customer redirect their possessor share back into the Staff Pool.
             </div>
           </div>
 
