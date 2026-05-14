@@ -6,7 +6,7 @@ import { printMonthReport } from './PrintMonthReport.jsx';
 import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
 import { buildNotifications, getReadIds, seedReadIds } from './ProfilePage/NotificationsPanel.jsx';
-import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT, parseSignatureBbox, cropImageToBbox } from './utils/signatureRefine';
+import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT, parseSignatureBbox, parseSignatureMeta, cropImageToBbox } from './utils/signatureRefine';
 import {
   ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area,
@@ -1832,14 +1832,17 @@ function SignatureCapture({ label, value, onChange, settings, required, size = 1
             settings.geminiTemperature,
           );
           if (result?.text) {
-            const noteMatch = result.text.match(/NOTE:\s*(.+)/i);
-            if (noteMatch) setAiNote(noteMatch[1].trim());
-            if (!/IS_SIGNATURE:\s*yes/i.test(result.text)) {
+            // eslint-disable-next-line no-console
+            console.log('[signature AI]', result.text);
+            const { isSignature, note } = parseSignatureMeta(result.text);
+            if (note) setAiNote(note);
+            if (isSignature === false) {
               setError('AI could not clearly see a signature — retake if needed.');
-            } else {
-              const bbox = parseSignatureBbox(result.text);
-              if (bbox) preCropped = await cropImageToBbox(b64, bbox);
             }
+            const bbox = parseSignatureBbox(result.text);
+            // eslint-disable-next-line no-console
+            console.log('[signature bbox]', bbox);
+            if (bbox) preCropped = await cropImageToBbox(b64, bbox);
           }
         } catch { /* AI is optional — proceed to refinement on the uncropped image */ }
       }

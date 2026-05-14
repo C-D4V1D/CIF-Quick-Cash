@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { COLORS } from '../theme';
-import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT, parseSignatureBbox, cropImageToBbox } from '../utils/signatureRefine';
+import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT, parseSignatureBbox, parseSignatureMeta, cropImageToBbox } from '../utils/signatureRefine';
 
 const API_BASE = '/api';
 
@@ -89,15 +89,13 @@ export default function SignatureSection({ currentUser, settings = {}, callGemin
         );
         if (result?.text) {
           const text = result.text;
-          const isSig = /IS_SIGNATURE:\s*yes/i.test(text);
-          const noteMatch = text.match(/NOTE:\s*(.+)/i);
-          if (noteMatch) setAiNote(noteMatch[1].trim());
-          if (!isSig) {
+          const { isSignature, note } = parseSignatureMeta(text);
+          if (note) setAiNote(note);
+          if (isSignature === false) {
             setError('AI could not confirm a handwritten signature in this photo. You can still continue if you are sure.');
-          } else {
-            const bbox = parseSignatureBbox(text);
-            if (bbox) preCropped = await cropImageToBbox(rawData, bbox);
           }
+          const bbox = parseSignatureBbox(text);
+          if (bbox) preCropped = await cropImageToBbox(rawData, bbox);
         }
         // Ignore AI errors silently — refinement still works without AI.
       }
