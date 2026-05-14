@@ -107,8 +107,49 @@ export const refineSignatureImage = (dataUrl) =>
     img.src = dataUrl;
   });
 
-export const SIGNATURE_AI_PROMPT = `You are reviewing a photo uploaded as a user's handwritten signature.
-Respond with EXACTLY one line in this format:
+export const SIGNATURE_AI_PROMPT = `You are reviewing a photo uploaded as a user's handwritten signature on paper.
+The photo may contain distracting elements: printed agreement text, ruling lines, the signature line label, hands, or other paper edges.
+Respond with EXACTLY these three lines (in this exact order, no other text):
 IS_SIGNATURE: yes|no
+BBOX: ymin,xmin,ymax,xmax
 NOTE: <one short sentence of feedback>
-If the image does not clearly show a handwritten signature on a light background, answer "no".`;
+
+BBOX is the tight bounding box around ONLY the handwritten signature ink strokes — exclude any printed text, the signature line itself, hands, and paper edges. Use Gemini's standard normalized integer coordinates from 0 to 1000 (top-left origin). Leave a few % of padding around the strokes. If IS_SIGNATURE is "no" or you cannot determine a box, output BBOX: 0,0,1000,1000.`;
+
+// Crop a data URL image to a Gemini-style normalized 0–1000 bbox (ymin,xmin,ymax,xmax).
+// Returns a JPEG data URL. Falls back to the original on any failure.
+export const cropImageToBbox = (dataUrl, bbox) => new Promise((resolve) => {
+  try {
+    const [ymin, xmin, ymax, xmax] = bbox;
+    if (!(ymax > ymin && xmax > xmin)) return resolve(dataUrl);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const W = img.width, H = img.height;
+        const sx = Math.max(0, Math.floor((xmin / 1000) * W));
+        const sy = Math.max(0, Math.floor((ymin / 1000) * H));
+        const sw = Math.min(W - sx, Math.ceil(((xmax - xmin) / 1000) * W));
+        const sh = Math.min(H - sy, Math.ceil(((ymax - ymin) / 1000) * H));
+        if (sw < 10 || sh < 10) return resolve(dataUrl);
+        const canvas = document.createElement('canvas');
+        canvas.width = sw; canvas.height = sh;
+        canvas.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        resolve(canvas.toDataURL('image/jpeg', 0.92));
+      } catch { resolve(dataUrl); }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  } catch { resolve(dataUrl); }
+});
+
+// Parse the BBOX line out of a Gemini response. Returns [ymin,xmin,ymax,xmax] or null.
+export const parseSignatureBbox = (aiText) => {
+  if (!aiText) return null;
+  const m = aiText.match(/BBOX:\s*([\d.\-,\s]+)/i);
+  if (!m) return null;
+  const nums = m[1].split(/[,\s]+/).map(Number).filter(n => Number.isFinite(n));
+  if (nums.length < 4) return null;
+  const [ymin, xmin, ymax, xmax] = nums;
+  if (ymin === 0 && xmin === 0 && ymax === 1000 && xmax === 1000) return null;
+  return [ymin, xmin, ymax, xmax];
+};

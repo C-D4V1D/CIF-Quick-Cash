@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useLocation, Routes, Route, Navigate } from "react-router-dom";
-import { viewAgreementPDF, downloadAgreementPDF, viewBusinessCopyPDF, downloadBusinessCopyPDF } from './PrintAgreement.jsx';
+import { viewAgreementPDF, downloadAgreementPDF, viewBusinessCopyPDF, downloadBusinessCopyPDF, viewCustomerCopyPDF, downloadCustomerCopyPDF } from './PrintAgreement.jsx';
 import { printMonthReport } from './PrintMonthReport.jsx';
 import { printStorageTag } from './PrintStorageTag.jsx';
 import ProfilePage from './ProfilePage/index.jsx';
 import { buildNotifications, getReadIds, seedReadIds } from './ProfilePage/NotificationsPanel.jsx';
-import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT } from './utils/signatureRefine';
+import { compressToDataUrl, refineSignatureImage, SIGNATURE_AI_PROMPT, parseSignatureBbox, cropImageToBbox } from './utils/signatureRefine';
 import {
   ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   Legend, ResponsiveContainer, ReferenceLine, AreaChart, Area,
@@ -1817,7 +1817,10 @@ function SignatureCapture({ label, value, onChange, settings, required, size = 1
     try {
       const b64 = await compressToDataUrl(file);
       setRawData(b64);
-      // Optional AI verification (only if an API key is configured)
+      // Optional AI verification + bounding-box crop (only if an API key is configured).
+      // The AI returns a tight bbox around the signature ink so we can crop out
+      // any printed agreement text or other distractions before refinement.
+      let preCropped = b64;
       if (settings?.geminiApiKey) {
         try {
           const result = await callGeminiAI(
@@ -1833,11 +1836,14 @@ function SignatureCapture({ label, value, onChange, settings, required, size = 1
             if (noteMatch) setAiNote(noteMatch[1].trim());
             if (!/IS_SIGNATURE:\s*yes/i.test(result.text)) {
               setError('AI could not clearly see a signature — retake if needed.');
+            } else {
+              const bbox = parseSignatureBbox(result.text);
+              if (bbox) preCropped = await cropImageToBbox(b64, bbox);
             }
           }
-        } catch { /* AI is optional — proceed to refinement */ }
+        } catch { /* AI is optional — proceed to refinement on the uncropped image */ }
       }
-      const refined = await refineSignatureImage(b64);
+      const refined = await refineSignatureImage(preCropped);
       setRefinedData(refined);
       setStage('confirm');
     } catch (err) {
@@ -6804,24 +6810,26 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
               </>
             ))}
 
-            {/* Step 2 — Generate & print */}
+            {/* Step 2 — Generate & print (customer copy only — the business copy is
+                always available later from the transaction details view) */}
             {stepBox(2, 'Generate & Print the PDF', '#0891b2', (
               <>
-                <p style={{ margin: '0 0 10px' }}>Click the button to open or download the {tx.type === 'outright' ? 'receipt' : 'agreement'} PDF. Print it on <strong>A4 paper</strong>. You will get two copies — one for the business and one for the {tx.type === 'outright' ? 'seller' : 'customer'}.</p>
+                <p style={{ margin: '0 0 10px' }}>Click the button to open or download the <strong>{tx.type === 'outright' ? 'seller' : 'customer'} copy</strong> of the {tx.type === 'outright' ? 'receipt' : 'agreement'}. Print it on <strong>A4 paper</strong> and hand it to the {tx.type === 'outright' ? 'seller' : 'customer'}.</p>
+                <p style={{ margin: '0 0 10px', fontSize: '12px', color: COLORS.textMuted }}>ℹ️ The business copy is available anytime later from the transaction details view.</p>
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                   <button
                     style={{ ...S.btn('accent'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
                     disabled={pdfLoading}
-                    onClick={async () => { setPdfLoading(true); try { await viewAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
+                    onClick={async () => { setPdfLoading(true); try { await viewCustomerCopyPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
                   >
-                    {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 ${tx.type === 'outright' ? 'View Receipt PDF' : 'View Agreement PDF'}`}
+                    {pdfLoading ? <><Spinner /> Generating PDF…</> : `👁 View ${tx.type === 'outright' ? 'Seller' : 'Customer'} Copy`}
                   </button>
                   <button
                     style={{ ...S.btn('outline'), padding: '10px 20px', fontSize: '14px', opacity: pdfLoading ? 0.6 : 1 }}
                     disabled={pdfLoading}
-                    onClick={async () => { setPdfLoading(true); try { await downloadAgreementPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
+                    onClick={async () => { setPdfLoading(true); try { await downloadCustomerCopyPDF({ ...tx, repSignatureUrl: currentUser?.signature || null }, settings); } finally { setPdfLoading(false); } }}
                   >
-                    ⬇ Download PDF
+                    ⬇ Download {tx.type === 'outright' ? 'Seller' : 'Customer'} Copy
                   </button>
                 </div>
               </>
@@ -6853,11 +6861,11 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             ))}
 
             {/* Step 5 — Sign & thumbprint */}
-            {stepBox(5, 'Sign & Thumbprint Both Copies', '#d97706', (
+            {stepBox(5, `Sign & Thumbprint the ${tx.type === 'outright' ? 'Seller' : 'Customer'} Copy`, '#d97706', (
               <ul style={{ margin: 0, paddingLeft: '18px' }}>
                 <li>Ask them to write their signature on the signature line.</li>
                 <li>Ask them to press their right thumb on the thumbprint box.</li>
-                <li>Give the {tx.type === 'outright' ? 'seller' : 'customer'} one copy and keep one copy for the business.</li>
+                <li>Hand the signed copy to the {tx.type === 'outright' ? 'seller' : 'customer'} to take home.</li>
               </ul>
             ))}
 

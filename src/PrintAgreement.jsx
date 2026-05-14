@@ -1047,3 +1047,47 @@ export async function downloadBusinessCopyPDF(tx, settings = {}) {
   const isOutright = tx.type === 'outright';
   pdf.save(`${isOutright ? 'Receipt' : 'Agreement'}_Business_${tx.ref || 'doc'}.pdf`);
 }
+
+// ---------------------------------------------------------------------------
+// Generate a PDF containing only the customer/seller copy (for handing to
+// the customer at the agreement step — business copy is always available
+// later from the transaction details view).
+// ---------------------------------------------------------------------------
+export async function generateCustomerCopyPDF(tx, settings = {}) {
+  const isOutright = tx.type === 'outright';
+  const css = getDocumentCSS(isOutright);
+
+  if (isOutright) {
+    const W = 794;
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const pages = buildOutrightCopyHTML(tx, settings, 'SELLER COPY', false);
+    for (let i = 0; i < pages.length; i++) {
+      if (i > 0) pdf.addPage();
+      const imgData = await capturePageHTML(pages[i], css, W);
+      addImageToPage(pdf, imgData, 210, 297);
+    }
+    return pdf;
+  } else {
+    const W = 1123;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const faces = buildCopyHTML(tx, settings, 'CUSTOMER COPY', false);
+    for (let i = 0; i < faces.length; i++) {
+      if (i > 0) pdf.addPage();
+      const imgData = await capturePageHTML(faces[i], css, W);
+      addImageToPage(pdf, imgData, 297, 210);
+    }
+    return pdf;
+  }
+}
+
+export async function viewCustomerCopyPDF(tx, settings = {}) {
+  const pdf = await generateCustomerCopyPDF(tx, settings);
+  const url = pdf.output('bloburl');
+  window.open(url, '_blank');
+}
+
+export async function downloadCustomerCopyPDF(tx, settings = {}) {
+  const pdf = await generateCustomerCopyPDF(tx, settings);
+  const isOutright = tx.type === 'outright';
+  pdf.save(`${isOutright ? 'Receipt' : 'Agreement'}_Customer_${tx.ref || 'doc'}.pdf`);
+}
