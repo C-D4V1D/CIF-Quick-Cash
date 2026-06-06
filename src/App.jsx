@@ -456,6 +456,7 @@ const DEFAULT_SETTINGS = {
   cacRegNumber: '',
   // Loan Parameters
   interestRate: 1, interestRateRanges: [], loanCapNoReceipt: 40, loanCapWithReceipt: 50,
+  outrightCapNoReceipt: 40, outrightCapWithReceipt: 50,
   graceDays: 3, serviceFee: 1000, serviceFeeRanges: [], maxLoanDays: 30,
   // Sales Configuration
   targetSellPct: 75, minSellBonus: 20, outrightMinMarkupPct: 20, maxPartsOnlyAdvance: 5000,
@@ -5844,10 +5845,15 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
 
   // For multi-item loans, aggregate totals across all snapshotted items.
   const allTxItems = tx.items && tx.items.length > 0 ? tx.items : null;
-  const capPct = tx.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
+  const isOutright = tx.type === 'outright';
+  const capPct = tx.hasReceipt === true
+    ? (isOutright ? (settings.outrightCapWithReceipt || 50) : (settings.loanCapWithReceipt || 50))
+    : (isOutright ? (settings.outrightCapNoReceipt || 40) : (settings.loanCapNoReceipt || 40));
   const maxAdvance = allTxItems
     ? allTxItems.reduce((s, item) => {
-        const p = item.hasReceipt === true ? (settings.loanCapWithReceipt || 50) : (settings.loanCapNoReceipt || 40);
+        const p = item.hasReceipt === true
+          ? (isOutright ? (settings.outrightCapWithReceipt || 50) : (settings.loanCapWithReceipt || 50))
+          : (isOutright ? (settings.outrightCapNoReceipt || 40) : (settings.loanCapNoReceipt || 40));
         return s + (item.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((item.estimatedValue || 0) * p / 100));
       }, 0)
     : (tx.partsOnly ? (settings.maxPartsOnlyAdvance || MAX_PARTS_ONLY_ADVANCE) : Math.floor((tx.estimatedValue || 0) * capPct / 100));
@@ -12654,6 +12660,12 @@ export default function App() {
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Cap — With Receipt (%)<InfoIcon tip="The most we can give when a customer shows a receipt — as a percentage of the item's value. We can give more because the receipt proves they bought it." /></span>}>
                 <input style={S.input} type="number" min="0" max="100" value={es.loanCapWithReceipt} onChange={e => updateSettings({ ...es, loanCapWithReceipt: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Cap — No Receipt (%)<InfoIcon tip="The most we pay for an outright purchase when the customer has no receipt — as a percentage of the item's resale value. Separate from the loan cap so you can set a different risk tolerance for direct buys." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" value={es.outrightCapNoReceipt ?? DEFAULT_SETTINGS.outrightCapNoReceipt} onChange={e => updateSettings({ ...es, outrightCapNoReceipt: Number(e.target.value) })} />
+              </Field>
+              <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Outright Purchase Cap — With Receipt (%)<InfoIcon tip="The most we pay for an outright purchase when the customer shows a receipt — as a percentage of the item's resale value. You can afford to pay more when ownership is clearly verified." /></span>}>
+                <input style={S.input} type="number" min="0" max="100" value={es.outrightCapWithReceipt ?? DEFAULT_SETTINGS.outrightCapWithReceipt} onChange={e => updateSettings({ ...es, outrightCapWithReceipt: Number(e.target.value) })} />
               </Field>
               <Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Max Loan Days<InfoIcon tip="The longest time a customer can take before they must come back to pay. The system won't let you set a loan longer than this." /></span>}>
                 <input style={S.input} type="number" min="1" max="365" value={es.maxLoanDays} onChange={e => updateSettings({ ...es, maxLoanDays: Number(e.target.value) })} />
