@@ -7470,7 +7470,8 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
     appliedInterestRate: tx.appliedInterestRate ?? settings.interestRate ?? 1,
     cycleStart: balanceCycleStart,
     principalSince: tx.principalSince || balanceCycleStart,
-    loanDays: Number(tx.loanDays) || settings.maxLoanDays || 30,
+    // Company max loan tenure policy, not the customer's own agreed return date.
+    loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
     carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
   };
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
@@ -7586,7 +7587,8 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
     appliedInterestRate: rate,
     cycleStart: itemCycleStart,
     principalSince: item?.principalSince || itemCycleStart,
-    loanDays: Number(item?.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+    // Company max loan tenure policy, not the customer's own agreed return date.
+    loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
     carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
   };
   const payoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
@@ -7721,7 +7723,8 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         appliedInterestRate: rate,
         cycleStart: item?.cycleStart || tx.dateGiven,
         principalSince: item?.principalSince || item?.cycleStart || tx.dateGiven,
-        loanDays: Number(item?.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+        // Company max loan tenure policy, not the customer's own agreed return date.
+        loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
         carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
       }
     : {
@@ -7729,7 +7732,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         appliedInterestRate: rate,
         cycleStart: tx.cycleStart || tx.dateGiven,
         principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
-        loanDays: Number(tx.loanDays) || settings.maxLoanDays || 30,
+        loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
         carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
       };
 
@@ -7789,7 +7792,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginTop: '8px' }}>
           <div><span style={S.statLabel}>{hasItems ? 'Item Advance' : 'Advance Given'}</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(balance.cashAdvance)}</strong></div>
           <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
-          <div><span style={S.statLabel}>Loan Term</span><br /><strong>{balance.loanDays} days</strong></div>
+          <div><span style={S.statLabel}>Max Loan Tenure</span><br /><strong>{balance.loanDays} days</strong></div>
         </div>
       </div>
 
@@ -7819,7 +7822,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
             </div>
           ) : (
             <div style={{ fontSize: '14px', lineHeight: 1.7 }}>
-              <div>Day <strong>{preview.dayOfCycle}</strong> of a {preview.loanDays}-day term — {preview.bucket === 'principal_first' ? 'within the agreed term, so this payment reduces principal first' : 'on/after the agreed term, so this payment settles interest first'}.</div>
+              <div>Day <strong>{preview.dayOfCycle}</strong> of the {preview.loanDays}-day max tenure — {preview.bucket === 'principal_first' ? 'still within the company\'s max tenure, so this payment reduces principal first' : 'at or past the company\'s max tenure, so this payment settles interest first'}.</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '10px' }}>
                 <div style={{ padding: '8px 10px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
                   <div style={{ fontSize: '11px', color: COLORS.textMuted }}>Applied to Principal</div>
@@ -10186,7 +10189,8 @@ export default function App() {
                     appliedInterestRate: rate,
                     cycleStart: item.cycleStart || tx.dateGiven,
                     principalSince: item.principalSince || item.cycleStart || tx.dateGiven,
-                    loanDays: Number(item.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+                    // Company max loan tenure policy, not the customer's own agreed return date.
+                    loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
                     carriedInterestOwed: Number(item.carriedInterestOwed) || 0,
                   }, { amount: Number.MAX_SAFE_INTEGER, date: localISODate() }, itemGraceDays);
                   const due = itemCashAdvance + (itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied));

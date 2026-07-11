@@ -556,6 +556,10 @@ const getItemCashAdvance = (tx, item) => {
 //
 // balance: { cashAdvance, appliedInterestRate, cycleStart, principalSince,
 //            dateGiven, loanDays, carriedInterestOwed }
+//   loanDays here is the COMPANY's max loan tenure policy (settings.maxLoanDays),
+//   not the customer's own agreed return date (item.loanDays/tx.loanDays) — that
+//   softer, customer-facing target only drives overdue reminders elsewhere in the
+//   app and has no bearing on which balance a payment pays down first.
 // payment: { amount, date }
 // graceDays: from admin settings, used only for the fee-accrual freeze cap.
 function computeLoanPayment(balance, payment, graceDays = 3) {
@@ -1852,7 +1856,10 @@ export async function onRequest(context) {
               appliedInterestRate: appliedRate,
               cycleStart: prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
               principalSince: prevItem?.principalSince || prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
-              loanDays: Number(prevItem?.loanDays || existingData?.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+              // The company's max loan tenure policy — NOT the customer's own agreed
+              // return date (item.loanDays/tx.loanDays), which is a softer,
+              // customer-facing target used only for overdue reminders elsewhere.
+              loanDays: loanCfg.maxLoanDays,
               carriedInterestOwed: Number(prevItem?.carriedInterestOwed) || 0,
             };
             const check = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
@@ -1885,7 +1892,8 @@ export async function onRequest(context) {
             appliedInterestRate: appliedRate,
             cycleStart: existingData?.cycleStart || existingData?.dateGiven || tx.dateGiven,
             principalSince: existingData?.principalSince || existingData?.cycleStart || existingData?.dateGiven || tx.dateGiven,
-            loanDays: Number(existingData?.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+            // Company max loan tenure policy, not the customer's own agreed return date.
+            loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(existingData?.carriedInterestOwed) || 0,
           };
           const check = computeLoanPayment(legacyBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
@@ -2214,7 +2222,8 @@ export async function onRequest(context) {
             appliedInterestRate: appliedRate,
             cycleStart: targetItem.cycleStart || tx.dateGiven,
             principalSince: targetItem.principalSince || targetItem.cycleStart || tx.dateGiven,
-            loanDays: Number(targetItem.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+            // Company max loan tenure policy, not the customer's own agreed return date.
+            loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(targetItem.carriedInterestOwed) || 0,
           }
         : {
@@ -2222,7 +2231,7 @@ export async function onRequest(context) {
             appliedInterestRate: appliedRate,
             cycleStart: tx.cycleStart || tx.dateGiven,
             principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
-            loanDays: Number(tx.loanDays) || loanCfg.maxLoanDays,
+            loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
           };
 
@@ -2307,7 +2316,7 @@ export async function onRequest(context) {
           breakdown = `Loan fully repaid — ₦${fmtNP(result.principalApplied)} principal + ₦${fmtNP(result.interestApplied)} interest = ₦${fmtNP(result.principalApplied + result.interestApplied)}. Item returned.`;
         }
       } else {
-        const bucketLabel = result.bucket === 'principal_first' ? 'on time (within the agreed term)' : 'after the agreed term (interest is settled first)';
+        const bucketLabel = result.bucket === 'principal_first' ? 'within the company max tenure' : 'at or past the company max tenure (interest is settled first)';
         if (hasItems) {
           const updatedItems = tx.items.map((it, i) => i === targetIdx
             ? {
@@ -2317,7 +2326,6 @@ export async function onRequest(context) {
                 principalSince: result.newPrincipalSince,
                 cycleStart: result.newCycleStart,
                 deadlineDate: result.newDeadlineDate || it.deadlineDate || tx.deadlineDate,
-                loanDays: balance.loanDays,
                 payments: [...(it.payments || []), paymentEntry],
               }
             : it);
