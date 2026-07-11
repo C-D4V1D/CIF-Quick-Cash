@@ -529,6 +529,26 @@ const daysBetweenDates = (a, b) => {
   return Math.max(0, Math.floor((new Date(b) - new Date(a)) / 86400000));
 };
 
+// The wizard's buildCurrentItem() (used to snapshot a single-item loan's tx.items[0]
+// at completion) only copies ITEM_FIELDS, which has never included cashAdvance/
+// itemCashAdvance — so the stored item.itemCashAdvance is undefined for the vast
+// majority of real single-item loans. This never surfaced before because the
+// pre-existing repayment flow always read tx.cashAdvance directly and never touched
+// items[] for a single-item loan. The payment feature is the first thing that reads
+// item.itemCashAdvance as the source of truth, so it must fall back sensibly instead
+// of silently treating a real loan as if ₦0 were owed.
+const getItemCashAdvance = (tx, item) => {
+  if (item?.itemCashAdvance !== undefined && item?.itemCashAdvance !== null) {
+    return Number(item.itemCashAdvance) || 0;
+  }
+  const items = Array.isArray(tx?.items) ? tx.items : [];
+  const total = Number(tx?.cashAdvance) || 0;
+  if (items.length <= 1) return total;
+  // Genuine multi-item loans always set this at creation (proportional to estimated
+  // value) — an even split here is only a defensive last resort, not the normal path.
+  return Math.round(total / items.length);
+};
+
 // Pure function — no I/O. Given the current state of a principal balance and a
 // proposed payment, returns exactly what should change. Never trusts a client
 // to supply cashAdvance/interestOwed/etc — callers must pass values read from
@@ -1774,6 +1794,13 @@ export async function onRequest(context) {
         loadLoanConfig(db)
       ]);
       const existingData = existing?.data ? JSON.parse(existing.data) : null;
+
+      // Only an admin may confirm a sale flagged as below the minimum price —
+      // the frontend already gates this, but a direct API call must not bypass it.
+      if (tx.status === 'sold' && tx.belowMinimumOverride && auth.user.role !== 'admin') {
+        return error('Only an admin can confirm a sale below the minimum price.', 403);
+      }
+
       if (tx.status === 'for_sale' && !tx.listedForSaleDate) {
         tx.listedForSaleDate = existingData?.listedForSaleDate
           || (existing?.status === 'for_sale' ? new Date().toISOString() : null)
@@ -1818,7 +1845,7 @@ export async function onRequest(context) {
             const prevItem = existingItems[i];
             // Only validate items that are newly redeemed in this update
             if (!item.redeemed || prevItem?.redeemed) continue;
-            const itemAdvance = Number(prevItem?.itemCashAdvance ?? item.itemCashAdvance ?? 0);
+            const itemAdvance = getItemCashAdvance(existingData || tx, prevItem ?? item);
             const redeemDate = item.dateRedeemed || todayNigeria();
             const itemBalance = {
               cashAdvance: itemAdvance,
@@ -1891,7 +1918,8 @@ export async function onRequest(context) {
         putAction = 'repaid'; putDesc = `✅ Loan repaid — ${ref}: ${tx.fullName} (${itemCount} item${itemCount !== 1 ? 's' : ''}) — ₦${fmtNP(tx.totalFees)} interest collected over ${tx.daysCharged || 0} days`;
       } else if (tx.status === 'sold') {
         const profit = (tx.salePrice || 0) - (tx.cashAdvance || 0);
-        putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})${tx.saleCondition ? ` — Condition: ${tx.saleCondition}` : ''}`;
+        putAction = 'sold'; putDesc = `💰 Item sold — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')} — sold for ₦${fmtNP(tx.salePrice)} (profit ₦${fmtNP(profit)})${tx.saleCondition ? ` — Condition: ${tx.saleCondition}` : ''}` +
+          (tx.belowMinimumOverride ? ` ⚠ BELOW MINIMUM PRICE — approved by ${tx.belowMinimumApprovedBy || 'admin'}: "${tx.belowMinimumReason || ''}"` : '');
       } else if (tx.status === 'for_sale') {
         putAction = 'update'; putDesc = `🏷 Marked for sale — ${ref}: ${[tx.aiBrand, tx.aiModel].filter(Boolean).join(' ')}`;
       } else if (tx.status === 'active' && tx.type === 'advance' && Array.isArray(tx.items)) {
@@ -2182,7 +2210,7 @@ export async function onRequest(context) {
 
       const balance = hasItems
         ? {
-            cashAdvance: Number(targetItem.itemCashAdvance) || 0,
+            cashAdvance: getItemCashAdvance(tx, targetItem),
             appliedInterestRate: appliedRate,
             cycleStart: targetItem.cycleStart || tx.dateGiven,
             principalSince: targetItem.principalSince || targetItem.cycleStart || tx.dateGiven,
