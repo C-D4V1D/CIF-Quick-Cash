@@ -550,13 +550,21 @@ const getItemCashAdvance = (tx, item) => {
 };
 
 // Cheap current-outstanding-principal aggregate — see the frontend mirror in App.jsx
-// for the full rationale. tx.cashAdvance never changes after a partial payment (it
-// stays the original historical total), so "capital currently deployed" style sums
-// (used here for surplus/shortfall detection) must sum unredeemed items instead.
+// for the full rationale. Every advance loan is tracked as one shared balance at
+// the top level (tx.cashAdvance IS the live current balance, updated on every
+// payment) — items[] no longer carries its own principal. The per-item sum is only
+// still needed as a read-only fallback for a multi-item loan that hasn't had a
+// payment recorded since the shared-balance model shipped, and so still has legacy
+// per-item state left over from the old model (see the payment endpoint's
+// consolidation step, which folds that state into tx.cashAdvance the next time a
+// payment is made).
 const getCurrentOutstandingPrincipal = (tx) => {
   if (!tx || tx.type !== 'advance') return 0;
   if (Array.isArray(tx.items) && tx.items.length > 0) {
-    return tx.items.reduce((s, it) => s + (it.redeemed ? 0 : getItemCashAdvance(tx, it)), 0);
+    const hasLegacyItemState = tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
+    if (hasLegacyItemState) {
+      return tx.items.reduce((s, it) => s + (it.redeemed ? 0 : getItemCashAdvance(tx, it)), 0);
+    }
   }
   return Number(tx.cashAdvance) || 0;
 };
@@ -678,10 +686,11 @@ function computeLoanPayment(balance, payment, graceDays = 3, options = {}) {
 // Current outstanding principal + checkpointed interest owed as of today — the
 // backend mirror of the frontend's computeCurrentLoanState, used anywhere a
 // customer-facing figure ("what do you owe right now") is generated (SMS
-// reminders). tx.cashAdvance never changes after a partial payment (it stays the
-// original historical total — see getItemCashAdvance), so a naive
-// `cashAdvance + elapsedDays * dailyFee` calculation silently ignores any payment
-// already made and any per-item checkpoint, overstating what's actually owed.
+// reminders). Every advance loan is tracked as one shared balance at the top
+// level; a multi-item loan that hasn't had a payment recorded since the
+// shared-balance model shipped may still carry legacy per-item state, which is
+// summed here as a read-only fallback (see the payment endpoint's consolidation
+// step for where that state actually gets folded into the shared balance).
 function computeCurrentOwed(tx, cfg) {
   if (!tx || tx.type !== 'advance') return { principal: 0, interestOwed: 0, dailyFee: 0, total: 0 };
   const rate = Number(tx.appliedInterestRate) || Number(cfg.interestRate) || 1;
@@ -693,8 +702,9 @@ function computeCurrentOwed(tx, cfg) {
     const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
     return payoff.error ? { principal: cashAdvance, interestOwed: 0, dailyFee: 0 } : { principal: cashAdvance, interestOwed: payoff.interestApplied, dailyFee: payoff.dailyFee };
   };
+  const hasLegacyItemState = Array.isArray(tx.items) && tx.items.length > 0 && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
   let principal = 0, interestOwed = 0, dailyFee = 0;
-  if (Array.isArray(tx.items) && tx.items.length > 0) {
+  if (hasLegacyItemState) {
     for (const item of tx.items) {
       if (item.redeemed) continue;
       const itemAdvance = getItemCashAdvance(tx, item);
@@ -1901,60 +1911,38 @@ export async function onRequest(context) {
       // cannot be downward-manipulated to reduce the expected fee.
       // appliedInterestRate is locked in at loan creation; fall back to current config for old records.
       //
-      // Expected fees are computed via computeLoanPayment (forcing a full-payoff outcome
-      // with an unlimited payment amount) rather than a flat daysCharged*dailyFee formula,
-      // so an item that already had partial interest payments recorded through the payment
-      // endpoint gets proper credit instead of being double-charged at redemption.
-      if (tx.type === 'advance' && (tx.status === 'closed' || tx.status === 'active')) {
+      // Every advance loan — items or not — is tracked as one shared balance, so
+      // closing it out is validated against the SAME shared balance regardless of
+      // how many items it holds; items[] only carries identity/collateral status
+      // now (see the payment endpoint). A loan that hasn't had a payment recorded
+      // since the shared-balance model shipped may still carry legacy per-item
+      // state, summed here as a read-only fallback for validation purposes only.
+      if (tx.type === 'advance' && tx.status === 'closed') {
         const appliedRate = Number(existingData?.appliedInterestRate || loanCfg.interestRate);
+        const redeemDate = tx.dateRepaid || todayNigeria();
+        const hasLegacyItemState = Array.isArray(existingData?.items) && existingData.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
 
-        if (Array.isArray(tx.items) && tx.items.length > 0) {
-          // Multi-item: validate each newly-redeemed item's fees independently.
-          const existingItems = Array.isArray(existingData?.items) ? existingData.items : [];
-          for (let i = 0; i < tx.items.length; i++) {
-            const item = tx.items[i];
-            const prevItem = existingItems[i];
-            // Only validate items that are newly redeemed in this update
-            if (!item.redeemed || prevItem?.redeemed) continue;
-            const itemAdvance = getItemCashAdvance(existingData || tx, prevItem ?? item);
-            const redeemDate = item.dateRedeemed || todayNigeria();
+        let cashAdvance, expectedTotalFees;
+        if (hasLegacyItemState) {
+          let principal = 0, interest = 0;
+          for (const item of existingData.items) {
+            if (item.redeemed) continue;
+            const itemAdvance = getItemCashAdvance(existingData, item);
+            const itemCycleStart = item.cycleStart || existingData.dateGiven;
             const itemBalance = {
-              cashAdvance: itemAdvance,
-              appliedInterestRate: appliedRate,
-              cycleStart: prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
-              principalSince: prevItem?.principalSince || prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
-              // The company's max loan tenure policy — NOT the customer's own agreed
-              // return date (item.loanDays/tx.loanDays), which is a softer,
-              // customer-facing target used only for overdue reminders elsewhere.
-              loanDays: loanCfg.maxLoanDays,
-              carriedInterestOwed: Number(prevItem?.carriedInterestOwed) || 0,
+              cashAdvance: itemAdvance, appliedInterestRate: appliedRate, cycleStart: itemCycleStart,
+              principalSince: item.principalSince || itemCycleStart, loanDays: loanCfg.maxLoanDays,
+              carriedInterestOwed: Number(item.carriedInterestOwed) || 0,
             };
             const check = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
-            const expectedItemFees = check.error ? 0 : Math.round(check.interestApplied);
-            if (Number(item.feesCharged) !== expectedItemFees) {
-              const label = item.aiItemType || item.captureItemType || `Item ${i + 1}`;
-              return error(
-                `Fee mismatch for "${label}": submitted ₦${item.feesCharged} but expected ₦${expectedItemFees}` +
-                ` (₦${itemAdvance} advance at ${appliedRate}%/day, redeemed ${redeemDate})`,
-                422
-              );
-            }
+            principal += itemAdvance;
+            interest += check.error ? 0 : check.interestApplied;
           }
-          // For full closure, also validate the aggregate totalFees on the transaction
-          if (tx.status === 'closed') {
-            const expectedAggregateFees = tx.items.reduce((s, item) => s + (Number(item.feesCharged) || 0), 0);
-            if (Number(tx.totalFees) !== expectedAggregateFees) {
-              return error(
-                `Aggregate fee mismatch: submitted ₦${tx.totalFees} but sum of item fees is ₦${expectedAggregateFees}`,
-                422
-              );
-            }
-          }
-        } else if (tx.status === 'closed') {
-          // Legacy single-item path (no items[] on the stored record)
-          const cashAdvance = Number(existingData?.cashAdvance || 0);
-          const redeemDate = tx.dateRepaid || todayNigeria();
-          const legacyBalance = {
+          cashAdvance = principal;
+          expectedTotalFees = Math.round(interest);
+        } else {
+          cashAdvance = Number(existingData?.cashAdvance || 0);
+          const balance = {
             cashAdvance,
             appliedInterestRate: appliedRate,
             cycleStart: existingData?.cycleStart || existingData?.dateGiven || tx.dateGiven,
@@ -1963,15 +1951,15 @@ export async function onRequest(context) {
             loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(existingData?.carriedInterestOwed) || 0,
           };
-          const check = computeLoanPayment(legacyBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
-          const expectedTotalFees = check.error ? 0 : Math.round(check.interestApplied);
-          if (Number(tx.totalFees) !== expectedTotalFees) {
-            return error(
-              `Fee mismatch: submitted ₦${tx.totalFees} but expected ₦${expectedTotalFees}` +
-              ` (₦${cashAdvance} advance at ${appliedRate}%/day, redeemed ${redeemDate})`,
-              422
-            );
-          }
+          const check = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
+          expectedTotalFees = check.error ? 0 : Math.round(check.interestApplied);
+        }
+        if (Number(tx.totalFees) !== expectedTotalFees) {
+          return error(
+            `Fee mismatch: submitted ₦${tx.totalFees} but expected ₦${expectedTotalFees}` +
+            ` (₦${cashAdvance} advance at ${appliedRate}%/day, redeemed ${redeemDate})`,
+            422
+          );
         }
       }
 
@@ -2233,8 +2221,20 @@ export async function onRequest(context) {
     // ============================================================
     // POST /api/transactions/:ref/payment — record a flexible partial (or full)
     // loan payment. Authoritative: the client sends only { amount, date, method,
-    // note, itemIndex? } — every financial field is recomputed here from the
-    // stored record so nothing can be tampered with client-side.
+    // note } — every financial field is recomputed here from the stored record so
+    // nothing can be tampered with client-side.
+    //
+    // Every advance loan — one item, several items, or no items at all — is
+    // tracked as ONE shared balance (cashAdvance/cycleStart/principalSince/
+    // carriedInterestOwed at the top level of tx), the same way a no-items loan
+    // has always worked. tx.items[] is purely descriptive from here on (what's
+    // held as collateral, photos, redeemed status) — it no longer carries its own
+    // principal/interest. A multi-item loan created before this change may still
+    // have per-item financial state left over from the old model (from a payment
+    // made while items were tracked independently); the first payment recorded
+    // here folds that legacy state into the shared balance and strips it from
+    // items[] permanently, so every payment after that goes through the single
+    // path below.
     // ============================================================
     if (/^transactions\/[^/]+\/payment$/.test(path) && method === 'POST') {
       const auth = requireAuth(request);
@@ -2245,8 +2245,6 @@ export async function onRequest(context) {
       const date = body.date;
       const paymentMethod = (body.method || '').trim();
       const note = (body.note || '').trim();
-      const itemIndex = Number.isInteger(body.itemIndex) ? body.itemIndex : null;
-      const combined = body.itemIndex === 'combined';
 
       if (!(amountNum > 0)) return error('Payment amount must be greater than zero.', 400);
       if (!date) return error('Payment date is required.', 400);
@@ -2267,279 +2265,59 @@ export async function onRequest(context) {
       const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
       const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
 
-      // ============================================================
-      // COMBINED PAYMENT — staff can choose to treat every unredeemed item on a
-      // multi-item loan as a single loan and apply one payment across all of them.
-      // Amount waterfalls in soonest-deadline-first order (same default order the
-      // single-item picker uses): each item is offered the remaining amount via
-      // the normal computeLoanPayment engine; a full payoff on an item carries its
-      // overpayment forward to the next item, a partial payment exhausts the
-      // remaining amount and stops. Each touched item gets its own payment ledger
-      // entry (with its own sub-amount/principal/interest split) so per-item
-      // history and getItemCashAdvance stay accurate — only how the incoming cash
-      // gets allocated differs from a single-item payment.
-      // ============================================================
-      if (combined && hasItems) {
-        const unredeemed = tx.items
-          .map((it, i) => ({ it, i }))
-          .filter(({ it }) => !it.redeemed)
-          .sort((a, b) => (a.it.deadlineDate || tx.deadlineDate || '').localeCompare(b.it.deadlineDate || tx.deadlineDate || ''));
-        if (unredeemed.length === 0) return error('All items on this loan are already redeemed.', 400);
-
-        for (const { it } of unredeemed) {
-          const principalSince = it.principalSince || it.cycleStart || tx.dateGiven;
-          if (date < principalSince) {
-            const label = it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}` : (it.captureItemType || 'an item');
-            return error(`Payment date cannot be before ${principalSince} (the start of the current cycle or the last recorded payment for ${label}).`, 400);
-          }
-        }
-
-        const labelOf = (it, i) => it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}` : (it.captureItemType || `Item ${i + 1}`);
-        const mkBalance = (it) => ({
-          cashAdvance: getItemCashAdvance(tx, it),
-          appliedInterestRate: appliedRate,
-          cycleStart: it.cycleStart || tx.dateGiven,
-          principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
-          loanDays: loanCfg.maxLoanDays,
-          carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-          deadlineDate: it.deadlineDate || tx.deadlineDate,
-        });
-
-        // Past the company's max tenure, the payment engine settles interest before
-        // principal on a SINGLE loan (see computeLoanPayment's bucket logic). Combining
-        // several items into one payment must honor the same policy across the whole
-        // basket — not just within whichever item happens to be processed first.
-        //
-        // Whether the BASKET is overdue is decided ONCE, from the earliest-deadline
-        // unredeemed item's cycleStart (tx.cycleStart, kept in sync by
-        // mirrorTopLevelFromItems — the same anchor getLoanTimeline/effectiveElapsedDays
-        // use elsewhere). It is NOT decided per item: an item can look "fresh" on its
-        // own (it rolled over recently after an earlier interest-only payment cleared
-        // its own small balance) while the loan as a whole is still badly overdue on
-        // its other items — that item must not jump the queue for principal just
-        // because its own post-rollover clock resets to day 0. So when the basket is
-        // overdue, pass 1 force-clears interest on EVERY item that owes any (via
-        // forceBucket, bypassing what would otherwise be that item's own fresh-cycle
-        // "principal first" bucket) before pass 2 lets anything reach principal.
-        let remaining = amountNum;
-        const updatedItems = [...tx.items];
-        let totalPrincipalApplied = 0, totalInterestApplied = 0;
-        const interestNotes = [], principalNotes = [];
-
-        const overallAnchor = tx.cycleStart || tx.dateGiven;
-        const overallOverdue = daysBetweenDates(overallAnchor, date) >= loanCfg.maxLoanDays;
-
-        const states = unredeemed.map(({ it, i }) => {
-          const balance = mkBalance(it);
-          const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date }, loanCfg.graceDays);
-          const interestOwed = full.error ? 0 : full.interestOwedBefore;
-          return { it, i, balance, interestOwed, owesAnything: !full.error, interestCleared: interestOwed <= 0 };
-        }).filter(s => s.owesAnything);
-
-        // Pass 1 — clear interest on every item, in order, before any principal moves.
-        for (const s of states) {
-          if (!overallOverdue || remaining <= 0 || s.interestOwed <= 0) continue;
-          const pay = Math.min(remaining, s.interestOwed);
-          const r = computeLoanPayment(s.balance, { amount: pay, date }, loanCfg.graceDays, { forceBucket: 'interest_first' });
-          if (r.error) continue;
-          // A zero-principal item (fully paid down previously, only interest left
-          // outstanding) can hit full_payoff here since pay may equal its entire
-          // remaining balance — that response shape has no newCarriedInterestOwed/etc.,
-          // so redeem it directly instead of falling through to the partial-shaped update.
-          if (r.outcome === 'full_payoff') {
-            const it = updatedItems[s.i];
-            const entry = {
-              date, amount: r.principalApplied + r.interestApplied, method: paymentMethod,
-              note: note ? `${note} (combined payment across ${unredeemed.length} items)` : `Part of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
-              principalApplied: r.principalApplied, interestApplied: r.interestApplied, outcome: 'full_payoff',
-              rolledOver: false, recordedBy: auth.user.name || auth.user.username, recordedAt: new Date().toISOString(),
-            };
-            updatedItems[s.i] = { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: (it.payments || []).reduce((sum, p) => sum + (p.principalApplied || 0) + (p.interestApplied || 0), 0) + r.principalApplied + r.interestApplied, daysCharged: r.dayOfCycle, feesCharged: (it.payments || []).reduce((sum, p) => sum + (p.interestApplied || 0), 0) + r.interestApplied, payments: [...(it.payments || []), entry] };
-            totalInterestApplied += r.interestApplied;
-            totalPrincipalApplied += r.principalApplied;
-            remaining = r.overpayment || 0;
-            interestNotes.push(`${labelOf(s.it, s.i)} fully redeemed (₦${fmtNP(r.principalApplied)} principal + ₦${fmtNP(r.interestApplied)} interest)`);
-            continue;
-          }
-          s.balance = { ...s.balance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || s.balance.deadlineDate };
-          s.interestCleared = r.newCarriedInterestOwed <= 0;
-          const entry = {
-            date, amount: r.interestApplied, method: paymentMethod,
-            note: note ? `${note} (interest portion of a combined payment across ${unredeemed.length} items)` : `Interest portion of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
-            principalApplied: 0, interestApplied: r.interestApplied, outcome: 'partial',
-            rolledOver: !!r.rolledOver, recordedBy: auth.user.name || auth.user.username, recordedAt: new Date().toISOString(),
+      // Legacy per-item state from the old per-item payment model — an unredeemed
+      // item carrying its own itemCashAdvance/principalSince/carriedInterestOwed
+      // means it was individually touched by a payment before this change shipped.
+      // Fold every unredeemed item's current balance into the shared one, once,
+      // then strip those fields from items[] so this only ever runs once per loan.
+      const needsConsolidation = hasItems && tx.items.some(it => !it.redeemed && (
+        it.itemCashAdvance !== undefined || it.principalSince !== undefined || it.carriedInterestOwed !== undefined
+      ));
+      if (needsConsolidation) {
+        let consolidatedPrincipal = 0, consolidatedInterest = 0, earliestDeadline = null;
+        for (const it of tx.items) {
+          if (it.redeemed) continue;
+          const itemAdvance = getItemCashAdvance(tx, it);
+          const itemCycleStart = it.cycleStart || tx.dateGiven;
+          const itemBalance = {
+            cashAdvance: itemAdvance, appliedInterestRate: appliedRate, cycleStart: itemCycleStart,
+            principalSince: it.principalSince || itemCycleStart, loanDays: loanCfg.maxLoanDays,
+            carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
           };
-          updatedItems[s.i] = { ...updatedItems[s.i], carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || updatedItems[s.i].deadlineDate || tx.deadlineDate, payments: [...(updatedItems[s.i].payments || []), entry] };
-          totalInterestApplied += r.interestApplied;
-          remaining -= r.interestApplied;
-          interestNotes.push(`${labelOf(s.it, s.i)}: ₦${fmtNP(r.interestApplied)} interest cleared${r.rolledOver ? ` — renewed, new deadline ${r.newDeadlineDate}` : r.newDeadlineDate ? ` — deadline extended to ${r.newDeadlineDate} (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed beyond that)` : ` (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed)`}`);
+          const payoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date }, loanCfg.graceDays);
+          consolidatedPrincipal += itemAdvance;
+          consolidatedInterest += payoff.error ? 0 : payoff.interestApplied;
+          const dl = it.deadlineDate || tx.deadlineDate || '';
+          if (!earliestDeadline || dl < earliestDeadline) earliestDeadline = dl;
         }
-
-        // Pass 2 — apply whatever remains to principal, in order. If the basket is
-        // overdue, items whose interest wasn't fully cleared above are skipped (still
-        // waiting on interest); if the basket isn't overdue, every item goes through
-        // its own normal principal-then-interest single-call flow, unaffected by pass 1
-        // (which never ran).
-        for (const s of states) {
-          if (remaining <= 0) break;
-          if (updatedItems[s.i].redeemed) continue;
-          if (overallOverdue && !s.interestCleared) continue;
-          const r = computeLoanPayment(s.balance, { amount: remaining, date }, loanCfg.graceDays);
-          if (r.error) continue;
-          const subAmount = r.outcome === 'full_payoff' ? (r.principalApplied + r.interestApplied) : remaining;
-          const entry = {
-            date, amount: subAmount, method: paymentMethod,
-            note: note ? `${note} (principal portion of a combined payment across ${unredeemed.length} items)` : `Principal portion of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
-            principalApplied: r.principalApplied, interestApplied: r.interestApplied, outcome: r.outcome,
-            rolledOver: !!r.rolledOver, recordedBy: auth.user.name || auth.user.username, recordedAt: new Date().toISOString(),
-          };
-          if (r.outcome === 'full_payoff') {
-            const it = updatedItems[s.i];
-            updatedItems[s.i] = { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: (it.payments || []).reduce((sum, p) => sum + (p.principalApplied || 0) + (p.interestApplied || 0), 0) + r.principalApplied + r.interestApplied, daysCharged: r.dayOfCycle, feesCharged: (it.payments || []).reduce((sum, p) => sum + (p.interestApplied || 0), 0) + r.interestApplied, payments: [...(it.payments || []), entry] };
-            remaining = r.overpayment || 0;
-            principalNotes.push(`${labelOf(s.it, s.i)} fully redeemed (₦${fmtNP(r.principalApplied)} principal + ₦${fmtNP(r.interestApplied)} interest)`);
-          } else {
-            updatedItems[s.i] = { ...updatedItems[s.i], itemCashAdvance: r.newCashAdvance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || updatedItems[s.i].deadlineDate || tx.deadlineDate, payments: [...(updatedItems[s.i].payments || []), entry] };
-            remaining = 0;
-            principalNotes.push(`${labelOf(s.it, s.i)}: ₦${fmtNP(r.principalApplied)} to principal${r.rolledOver ? ' — renewed' : ''}`);
-          }
-          totalPrincipalApplied += r.principalApplied;
-          totalInterestApplied += r.interestApplied;
-        }
-
-        const perItemNotes = [...interestNotes, ...principalNotes];
-        const totalOverpayment = remaining > 0 ? remaining : 0;
-        tx.items = updatedItems;
-        const allRedeemed = updatedItems.every(it => it.redeemed);
-        const wasRescued = tx.status === 'for_sale' || tx.status === 'ready_to_sell';
-        if (allRedeemed) {
-          tx.status = 'closed';
-          tx.amountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
-          tx.dateRepaid = date;
-          tx.daysCharged = Math.max(...updatedItems.map(it => it.daysCharged || 0));
-          tx.totalFees = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
-          tx.itemReturned = true;
-          tx.repaidBy = auth.user.name;
-        } else {
-          const unredeemedNow = updatedItems.filter(it => !it.redeemed);
-          const earliest = unredeemedNow.reduce((best, it) => {
-            const dl = it.deadlineDate || tx.deadlineDate || '';
-            const bestDl = best ? (best.deadlineDate || tx.deadlineDate || '') : null;
-            return (!best || dl < bestDl) ? it : best;
-          }, null);
-          if (earliest) {
-            tx.cycleStart = earliest.cycleStart || tx.dateGiven;
-            tx.principalSince = earliest.principalSince || earliest.cycleStart || tx.dateGiven;
-            tx.deadlineDate = earliest.deadlineDate || tx.deadlineDate;
-          }
-          if (wasRescued) tx.status = 'active';
-        }
-
-        const breakdown = `Combined payment of ₦${fmtNP(amountNum)} applied across ${unredeemed.length} item(s): ${perItemNotes.join('; ')}.` +
-          (allRedeemed ? ' All items now redeemed — loan closed.' : '') +
-          (totalOverpayment > 0 ? ` ⚠ Overpayment of ₦${fmtNP(totalOverpayment)} — confirm with the customer.` : '');
-        const result = { outcome: allRedeemed ? 'full_payoff' : 'partial', principalApplied: totalPrincipalApplied, interestApplied: totalInterestApplied, overpayment: totalOverpayment };
-
-        await db
-          .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
-          .bind(JSON.stringify(tx), tx.status || 'active', ref)
-          .run();
-
-        const actionLabel = result.outcome === 'full_payoff' ? 'repaid' : 'loan_payment';
-        await logActivity({
-          user: auth.user, action: actionLabel, entityType: 'transaction', entityId: ref,
-          description: `💵 Combined payment recorded — ${ref}: ${tx.fullName} paid ₦${fmtNP(amountNum)} on ${date}. ${breakdown}`,
+        tx.cashAdvance = consolidatedPrincipal;
+        tx.carriedInterestOwed = consolidatedInterest;
+        tx.principalSince = date;
+        tx.cycleStart = tx.cycleStart || tx.dateGiven;
+        tx.deadlineDate = earliestDeadline || tx.deadlineDate;
+        tx.items = tx.items.map(it => {
+          const { itemCashAdvance, cycleStart, principalSince, carriedInterestOwed, payments, ...rest } = it;
+          return rest;
         });
-
-        try {
-          await awardStepPoints('tx:' + ref, [{ userId: auth.user.id, stepKey: 'repayment_collection' }]);
-        } catch (e) {
-          console.error('[staff_points payment] failed:', e?.message ?? e);
-        }
-
-        try {
-          const smsCfg = await loadSmsConfig();
-          if (smsCfg.enabled) {
-            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
-            const phone = toIntlPhone(rawPhone);
-            if (phone) {
-              const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
-              if (result.outcome === 'full_payoff' && smsCfg.redemptionConfirmationEnabled) {
-                const message = fillSmsTemplate(smsCfg.tmplRedemptionConfirmation, {
-                  customerName: tx.fullName, ref, amount: fmtSms(amountNum), dueDate: tx.deadlineDate || '',
-                  businessName: smsCfg.businessName, shopPhone: smsCfg.shopPhone,
-                });
-                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
-                await insertSmsLog({ transactionRef: ref, triggerType: 'redemption_confirmation', message, recipient: phone, status: ok ? 'sent' : 'failed', termiiResponse: JSON.stringify(response), messageId });
-              } else if (result.outcome !== 'full_payoff' && smsCfg.loanPaymentConfirmationEnabled) {
-                const message = fillSmsTemplate(smsCfg.tmplLoanPayment, {
-                  customerName: tx.fullName, ref, amount: fmtSms(amountNum), breakdown,
-                  businessName: smsCfg.businessName, shopPhone: smsCfg.shopPhone,
-                });
-                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
-                await insertSmsLog({ transactionRef: ref, triggerType: 'loan_payment', message, recipient: phone, status: ok ? 'sent' : 'failed', termiiResponse: JSON.stringify(response), messageId });
-              }
-            }
-          }
-        } catch (_smsErr) {
-          await logSmsRuntimeError({ user: auth.user, transactionRef: ref, triggerType: 'loan_payment', err: _smsErr });
-        }
-
-        await pushNotifyAll(env, db, {
-          title: result.outcome === 'full_payoff' ? '✅ Loan Redeemed' : '💵 Loan Payment Recorded',
-          body: `${ref}: ${tx.fullName} paid ₦${fmtNP(amountNum)}`,
-          url: '/transactions',
-          tag: 'loan-payment',
-        });
-
-        return json({ success: true, outcome: result.outcome, breakdown, combined: true, perItemBreakdown: perItemNotes, result });
       }
-
-      let targetIdx = -1, targetItem = null;
-      if (hasItems) {
-        if (itemIndex !== null && tx.items[itemIndex] && !tx.items[itemIndex].redeemed) {
-          targetIdx = itemIndex;
-        } else {
-          // Default selection: the unredeemed item whose current deadline is soonest.
-          let best = null;
-          tx.items.forEach((it, i) => {
-            if (it.redeemed) return;
-            const dl = it.deadlineDate || tx.deadlineDate || '';
-            if (!best || dl < best.dl) best = { i, dl };
-          });
-          if (!best) return error('All items on this loan are already redeemed.', 400);
-          targetIdx = best.i;
-        }
-        targetItem = tx.items[targetIdx];
-      }
-
-      const balance = hasItems
-        ? {
-            cashAdvance: getItemCashAdvance(tx, targetItem),
-            appliedInterestRate: appliedRate,
-            cycleStart: targetItem.cycleStart || tx.dateGiven,
-            principalSince: targetItem.principalSince || targetItem.cycleStart || tx.dateGiven,
-            // Company max loan tenure policy, not the customer's own agreed return date.
-            loanDays: loanCfg.maxLoanDays,
-            carriedInterestOwed: Number(targetItem.carriedInterestOwed) || 0,
-            deadlineDate: targetItem.deadlineDate || tx.deadlineDate,
-          }
-        : {
-            cashAdvance: Number(tx.cashAdvance) || 0,
-            appliedInterestRate: appliedRate,
-            cycleStart: tx.cycleStart || tx.dateGiven,
-            principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
-            loanDays: loanCfg.maxLoanDays,
-            carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
-            deadlineDate: tx.deadlineDate,
-          };
 
       // No backdating before the last accrual checkpoint — principalSince already
       // equals the most recent payment's date (or cycleStart/dateGiven if no
       // payment has been made yet), so this alone is the correct lower bound.
-      if (date < balance.principalSince) {
-        return error(`Payment date cannot be before ${balance.principalSince} (the start of the current cycle or the last recorded payment).`, 400);
+      const checkpoint = tx.principalSince || tx.cycleStart || tx.dateGiven;
+      if (date < checkpoint) {
+        return error(`Payment date cannot be before ${checkpoint} (the start of the current cycle or the last recorded payment).`, 400);
       }
+
+      const balance = {
+        cashAdvance: Number(tx.cashAdvance) || 0,
+        appliedInterestRate: appliedRate,
+        cycleStart: tx.cycleStart || tx.dateGiven,
+        principalSince: checkpoint,
+        loanDays: loanCfg.maxLoanDays,
+        carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
+        deadlineDate: tx.deadlineDate,
+      };
 
       const result = computeLoanPayment(balance, { amount: amountNum, date }, loanCfg.graceDays);
       if (result.error) return error(result.error, 400);
@@ -2554,90 +2332,33 @@ export async function onRequest(context) {
         recordedAt: new Date().toISOString(),
       };
 
-      // The wizard always populates tx.items (even for a single-item loan), so the
-      // hasItems branch below is the common path — not just true multi-item loans.
-      // Everything ELSE in the app (timeline/eligibility, dashboards, RepaymentModal)
-      // still reads the TOP-LEVEL tx.cycleStart/deadlineDate/principalSince, so after
-      // touching items[] we always mirror those fields back from whichever unredeemed
-      // item is most urgent (soonest deadline) — this keeps a single-item loan's
-      // rollover visible everywhere, and keeps a multi-item loan's overall timeline
-      // driven by its most-at-risk item.
-      const mirrorTopLevelFromItems = (items) => {
-        const unredeemed = items.filter(it => !it.redeemed);
-        if (unredeemed.length === 0) return;
-        const earliest = unredeemed.reduce((best, it) => {
-          const dl = it.deadlineDate || tx.deadlineDate || '';
-          const bestDl = best ? (best.deadlineDate || tx.deadlineDate || '') : null;
-          return (!best || dl < bestDl) ? it : best;
-        }, null);
-        tx.cycleStart = earliest.cycleStart || tx.dateGiven;
-        tx.principalSince = earliest.principalSince || earliest.cycleStart || tx.dateGiven;
-        tx.deadlineDate = earliest.deadlineDate || tx.deadlineDate;
-      };
-
       let breakdown;
-      let wasRescued = tx.status === 'for_sale' || tx.status === 'ready_to_sell';
+      const wasRescued = tx.status === 'for_sale' || tx.status === 'ready_to_sell';
 
       if (result.outcome === 'full_payoff') {
+        tx.status = 'closed';
+        tx.amountRepaid = result.principalApplied + result.interestApplied;
+        tx.dateRepaid = date;
+        tx.daysCharged = result.dayOfCycle;
+        tx.totalFees = result.interestApplied;
+        tx.itemReturned = true;
+        tx.repaidBy = auth.user.name;
+        tx.payments = [...(tx.payments || []), paymentEntry];
+        // The shared balance is now zero — every item still held as collateral is
+        // released together, whether or not some were already marked redeemed
+        // individually earlier.
         if (hasItems) {
-          const updatedItems = tx.items.map((it, i) => i === targetIdx
-            ? { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: result.principalApplied + result.interestApplied, daysCharged: result.dayOfCycle, feesCharged: result.interestApplied, payments: [...(it.payments || []), paymentEntry] }
-            : it);
-          tx.items = updatedItems;
-          const allRedeemed = updatedItems.every(it => it.redeemed);
-          // tx.cashAdvance is left untouched here — for items-based loans it has always
-          // been the original total given (set once at creation), never reduced as items
-          // are redeemed (see RedeemItemModal, which never writes it either). Monthly/
-          // historical reporting keyed by dateGiven relies on it staying immutable;
-          // "currently outstanding" is item.itemCashAdvance summed over unredeemed items.
-          if (allRedeemed) {
-            tx.status = 'closed';
-            tx.amountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
-            tx.dateRepaid = date;
-            tx.daysCharged = result.dayOfCycle;
-            tx.totalFees = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
-            tx.itemReturned = true;
-            tx.repaidBy = auth.user.name;
-          } else {
-            mirrorTopLevelFromItems(updatedItems);
-          }
-          breakdown = `Item fully redeemed — ₦${fmtNP(result.principalApplied)} principal + ₦${fmtNP(result.interestApplied)} interest = ₦${fmtNP(result.principalApplied + result.interestApplied)}.` + (allRedeemed ? ' All items now redeemed — loan closed.' : ` ${updatedItems.filter(it => !it.redeemed).length} item(s) remain.`);
-        } else {
-          tx.status = 'closed';
-          tx.amountRepaid = result.principalApplied + result.interestApplied;
-          tx.dateRepaid = date;
-          tx.daysCharged = result.dayOfCycle;
-          tx.totalFees = result.interestApplied;
-          tx.itemReturned = true;
-          tx.repaidBy = auth.user.name;
-          tx.payments = [...(tx.payments || []), paymentEntry];
-          breakdown = `Loan fully repaid — ₦${fmtNP(result.principalApplied)} principal + ₦${fmtNP(result.interestApplied)} interest = ₦${fmtNP(result.principalApplied + result.interestApplied)}. Item returned.`;
+          tx.items = tx.items.map(it => it.redeemed ? it : { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name });
         }
+        breakdown = `Loan fully repaid — ₦${fmtNP(result.principalApplied)} principal + ₦${fmtNP(result.interestApplied)} interest = ₦${fmtNP(result.principalApplied + result.interestApplied)}. ${hasItems ? 'All items' : 'Item'} returned.`;
       } else {
         const bucketLabel = result.bucket === 'principal_first' ? 'within the company max tenure' : 'at or past the company max tenure (interest is settled first)';
-        if (hasItems) {
-          const updatedItems = tx.items.map((it, i) => i === targetIdx
-            ? {
-                ...it,
-                itemCashAdvance: result.newCashAdvance,
-                carriedInterestOwed: result.newCarriedInterestOwed,
-                principalSince: result.newPrincipalSince,
-                cycleStart: result.newCycleStart,
-                deadlineDate: result.newDeadlineDate || it.deadlineDate || tx.deadlineDate,
-                payments: [...(it.payments || []), paymentEntry],
-              }
-            : it);
-          tx.items = updatedItems;
-          // tx.cashAdvance intentionally left untouched — see note above.
-          mirrorTopLevelFromItems(updatedItems);
-        } else {
-          tx.cashAdvance = result.newCashAdvance;
-          tx.carriedInterestOwed = result.newCarriedInterestOwed;
-          tx.principalSince = result.newPrincipalSince;
-          tx.cycleStart = result.newCycleStart;
-          tx.deadlineDate = result.newDeadlineDate || tx.deadlineDate;
-          tx.payments = [...(tx.payments || []), paymentEntry];
-        }
+        tx.cashAdvance = result.newCashAdvance;
+        tx.carriedInterestOwed = result.newCarriedInterestOwed;
+        tx.principalSince = result.newPrincipalSince;
+        tx.cycleStart = result.newCycleStart;
+        tx.deadlineDate = result.newDeadlineDate || tx.deadlineDate;
+        tx.payments = [...(tx.payments || []), paymentEntry];
         if (wasRescued) tx.status = 'active';
         breakdown = `Payment received ${bucketLabel}: ₦${fmtNP(result.principalApplied)} applied to principal, ₦${fmtNP(result.interestApplied)} applied to interest.` +
           (result.rolledOver
