@@ -393,24 +393,35 @@ const getItemCashAdvance = (tx, item) => {
 
 // Cheap, date-math-free variant for dashboard-style aggregates that only need the
 // current outstanding PRINCIPAL (not interest) across possibly many transactions —
-// e.g. "capital currently deployed". tx.cashAdvance itself never changes after a
-// partial payment (it stays the original historical total for monthly/origination
-// reporting — see getItemCashAdvance above), so anything computing "money out
-// right now" must sum unredeemed items' current advance instead of reading it raw.
+// e.g. "capital currently deployed". Every advance loan is tracked as ONE shared
+// balance at the top level (tx.cashAdvance IS the live current balance, updated on
+// every payment) — items[] no longer carries its own principal. The per-item sum
+// below is only a read-only fallback for a multi-item loan that hasn't had a
+// payment recorded since the shared-balance model shipped, and so still has legacy
+// per-item state left over from the old per-item payment model.
 const getCurrentOutstandingPrincipal = (tx) => {
   if (!tx || tx.type !== 'advance') return 0;
   if (Array.isArray(tx.items) && tx.items.length > 0) {
-    return tx.items.reduce((s, it) => s + (it.redeemed ? 0 : getItemCashAdvance(tx, it)), 0);
+    const hasLegacyItemState = tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
+    if (hasLegacyItemState) {
+      return tx.items.reduce((s, it) => s + (it.redeemed ? 0 : getItemCashAdvance(tx, it)), 0);
+    }
   }
   return Number(tx.cashAdvance) || 0;
 };
 
+// Every advance loan's payment ledger lives at tx.payments now (see the payment
+// endpoint's consolidation step, which folds any legacy per-item payments into it
+// the first time a loan is touched under the shared-balance model). Falls back to
+// summing items[].payments only for a loan that hasn't had a payment recorded
+// since that model shipped, and so hasn't been consolidated yet.
 const getLoanPaymentEntries = (tx) => {
   if (!tx || tx.type !== 'advance') return [];
+  if (Array.isArray(tx.payments) && tx.payments.length > 0) return tx.payments;
   if (Array.isArray(tx.items) && tx.items.length > 0) {
     return tx.items.flatMap(it => it?.payments || []);
   }
-  return tx.payments || [];
+  return [];
 };
 
 const getRecognizedInterest = (tx, options = {}) => {
@@ -510,11 +521,15 @@ const computeLoanPayment = (balance, payment, graceDays = 3, options = {}) => {
 };
 
 // Computes the TRUE current state of an advance loan, accounting for any partial
-// payments already recorded. Unlike tx.cashAdvance (which intentionally stays at
-// the original total for historical/monthly reporting — see getItemCashAdvance),
-// this reflects what's actually still outstanding right now: current principal,
-// checkpointed interest owed, and a correct "amount due today". Returns null for
-// non-advance transactions.
+// payments already recorded. Every advance loan — one item, several items, or no
+// items at all — is tracked as ONE shared balance at the top level of tx
+// (cashAdvance/cycleStart/principalSince/carriedInterestOwed), same as it's always
+// worked for a no-items loan; items[] is purely descriptive (collateral identity,
+// photos, redeemed status) and no longer carries its own principal/interest. A
+// multi-item loan that hasn't had a payment recorded since the shared-balance
+// model shipped may still have legacy per-item state — summed here as a read-only
+// display fallback until its next payment folds it into the shared balance for
+// real (see the payment endpoint). Returns null for non-advance transactions.
 const computeCurrentLoanState = (tx, settings) => {
   if (!tx || tx.type !== 'advance') return null;
   const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
@@ -522,11 +537,10 @@ const computeCurrentLoanState = (tx, settings) => {
   const loanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const today = localISODate();
   const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
-  const allPayments = hasItems ? tx.items.flatMap((it, idx) => (it.payments || []).map(p => ({ ...p, itemIndex: idx, itemLabel: it.aiItemType || it.captureItemType || `Item ${idx + 1}` }))) : (tx.payments || []);
-  allPayments.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const hasLegacyItemState = hasItems && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
 
   if (tx.status === 'closed' || tx.status === 'sold' || tx.status === 'declined') {
-    return { isSettled: true, originalAdvance: tx.cashAdvance || 0, currentPrincipal: 0, interestOwed: 0, dailyInterestTotal: 0, amountDueToday: 0, payments: allPayments };
+    return { isSettled: true, originalAdvance: tx.cashAdvance || 0, currentPrincipal: 0, interestOwed: 0, dailyInterestTotal: 0, amountDueToday: 0, payments: tx.payments || [] };
   }
 
   const evaluate = (cashAdvance, cycleStart, principalSince, carriedInterestOwed) => {
@@ -535,12 +549,15 @@ const computeCurrentLoanState = (tx, settings) => {
     return payoff.error ? { principal: cashAdvance, interestOwed: 0, dailyFee: 0 } : { principal: cashAdvance, interestOwed: payoff.interestApplied, dailyFee: payoff.dailyFee };
   };
 
-  let currentPrincipal = 0, interestOwed = 0, dailyInterestTotal = 0;
-  if (hasItems) {
+  let currentPrincipal, interestOwed, dailyInterestTotal, allPayments;
+  if (hasLegacyItemState) {
+    currentPrincipal = 0; interestOwed = 0; dailyInterestTotal = 0;
+    allPayments = tx.items.flatMap((it, idx) => (it.payments || []).map(p => ({ ...p, itemIndex: idx, itemLabel: it.aiItemType || it.captureItemType || `Item ${idx + 1}` })));
     for (const item of tx.items) {
       if (item.redeemed) continue;
       const itemAdvance = getItemCashAdvance(tx, item);
-      const r = evaluate(itemAdvance, item.cycleStart || tx.dateGiven, item.principalSince, item.carriedInterestOwed);
+      const itemCycleStart = item.cycleStart || tx.dateGiven;
+      const r = evaluate(itemAdvance, itemCycleStart, item.principalSince, item.carriedInterestOwed);
       currentPrincipal += r.principal;
       interestOwed += r.interestOwed;
       dailyInterestTotal += r.dailyFee;
@@ -550,15 +567,19 @@ const computeCurrentLoanState = (tx, settings) => {
     currentPrincipal = r.principal;
     interestOwed = r.interestOwed;
     dailyInterestTotal = r.dailyFee;
+    allPayments = tx.payments || [];
   }
+  allPayments = [...allPayments].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
-  // Break the total interest owed into what accrued BEFORE the most recent principal
-  // payment (frozen at the old, higher balance) vs. what has accrued SINCE it (at the
-  // new, lower balance) — this is the same carriedInterestOwed/newAccrual split
-  // computeLoanPayment uses internally, derived here for display purposes. Skipped
-  // when no payment has been recorded yet, since there's nothing to split.
+  // Break the total interest owed into what accrued BEFORE the most recent payment
+  // (frozen at the old, higher balance) vs. what has accrued SINCE it (at the new,
+  // lower balance) — the same carriedInterestOwed/newAccrual split computeLoanPayment
+  // uses internally, derived here for display. Only exact for a single checkpoint,
+  // so it's skipped for a not-yet-consolidated legacy multi-item loan (its items can
+  // have diverged checkpoints); that display catches up automatically once its next
+  // payment consolidates it into the shared balance.
   let interestBreakdown = null;
-  if (allPayments.length > 0) {
+  if (!hasLegacyItemState && allPayments.length > 0) {
     const anchor = tx.cycleStart || tx.dateGiven;
     const lastPaymentDate = allPayments[0].date;
     const daysBeforePayment = Math.max(0, daysBetweenDates(anchor, lastPaymentDate));
@@ -4357,7 +4378,10 @@ function CustomerPortal({ onBack, settings }) {
                   You successfully repaid your loan on <strong>{formatDateLong(tx.dateRepaid) || 'the agreed date'}</strong> and collected your item.<br /><br />
                   <strong>Summary:</strong><br />
                   &bull; Cash advance: <strong>{fmtMoney(tx.cashAdvance)}</strong><br />
-                  &bull; Daily fee ({tx.daysCharged ?? 0} day{(tx.daysCharged ?? 0) !== 1 ? 's' : ''} × {fmtMoney(tx.dailyFee ?? 0)}): <strong>{fmtMoney(tx.totalFees ?? 0)}</strong><br />
+                  {/* Not shown as "days × daily fee" — with multiple items, each accrues
+                      from its own checkpoint, so a single multiplication wouldn't
+                      reconcile with the correctly-computed total below it. */}
+                  &bull; Holding fees ({tx.daysCharged ?? 0} day{(tx.daysCharged ?? 0) !== 1 ? 's' : ''} outstanding): <strong>{fmtMoney(tx.totalFees ?? 0)}</strong><br />
                   &bull; Total repaid: <strong>{fmtMoney(tx.amountRepaid)}</strong><br /><br />
                   Thank you for your business! We&apos;re here whenever you need cash again.<br />
                   <span style={{ opacity: 0.65, fontSize: '12px' }}>Agreement Ref: {tx.ref}</span>
@@ -7594,65 +7618,59 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
 // ============================================================
 function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   const today = localISODate();
+  const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
+  const hasLegacyItemState = hasItems && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
+  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const loanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const balanceCycleStart = tx.cycleStart || tx.dateGiven;
   // Defaults to today but staff can pick an earlier date when catching up on a
   // collection that wasn't recorded the same day — fees are computed as of
   // whichever date is chosen, not always "today".
   const [collectionDate, setCollectionDate] = useState(today);
+
+  // Every advance loan — one item, several, or none — shares ONE balance, same as
+  // it's always worked for a no-items loan; paying it off releases every item held
+  // as collateral together. A loan that hasn't had a payment recorded since the
+  // shared-balance model shipped may still carry legacy per-item state, summed
+  // here as a read-only fallback (see the payment endpoint's consolidation step).
+  const advanceToCollect = hasLegacyItemState
+    ? tx.items.reduce((s, it) => s + (it.redeemed ? 0 : getItemCashAdvance(tx, it)), 0)
+    : (tx.cashAdvance || 0);
+
   // Full payoff = force computeLoanPayment's full_payoff branch (unlimited amount) so the
   // interest owed correctly accounts for any prior partial payments and principal changes
   // (see computeLoanPayment's checkpointed accrual — a flat days*dailyFee formula would
   // either double-charge or erase interest already accrued at a different principal).
-  const balance = {
-    cashAdvance: tx.cashAdvance || 0,
-    appliedInterestRate: tx.appliedInterestRate ?? settings.interestRate ?? 1,
-    cycleStart: balanceCycleStart,
-    principalSince: tx.principalSince || balanceCycleStart,
-    // Company max loan tenure policy, not the customer's own agreed return date.
-    loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
-    carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
-  };
-  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
-  let days = 0;
-  let dailyFee = 0;
-  let totalFees = 0;
-  let advanceToCollect = 0;
-
-  const calculateItemPayoff = (tx, it, settings, collectionDate, graceDays) => {
-    const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-    const itemAdvance = getItemCashAdvance(tx, it);
-    const itemCycleStart = it.cycleStart || tx.dateGiven;
-    const itemBalance = {
-      cashAdvance: itemAdvance,
-      appliedInterestRate: rate,
-      cycleStart: itemCycleStart,
-      principalSince: it.principalSince || itemCycleStart,
-      loanDays: Number(it.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
-      carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-    };
-    const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
-    const itemDays = itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings);
-    const itemFees = itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
-    const itemDailyFee = itemPayoff.dailyFee ?? Math.floor(itemAdvance * rate / 100);
-    return { itemAdvance, itemDays, itemFees, itemDailyFee };
-  };
-
-  if (Array.isArray(tx.items) && tx.items.length > 0) {
-    tx.items.forEach(it => {
-      if (it.redeemed) return;
-      const { itemAdvance, itemDays, itemFees, itemDailyFee } = calculateItemPayoff(tx, it, settings, collectionDate, graceDays);
-      
-      days = Math.max(days, itemDays);
-      dailyFee += itemDailyFee;
-      totalFees += itemFees;
-      advanceToCollect += itemAdvance;
-    });
+  let days, dailyFee, totalFees;
+  if (hasLegacyItemState) {
+    days = 0; dailyFee = 0; totalFees = 0;
+    for (const it of tx.items) {
+      if (it.redeemed) continue;
+      const itemAdvance = getItemCashAdvance(tx, it);
+      const itemCycleStart = it.cycleStart || tx.dateGiven;
+      const itemBalance = {
+        cashAdvance: itemAdvance, appliedInterestRate: rate, cycleStart: itemCycleStart,
+        principalSince: it.principalSince || itemCycleStart, loanDays, carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+      };
+      const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
+      days = Math.max(days, itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings));
+      dailyFee += itemPayoff.dailyFee ?? Math.floor(itemAdvance * rate / 100);
+      totalFees += itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
+    }
   } else {
+    const balance = {
+      cashAdvance: tx.cashAdvance || 0,
+      appliedInterestRate: rate,
+      cycleStart: balanceCycleStart,
+      principalSince: tx.principalSince || balanceCycleStart,
+      loanDays,
+      carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
+    };
     const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
     days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
-    dailyFee = payoff.dailyFee ?? Math.floor((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
+    dailyFee = payoff.dailyFee ?? Math.floor((tx.cashAdvance || 0) * rate / 100);
     totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
-    advanceToCollect = tx.cashAdvance || 0;
   }
   const totalDue = advanceToCollect + totalFees;
 
@@ -7661,56 +7679,20 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   const [collectionNotes, setCollectionNotes] = useState(tx.collectionNotes || '');
 
   const handleConfirm = () => {
-    let updatedItems = tx.items;
-    let finalAmountRepaid = 0;
-    let finalTotalFees = 0;
-    let maxDays = 0;
-
-    if (Array.isArray(tx.items) && tx.items.length > 0) {
-      updatedItems = tx.items.map(it => {
-        if (it.redeemed) {
-          finalTotalFees += (it.feesCharged || 0);
-          finalAmountRepaid += (it.amountPaid || 0);
-          maxDays = Math.max(maxDays, it.daysCharged || 0);
-          return it;
-        }
-
-        const { itemAdvance, itemDays, itemFees } = calculateItemPayoff(tx, it, settings, collectionDate, graceDays);
-        const amountPaid = itemAdvance + itemFees;
-        finalTotalFees += itemFees;
-        finalAmountRepaid += amountPaid;
-        maxDays = Math.max(maxDays, itemDays);
-
-        return {
-          ...it,
-          redeemed: true,
-          dateRedeemed: collectionDate,
-          repaidBy: currentUser?.name || '',
-          amountPaid,
-          daysCharged: itemDays,
-          feesCharged: itemFees,
-          handoverPhoto: collectionPhoto,
-          collectionNotes: collectionNotes.trim()
-        };
-      });
-    } else {
-      finalAmountRepaid = totalDue;
-      finalTotalFees = totalFees;
-      maxDays = days;
-    }
-
     onSave({
       ...tx,
       status: 'closed',
-      amountRepaid: finalAmountRepaid,
+      amountRepaid: totalDue,
       dateRepaid: collectionDate,
-      daysCharged: maxDays,
-      totalFees: finalTotalFees,
+      daysCharged: days,
+      totalFees,
       itemReturned: true,
       repaidBy: currentUser?.name || '',
       photoCollectionHandover: collectionPhoto,
       collectionNotes: collectionNotes.trim(),
-      ...(updatedItems ? { items: updatedItems } : {})
+      // Paying off the shared balance releases every item held as collateral,
+      // whether or not some were already marked redeemed individually earlier.
+      ...(hasItems ? { items: tx.items.map(it => it.redeemed ? it : { ...it, redeemed: true, dateRedeemed: collectionDate, repaidBy: currentUser?.name || '' }) } : {}),
     });
   };
   return (
@@ -7743,7 +7725,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
         )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
-          <div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div>
+          <div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong>{hasItems && tx.items.length > 1 && <span style={{ color: COLORS.textMuted, fontWeight: 400 }}> (+{tx.items.length - 1} more, all released together)</span>}</div>
           <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(advanceToCollect)}</strong></div>
           <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
         </div>
@@ -7756,9 +7738,9 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
       {/* ── Date Breakdown ── */}
       <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
         <div style={{ fontSize: '14px', fontWeight: 700 }}>
-          {balance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(balance.cycleStart)} → Collected: {fmtDate(collectionDate)} = {days} day{days === 1 ? '' : 's'}
+          {balanceCycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(balanceCycleStart)} → Collected: {fmtDate(collectionDate)} = {days} day{days === 1 ? '' : 's'}
         </div>
-        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>The collection date is counted as a full day.{balance.cycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
+        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>The collection date is counted as a full day.{balanceCycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
       </div>
 
       {/* ── Total Due ── */}
@@ -7787,7 +7769,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
       </div>
 
       {/* ── Confirmation & Actions ── */}
-      <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item returned</span></label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item{hasItems && tx.items.length > 1 ? 's' : ''} returned</span></label>
       <div style={{ display: 'flex', gap: '12px' }}>
         <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={handleConfirm}>✅ Confirm</button>
         <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
@@ -7799,99 +7781,57 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
 // ============================================================
 // REDEEM ITEM MODAL — partial redemption of one item from a multi-item loan
 // ============================================================
-function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser }) {
+// ============================================================
+// RELEASE ITEM MODAL — hand back one physical item from a multi-item loan
+// while the others stay held as collateral.
+//
+// Every advance loan shares ONE balance now (see PartialPaymentModal /
+// RepaymentModal) — releasing one item early does NOT compute or deduct its
+// own "share" of that balance. The debt is reduced only through Record
+// Payment; this is a judgment call staff make (e.g. the customer has paid
+// enough that releasing this item is reasonable, or is trusted to keep
+// paying down the rest), recorded here as a plain confirmation plus an
+// optional staff note of what amount was considered — not a computed split.
+// ============================================================
+function RedeemItemModal({ tx, itemIndex, onClose, onSave, currentUser }) {
   const item = tx.items[itemIndex];
   const today = localISODate();
-  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-  const itemAdvance = getItemCashAdvance(tx, item);
-  const itemCycleStart = item?.cycleStart || tx.dateGiven;
-  // Defaults to today but staff can pick an earlier date when catching up on a
-  // collection that wasn't recorded the same day — fees are computed as of
-  // whichever date is chosen, not always "today".
-  const [collectionDate, setCollectionDate] = useState(today);
-  // Full payoff = force computeLoanPayment's full_payoff branch so interest owed correctly
-  // accounts for any prior partial payments and principal changes on this item.
-  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
-  const itemBalance = {
-    cashAdvance: itemAdvance,
-    appliedInterestRate: rate,
-    cycleStart: itemCycleStart,
-    principalSince: item?.principalSince || itemCycleStart,
-    // Company max loan tenure policy, not the customer's own agreed return date.
-    loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
-    carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
-  };
-  const payoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
-  const days = payoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, item, settings);
-  const dailyFee = payoff.dailyFee ?? Math.floor(itemAdvance * rate / 100);
-  const totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
-  const totalDue = itemAdvance + totalFees;
+  const [releaseDate, setReleaseDate] = useState(today);
   const [confirmed, setConfirmed] = useState(false);
   const [handoverPhoto, setHandoverPhoto] = useState(item?.handoverPhoto || null);
   const [collectionNotes, setCollectionNotes] = useState(item?.collectionNotes || '');
+  const [considerationAmount, setConsiderationAmount] = useState('');
   if (!item) return null;
   const itemLabel = item.aiItemType ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}${item.aiModel ? ' ' + item.aiModel : ''}` : (item.captureItemType || `Item ${itemIndex + 1}`);
+  const remainingCount = tx.items.filter(i => !i.redeemed).length - 1;
   const handleConfirm = () => {
     const updatedItems = tx.items.map((it, idx) =>
       idx === itemIndex
-        ? { ...it, redeemed: true, dateRedeemed: collectionDate, repaidBy: currentUser?.name || '', amountPaid: totalDue, daysCharged: days, feesCharged: totalFees, handoverPhoto, collectionNotes: collectionNotes.trim() }
+        ? { ...it, redeemed: true, dateRedeemed: releaseDate, repaidBy: currentUser?.name || '', handoverPhoto, collectionNotes: collectionNotes.trim(), ...(considerationAmount ? { releaseConsideration: Number(considerationAmount) || 0 } : {}) }
         : it
     );
-    const allRedeemed = updatedItems.every(it => it.redeemed);
-    const totalAmountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
-    const totalFeesAll = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
-    // Mirror the top-level timeline from whichever unredeemed item is now soonest
-    // due, in case the just-redeemed item was the one driving it (see the same
-    // mirroring done by the partial-payment endpoint).
-    let timelineMirror = {};
-    if (!allRedeemed) {
-      const unredeemed = updatedItems.filter(it => !it.redeemed);
-      const earliest = unredeemed.reduce((best, it) => {
-        const dl = it.deadlineDate || tx.deadlineDate || '';
-        const bestDl = best ? (best.deadlineDate || tx.deadlineDate || '') : null;
-        return (!best || dl < bestDl) ? it : best;
-      }, null);
-      timelineMirror = {
-        cycleStart: earliest.cycleStart || tx.dateGiven,
-        principalSince: earliest.principalSince || earliest.cycleStart || tx.dateGiven,
-        deadlineDate: earliest.deadlineDate || tx.deadlineDate,
-      };
-    }
-    onSave({
-      ...tx,
-      items: updatedItems,
-      ...timelineMirror,
-      status: allRedeemed ? 'closed' : 'active',
-      ...(allRedeemed ? {
-        amountRepaid: totalAmountRepaid,
-        dateRepaid: collectionDate,
-        daysCharged: days,
-        totalFees: totalFeesAll,
-        itemReturned: true,
-        repaidBy: currentUser?.name || '',
-      } : {}),
-    });
+    onSave({ ...tx, items: updatedItems });
   };
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px' }}>
-        <span style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '8px', background: '#fff7ed', border: '2px solid #f59e0b', color: '#b45309', fontSize: '16px', fontWeight: 800 }}>📦 Redeeming: {itemLabel}</span>
+        <span style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '8px', background: '#fff7ed', border: '2px solid #f59e0b', color: '#b45309', fontSize: '16px', fontWeight: 800 }}>📦 Releasing: {itemLabel}</span>
+      </div>
+      <div style={S.alert('info')}>
+        ℹ️ This loan's balance is shared across all its items — releasing this item does <strong>not</strong> reduce it. Record any payment separately via <strong>Record Payment</strong>. This just confirms the physical handover; {remainingCount} other item{remainingCount !== 1 ? 's' : ''} will remain held as collateral for the outstanding balance.
       </div>
       <div style={{ ...S.card, background: COLORS.bg }}>
         <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '12px', color: COLORS.primaryDark }}>{tx.fullName}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
-          <div><span style={S.statLabel}>Item Advance</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(itemAdvance)}</strong></div>
-          <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(totalFees)}</strong>{Number(item?.carriedInterestOwed) > 0 && <div style={{ fontSize: '11px', color: COLORS.textMuted }}>(includes ₦{Number(item.carriedInterestOwed).toLocaleString()} carried over from before the last partial payment, at {fmtMoney(dailyFee)}/day since)</div>}</div>
-          <div><span style={S.statLabel}>Item {itemIndex + 1} of {tx.items.length}</span><br /><strong>{tx.items.filter(i => !i.redeemed).length - 1} other item{tx.items.filter(i => !i.redeemed).length - 1 !== 1 ? 's' : ''} remain</strong></div>
+          <div><span style={S.statLabel}>Item {itemIndex + 1} of {tx.items.length}</span><br /><strong>{itemLabel}</strong></div>
+          <div><span style={S.statLabel}>Items Remaining After This</span><br /><strong>{remainingCount}</strong></div>
         </div>
       </div>
-      <Field label="Date Collected"><input style={S.input} type="date" value={collectionDate} min={itemCycleStart} max={today} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCollectionDate(e.target.value)} /></Field>
-      {collectionDate !== today && <div style={{ fontSize: '12px', color: COLORS.warning, marginTop: '-8px', marginBottom: '8px' }}>⚠ Backdated — fees are calculated as of {fmtDate(collectionDate)}, not today.</div>}
-      <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
-        <div style={{ fontSize: '14px', fontWeight: 700 }}>{itemBalance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(itemBalance.cycleStart)} → Collected: {fmtDate(collectionDate)} = {days} day{days === 1 ? '' : 's'}</div>
-        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Interest rate: {rate}%/day on this item's advance of {fmtMoney(itemAdvance)}.{itemBalance.cycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
-      </div>
-      <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Amount Due for This Item</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
+      <Field label="Date Released"><input style={S.input} type="date" value={releaseDate} max={today} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setReleaseDate(e.target.value)} /></Field>
+      <Field label="Amount considered for this release (optional, record-keeping only)">
+        <input style={S.input} type="number" value={considerationAmount} placeholder="0" onChange={e => setConsiderationAmount(e.target.value)} />
+        <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>Not deducted from the loan balance — just a note of what justified releasing this item now.</div>
+      </Field>
       <div style={{ ...S.card, border: `2px dashed ${COLORS.accent}`, background: '#fffbeb' }}>
         <div style={{ fontSize: '15px', fontWeight: 700, marginBottom: '8px', color: '#92400e' }}>📸 Handover Photo</div>
         <div style={S.alert('info')}>📋 Take a photo of the customer <strong>holding this specific item</strong> as proof of handover.</div>
@@ -7902,14 +7842,14 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
       </div>
       <div style={S.card}>
         <div style={{ fontSize: '14px', fontWeight: 700, marginBottom: '8px' }}>📝 Staff Notes</div>
-        <textarea style={S.textarea} placeholder="e.g. Customer redeemed laptop only, generators to be collected later." value={collectionNotes} onChange={e => setCollectionNotes(e.target.value)} />
+        <textarea style={S.textarea} placeholder="e.g. Customer released laptop only, generators to be collected later." value={collectionNotes} onChange={e => setCollectionNotes(e.target.value)} />
       </div>
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}>
         <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} />
-        <span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)} for this item; item handed over</span>
+        <span style={{ fontWeight: 600 }}>Confirmed — item physically handed over</span>
       </label>
       <div style={{ display: 'flex', gap: '12px' }}>
-        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !handoverPhoto) ? 0.5 : 1 }} disabled={!confirmed || !handoverPhoto} onClick={handleConfirm}>✅ Confirm Redemption</button>
+        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !handoverPhoto) ? 0.5 : 1 }} disabled={!confirmed || !handoverPhoto} onClick={handleConfirm}>✅ Confirm Release</button>
         <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
       </div>
     </div>
@@ -7922,23 +7862,23 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
 // Staff enter only an amount and a date; the app works out how the payment
 // is applied (principal vs interest), whether the loan renews, and shows a
 // plain-English explanation that can be read straight to the customer.
+//
+// Every advance loan — one item, several items, or no items at all — shares
+// ONE balance, exactly like it's always worked for a no-items loan. There's no
+// "which item is this payment for" choice: a payment always applies to the
+// loan as a whole. A multi-item loan created before this model shipped may
+// still carry legacy per-item state (from a payment made under the old
+// per-item system); this modal reads a consolidated view of that for display,
+// and submitting a payment has the backend fold it into the shared balance
+// for good.
 // ============================================================
 function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
-  const unredeemedItems = hasItems ? tx.items.map((it, idx) => ({ ...it, idx })).filter(it => !it.redeemed) : [];
-  const defaultItemIdx = hasItems
-    ? unredeemedItems.reduce((best, it) => {
-        const dl = it.deadlineDate || tx.deadlineDate || '';
-        if (best === null) return it.idx;
-        const bestDl = tx.items[best].deadlineDate || tx.deadlineDate || '';
-        return dl < bestDl ? it.idx : best;
-      }, null)
-    : null;
+  const hasLegacyItemState = hasItems && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
+  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const loanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
 
-  // 'combined' treats every unredeemed item as one loan for this payment; a numeric
-  // index targets a single item. Defaults to combined on multi-item loans since
-  // that's what staff usually mean by "the customer paid ₦X" — no need to pick.
-  const [selectedIdx, setSelectedIdx] = useState(unredeemedItems.length > 1 ? 'combined' : defaultItemIdx);
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(localISODate());
   const [method, setMethod] = useState('');
@@ -7947,22 +7887,33 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   const [result, setResult] = useState(null); // server response after submit
   const [submitError, setSubmitError] = useState('');
 
-  const isCombined = selectedIdx === 'combined';
-  const item = (hasItems && !isCombined) ? tx.items[selectedIdx] : null;
-  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
-  const loanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
-  const balance = hasItems
-    ? {
-        cashAdvance: getItemCashAdvance(tx, item),
-        appliedInterestRate: rate,
-        cycleStart: item?.cycleStart || tx.dateGiven,
-        principalSince: item?.principalSince || item?.cycleStart || tx.dateGiven,
-        // Company max loan tenure policy, not the customer's own agreed return date.
-        loanDays,
-        carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
-        deadlineDate: item?.deadlineDate || tx.deadlineDate,
-      }
+  // Consolidated read-only view of the shared balance — for a loan that hasn't
+  // had a payment recorded since the shared-balance model shipped, this sums
+  // whatever legacy per-item state is left over (as of the entered Date Paid);
+  // the backend performs the real, persisted consolidation the moment this
+  // payment is submitted, so this only ever needs to run once per loan.
+  const balance = hasLegacyItemState
+    ? (() => {
+        const unredeemed = tx.items.filter(it => !it.redeemed);
+        const cashAdvance = unredeemed.reduce((s, it) => s + getItemCashAdvance(tx, it), 0);
+        let carriedInterestOwed = 0;
+        let earliestDeadline = null;
+        for (const it of unredeemed) {
+          const itemCycleStart = it.cycleStart || tx.dateGiven;
+          const itemBalance = {
+            cashAdvance: getItemCashAdvance(tx, it), appliedInterestRate: rate, cycleStart: itemCycleStart,
+            principalSince: it.principalSince || itemCycleStart, loanDays, carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+          };
+          const full = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date }, graceDays);
+          carriedInterestOwed += full.error ? 0 : full.interestApplied;
+          const dl = it.deadlineDate || tx.deadlineDate || '';
+          if (!earliestDeadline || dl < earliestDeadline) earliestDeadline = dl;
+        }
+        return {
+          cashAdvance, appliedInterestRate: rate, cycleStart: tx.cycleStart || tx.dateGiven,
+          principalSince: date, loanDays, carriedInterestOwed, deadlineDate: earliestDeadline || tx.deadlineDate,
+        };
+      })()
     : {
         cashAdvance: Number(tx.cashAdvance) || 0,
         appliedInterestRate: rate,
@@ -7974,14 +7925,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
       };
 
   const amountNum = Number(amount) || 0;
-  const preview = (!isCombined && amountNum > 0 && date) ? computeLoanPayment(balance, { amount: amountNum, date }, graceDays) : null;
-
-  // Soonest-deadline-first — same waterfall order the backend applies a combined payment in.
-  const orderedUnredeemed = hasItems
-    ? [...unredeemedItems].sort((a, b) => (a.deadlineDate || tx.deadlineDate || '').localeCompare(b.deadlineDate || tx.deadlineDate || ''))
-    : [];
-  const combinedTotalAdvance = orderedUnredeemed.reduce((s, it) => s + getItemCashAdvance(tx, it), 0);
-  const combinedDailyInterest = orderedUnredeemed.reduce((s, it) => s + Math.floor(getItemCashAdvance(tx, it) * rate / 100), 0);
+  const preview = (amountNum > 0 && date) ? computeLoanPayment(balance, { amount: amountNum, date }, graceDays) : null;
 
   // Accumulated interest owed as of the entered Date Paid (independent of whatever
   // amount the staff member has typed in yet) — evaluated via the same checkpointed
@@ -7990,91 +7934,9 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   // reconstructing payment history on its real date) shows the correct figure for
   // THAT date instead of silently substituting today's larger accrued total.
   const asOfDate = date || localISODate();
-  const accumulatedInterest = isCombined
-    ? orderedUnredeemed.reduce((s, it) => {
-        const itemBalance = {
-          cashAdvance: getItemCashAdvance(tx, it),
-          appliedInterestRate: rate,
-          cycleStart: it.cycleStart || tx.dateGiven,
-          principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
-          loanDays,
-          carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-        };
-        const full = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: asOfDate }, graceDays);
-        return s + (full.error ? 0 : full.interestOwedBefore);
-      }, 0)
-    : (() => {
-        const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: asOfDate }, graceDays);
-        return full.error ? 0 : full.interestOwedBefore;
-      })();
-  const totalAmountDue = (isCombined ? combinedTotalAdvance : balance.cashAdvance) + accumulatedInterest;
-
-  // Client-side mirror of the backend's waterfall so staff see the same per-item
-  // split (and any overpayment) before they submit.
-  //
-  // Whether the BASKET is overdue is decided ONCE, from the earliest-deadline
-  // unredeemed item's cycleStart (tx.cycleStart) — not per item. An item can look
-  // "fresh" on its own (it rolled over recently after an earlier interest-only
-  // payment cleared its own small balance) while the loan as a whole is still badly
-  // overdue on its other items; that item must not jump the queue for principal
-  // just because its own post-rollover clock resets to day 0. So when the basket is
-  // overdue, pass 1 force-clears interest on EVERY item that owes any before pass 2
-  // lets anything reach principal.
-  const combinedPreview = (isCombined && amountNum > 0 && date) ? (() => {
-    const mkBalance = (it) => ({
-      cashAdvance: getItemCashAdvance(tx, it),
-      appliedInterestRate: rate,
-      cycleStart: it.cycleStart || tx.dateGiven,
-      principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
-      loanDays,
-      carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-      deadlineDate: it.deadlineDate || tx.deadlineDate,
-    });
-    const overallAnchor = tx.cycleStart || tx.dateGiven;
-    const overallOverdue = daysBetweenDates(overallAnchor, date) >= loanDays;
-    const states = orderedUnredeemed.map(it => {
-      const balance = mkBalance(it);
-      const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date }, graceDays);
-      const interestOwed = full.error ? 0 : full.interestOwedBefore;
-      return { item: it, balance, interestOwed, owesAnything: !full.error, interestCleared: interestOwed <= 0 };
-    }).filter(s => s.owesAnything);
-
-    let remaining = amountNum;
-    const steps = [];
-
-    for (const s of states) {
-      if (!overallOverdue || remaining <= 0 || s.interestOwed <= 0) continue;
-      const pay = Math.min(remaining, s.interestOwed);
-      const r = computeLoanPayment(s.balance, { amount: pay, date }, graceDays, { forceBucket: 'interest_first' });
-      if (r.error) continue;
-      if (r.outcome === 'full_payoff') {
-        steps.push({ item: s.item, r, phase: 'redeemed' });
-        remaining = r.overpayment || 0;
-        continue;
-      }
-      s.balance = { ...s.balance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || s.balance.deadlineDate };
-      s.interestCleared = r.newCarriedInterestOwed <= 0;
-      steps.push({ item: s.item, r, phase: 'interest', interestStillOwed: s.interestOwed - r.interestApplied });
-      remaining -= r.interestApplied;
-    }
-
-    for (const s of states) {
-      if (remaining <= 0) break;
-      if (steps.find(st => st.item === s.item && st.phase === 'redeemed')) continue;
-      if (overallOverdue && !s.interestCleared) continue;
-      const r = computeLoanPayment(s.balance, { amount: remaining, date }, graceDays);
-      if (r.error) continue;
-      steps.push({ item: s.item, r, phase: r.outcome === 'full_payoff' ? 'redeemed' : 'principal' });
-      remaining = r.outcome === 'full_payoff' ? (r.overpayment || 0) : 0;
-    }
-
-    const totalPrincipal = steps.reduce((s, st) => s + st.r.principalApplied, 0);
-    const totalInterest = steps.reduce((s, st) => s + st.r.interestApplied, 0);
-    const allPaid = orderedUnredeemed.length > 0 && orderedUnredeemed.every(it => steps.find(st => st.item === it && st.phase === 'redeemed'));
-    return { steps, totalPrincipal, totalInterest, overpayment: remaining, allPaid };
-  })() : null;
-
-  const itemLabel = (it) => it ? (it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}${it.aiModel ? ' ' + it.aiModel : ''}` : (it.captureItemType || 'Item')) : '';
+  const accumCheck = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: asOfDate }, graceDays);
+  const accumulatedInterest = accumCheck.error ? 0 : accumCheck.interestApplied;
+  const totalAmountDue = balance.cashAdvance + accumulatedInterest;
 
   const handleSubmit = async () => {
     if (!(amountNum > 0) || !date || submitting) return;
@@ -8082,7 +7944,6 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
     setSubmitError('');
     const res = await API.post(`transactions/${encodeURIComponent(tx.ref)}/payment`, {
       amount: amountNum, date, method: method.trim(), note: note.trim(),
-      itemIndex: hasItems ? selectedIdx : undefined,
     });
     setSubmitting(false);
     if (res?.error) { setSubmitError(res.error); return; }
@@ -8090,9 +7951,11 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   };
 
   const fmtN = (n) => fmtMoney(n);
-  const paymentsHistory = isCombined
-    ? orderedUnredeemed.flatMap(it => it.payments || [])
-    : (hasItems ? (item?.payments || []) : (tx.payments || []));
+  // A not-yet-consolidated legacy loan still has its payment history spread across
+  // items[]; once consolidated (its next payment), history lives on tx.payments.
+  const paymentsHistory = hasLegacyItemState
+    ? tx.items.flatMap(it => it.payments || [])
+    : (tx.payments || []);
 
   if (result) {
     return (
@@ -8118,22 +7981,10 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
 
       <div style={{ ...S.card, background: COLORS.bg }}>
         <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: COLORS.primaryDark }}>{tx.fullName}</div>
-        {hasItems && unredeemedItems.length > 1 && (
-          <Field label="Which item is this payment for?">
-            <select style={S.select} value={selectedIdx} onChange={e => setSelectedIdx(e.target.value === 'combined' ? 'combined' : Number(e.target.value))}>
-              <option value="combined">🔗 All {orderedUnredeemed.length} items together — {fmtMoney(combinedTotalAdvance)} total</option>
-              {unredeemedItems.map(it => <option key={it.idx} value={it.idx}>{itemLabel(it)} — {fmtMoney(getItemCashAdvance(tx, it))}</option>)}
-            </select>
-            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>
-              {isCombined
-                ? 'Treats every unredeemed item as one loan — the payment is applied across them, item closest to its deadline first.'
-                : 'Applies only to this item. Switch to "All items together" to split one payment across every item.'}
-            </div>
-          </Field>
-        )}
+        {hasItems && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginBottom: '8px' }}>Collateral: {tx.items.filter(it => !it.redeemed).length} item{tx.items.filter(it => !it.redeemed).length !== 1 ? 's' : ''} held against one shared balance below.</div>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginTop: '8px' }}>
-          <div><span style={S.statLabel}>{isCombined ? 'Combined Items Advance' : hasItems ? 'Item Advance' : 'Advance Given'}</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(isCombined ? combinedTotalAdvance : balance.cashAdvance)}</strong></div>
-          <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(isCombined ? combinedDailyInterest : Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
+          <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(balance.cashAdvance)}</strong></div>
+          <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
           <div><span style={S.statLabel}>Max Loan Tenure</span><br /><strong>{loanDays} days</strong></div>
           <div><span style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Accumulated Interest{asOfDate !== localISODate() ? ` (as of ${fmtDate(asOfDate)})` : ''}<InfoIcon tip="Interest owed as of the entered Date Paid, at the current daily rate, checkpointed from the last payment (or loan start if none)." /></span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(accumulatedInterest)}</strong></div>
         </div>
@@ -8154,51 +8005,18 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         <Field label="Note (optional)"><input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Any extra context" /></Field>
       </div>
 
-      {/* ── Live Preview (combined) ── */}
-      {isCombined && combinedPreview && (
-        <div style={{ ...S.card, background: combinedPreview.allPaid ? COLORS.primaryLight : '#f8fafc', border: `2px solid ${combinedPreview.allPaid ? COLORS.primary : COLORS.border}` }}>
-          <div style={{ fontSize: '13px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>What will happen — {orderedUnredeemed.length} items</div>
-          {combinedPreview.steps.length === 0 ? (
-            <div style={{ fontSize: '14px', color: COLORS.textMuted }}>Enter an amount to see how it splits across items.</div>
-          ) : (
-            <div style={{ fontSize: '13.5px', lineHeight: 1.6 }}>
-              {combinedPreview.steps.map(({ item: it, r, phase, interestStillOwed }, i) => (
-                <div key={`${it.idx}-${phase}`} style={{ padding: '8px 10px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}`, marginBottom: i < combinedPreview.steps.length - 1 ? '8px' : 0 }}>
-                  <strong>{itemLabel(it)}</strong>: {phase === 'redeemed' ? (
-                    <>✅ fully redeemed — {fmtN(r.principalApplied)} principal + {fmtN(r.interestApplied)} interest</>
-                  ) : phase === 'interest' ? (
-                    <>{fmtN(r.interestApplied)} interest cleared{r.rolledOver ? ` — 🔄 renewed, new deadline ${fmtDate(r.newDeadlineDate)}` : r.newDeadlineDate ? ` — deadline extended to ${fmtDate(r.newDeadlineDate)} (${fmtN(interestStillOwed)} interest still owed beyond that)` : ` (${fmtN(interestStillOwed)} interest still owed — principal untouched until this clears)`}</>
-                  ) : (
-                    <>{fmtN(r.principalApplied)} to principal{r.rolledOver ? ` — 🔄 renewed, new deadline ${fmtDate(r.newDeadlineDate)}` : ` (${fmtN(r.newCashAdvance)} still owed)`}</>
-                  )}
-                </div>
-              ))}
-              {orderedUnredeemed.some(it => !combinedPreview.steps.find(st => st.item === it)) && (
-                <div style={{ color: COLORS.textMuted, marginTop: '4px' }}>Remaining item(s) untouched — amount ran out before reaching them.</div>
-              )}
-              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${COLORS.border}`, display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                <div>Total principal: <strong style={{ color: COLORS.primary }}>{fmtN(combinedPreview.totalPrincipal)}</strong></div>
-                <div>Total interest: <strong style={{ color: COLORS.warning }}>{fmtN(combinedPreview.totalInterest)}</strong></div>
-              </div>
-              {combinedPreview.overpayment > 0 && <div style={{ color: COLORS.warning, marginTop: '6px' }}>⚠ Overpayment of {fmtN(combinedPreview.overpayment)} — confirm with the customer before proceeding.</div>}
-              {combinedPreview.allPaid && <div style={{ marginTop: '6px', fontWeight: 700 }}>All items will be fully redeemed and the loan closed.</div>}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* ── Live Preview ── */}
-      {!isCombined && preview && preview.error && (
+      {preview && preview.error && (
         <div style={S.alert('danger')}>⛔ {preview.error}</div>
       )}
-      {!isCombined && preview && !preview.error && (
+      {preview && !preview.error && (
         <div style={{ ...S.card, background: preview.outcome === 'full_payoff' ? COLORS.primaryLight : '#f8fafc', border: `2px solid ${preview.outcome === 'full_payoff' ? COLORS.primary : COLORS.border}` }}>
           <div style={{ fontSize: '13px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>What will happen</div>
           {preview.outcome === 'full_payoff' ? (
             <div style={{ fontSize: '14px', lineHeight: 1.7 }}>
               ✅ This payment covers everything owed — <strong>{fmtN(preview.principalApplied)}</strong> principal + <strong>{fmtN(preview.interestApplied)}</strong> interest = <strong>{fmtN(preview.principalApplied + preview.interestApplied)}</strong>.
               {preview.overpayment > 0 && <div style={{ color: COLORS.warning, marginTop: '4px' }}>⚠ Overpayment of {fmtN(preview.overpayment)} — confirm with the customer before proceeding.</div>}
-              <div style={{ marginTop: '6px', fontWeight: 700 }}>The loan will close and the item can be handed back.</div>
+              <div style={{ marginTop: '6px', fontWeight: 700 }}>The loan will close and {hasItems ? 'all items can' : 'the item can'} be handed back.</div>
             </div>
           ) : (
             <div style={{ fontSize: '14px', lineHeight: 1.7 }}>
@@ -8233,14 +8051,13 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
       {/* ── Payment History ── */}
       {paymentsHistory.length > 0 && (
         <div style={S.card}>
-          <div style={S.cardTitle}>📜 Payment History{isCombined ? ' — all items' : hasItems ? ' — this item' : ''}</div>
+          <div style={S.cardTitle}>📜 Payment History</div>
           <table style={S.table}>
-            <thead><tr><th style={S.th}>Date</th>{isCombined && <th style={S.th}>Item</th>}<th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th></tr></thead>
+            <thead><tr><th style={S.th}>Date</th><th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th></tr></thead>
             <tbody>
               {[...paymentsHistory].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).map((p, i) => (
                 <tr key={i}>
                   <td style={S.td}>{fmtDate(p.date)}</td>
-                  {isCombined && <td style={S.td}>{itemLabel(orderedUnredeemed.find(it => (it.payments || []).includes(p)) || tx.items?.find(it => (it.payments || []).includes(p)))}</td>}
                   <td style={S.td}>{fmtMoney(p.amount)}</td>
                   <td style={S.td}>{fmtMoney(p.principalApplied)}</td>
                   <td style={S.td}>{fmtMoney(p.interestApplied)}</td>
@@ -8971,12 +8788,12 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       <div style={S.card}>
         <div style={S.cardTitle}>📜 Payment History</div>
         <table style={S.table}>
-          <thead><tr><th style={S.th}>Date</th>{Array.isArray(tx.items) && tx.items.length > 1 && <th style={S.th}>Item</th>}<th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th><th style={S.th}>By</th></tr></thead>
+          <thead><tr><th style={S.th}>Date</th>{loanState.payments.some(p => p.itemLabel) && <th style={S.th}>Item</th>}<th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th><th style={S.th}>By</th></tr></thead>
           <tbody>
             {loanState.payments.map((p, i) => (
               <tr key={i}>
                 <td style={S.td}>{fmtDate(p.date)}</td>
-                {Array.isArray(tx.items) && tx.items.length > 1 && <td style={S.td}>{p.itemLabel}</td>}
+                {loanState.payments.some(pp => pp.itemLabel) && <td style={S.td}>{p.itemLabel || '—'}</td>}
                 <td style={S.td}>{fmtMoney(p.amount)}</td>
                 <td style={S.td}>{fmtMoney(p.principalApplied)}</td>
                 <td style={S.td}>{fmtMoney(p.interestApplied)}</td>
@@ -10603,14 +10420,15 @@ export default function App() {
             <div>
               <div style={{ marginBottom: '20px' }}>
                 <button style={S.btn('outline')} onClick={() => navigate(txRepayPath(txRef))}>← Back to Items</button>
-                <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>📦 Redeem Item</h2>
+                <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>📦 Release Item</h2>
                 <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong></div>
               </div>
-              <RedeemItemModal tx={normTx} itemIndex={itemIndexParam} settings={settings} currentUser={currentUser} onClose={() => navigate(txRepayPath(txRef))} onSave={collectSave} />
+              <RedeemItemModal tx={normTx} itemIndex={itemIndexParam} currentUser={currentUser} onClose={() => navigate(txRepayPath(txRef))} onSave={collectSave} />
             </div>
           );
         }
         if (normTx.items.length > 1 && unredeemedItems.length > 1) {
+          const loanState = computeCurrentLoanState(tx, settings);
           return (
             <div>
               <div style={{ marginBottom: '20px' }}>
@@ -10618,26 +10436,17 @@ export default function App() {
                 <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>💰 Collect Repayment</h2>
                 <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong> — {unredeemedItems.length} items outstanding</div>
               </div>
-              <div style={S.alert('info')}>📋 This loan has multiple collateral items. Choose to redeem one item at a time, or collect all remaining items at once.</div>
+              <div style={{ ...S.card, background: COLORS.dangerLight, border: `2px solid ${COLORS.danger}`, textAlign: 'center', marginBottom: '16px' }}>
+                <div style={S.statLabel}>Shared Balance Owed (all items)</div>
+                <div style={{ fontSize: '28px', fontWeight: 800, color: COLORS.danger }}>{fmtMoney(loanState ? loanState.amountDueToday : 0)}</div>
+              </div>
+              <div style={S.alert('info')}>📋 This loan's balance is shared across all its items — it isn't split per item. Release one item early as a judgment call (the balance stays the same), or collect everything at once below to pay it off and release all items together.</div>
               <div style={{ display: 'grid', gap: '10px', marginBottom: '20px' }}>
                 {normTx.items.map((item, idx) => {
-                  if (item.redeemed) return (<div key={idx} style={{ ...S.card, opacity: 0.6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}</span><span style={{ color: COLORS.primary, fontWeight: 700 }}>✅ Redeemed</span></div>);
-                  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-                  const itemGraceDays = Math.max(0, Number(settings.graceDays) || 3);
-                  const itemCashAdvance = getItemCashAdvance(tx, item);
-                  const itemPayoff = computeLoanPayment({
-                    cashAdvance: itemCashAdvance,
-                    appliedInterestRate: rate,
-                    cycleStart: item.cycleStart || tx.dateGiven,
-                    principalSince: item.principalSince || item.cycleStart || tx.dateGiven,
-                    // Company max loan tenure policy, not the customer's own agreed return date.
-                    loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
-                    carriedInterestOwed: Number(item.carriedInterestOwed) || 0,
-                  }, { amount: Number.MAX_SAFE_INTEGER, date: localISODate() }, itemGraceDays);
-                  const due = itemCashAdvance + (itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied));
+                  if (item.redeemed) return (<div key={idx} style={{ ...S.card, opacity: 0.6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}</span><span style={{ color: COLORS.primary, fontWeight: 700 }}>✅ Released</span></div>);
                   return (<div key={idx} style={{ ...S.card, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                    <div><div style={{ fontWeight: 700 }}>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}{item.aiBrand ? ' — ' + item.aiBrand : ''}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>Amount due: {fmtMoney(due)}</div></div>
-                    <button style={S.btnSm('accent')} onClick={() => navigate(`${txRepayPath(txRef)}/item/${idx}`)}>Redeem this item</button>
+                    <div style={{ fontWeight: 700 }}>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}{item.aiBrand ? ' — ' + item.aiBrand : ''}</div>
+                    <button style={S.btnSm('accent')} onClick={() => navigate(`${txRepayPath(txRef)}/item/${idx}`)}>Release this item</button>
                   </div>);
                 })}
               </div>
