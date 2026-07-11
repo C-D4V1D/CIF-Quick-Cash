@@ -7945,6 +7945,29 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   const combinedTotalAdvance = orderedUnredeemed.reduce((s, it) => s + getItemCashAdvance(tx, it), 0);
   const combinedDailyInterest = orderedUnredeemed.reduce((s, it) => s + Math.floor(getItemCashAdvance(tx, it) * rate / 100), 0);
 
+  // Accumulated interest owed as of today (independent of whatever the staff member
+  // has typed into the amount field yet) — evaluated via the same checkpointed
+  // computeLoanPayment engine used everywhere else, not a flat days*dailyFee guess.
+  const today = localISODate();
+  const accumulatedInterest = isCombined
+    ? orderedUnredeemed.reduce((s, it) => {
+        const itemBalance = {
+          cashAdvance: getItemCashAdvance(tx, it),
+          appliedInterestRate: rate,
+          cycleStart: it.cycleStart || tx.dateGiven,
+          principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
+          loanDays,
+          carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+        };
+        const full = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+        return s + (full.error ? 0 : full.interestOwedBefore);
+      }, 0)
+    : (() => {
+        const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+        return full.error ? 0 : full.interestOwedBefore;
+      })();
+  const totalAmountDue = (isCombined ? combinedTotalAdvance : balance.cashAdvance) + accumulatedInterest;
+
   // Client-side mirror of the backend's waterfall so staff see the same per-item
   // split (and any overpayment) before they submit.
   // Mirrors the backend's two-pass waterfall: clear interest on every overdue
@@ -8066,6 +8089,11 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
           <div><span style={S.statLabel}>{isCombined ? 'Combined Items Advance' : hasItems ? 'Item Advance' : 'Advance Given'}</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(isCombined ? combinedTotalAdvance : balance.cashAdvance)}</strong></div>
           <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(isCombined ? combinedDailyInterest : Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
           <div><span style={S.statLabel}>Max Loan Tenure</span><br /><strong>{loanDays} days</strong></div>
+          <div><span style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Accumulated Interest<InfoIcon tip="Interest owed as of today at the current daily rate, checkpointed from the last payment (or loan start if none)." /></span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(accumulatedInterest)}</strong></div>
+        </div>
+        <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.dangerLight, borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+          <span style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Total Amount Due Today<InfoIcon tip="Everything owed right now — advance plus accumulated interest — as of today's date, before this payment is applied." /></span>
+          <strong style={{ fontSize: '22px', color: COLORS.danger }}>{fmtMoney(totalAmountDue)}</strong>
         </div>
       </div>
 
