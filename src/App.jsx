@@ -410,12 +410,18 @@ const getCurrentOutstandingPrincipal = (tx) => {
   return Number(tx.cashAdvance) || 0;
 };
 
+// Every advance loan's payment ledger lives at tx.payments now (see the payment
+// endpoint's consolidation step, which folds any legacy per-item payments into it
+// the first time a loan is touched under the shared-balance model). Falls back to
+// summing items[].payments only for a loan that hasn't had a payment recorded
+// since that model shipped, and so hasn't been consolidated yet.
 const getLoanPaymentEntries = (tx) => {
   if (!tx || tx.type !== 'advance') return [];
+  if (Array.isArray(tx.payments) && tx.payments.length > 0) return tx.payments;
   if (Array.isArray(tx.items) && tx.items.length > 0) {
     return tx.items.flatMap(it => it?.payments || []);
   }
-  return tx.payments || [];
+  return [];
 };
 
 const getRecognizedInterest = (tx, options = {}) => {

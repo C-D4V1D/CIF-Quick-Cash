@@ -569,12 +569,18 @@ const getCurrentOutstandingPrincipal = (tx) => {
   return Number(tx.cashAdvance) || 0;
 };
 
+// Every advance loan's payment ledger lives at tx.payments now (see the payment
+// endpoint's consolidation step, which folds any legacy per-item payments into it
+// the first time a loan is touched under the shared-balance model). Falls back to
+// summing items[].payments only for a loan that hasn't had a payment recorded
+// since that model shipped, and so hasn't been consolidated yet.
 const getLoanPaymentEntries = (tx) => {
   if (!tx || tx.type !== 'advance') return [];
+  if (Array.isArray(tx.payments) && tx.payments.length > 0) return tx.payments;
   if (Array.isArray(tx.items) && tx.items.length > 0) {
     return tx.items.flatMap(it => it?.payments || []);
   }
-  return tx.payments || [];
+  return [];
 };
 
 const getRecognizedInterest = (tx, options = {}) => {
@@ -2301,6 +2307,14 @@ export async function onRequest(context) {
         it.itemCashAdvance !== undefined || it.principalSince !== undefined || it.carriedInterestOwed !== undefined
       ));
       if (needsConsolidation) {
+        // Preserve every item's historical payment ledger by folding it into the
+        // shared tx.payments list before stripping items[] down to identity-only
+        // fields below — this is a display/audit record, not "current state", and
+        // must not be silently discarded.
+        const legacyPayments = tx.items.flatMap(it => it.payments || []);
+        if (legacyPayments.length > 0) {
+          tx.payments = [...(tx.payments || []), ...legacyPayments].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+        }
         let consolidatedPrincipal = 0, consolidatedInterest = 0, earliestDeadline = null;
         for (const it of tx.items) {
           if (it.redeemed) continue;
