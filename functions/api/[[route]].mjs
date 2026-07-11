@@ -2191,6 +2191,7 @@ export async function onRequest(context) {
       const paymentMethod = (body.method || '').trim();
       const note = (body.note || '').trim();
       const itemIndex = Number.isInteger(body.itemIndex) ? body.itemIndex : null;
+      const combined = body.itemIndex === 'combined';
 
       if (!(amountNum > 0)) return error('Payment amount must be greater than zero.', 400);
       if (!date) return error('Payment date is required.', 400);
@@ -2209,6 +2210,161 @@ export async function onRequest(context) {
       const loanCfg = await loadLoanConfig(db);
       const appliedRate = Number(tx.appliedInterestRate || loanCfg.interestRate);
       const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
+      const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
+
+      // ============================================================
+      // COMBINED PAYMENT — staff can choose to treat every unredeemed item on a
+      // multi-item loan as a single loan and apply one payment across all of them.
+      // Amount waterfalls in soonest-deadline-first order (same default order the
+      // single-item picker uses): each item is offered the remaining amount via
+      // the normal computeLoanPayment engine; a full payoff on an item carries its
+      // overpayment forward to the next item, a partial payment exhausts the
+      // remaining amount and stops. Each touched item gets its own payment ledger
+      // entry (with its own sub-amount/principal/interest split) so per-item
+      // history and getItemCashAdvance stay accurate — only how the incoming cash
+      // gets allocated differs from a single-item payment.
+      // ============================================================
+      if (combined && hasItems) {
+        const unredeemed = tx.items
+          .map((it, i) => ({ it, i }))
+          .filter(({ it }) => !it.redeemed)
+          .sort((a, b) => (a.it.deadlineDate || tx.deadlineDate || '').localeCompare(b.it.deadlineDate || tx.deadlineDate || ''));
+        if (unredeemed.length === 0) return error('All items on this loan are already redeemed.', 400);
+
+        for (const { it } of unredeemed) {
+          const principalSince = it.principalSince || it.cycleStart || tx.dateGiven;
+          if (date < principalSince) {
+            const label = it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}` : (it.captureItemType || 'an item');
+            return error(`Payment date cannot be before ${principalSince} (the start of the current cycle or the last recorded payment for ${label}).`, 400);
+          }
+        }
+
+        let remaining = amountNum;
+        const updatedItems = [...tx.items];
+        let totalPrincipalApplied = 0, totalInterestApplied = 0;
+        const perItemNotes = [];
+
+        for (const { it, i } of unredeemed) {
+          if (remaining <= 0) break;
+          const itemBalance = {
+            cashAdvance: getItemCashAdvance(tx, it),
+            appliedInterestRate: appliedRate,
+            cycleStart: it.cycleStart || tx.dateGiven,
+            principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
+            loanDays: loanCfg.maxLoanDays,
+            carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+          };
+          const r = computeLoanPayment(itemBalance, { amount: remaining, date }, loanCfg.graceDays);
+          if (r.error) continue; // nothing owed on this item — leave it untouched
+
+          const itemLabel = it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}` : (it.captureItemType || `Item ${i + 1}`);
+          const subAmount = r.outcome === 'full_payoff' ? (r.principalApplied + r.interestApplied) : remaining;
+          const itemPaymentEntry = {
+            date, amount: subAmount, method: paymentMethod,
+            note: note ? `${note} (combined payment across ${unredeemed.length} items)` : `Part of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
+            principalApplied: r.principalApplied, interestApplied: r.interestApplied, outcome: r.outcome,
+            rolledOver: !!r.rolledOver, recordedBy: auth.user.name || auth.user.username, recordedAt: new Date().toISOString(),
+          };
+
+          if (r.outcome === 'full_payoff') {
+            updatedItems[i] = { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: r.principalApplied + r.interestApplied, daysCharged: r.dayOfCycle, feesCharged: r.interestApplied, payments: [...(it.payments || []), itemPaymentEntry] };
+            remaining = r.overpayment || 0;
+            perItemNotes.push(`${itemLabel} fully redeemed (₦${fmtNP(r.principalApplied)} principal + ₦${fmtNP(r.interestApplied)} interest)`);
+          } else {
+            updatedItems[i] = { ...it, itemCashAdvance: r.newCashAdvance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || it.deadlineDate || tx.deadlineDate, payments: [...(it.payments || []), itemPaymentEntry] };
+            remaining = 0;
+            perItemNotes.push(`${itemLabel}: ₦${fmtNP(r.principalApplied)} to principal, ₦${fmtNP(r.interestApplied)} to interest${r.rolledOver ? ' — renewed' : ''}`);
+          }
+          totalPrincipalApplied += r.principalApplied;
+          totalInterestApplied += r.interestApplied;
+        }
+
+        const totalOverpayment = remaining > 0 ? remaining : 0;
+        tx.items = updatedItems;
+        const allRedeemed = updatedItems.every(it => it.redeemed);
+        const wasRescued = tx.status === 'for_sale' || tx.status === 'ready_to_sell';
+        if (allRedeemed) {
+          tx.status = 'closed';
+          tx.amountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
+          tx.dateRepaid = date;
+          tx.daysCharged = Math.max(...updatedItems.map(it => it.daysCharged || 0));
+          tx.totalFees = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
+          tx.itemReturned = true;
+          tx.repaidBy = auth.user.name;
+        } else {
+          const unredeemedNow = updatedItems.filter(it => !it.redeemed);
+          const earliest = unredeemedNow.reduce((best, it) => {
+            const dl = it.deadlineDate || tx.deadlineDate || '';
+            const bestDl = best ? (best.deadlineDate || tx.deadlineDate || '') : null;
+            return (!best || dl < bestDl) ? it : best;
+          }, null);
+          if (earliest) {
+            tx.cycleStart = earliest.cycleStart || tx.dateGiven;
+            tx.principalSince = earliest.principalSince || earliest.cycleStart || tx.dateGiven;
+            tx.deadlineDate = earliest.deadlineDate || tx.deadlineDate;
+          }
+          if (wasRescued) tx.status = 'active';
+        }
+
+        const breakdown = `Combined payment of ₦${fmtNP(amountNum)} applied across ${unredeemed.length} item(s): ${perItemNotes.join('; ')}.` +
+          (allRedeemed ? ' All items now redeemed — loan closed.' : '') +
+          (totalOverpayment > 0 ? ` ⚠ Overpayment of ₦${fmtNP(totalOverpayment)} — confirm with the customer.` : '');
+        const result = { outcome: allRedeemed ? 'full_payoff' : 'partial', principalApplied: totalPrincipalApplied, interestApplied: totalInterestApplied, overpayment: totalOverpayment };
+
+        await db
+          .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
+          .bind(JSON.stringify(tx), tx.status || 'active', ref)
+          .run();
+
+        const actionLabel = result.outcome === 'full_payoff' ? 'repaid' : 'loan_payment';
+        await logActivity({
+          user: auth.user, action: actionLabel, entityType: 'transaction', entityId: ref,
+          description: `💵 Combined payment recorded — ${ref}: ${tx.fullName} paid ₦${fmtNP(amountNum)} on ${date}. ${breakdown}`,
+        });
+
+        try {
+          await awardStepPoints('tx:' + ref, [{ userId: auth.user.id, stepKey: 'repayment_collection' }]);
+        } catch (e) {
+          console.error('[staff_points payment] failed:', e?.message ?? e);
+        }
+
+        try {
+          const smsCfg = await loadSmsConfig();
+          if (smsCfg.enabled) {
+            const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+            const phone = toIntlPhone(rawPhone);
+            if (phone) {
+              const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+              if (result.outcome === 'full_payoff' && smsCfg.redemptionConfirmationEnabled) {
+                const message = fillSmsTemplate(smsCfg.tmplRedemptionConfirmation, {
+                  customerName: tx.fullName, ref, amount: fmtSms(amountNum), dueDate: tx.deadlineDate || '',
+                  businessName: smsCfg.businessName, shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await insertSmsLog({ transactionRef: ref, triggerType: 'redemption_confirmation', message, recipient: phone, status: ok ? 'sent' : 'failed', termiiResponse: JSON.stringify(response), messageId });
+              } else if (result.outcome !== 'full_payoff' && smsCfg.loanPaymentConfirmationEnabled) {
+                const message = fillSmsTemplate(smsCfg.tmplLoanPayment, {
+                  customerName: tx.fullName, ref, amount: fmtSms(amountNum), breakdown,
+                  businessName: smsCfg.businessName, shopPhone: smsCfg.shopPhone,
+                });
+                const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+                await insertSmsLog({ transactionRef: ref, triggerType: 'loan_payment', message, recipient: phone, status: ok ? 'sent' : 'failed', termiiResponse: JSON.stringify(response), messageId });
+              }
+            }
+          }
+        } catch (_smsErr) {
+          await logSmsRuntimeError({ user: auth.user, transactionRef: ref, triggerType: 'loan_payment', err: _smsErr });
+        }
+
+        await pushNotifyAll(env, db, {
+          title: result.outcome === 'full_payoff' ? '✅ Loan Redeemed' : '💵 Loan Payment Recorded',
+          body: `${ref}: ${tx.fullName} paid ₦${fmtNP(amountNum)}`,
+          url: '/transactions',
+          tag: 'loan-payment',
+        });
+
+        return json({ success: true, outcome: result.outcome, breakdown, combined: true, perItemBreakdown: perItemNotes, result });
+      }
 
       let targetIdx = -1, targetItem = null;
       if (hasItems) {
@@ -2257,7 +2413,6 @@ export async function onRequest(context) {
       const result = computeLoanPayment(balance, { amount: amountNum, date }, loanCfg.graceDays);
       if (result.error) return error(result.error, 400);
 
-      const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
       const paymentEntry = {
         date, amount: amountNum, method: paymentMethod, note: note || null,
         principalApplied: result.principalApplied,
