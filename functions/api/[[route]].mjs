@@ -635,6 +635,19 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
   const newInterestOwed = Math.max(0, Math.round((interestOwed - interestApplied) * 100) / 100);
   const rolledOver = bucket === 'interest_first' && interestOwed > 0 && newInterestOwed <= 0;
 
+  // Past the max tenure, an interest payment buys days, not just a binary "renewed or
+  // not". Fully clearing the owed interest buys the full loanDays term (a normal
+  // renewal); a partial interest-first payment still buys a proportional number of
+  // days (amount ÷ current daily rate), rounded down. Either way the extension is
+  // measured from the CURRENT deadline — not the payment date — so paying late
+  // doesn't earn extra slack, and paying exactly on time doesn't lose any.
+  let newDeadlineDate = null;
+  if (bucket === 'interest_first' && interestApplied > 0 && dailyFee > 0) {
+    const currentDeadline = balance.deadlineDate || addDaysToDate(cycleStart, loanDays);
+    const daysBought = rolledOver ? loanDays : Math.floor(interestApplied / dailyFee);
+    if (daysBought > 0) newDeadlineDate = addDaysToDate(currentDeadline, daysBought);
+  }
+
   return {
     outcome: 'partial',
     bucket,
@@ -653,7 +666,7 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
     // whatever's left unpaid carries forward, future accrual starts fresh from here.
     newPrincipalSince: date,
     newCarriedInterestOwed: newInterestOwed,
-    newDeadlineDate: rolledOver ? addDaysToDate(date, loanDays) : null,
+    newDeadlineDate,
   };
 }
 
@@ -2239,46 +2252,108 @@ export async function onRequest(context) {
           }
         }
 
+        const labelOf = (it, i) => it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}` : (it.captureItemType || `Item ${i + 1}`);
+        const mkBalance = (it) => ({
+          cashAdvance: getItemCashAdvance(tx, it),
+          appliedInterestRate: appliedRate,
+          cycleStart: it.cycleStart || tx.dateGiven,
+          principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
+          loanDays: loanCfg.maxLoanDays,
+          carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+          deadlineDate: it.deadlineDate || tx.deadlineDate,
+        });
+
+        // Past the company's max tenure, the payment engine settles interest before
+        // principal on a SINGLE loan (see computeLoanPayment's bucket logic). Combining
+        // several items into one payment must honor the same policy across the whole
+        // basket — not just within whichever item happens to be processed first. So this
+        // runs two passes: first clear interest on every overdue ("interest_first")
+        // item, in deadline order; only once that's done does anything go to principal.
+        // Items still within tenure ("principal_first") are unaffected by pass 1 and are
+        // simply paid in their own normal principal-then-interest order in pass 2.
         let remaining = amountNum;
         const updatedItems = [...tx.items];
         let totalPrincipalApplied = 0, totalInterestApplied = 0;
-        const perItemNotes = [];
+        const interestNotes = [], principalNotes = [];
 
-        for (const { it, i } of unredeemed) {
-          if (remaining <= 0) break;
-          const itemBalance = {
-            cashAdvance: getItemCashAdvance(tx, it),
-            appliedInterestRate: appliedRate,
-            cycleStart: it.cycleStart || tx.dateGiven,
-            principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
-            loanDays: loanCfg.maxLoanDays,
-            carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+        const states = unredeemed.map(({ it, i }) => {
+          const balance = mkBalance(it);
+          const dayOfCycle = daysBetweenDates(balance.cycleStart, date);
+          const bucket = dayOfCycle < balance.loanDays ? 'principal_first' : 'interest_first';
+          const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date }, loanCfg.graceDays);
+          return { it, i, balance, bucket, interestOwed: full.error ? 0 : full.interestOwedBefore, owesAnything: !full.error };
+        }).filter(s => s.owesAnything);
+
+        // Pass 1 — clear interest on overdue items, in order, before any principal moves.
+        for (const s of states) {
+          if (s.bucket !== 'interest_first' || remaining <= 0 || s.interestOwed <= 0) continue;
+          const pay = Math.min(remaining, s.interestOwed);
+          const r = computeLoanPayment(s.balance, { amount: pay, date }, loanCfg.graceDays);
+          if (r.error) continue;
+          // A zero-principal item (fully paid down previously, only interest left
+          // outstanding) can hit full_payoff here since pay may equal its entire
+          // remaining balance — that response shape has no newCarriedInterestOwed/etc.,
+          // so redeem it directly instead of falling through to the partial-shaped update.
+          if (r.outcome === 'full_payoff') {
+            const it = updatedItems[s.i];
+            const entry = {
+              date, amount: r.principalApplied + r.interestApplied, method: paymentMethod,
+              note: note ? `${note} (combined payment across ${unredeemed.length} items)` : `Part of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
+              principalApplied: r.principalApplied, interestApplied: r.interestApplied, outcome: 'full_payoff',
+              rolledOver: false, recordedBy: auth.user.name || auth.user.username, recordedAt: new Date().toISOString(),
+            };
+            updatedItems[s.i] = { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: (it.payments || []).reduce((sum, p) => sum + (p.principalApplied || 0) + (p.interestApplied || 0), 0) + r.principalApplied + r.interestApplied, daysCharged: r.dayOfCycle, feesCharged: (it.payments || []).reduce((sum, p) => sum + (p.interestApplied || 0), 0) + r.interestApplied, payments: [...(it.payments || []), entry] };
+            totalInterestApplied += r.interestApplied;
+            totalPrincipalApplied += r.principalApplied;
+            remaining = r.overpayment || 0;
+            interestNotes.push(`${labelOf(s.it, s.i)} fully redeemed (₦${fmtNP(r.principalApplied)} principal + ₦${fmtNP(r.interestApplied)} interest)`);
+            continue;
+          }
+          s.balance = { ...s.balance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || s.balance.deadlineDate };
+          s.interestCleared = r.newCarriedInterestOwed <= 0;
+          const entry = {
+            date, amount: r.interestApplied, method: paymentMethod,
+            note: note ? `${note} (interest portion of a combined payment across ${unredeemed.length} items)` : `Interest portion of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
+            principalApplied: 0, interestApplied: r.interestApplied, outcome: 'partial',
+            rolledOver: !!r.rolledOver, recordedBy: auth.user.name || auth.user.username, recordedAt: new Date().toISOString(),
           };
-          const r = computeLoanPayment(itemBalance, { amount: remaining, date }, loanCfg.graceDays);
-          if (r.error) continue; // nothing owed on this item — leave it untouched
+          updatedItems[s.i] = { ...updatedItems[s.i], carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || updatedItems[s.i].deadlineDate || tx.deadlineDate, payments: [...(updatedItems[s.i].payments || []), entry] };
+          totalInterestApplied += r.interestApplied;
+          remaining -= r.interestApplied;
+          interestNotes.push(`${labelOf(s.it, s.i)}: ₦${fmtNP(r.interestApplied)} interest cleared${r.rolledOver ? ` — renewed, new deadline ${r.newDeadlineDate}` : r.newDeadlineDate ? ` — deadline extended to ${r.newDeadlineDate} (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed beyond that)` : ` (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed)`}`);
+        }
 
-          const itemLabel = it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}` : (it.captureItemType || `Item ${i + 1}`);
+        // Pass 2 — apply whatever remains to principal, in order. Overdue items whose
+        // interest wasn't fully cleared above are skipped (still waiting on interest);
+        // items that started principal_first go through their normal single-call flow.
+        for (const s of states) {
+          if (remaining <= 0) break;
+          if (updatedItems[s.i].redeemed) continue;
+          if (s.bucket === 'interest_first' && !s.interestCleared) continue;
+          const r = computeLoanPayment(s.balance, { amount: remaining, date }, loanCfg.graceDays);
+          if (r.error) continue;
           const subAmount = r.outcome === 'full_payoff' ? (r.principalApplied + r.interestApplied) : remaining;
-          const itemPaymentEntry = {
+          const entry = {
             date, amount: subAmount, method: paymentMethod,
-            note: note ? `${note} (combined payment across ${unredeemed.length} items)` : `Part of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
+            note: note ? `${note} (principal portion of a combined payment across ${unredeemed.length} items)` : `Principal portion of a combined payment of ₦${fmtNP(amountNum)} across ${unredeemed.length} items`,
             principalApplied: r.principalApplied, interestApplied: r.interestApplied, outcome: r.outcome,
             rolledOver: !!r.rolledOver, recordedBy: auth.user.name || auth.user.username, recordedAt: new Date().toISOString(),
           };
-
           if (r.outcome === 'full_payoff') {
-            updatedItems[i] = { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: r.principalApplied + r.interestApplied, daysCharged: r.dayOfCycle, feesCharged: r.interestApplied, payments: [...(it.payments || []), itemPaymentEntry] };
+            const it = updatedItems[s.i];
+            updatedItems[s.i] = { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: (it.payments || []).reduce((sum, p) => sum + (p.principalApplied || 0) + (p.interestApplied || 0), 0) + r.principalApplied + r.interestApplied, daysCharged: r.dayOfCycle, feesCharged: (it.payments || []).reduce((sum, p) => sum + (p.interestApplied || 0), 0) + r.interestApplied, payments: [...(it.payments || []), entry] };
             remaining = r.overpayment || 0;
-            perItemNotes.push(`${itemLabel} fully redeemed (₦${fmtNP(r.principalApplied)} principal + ₦${fmtNP(r.interestApplied)} interest)`);
+            principalNotes.push(`${labelOf(s.it, s.i)} fully redeemed (₦${fmtNP(r.principalApplied)} principal + ₦${fmtNP(r.interestApplied)} interest)`);
           } else {
-            updatedItems[i] = { ...it, itemCashAdvance: r.newCashAdvance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || it.deadlineDate || tx.deadlineDate, payments: [...(it.payments || []), itemPaymentEntry] };
+            updatedItems[s.i] = { ...updatedItems[s.i], itemCashAdvance: r.newCashAdvance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || updatedItems[s.i].deadlineDate || tx.deadlineDate, payments: [...(updatedItems[s.i].payments || []), entry] };
             remaining = 0;
-            perItemNotes.push(`${itemLabel}: ₦${fmtNP(r.principalApplied)} to principal, ₦${fmtNP(r.interestApplied)} to interest${r.rolledOver ? ' — renewed' : ''}`);
+            principalNotes.push(`${labelOf(s.it, s.i)}: ₦${fmtNP(r.principalApplied)} to principal${r.rolledOver ? ' — renewed' : ''}`);
           }
           totalPrincipalApplied += r.principalApplied;
           totalInterestApplied += r.interestApplied;
         }
 
+        const perItemNotes = [...interestNotes, ...principalNotes];
         const totalOverpayment = remaining > 0 ? remaining : 0;
         tx.items = updatedItems;
         const allRedeemed = updatedItems.every(it => it.redeemed);
@@ -2393,6 +2468,7 @@ export async function onRequest(context) {
             // Company max loan tenure policy, not the customer's own agreed return date.
             loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(targetItem.carriedInterestOwed) || 0,
+            deadlineDate: targetItem.deadlineDate || tx.deadlineDate,
           }
         : {
             cashAdvance: Number(tx.cashAdvance) || 0,
@@ -2401,6 +2477,7 @@ export async function onRequest(context) {
             principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
             loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
+            deadlineDate: tx.deadlineDate,
           };
 
       // No backdating before the last accrual checkpoint — principalSince already
@@ -2511,7 +2588,9 @@ export async function onRequest(context) {
         breakdown = `Payment received ${bucketLabel}: ₦${fmtNP(result.principalApplied)} applied to principal, ₦${fmtNP(result.interestApplied)} applied to interest.` +
           (result.rolledOver
             ? ` Interest fully cleared — loan renewed, new deadline ${result.newDeadlineDate}.`
-            : ` Remaining interest owed this cycle: ₦${fmtNP(result.newInterestOwed)}.`) +
+            : result.newDeadlineDate
+              ? ` Interest payment bought extra time — deadline extended to ${result.newDeadlineDate}. Remaining interest owed beyond that: ₦${fmtNP(result.newInterestOwed)}.`
+              : ` Remaining interest owed this cycle: ₦${fmtNP(result.newInterestOwed)}.`) +
           (wasRescued ? ' Item pulled back from the sale pipeline.' : '');
       }
 
