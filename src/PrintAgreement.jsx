@@ -33,7 +33,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
   const serialImei = [(primaryItem.imei || tx.imei) && `IMEI: ${primaryItem.imei || tx.imei}`, (primaryItem.serialNumber || tx.serialNumber) && `S/N: ${primaryItem.serialNumber || tx.serialNumber}`]
     .filter(Boolean).join('     ');
   const interestRate = settings.interestRate ?? 1;
-  const dailyFee = tx.dailyFee ?? Math.round((tx.cashAdvance || 0) * Number(interestRate) / 100);
+  const dailyFee = tx.dailyFee ?? Math.floor((tx.cashAdvance || 0) * Number(interestRate) / 100);
   const loanDays = tx.loanDays || 30;
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const internalDeadlineDate = (() => {
@@ -298,7 +298,7 @@ const buildCopyHTML = (tx, settings, copyLabel, isBusinessCopy) => {
     <div class="fee-box">
       <div style="margin-bottom:3px"><b>Daily Holding &amp; Service Fee Rate: &nbsp;${interestRate}% of the advance amount, per day</b></div>
       <div>Every new day that begins counts as a full day's fee.</div>
-      <div class="muted-italic">Example: Advance of ₦10,000 = ₦${Math.round(10000 * interestRate / 100).toLocaleString()} fee per day.</div>
+      <div class="muted-italic">Example: Advance of ₦10,000 = ₦${Math.floor(10000 * interestRate / 100).toLocaleString()} fee per day.</div>
       <div class="muted-italic">Your exact total will be calculated on the day you come to collect.</div>
     </div>
 
