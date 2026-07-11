@@ -508,6 +508,14 @@ async function ensureStaffPointsTable(db) {
   }
 }
 
+async function ensureCapitalTypeColumn(db) {
+  try {
+    await db.prepare(`ALTER TABLE capital ADD COLUMN type TEXT NOT NULL DEFAULT 'contribution'`).run();
+  } catch (e) {
+    // Column already exists — ignore.
+  }
+}
+
 async function ensureSchema(db) {
   if (_schemaReady) return;
   try {
@@ -515,6 +523,7 @@ async function ensureSchema(db) {
     if (row) {
       // Fast-path migrations for tables added after the initial schema was deployed.
       await ensureStaffPointsTable(db);
+      await ensureCapitalTypeColumn(db);
       _schemaReady = true;
       return;
     }
@@ -530,7 +539,7 @@ async function ensureSchema(db) {
       db.prepare(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT (datetime('now')))`),
       db.prepare(`CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, description TEXT, amount REAL NOT NULL, registered_by TEXT)`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (date DESC)`),
-      db.prepare(`CREATE TABLE IF NOT EXISTS capital (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, method TEXT NOT NULL, receipt TEXT, user_id TEXT REFERENCES users(id))`),
+      db.prepare(`CREATE TABLE IF NOT EXISTS capital (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, amount REAL NOT NULL, date TEXT NOT NULL, method TEXT NOT NULL, receipt TEXT, user_id TEXT REFERENCES users(id), type TEXT NOT NULL DEFAULT 'contribution')`),
       db.prepare(`CREATE TABLE IF NOT EXISTS declined_log (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, ref TEXT, customer_name TEXT, nin_bvn TEXT, item TEXT NOT NULL, reason TEXT NOT NULL, notes TEXT)`),
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_declined_log_date ON declined_log (date DESC)`),
       db.prepare(`CREATE TABLE IF NOT EXISTS profit_distributions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, amount REAL NOT NULL, method TEXT NOT NULL, note TEXT, receipt TEXT, created_by TEXT, decision_ids TEXT, stakeholder_name TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))`),
@@ -913,7 +922,7 @@ export async function onRequest(context) {
       if (scope === 'secondary') {
         const [expensesRes, capitalRes, declinedRes, usersRes] = await Promise.all([
           db.prepare('SELECT id, date, category, description, amount, registered_by FROM expenses ORDER BY date DESC').all(),
-          db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all(),
+          db.prepare('SELECT id, name, amount, date, method, receipt, user_id, type FROM capital ORDER BY date').all(),
           db.prepare('SELECT id, date, ref, customer_name AS customerName, nin_bvn AS ninBvn, item, reason, notes FROM declined_log ORDER BY date DESC').all(),
           isAdmin
             ? db.prepare('SELECT id, username, role, roles, name, active, phone1, phone2, email, created_at FROM users ORDER BY created_at').all()
@@ -2091,22 +2100,39 @@ export async function onRequest(context) {
     if (path === 'capital' && method === 'GET') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { results } = await db.prepare('SELECT id, name, amount, date, method, receipt, user_id FROM capital ORDER BY date').all();
+      const { results } = await db.prepare('SELECT id, name, amount, date, method, receipt, user_id, type FROM capital ORDER BY date').all();
       return json(results);
     }
     if (path === 'capital' && method === 'POST') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
-      const { name, amount, date, method: capitalMethod, receipt, user_id } = await request.json();
+      const { name, amount, date, method: capitalMethod, receipt, user_id, type } = await request.json();
+      const entryType = type === 'withdrawal' ? 'withdrawal' : 'contribution';
+      const amountNum = Number(amount);
+      if (!name || !(amountNum > 0) || !date || !capitalMethod) {
+        return json({ error: 'name, amount, date, and method are required' }, 400);
+      }
+      if (entryType === 'withdrawal') {
+        // A withdrawal can never exceed the stakeholder's current net capital balance.
+        const { results: existing } = await db
+          .prepare(`SELECT amount, type FROM capital WHERE lower(name) = lower(?)`)
+          .bind(name)
+          .all();
+        const netBalance = (existing || []).reduce((s, c) => s + (c.type === 'withdrawal' ? -(c.amount || 0) : (c.amount || 0)), 0);
+        if (amountNum > netBalance) {
+          return json({ error: `Cannot withdraw ₦${amountNum.toLocaleString('en-NG')} — ${name}'s current net capital balance is only ₦${netBalance.toLocaleString('en-NG')}.` }, 400);
+        }
+      }
       const inserted = await db
-        .prepare('INSERT INTO capital (name, amount, date, method, receipt, user_id) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(name, amount, date, capitalMethod, receipt || null, user_id || null)
+        .prepare('INSERT INTO capital (name, amount, date, method, receipt, user_id, type) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(name, amountNum, date, capitalMethod, receipt || null, user_id || null, entryType)
         .run();
-      await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `💎 Capital deposited — ${name} contributed ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}` });
+      const verb = entryType === 'withdrawal' ? 'withdrew' : 'contributed';
+      await logActivity({ user: auth.user, action: 'entry', entityType: 'capital', entityId: String(inserted.meta.last_row_id), description: `${entryType === 'withdrawal' ? '💸' : '💎'} Capital ${entryType === 'withdrawal' ? 'withdrawn' : 'deposited'} — ${name} ${verb} ₦${amountNum.toLocaleString('en-NG')} via ${capitalMethod}` });
       // Broadcast to all subscribed devices — covers admins, staff and the stakeholder themselves.
       await pushNotifyAll(env, db, {
-        title: '💰 Capital Entry Recorded',
-        body: `${name} deposited ₦${Number(amount).toLocaleString('en-NG')} via ${capitalMethod}.`,
+        title: entryType === 'withdrawal' ? '💸 Capital Withdrawal Recorded' : '💰 Capital Entry Recorded',
+        body: `${name} ${verb} ₦${amountNum.toLocaleString('en-NG')} via ${capitalMethod}.`,
         url: '/capital',
         tag: 'capital-entry',
       });
@@ -3477,30 +3503,34 @@ export async function onRequest(context) {
         // Check if auto-generate is enabled (default: true)
         if (cfg.autoGenerateDecisions === false) return json({ ok: true, skipped: true, reason: 'Auto-generate is disabled in settings' });
 
-        // Get capital entries
-        const capitalRes = await db.prepare('SELECT id, name, amount, date, user_id FROM capital ORDER BY date').all();
+        // Get capital entries (contributions and withdrawals — withdrawals net out as negative amounts below)
+        const capitalRes = await db.prepare('SELECT id, name, amount, date, user_id, type FROM capital ORDER BY date').all();
         const capitalEntries = capitalRes.results || [];
         if (capitalEntries.length === 0) return json({ ok: true, skipped: true, reason: 'No capital entries found' });
+        const capSigned = (c) => c.type === 'withdrawal' ? -(c.amount || 0) : (c.amount || 0);
 
-        // Compute capital-days for the period
+        // Compute capital-days for the period. A withdrawal is just a negative-amount entry
+        // dated on its withdrawal date, so it naturally reduces capital-days from that date
+        // forward using the same date-weighted formula as a contribution — no special-casing needed.
         const pStart = new Date(Date.UTC(prevYear, prevMonth - 1, 1));
         const pEnd = new Date(Date.UTC(prevYear, prevMonth, 0)); // last day of month
         const byStake = {};
         for (const c of capitalEntries) {
           const key = c.name.toLowerCase();
           if (!byStake[key]) byStake[key] = { name: c.name, user_id: c.user_id, capitalDays: 0, total: 0 };
-          byStake[key].total += (c.amount || 0);
+          const signedAmount = capSigned(c);
+          byStake[key].total += signedAmount;
           const entryDate = new Date(c.date);
           if (isNaN(entryDate.getTime())) continue;
           const entryUTC = new Date(Date.UTC(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()));
           if (entryUTC > pEnd) continue;
           const effectiveStart = entryUTC > pStart ? entryUTC : pStart;
           const days = Math.round((pEnd - effectiveStart) / 86400000) + 1;
-          byStake[key].capitalDays += (c.amount || 0) * days;
+          byStake[key].capitalDays += signedAmount * days;
         }
         const arr = Object.values(byStake).filter(s => s.user_id);
         const totalCD = arr.reduce((s, x) => s + x.capitalDays, 0);
-        if (totalCD === 0) return json({ ok: true, skipped: true, reason: `No capital-days for ${period}` });
+        if (totalCD <= 0) return json({ ok: true, skipped: true, reason: `No net capital-days for ${period} (contributions and withdrawals may have netted to zero)` });
 
         // Calculate profit for the period
         const txRes = await db.prepare('SELECT data, status, created_at FROM transactions').all();
@@ -3543,7 +3573,7 @@ export async function onRequest(context) {
         if (profit <= 0) return json({ ok: true, skipped: true, reason: `No profit for ${period} (profit: ${profit})` });
 
         // Determine capital surplus — simplified: available lending capital > total capital needed
-        const totalCapital = capitalEntries.reduce((s, c) => s + (c.amount || 0), 0);
+        const totalCapital = capitalEntries.reduce((s, c) => s + capSigned(c), 0);
         const activeTx = allTx.filter(t => t.status === 'active');
         const forSaleTx = allTx.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
         const totalOut = activeTx.reduce((s, t) => s + (t.cashAdvance || 0), 0);

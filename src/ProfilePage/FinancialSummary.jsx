@@ -7,6 +7,8 @@ import { COLORS } from '../theme';
 
 const fmtMoney = (n) => '₦' + Number(n || 0).toLocaleString();
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// A withdrawal row stores a positive `amount` but represents capital leaving the business.
+const capSignedAmount = (c) => (c.type === 'withdrawal' ? -(c.amount || 0) : (c.amount || 0));
 
 function getLast12Months() {
   const months = [];
@@ -48,9 +50,9 @@ export default function FinancialSummary({ currentUser, capital, distributions, 
     [capital, currentUser]
   );
 
-  // All capital (for share calculation)
-  const totalAllCapital = capital.reduce((s, c) => s + (c.amount || 0), 0);
-  const myTotalCapital = myCapital.reduce((s, c) => s + (c.amount || 0), 0);
+  // All capital (for share calculation) — net of withdrawals
+  const totalAllCapital = capital.reduce((s, c) => s + capSignedAmount(c), 0);
+  const myTotalCapital = Math.max(0, myCapital.reduce((s, c) => s + capSignedAmount(c), 0));
   const sharePercent = totalAllCapital > 0 ? ((myTotalCapital / totalAllCapital) * 100).toFixed(1) : '0.0';
 
   // My distributions (by stakeholder_name)
@@ -99,9 +101,10 @@ export default function FinancialSummary({ currentUser, capital, distributions, 
   ];
   const PIE_COLORS = [COLORS.primary, COLORS.border];
 
-  // Capital growth since joined
-  const firstCapital = myCapital.length > 0
-    ? [...myCapital].sort((a, b) => new Date(a.date) - new Date(b.date))[0]
+  // Capital growth since joined — anchor on the first CONTRIBUTION (a withdrawal can never be first)
+  const myContributions = myCapital.filter(c => c.type !== 'withdrawal');
+  const firstCapital = myContributions.length > 0
+    ? [...myContributions].sort((a, b) => new Date(a.date) - new Date(b.date))[0]
     : null;
   const growthPct = firstCapital && firstCapital.amount > 0
     ? (((myTotalCapital - firstCapital.amount) / firstCapital.amount) * 100).toFixed(1)
@@ -174,14 +177,17 @@ export default function FinancialSummary({ currentUser, capital, distributions, 
             )}
 
             <div>
-              <div style={{ fontSize: '12px', color: COLORS.textMuted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Contributions ({myCapital.length})</div>
+              <div style={{ fontSize: '12px', color: COLORS.textMuted, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Capital Entries ({myCapital.length})</div>
               <div style={{ maxHeight: '80px', overflowY: 'auto' }}>
-                {myCapital.slice(0, 5).map((c, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '4px 0', borderBottom: `1px solid ${COLORS.border}` }}>
-                    <span style={{ color: COLORS.textMuted }}>{new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-                    <span style={{ fontWeight: 700, color: COLORS.primary }}>{fmtMoney(c.amount)}</span>
-                  </div>
-                ))}
+                {myCapital.slice(0, 5).map((c, i) => {
+                  const isWithdrawal = c.type === 'withdrawal';
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '4px 0', borderBottom: `1px solid ${COLORS.border}` }}>
+                      <span style={{ color: COLORS.textMuted }}>{isWithdrawal ? '💸 ' : ''}{new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+                      <span style={{ fontWeight: 700, color: isWithdrawal ? COLORS.danger : COLORS.primary }}>{isWithdrawal ? '− ' : ''}{fmtMoney(c.amount)}</span>
+                    </div>
+                  );
+                })}
                 {myCapital.length === 0 && <div style={{ fontSize: '13px', color: COLORS.textMuted, fontStyle: 'italic' }}>No capital entries found</div>}
               </div>
             </div>

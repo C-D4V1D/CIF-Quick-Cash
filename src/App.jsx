@@ -598,6 +598,10 @@ const DEFAULT_SETTINGS = {
 // CAPITAL ANALYSIS — PREDICTION ENGINE (pure functions)
 // ============================================================
 
+// A withdrawal row stores a positive `amount` but represents capital leaving the
+// business — sign it negative so every SUM/reduce over capital entries nets correctly.
+const capSignedAmount = (c) => (c.type === 'withdrawal' ? -(c.amount || 0) : (c.amount || 0));
+
 const capMonthKey = (d) => {
   if (!d) return null;
   const s = typeof d === 'string' ? d : new Date(d).toISOString();
@@ -676,7 +680,7 @@ const capBuildSnapshots = (transactions, expenses, distributions, capitalEntries
       .reduce((s, d) => s + (d.amount || 0), 0);
     const capitalInjected = capitalEntries
       .filter(c => capMonthKey(c.date) === mk)
-      .reduce((s, c) => s + (c.amount || 0), 0);
+      .reduce((s, c) => s + capSignedAmount(c), 0);
     const netConsumed = loanOriginations + outrightSpend - loanRecoveries - saleRecoveries + expenseTotal + distributionTotal;
     return { month: mk, loanOriginations, outrightSpend, loanRecoveries, saleRecoveries, expenseTotal, distributionTotal, capitalInjected, netConsumed };
   });
@@ -755,7 +759,7 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   if (snapshots.length === 0) return null;
 
   // Mirror the existing capital page formulas exactly
-  const totalCapital = capitalEntries.reduce((s, c) => s + (c.amount || 0), 0);
+  const totalCapital = capitalEntries.reduce((s, c) => s + capSignedAmount(c), 0);
   const activeTxs = transactions.filter(t => t.status === 'active');
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
   const closedTxs = transactions.filter(t => t.status === 'closed');
@@ -899,19 +903,21 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   const capByName = Object.values(capitalEntries.reduce((acc, c) => {
     const key = c.name.toLowerCase();
     if (!acc[key]) acc[key] = { name: c.name, total: 0 };
-    acc[key].total += (c.amount || 0);
+    acc[key].total += capSignedAmount(c);
     return acc;
   }, {}));
 
   // Contribution plan (shown when deficit)
   const contributionPlan = capByName.map(s => {
     const tgt = ownershipTargets[s.name] || {};
-    const currentPct = totalCapital > 0 ? s.total / totalCapital * 100 : 0;
+    // Clamp to 0 — a stakeholder can't hold a negative share of the business.
+    const clampedTotal = Math.max(0, s.total);
+    const currentPct = totalCapital > 0 ? clampedTotal / totalCapital * 100 : 0;
     const targetPct = tgt.targetPercent != null ? tgt.targetPercent : currentPct;
     const expectedTotal = primaryForecast ? primaryForecast.predictedRequired * (targetPct / 100) : 0;
-    const gap = Math.max(0, expectedTotal - s.total);
+    const gap = Math.max(0, expectedTotal - clampedTotal);
     return {
-      name: s.name, total: s.total, currentPct: Math.round(currentPct * 10) / 10,
+      name: s.name, total: clampedTotal, currentPct: Math.round(currentPct * 10) / 10,
       targetPct: Math.round(targetPct * 10) / 10, minPct: tgt.minPercent ?? null,
       maxPct: tgt.maxPercent ?? null, expectedTotal: Math.round(expectedTotal), gap: Math.round(gap),
     };
@@ -920,12 +926,13 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   // Withdrawal plan (shown when surplus)
   const withdrawalPlan = (() => {
     const rawPlan = capByName.map(s => {
-      const ownership = totalCapital > 0 ? s.total / totalCapital : 0;
+      const clampedTotal = Math.max(0, s.total);
+      const ownership = totalCapital > 0 ? clampedTotal / totalCapital : 0;
       const tgt = ownershipTargets[s.name] || {};
       const currentPct = ownership * 100;
       const maxPct = tgt.maxPercent ?? 100;
       const excessFactor = currentPct > maxPct ? 1.5 : 1.0;
-      return { name: s.name, total: s.total, currentPct: Math.round(currentPct * 10) / 10, withdrawAmount: safeWithdrawal * ownership * excessFactor };
+      return { name: s.name, total: clampedTotal, currentPct: Math.round(currentPct * 10) / 10, withdrawAmount: safeWithdrawal * ownership * excessFactor };
     });
     const rawTotal = rawPlan.reduce((s, x) => s + x.withdrawAmount, 0);
     return rawPlan.map(x => ({
@@ -987,7 +994,9 @@ const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, owne
   // enough to stay at their target.
   const pool = capByName.map(s => {
     const tgt = targets[s.name] || {};
-    const currentPct = totalCapital > 0 ? s.total / totalCapital * 100 : 0;
+    // Clamp to 0 — a stakeholder can't hold a negative share of the business.
+    const clampedTotal = Math.max(0, s.total);
+    const currentPct = totalCapital > 0 ? clampedTotal / totalCapital * 100 : 0;
     const targetPct  = tgt.targetPercent != null ? tgt.targetPercent : currentPct;
     const minPct     = tgt.minPercent ?? 0;
     const maxPct     = tgt.maxPercent ?? 100;
@@ -995,17 +1004,17 @@ const computeRealTimeShortfall = (shortfallAmount, capByName, totalCapital, owne
     // Their ideal total amount in the post-injection world
     const targetAmountAfter = totalAfter * targetPct / 100;
     // How much they need to contribute to reach that target (0 if already there/above)
-    const neededToReachTarget = Math.max(0, targetAmountAfter - s.total);
+    const neededToReachTarget = Math.max(0, targetAmountAfter - clampedTotal);
     // Hard cap: can't push them above maxPct
-    const maxCapacity = Math.max(0, totalAfter * maxPct / 100 - s.total);
+    const maxCapacity = Math.max(0, totalAfter * maxPct / 100 - clampedTotal);
     // Effective need respects maxCapacity
     const allowedNeed = Math.min(neededToReachTarget, maxCapacity);
     // "Above target" = they stay at/above their target even after full dilution
-    const isAboveTarget = s.total >= targetAmountAfter;
+    const isAboveTarget = clampedTotal >= targetAmountAfter;
 
     return {
       name: s.name,
-      currentAmount: s.total,
+      currentAmount: clampedTotal,
       currentPct: Math.round(currentPct * 10) / 10,
       targetPct: Math.round(targetPct * 10) / 10,
       minPct,
@@ -8576,20 +8585,27 @@ function ExpModal({ showAddExpense, setShowAddExpense, expForm, setExpForm, sett
   );
 }
 
-function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapitalTopUpFor, capital, setCapital, capForm, setCapForm, capShowPwd, setCapShowPwd, capAccountMode, setCapAccountMode, capSelectedUserId, setCapSelectedUserId, users, setUsers, loadData }) {
+function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapitalTopUpFor, capital, setCapital, capForm, setCapForm, capShowPwd, setCapShowPwd, capAccountMode, setCapAccountMode, capSelectedUserId, setCapSelectedUserId, capEntryType, setCapEntryType, users, setUsers, loadData }) {
   const isTopUp = !!capitalTopUpFor;
+  const isWithdrawal = isTopUp && capEntryType === 'withdrawal';
   const existingNames = [...new Set(capital.map(c => c.name))];
   const linkedEntry = isTopUp ? capital.find(c => c.name.toLowerCase() === capitalTopUpFor.toLowerCase()) : null;
   const linkedUserId = linkedEntry?.user_id || null;
   const linkedUser = linkedUserId ? users.find(u => u.id === linkedUserId) : null;
   const availableUsers = users.filter(u => u.id !== 'admin');
-  const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); };
-  const missingBaseFields = !capForm.name.trim() || !(Number(capForm.amount) > 0) || !capForm.date || !capForm.method.trim();
+  // Net capital balance currently on record for this stakeholder — a withdrawal can never exceed it.
+  const netBalance = isTopUp
+    ? capital.filter(c => c.name.toLowerCase() === capitalTopUpFor.toLowerCase()).reduce((s, c) => s + capSignedAmount(c), 0)
+    : 0;
+  const closeModal = () => { setShowAddCapital(false); setCapitalTopUpFor(null); setCapEntryType('contribution'); };
+  const amountNum = Number(capForm.amount) || 0;
+  const missingBaseFields = !capForm.name.trim() || !(amountNum > 0) || !capForm.date || !capForm.method.trim();
   const requiresExistingUserSelection = !isTopUp && capAccountMode === 'existing' && !capSelectedUserId;
   const requiresNewAccountCredentials = !isTopUp && capAccountMode === 'new' && (!capForm.username.trim() || !capForm.password.trim());
-  const missingRequired = missingBaseFields || requiresExistingUserSelection || requiresNewAccountCredentials;
+  const exceedsBalance = isWithdrawal && amountNum > netBalance;
+  const missingRequired = missingBaseFields || requiresExistingUserSelection || requiresNewAccountCredentials || exceedsBalance;
   const handleSave = async () => {
-    const amount = Number(capForm.amount) || 0;
+    const amount = amountNum;
     if (missingRequired) return;
     let userId = linkedUserId;
     if (!isTopUp) {
@@ -8609,16 +8625,29 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
         await API.post('users', newUser);
       }
     }
-    const capEntry = { name: capForm.name.trim(), amount, date: capForm.date, method: capForm.method.trim(), receipt: capForm.receipt, user_id: userId };
+    const capEntry = { name: capForm.name.trim(), amount, date: capForm.date, method: capForm.method.trim(), receipt: capForm.receipt, user_id: userId, type: isWithdrawal ? 'withdrawal' : 'contribution' };
     setCapital(prev => [...prev, { ...capEntry, id: Date.now() }]);
     closeModal();
-    await API.post('capital', capEntry);
+    const res = await API.post('capital', capEntry);
+    if (res?.error) { alert(res.error); setCapital(prev => prev.filter(x => x.id !== capEntry.id)); }
     loadData();
   };
   return (
-    <Modal open={showAddCapital} onClose={closeModal} title={isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add New Stakeholder'}>
+    <Modal open={showAddCapital} onClose={closeModal} title={isWithdrawal ? `Withdraw Capital — ${capitalTopUpFor}` : isTopUp ? `Top Up Capital — ${capitalTopUpFor}` : 'Add New Stakeholder'}>
       <div style={{ ...S.alert('info'), marginBottom: '12px' }}>Fields marked with <strong>*</strong> are mandatory. A login account is optional unless you choose <strong>Link to existing user</strong> or <strong>Create new stakeholder account</strong>.</div>
-      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ {missingBaseFields ? 'Stakeholder Name, Amount, Date, and Method/Bank are required.' : requiresExistingUserSelection ? 'Select the existing user account you want to link to this stakeholder.' : 'Username and Password are required when creating a new stakeholder login.'}</div>}
+      {isTopUp && (
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+          <button type="button" style={S.btnSm(capEntryType === 'contribution' ? 'primary' : 'outline')} onClick={() => setCapEntryType('contribution')}>💎 Contribution</button>
+          <button type="button" style={S.btnSm(capEntryType === 'withdrawal' ? 'danger' : 'outline')} onClick={() => setCapEntryType('withdrawal')}>💸 Withdrawal</button>
+        </div>
+      )}
+      {isWithdrawal && (
+        <div style={{ ...S.alert(exceedsBalance ? 'danger' : 'info'), marginBottom: '12px' }}>
+          {capitalTopUpFor}'s current net capital balance is <strong>{fmtMoney(netBalance)}</strong>.
+          {exceedsBalance && <> A withdrawal cannot exceed this balance.</>}
+        </div>
+      )}
+      {missingRequired && <div style={{ ...S.alert('danger'), marginBottom: '12px' }}>⛔ {exceedsBalance ? `Withdrawal amount cannot exceed the available balance of ${fmtMoney(netBalance)}.` : missingBaseFields ? 'Stakeholder Name, Amount, Date, and Method/Bank are required.' : requiresExistingUserSelection ? 'Select the existing user account you want to link to this stakeholder.' : 'Username and Password are required when creating a new stakeholder login.'}</div>}
       <div style={S.grid2}>
         <Field label="Stakeholder Name" required>
           {isTopUp
@@ -8628,9 +8657,9 @@ function CapModal({ showAddCapital, setShowAddCapital, capitalTopUpFor, setCapit
         {isTopUp
           ? <Field label="Account">{linkedUser ? <input style={{ ...S.input, background: '#f3f4f6', color: COLORS.textMuted }} value={`@${linkedUser.username}`} readOnly /> : <span style={{ fontSize: '13px', color: COLORS.textMuted, lineHeight: '40px' }}>No account linked</span>}</Field>
           : <div />}
-        <Field label="Amount (₦)" required><input style={S.input} type="number" value={capForm.amount} placeholder="0" onChange={e => setCapForm({ ...capForm, amount: e.target.value })} /></Field>
+        <Field label="Amount (₦)" required><input style={S.input} type="number" max={isWithdrawal ? netBalance : undefined} value={capForm.amount} placeholder="0" onChange={e => setCapForm({ ...capForm, amount: e.target.value })} /></Field>
         <Field label="Date" required><input style={S.input} type="date" value={capForm.date} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCapForm({ ...capForm, date: e.target.value })} /></Field>
-        <Field label="Method/Bank" required style={{ gridColumn: '1 / -1' }}><input style={S.input} value={capForm.method} onChange={e => setCapForm({ ...capForm, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
+        <Field label={isWithdrawal ? 'Payout Method/Bank' : 'Method/Bank'} required style={{ gridColumn: '1 / -1' }}><input style={S.input} value={capForm.method} onChange={e => setCapForm({ ...capForm, method: e.target.value })} placeholder="e.g. GTBank Transfer" /></Field>
       </div>
       {!isTopUp && (
         <div style={{ margin: '16px 0 8px', padding: '14px', background: COLORS.primaryLight, borderRadius: '10px', border: `1px solid ${COLORS.border}` }}>
@@ -9012,6 +9041,7 @@ export default function App() {
   const [capShowPwd, setCapShowPwd] = useState(false);
   const [capAccountMode, setCapAccountMode] = useState('none');
   const [capSelectedUserId, setCapSelectedUserId] = useState('');
+  const [capEntryType, setCapEntryType] = useState('contribution');
   const [usrForm, setUsrForm] = useState({ name: '', username: '', password: '', role: 'staff' });
   const [usrShowPwd, setUsrShowPwd] = useState(false);
   const [editUserUsername, setEditUserUsername] = useState('');
@@ -9324,7 +9354,7 @@ export default function App() {
   const totalRevenue = totalInterestEarned + totalSalesRevenue + totalServiceFees;
   const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
-  const totalCapital = capital.reduce((s, c) => s + (c.amount || 0), 0);
+  const totalCapital = capital.reduce((s, c) => s + capSignedAmount(c), 0);
   const totalDistributions = distributions.reduce((s, d) => s + (d.amount || 0), 0);
   const availableLendingCapital = totalCapital + netProfit - totalCapitalOut - totalCapitalInForSaleInventory - totalDistributions;
 
@@ -10679,7 +10709,8 @@ export default function App() {
           for (const c of capital) {
             const key = c.name.toLowerCase();
             if (!byStakeholder[key]) byStakeholder[key] = { name: c.name, total: 0, capitalDays: 0, entries: [] };
-            byStakeholder[key].total += (c.amount || 0);
+            const signedAmount = capSignedAmount(c);
+            byStakeholder[key].total += signedAmount;
             const entryDate = new Date(c.date);
             if (Number.isNaN(entryDate.getTime())) continue;
             const entryUTC = new Date(Date.UTC(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()));
@@ -10688,9 +10719,9 @@ export default function App() {
             // Start counting from the later of entry date or period start
             const effectiveStart = entryUTC > periodStart ? entryUTC : periodStart;
             const days = Math.round((periodEnd - effectiveStart) / 86400000) + 1; // inclusive
-            const cd = (c.amount || 0) * days;
+            const cd = signedAmount * days;
             byStakeholder[key].capitalDays += cd;
-            byStakeholder[key].entries.push({ amount: c.amount, date: c.date, days, capitalDays: cd });
+            byStakeholder[key].entries.push({ amount: c.amount, type: c.type, date: c.date, days, capitalDays: cd });
           }
           const arr = Object.values(byStakeholder);
           const totalCapitalDays = arr.reduce((s, x) => s + x.capitalDays, 0);
@@ -11339,7 +11370,7 @@ export default function App() {
             const lu = c.user_id ? users.find(u => u.id === c.user_id) : null;
             acc[key] = { name: c.name, total: 0, entries: [], user_id: c.user_id || null, username: lu?.username || null };
           }
-          acc[key].total += (c.amount || 0);
+          acc[key].total += capSignedAmount(c);
           acc[key].entries.push(c);
           return acc;
         }, {}));
@@ -11349,7 +11380,7 @@ export default function App() {
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
               <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark }}>💎 Capital & Distributions</h2>
-              {isAdmin && <button style={S.btn('primary')} onClick={() => { setCapitalTopUpFor(null); setCapForm({ name: '', amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' }); setCapShowPwd(false); setCapAccountMode('none'); setCapSelectedUserId(''); setShowAddCapital(true); }}>+ Add Stakeholder</button>}
+              {isAdmin && <button style={S.btn('primary')} onClick={() => { setCapitalTopUpFor(null); setCapEntryType('contribution'); setCapForm({ name: '', amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' }); setCapShowPwd(false); setCapAccountMode('none'); setCapSelectedUserId(''); setShowAddCapital(true); }}>+ Add Stakeholder</button>}
             </div>
 
             {/* Available for Lending */}
@@ -11561,10 +11592,11 @@ export default function App() {
             <div style={S.card}>
               <div style={{ ...S.cardTitle, display: 'flex', alignItems: 'center' }}>📥 Stakeholder Capital<InfoIcon tip="How much each investor has put in. The more they put in, the bigger their share of the profit." /></div>
               <table style={S.table}>
-                <thead><tr><th style={S.th}>Name</th><th style={S.th}>Total Capital</th><th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Share %<InfoIcon tip="This person's percentage of the total money invested. Their profit is worked out from this number." /></div></th><th style={S.th}>History</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead>
+                <thead><tr><th style={S.th}>Name</th><th style={S.th}>Net Capital</th><th style={S.th}><div style={{ display: 'flex', alignItems: 'center' }}>Share %<InfoIcon tip="This person's percentage of the total money invested. Their profit is worked out from this number." /></div></th><th style={S.th}>History</th>{isAdmin && <th style={S.th}>Actions</th>}</tr></thead>
                 <tbody>
                   {capByName.map((s, i) => {
-                    const pct = totalCapital > 0 ? (s.total / totalCapital * 100).toFixed(1) : '0.0';
+                    const clampedTotal = Math.max(0, s.total);
+                    const pct = totalCapital > 0 ? (clampedTotal / totalCapital * 100).toFixed(1) : '0.0';
                     const isExpanded = expandedCapital.has(s.name.toLowerCase());
                     return (
                       <Fragment key={i}>
@@ -11577,23 +11609,30 @@ export default function App() {
                               {isExpanded ? '▲ Hide' : `▼ ${s.entries.length} entry${s.entries.length !== 1 ? 'ies' : 'y'}`}
                             </button>
                           </td>
-                          {isAdmin && <td style={S.td}><button style={S.btnSm('primary')} onClick={() => { setCapitalTopUpFor(s.name); setCapForm({ name: s.name, amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' }); setCapShowPwd(false); setCapAccountMode('none'); setCapSelectedUserId(''); setShowAddCapital(true); }}>+ Top Up</button></td>}
+                          {isAdmin && <td style={{ ...S.td, display: 'flex', gap: '6px' }}>
+                            <button style={S.btnSm('primary')} onClick={() => { setCapitalTopUpFor(s.name); setCapEntryType('contribution'); setCapForm({ name: s.name, amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' }); setCapShowPwd(false); setCapAccountMode('none'); setCapSelectedUserId(''); setShowAddCapital(true); }}>+ Top Up</button>
+                            <button style={S.btnSm('danger')} disabled={s.total <= 0} onClick={() => { setCapitalTopUpFor(s.name); setCapEntryType('withdrawal'); setCapForm({ name: s.name, amount: '', date: localISODate(), method: '', receipt: '', username: '', password: '' }); setCapShowPwd(false); setCapAccountMode('none'); setCapSelectedUserId(''); setShowAddCapital(true); }}>− Withdraw</button>
+                          </td>}
                         </tr>
                         {isExpanded && (
                           <tr>
                             <td colSpan={isAdmin ? 5 : 4} style={{ padding: '4px 0 12px 20px', background: COLORS.bg }}>
                               <table style={{ ...S.table, fontSize: '12px' }}>
-                                <thead><tr><th style={S.th}>Date</th><th style={S.th}>Amount</th><th style={S.th}>Method</th><th style={S.th}>Receipt</th>{isAdmin && <th style={S.th}></th>}</tr></thead>
+                                <thead><tr><th style={S.th}>Date</th><th style={S.th}>Type</th><th style={S.th}>Amount</th><th style={S.th}>Method</th><th style={S.th}>Receipt</th>{isAdmin && <th style={S.th}></th>}</tr></thead>
                                 <tbody>
-                                  {s.entries.map((e, j) => (
+                                  {s.entries.map((e, j) => {
+                                    const isWithdrawal = e.type === 'withdrawal';
+                                    return (
                                     <tr key={j}>
                                       <td style={S.td}>{fmtDate(e.date)}</td>
-                                      <td style={S.td}>{fmtMoney(e.amount)}</td>
+                                      <td style={S.td}>{isWithdrawal ? <span style={{ color: COLORS.danger, fontWeight: 700 }}>💸 Withdrawal</span> : <span style={{ color: COLORS.primary, fontWeight: 700 }}>💎 Contribution</span>}</td>
+                                      <td style={{ ...S.td, color: isWithdrawal ? COLORS.danger : undefined }}>{isWithdrawal ? '− ' : ''}{fmtMoney(e.amount)}</td>
                                       <td style={S.td}>{e.method}</td>
                                       <td style={S.td}>{e.receipt ? <a href={e.receipt} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.primary, fontWeight: 600 }}>View</a> : <span style={{ color: COLORS.textMuted }}>—</span>}</td>
-                                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete ₦${e.amount.toLocaleString()} contribution from ${e.name}?`)) { const ok = await API.del(`capital/${e.id}`); if (ok) setCapital(prev => prev.filter(x => x.id !== e.id)); loadData(); } }}>Del</button></td>}
+                                      {isAdmin && <td style={S.td}><button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete ₦${e.amount.toLocaleString()} ${isWithdrawal ? 'withdrawal' : 'contribution'} from ${e.name}?`)) { const ok = await API.del(`capital/${e.id}`); if (ok) setCapital(prev => prev.filter(x => x.id !== e.id)); loadData(); } }}>Del</button></td>}
                                     </tr>
-                                  ))}
+                                    );
+                                  })}
                                 </tbody>
                               </table>
                             </td>
@@ -11638,18 +11677,19 @@ export default function App() {
                     for (const c of capital) {
                       const key = c.name.toLowerCase();
                       if (!byStake[key]) byStake[key] = { name: c.name, user_id: c.user_id, capitalDays: 0, total: 0 };
-                      byStake[key].total += (c.amount || 0);
+                      const signedAmount = capSignedAmount(c);
+                      byStake[key].total += signedAmount;
                       const entryDate = new Date(c.date);
                       if (Number.isNaN(entryDate.getTime())) continue;
                       const entryUTC = new Date(Date.UTC(entryDate.getFullYear(), entryDate.getMonth(), entryDate.getDate()));
                       if (entryUTC > pEnd) continue;
                       const effectiveStart = entryUTC > pStart ? entryUTC : pStart;
                       const days = Math.round((pEnd - effectiveStart) / 86400000) + 1;
-                      byStake[key].capitalDays += (c.amount || 0) * days;
+                      byStake[key].capitalDays += signedAmount * days;
                     }
                     const arr = Object.values(byStake);
                     const totalCD = arr.reduce((s, x) => s + x.capitalDays, 0);
-                    if (totalCD === 0) { alert('No capital-days for this period. Ensure capital entries exist.'); return; }
+                    if (totalCD <= 0) { alert('No net capital-days for this period (contributions and withdrawals may have netted to zero). Ensure capital entries exist.'); return; }
                     // Calculate stakeholder profit for the period
                     const periodTxs = transactions.filter(t => { if (!t.created_at) return false; const d = new Date(t.created_at.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
                     const periodClosed = closedTxs.filter(t => { const ds = t.dateRepaid || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
@@ -13948,7 +13988,7 @@ export default function App() {
       )}
 
       <ExpModal showAddExpense={showAddExpense} setShowAddExpense={setShowAddExpense} expForm={expForm} setExpForm={setExpForm} settings={settings} currentUser={currentUser} setExpenses={setExpenses} loadData={loadData} />
-      <CapModal showAddCapital={showAddCapital} setShowAddCapital={setShowAddCapital} capitalTopUpFor={capitalTopUpFor} setCapitalTopUpFor={setCapitalTopUpFor} capital={capital} setCapital={setCapital} capForm={capForm} setCapForm={setCapForm} capShowPwd={capShowPwd} setCapShowPwd={setCapShowPwd} capAccountMode={capAccountMode} setCapAccountMode={setCapAccountMode} capSelectedUserId={capSelectedUserId} setCapSelectedUserId={setCapSelectedUserId} users={users} setUsers={setUsers} loadData={loadData} />
+      <CapModal showAddCapital={showAddCapital} setShowAddCapital={setShowAddCapital} capitalTopUpFor={capitalTopUpFor} setCapitalTopUpFor={setCapitalTopUpFor} capital={capital} setCapital={setCapital} capForm={capForm} setCapForm={setCapForm} capShowPwd={capShowPwd} setCapShowPwd={setCapShowPwd} capAccountMode={capAccountMode} setCapAccountMode={setCapAccountMode} capSelectedUserId={capSelectedUserId} setCapSelectedUserId={setCapSelectedUserId} capEntryType={capEntryType} setCapEntryType={setCapEntryType} users={users} setUsers={setUsers} loadData={loadData} />
       <DistModal showAddDistribution={showAddDistribution} setShowAddDistribution={setShowAddDistribution} distForm={distForm} setDistForm={setDistForm} setDistributions={setDistributions} currentUser={currentUser} loadData={loadData} settings={settings} distDecisions={distDecisions} setDistDecisions={setDistDecisions} />
       <DecModal showAddDeclined={showAddDeclined} setShowAddDeclined={setShowAddDeclined} decForm={decForm} setDecForm={setDecForm} setDeclinedLog={setDeclinedLog} loadData={loadData} />
       <DeclineDraftModal declineDraftModal={declineDraftModal} setDeclineDraftModal={setDeclineDraftModal} declineDraftDec={declineDraftDec} setDeclineDraftDec={setDeclineDraftDec} setDeclinedLog={setDeclinedLog} setDrafts={setDrafts} currentUser={currentUser} loadData={loadData} />
