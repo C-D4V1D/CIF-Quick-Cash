@@ -7932,27 +7932,60 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
 
   // Client-side mirror of the backend's waterfall so staff see the same per-item
   // split (and any overpayment) before they submit.
+  // Mirrors the backend's two-pass waterfall: clear interest on every overdue
+  // ("interest_first") item first, in order, before anything goes to principal —
+  // matching the single-loan policy of settling interest before principal past the
+  // company's max tenure, applied across the whole combined basket instead of
+  // letting the first item in line consume the entire payment on its own principal.
   const combinedPreview = (isCombined && amountNum > 0 && date) ? (() => {
+    const mkBalance = (it) => ({
+      cashAdvance: getItemCashAdvance(tx, it),
+      appliedInterestRate: rate,
+      cycleStart: it.cycleStart || tx.dateGiven,
+      principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
+      loanDays,
+      carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+    });
+    const states = orderedUnredeemed.map(it => {
+      const balance = mkBalance(it);
+      const dayOfCycle = daysBetweenDates(balance.cycleStart, date);
+      const bucket = dayOfCycle < loanDays ? 'principal_first' : 'interest_first';
+      const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date }, graceDays);
+      return { item: it, balance, bucket, interestOwed: full.error ? 0 : full.interestOwedBefore, owesAnything: !full.error };
+    }).filter(s => s.owesAnything);
+
     let remaining = amountNum;
     const steps = [];
-    for (const it of orderedUnredeemed) {
-      if (remaining <= 0) break;
-      const itemBalance = {
-        cashAdvance: getItemCashAdvance(tx, it),
-        appliedInterestRate: rate,
-        cycleStart: it.cycleStart || tx.dateGiven,
-        principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
-        loanDays,
-        carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-      };
-      const r = computeLoanPayment(itemBalance, { amount: remaining, date }, graceDays);
+
+    for (const s of states) {
+      if (s.bucket !== 'interest_first' || remaining <= 0 || s.interestOwed <= 0) continue;
+      const pay = Math.min(remaining, s.interestOwed);
+      const r = computeLoanPayment(s.balance, { amount: pay, date }, graceDays);
       if (r.error) continue;
-      steps.push({ item: it, r });
+      if (r.outcome === 'full_payoff') {
+        steps.push({ item: s.item, r, phase: 'redeemed' });
+        remaining = r.overpayment || 0;
+        continue;
+      }
+      s.balance = { ...s.balance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart };
+      s.interestCleared = r.newCarriedInterestOwed <= 0;
+      steps.push({ item: s.item, r, phase: 'interest', interestStillOwed: s.interestOwed - r.interestApplied });
+      remaining -= r.interestApplied;
+    }
+
+    for (const s of states) {
+      if (remaining <= 0) break;
+      if (steps.find(st => st.item === s.item && st.phase === 'redeemed')) continue;
+      if (s.bucket === 'interest_first' && !s.interestCleared) continue;
+      const r = computeLoanPayment(s.balance, { amount: remaining, date }, graceDays);
+      if (r.error) continue;
+      steps.push({ item: s.item, r, phase: r.outcome === 'full_payoff' ? 'redeemed' : 'principal' });
       remaining = r.outcome === 'full_payoff' ? (r.overpayment || 0) : 0;
     }
+
     const totalPrincipal = steps.reduce((s, st) => s + st.r.principalApplied, 0);
     const totalInterest = steps.reduce((s, st) => s + st.r.interestApplied, 0);
-    const allPaid = orderedUnredeemed.length > 0 && orderedUnredeemed.every(it => steps.find(st => st.item === it)?.r.outcome === 'full_payoff');
+    const allPaid = orderedUnredeemed.length > 0 && orderedUnredeemed.every(it => steps.find(st => st.item === it && st.phase === 'redeemed'));
     return { steps, totalPrincipal, totalInterest, overpayment: remaining, allPaid };
   })() : null;
 
@@ -8039,12 +8072,14 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
             <div style={{ fontSize: '14px', color: COLORS.textMuted }}>Enter an amount to see how it splits across items.</div>
           ) : (
             <div style={{ fontSize: '13.5px', lineHeight: 1.6 }}>
-              {combinedPreview.steps.map(({ item: it, r }, i) => (
-                <div key={it.idx} style={{ padding: '8px 10px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}`, marginBottom: i < combinedPreview.steps.length - 1 ? '8px' : 0 }}>
-                  <strong>{itemLabel(it)}</strong>: {r.outcome === 'full_payoff' ? (
+              {combinedPreview.steps.map(({ item: it, r, phase, interestStillOwed }, i) => (
+                <div key={`${it.idx}-${phase}`} style={{ padding: '8px 10px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}`, marginBottom: i < combinedPreview.steps.length - 1 ? '8px' : 0 }}>
+                  <strong>{itemLabel(it)}</strong>: {phase === 'redeemed' ? (
                     <>✅ fully redeemed — {fmtN(r.principalApplied)} principal + {fmtN(r.interestApplied)} interest</>
+                  ) : phase === 'interest' ? (
+                    <>{fmtN(r.interestApplied)} interest cleared{r.rolledOver ? ' — 🔄 renewed' : ` (${fmtN(interestStillOwed)} interest still owed — principal untouched until this clears)`}</>
                   ) : (
-                    <>{fmtN(r.principalApplied)} to principal, {fmtN(r.interestApplied)} to interest{r.rolledOver ? ' — 🔄 renewed' : ` (${fmtN(r.newCashAdvance)} still owed)`}</>
+                    <>{fmtN(r.principalApplied)} to principal{r.rolledOver ? ' — 🔄 renewed' : ` (${fmtN(r.newCashAdvance)} still owed)`}</>
                   )}
                 </div>
               ))}
