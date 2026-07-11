@@ -503,12 +503,33 @@ const computeCurrentLoanState = (tx, settings) => {
     dailyInterestTotal = r.dailyFee;
   }
 
+  // Break the total interest owed into what accrued BEFORE the most recent principal
+  // payment (frozen at the old, higher balance) vs. what has accrued SINCE it (at the
+  // new, lower balance) — this is the same carriedInterestOwed/newAccrual split
+  // computeLoanPayment uses internally, derived here for display purposes. Skipped
+  // when no payment has been recorded yet, since there's nothing to split.
+  let interestBreakdown = null;
+  if (allPayments.length > 0) {
+    const anchor = tx.cycleStart || tx.dateGiven;
+    const lastPaymentDate = allPayments[0].date;
+    const daysBeforePayment = Math.max(0, daysBetweenDates(anchor, lastPaymentDate));
+    const daysSincePayment = Math.max(0, daysBetweenDates(lastPaymentDate, today));
+    const interestAfterPayment = Math.round(dailyInterestTotal * daysSincePayment);
+    const interestBeforePayment = Math.max(0, Math.round(interestOwed) - interestAfterPayment);
+    interestBreakdown = {
+      lastPaymentDate, daysBeforePayment, daysSincePayment,
+      interestBeforePayment, interestAfterPayment,
+      priorDailyInterest: daysBeforePayment > 0 ? Math.round(interestBeforePayment / daysBeforePayment) : 0,
+    };
+  }
+
   return {
     isSettled: false,
     originalAdvance: tx.cashAdvance || 0,
     currentPrincipal, interestOwed, dailyInterestTotal,
     amountDueToday: currentPrincipal + interestOwed,
     payments: allPayments,
+    interestBreakdown,
   };
 };
 
@@ -8697,6 +8718,27 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       {tx.type === 'advance' && (
         <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
           Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({tx.appliedInterestRate ?? settings.interestRate ?? 1}% of {hasBeenPaidDown ? 'current balance' : 'principal'}){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
+        </div>
+      )}
+      {tx.type === 'advance' && loanState && !loanState.isSettled && loanState.amountDueToday > 0 && (
+        <div style={{ marginTop: '10px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', border: `1px dashed ${COLORS.border}` }}>
+          <div style={{ fontWeight: 700, color: COLORS.text, marginBottom: '6px' }}>🧮 How ₦{Math.round(loanState.amountDueToday).toLocaleString()} due today is made up</div>
+          <div style={{ color: COLORS.textMuted, lineHeight: 1.9 }}>
+            <div>Current principal: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.currentPrincipal)}</strong></div>
+            {loanState.interestBreakdown ? (<>
+              <div>
+                + Interest before the last payment: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestBeforePayment)}</strong>
+                {loanState.interestBreakdown.daysBeforePayment > 0 && <span> ({fmtMoney(loanState.interestBreakdown.priorDailyInterest)}/day × {loanState.interestBreakdown.daysBeforePayment} day{loanState.interestBreakdown.daysBeforePayment !== 1 ? 's' : ''}, on the original balance)</span>}
+              </div>
+              <div>
+                + Interest since the last payment ({fmtDate(loanState.interestBreakdown.lastPaymentDate)}): <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestAfterPayment)}</strong>
+                {loanState.interestBreakdown.daysSincePayment > 0 && <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.interestBreakdown.daysSincePayment} day{loanState.interestBreakdown.daysSincePayment !== 1 ? 's' : ''}, on the current balance)</span>}
+              </div>
+            </>) : (
+              <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> ({fmtMoney(loanState.dailyInterestTotal)}/day × {daysOut} day{daysOut !== 1 ? 's' : ''})</div>
+            )}
+            <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '4px', paddingTop: '4px' }}>= Amount due today: <strong style={{ color: COLORS.danger }}>{fmtMoney(loanState.amountDueToday)}</strong></div>
+          </div>
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)} · Profit: <strong>{fmtMoney((tx.totalFees || 0) + (tx.serviceFeeAmount || 0))}</strong>{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
