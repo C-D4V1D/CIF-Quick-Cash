@@ -7474,14 +7474,114 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
     carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
   };
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
-  const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
-  const days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
-  const dailyFee = payoff.dailyFee ?? Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
-  const totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
-  const totalDue = (tx.cashAdvance || 0) + totalFees;
+  let days = 0;
+  let dailyFee = 0;
+  let totalFees = 0;
+  let advanceToCollect = 0;
+
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    tx.items.forEach(it => {
+      if (it.redeemed) return;
+      const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+      const itemAdvance = getItemCashAdvance(tx, it);
+      const itemCycleStart = it.cycleStart || tx.dateGiven;
+      const itemBalance = {
+        cashAdvance: itemAdvance,
+        appliedInterestRate: rate,
+        cycleStart: itemCycleStart,
+        principalSince: it.principalSince || itemCycleStart,
+        loanDays: Number(it.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+        carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+      };
+      const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
+      const itemDays = itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings);
+      const itemFees = itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
+      
+      days = Math.max(days, itemDays);
+      dailyFee += (itemPayoff.dailyFee ?? Math.floor(itemAdvance * rate / 100));
+      totalFees += itemFees;
+      advanceToCollect += itemAdvance;
+    });
+  } else {
+    const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
+    days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
+    dailyFee = payoff.dailyFee ?? Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
+    totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
+    advanceToCollect = tx.cashAdvance || 0;
+  }
+  const totalDue = advanceToCollect + totalFees;
+
   const [confirmed, setConfirmed] = useState(false);
   const [collectionPhoto, setCollectionPhoto] = useState(tx.photoCollectionHandover || null);
   const [collectionNotes, setCollectionNotes] = useState(tx.collectionNotes || '');
+
+  const handleConfirm = () => {
+    let updatedItems = tx.items;
+    let finalAmountRepaid = 0;
+    let finalTotalFees = 0;
+    let maxDays = 0;
+
+    if (Array.isArray(tx.items) && tx.items.length > 0) {
+      updatedItems = tx.items.map(it => {
+        if (it.redeemed) {
+          finalTotalFees += (it.feesCharged || 0);
+          finalAmountRepaid += (it.amountPaid || 0);
+          maxDays = Math.max(maxDays, it.daysCharged || 0);
+          return it;
+        }
+
+        const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+        const itemAdvance = getItemCashAdvance(tx, it);
+        const itemCycleStart = it.cycleStart || tx.dateGiven;
+        const itemBalance = {
+          cashAdvance: itemAdvance,
+          appliedInterestRate: rate,
+          cycleStart: itemCycleStart,
+          principalSince: it.principalSince || itemCycleStart,
+          loanDays: Number(it.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+          carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+        };
+        const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
+        const itemDays = itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings);
+        const itemFees = itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
+        
+        const amountPaid = itemAdvance + itemFees;
+        finalTotalFees += itemFees;
+        finalAmountRepaid += amountPaid;
+        maxDays = Math.max(maxDays, itemDays);
+
+        return {
+          ...it,
+          redeemed: true,
+          dateRedeemed: collectionDate,
+          repaidBy: currentUser?.name || '',
+          amountPaid,
+          daysCharged: itemDays,
+          feesCharged: itemFees,
+          handoverPhoto: collectionPhoto,
+          collectionNotes: collectionNotes.trim()
+        };
+      });
+    } else {
+      finalAmountRepaid = totalDue;
+      finalTotalFees = totalFees;
+      maxDays = days;
+    }
+
+    onSave({
+      ...tx,
+      status: 'closed',
+      amountRepaid: finalAmountRepaid,
+      dateRepaid: collectionDate,
+      daysCharged: maxDays,
+      totalFees: finalTotalFees,
+      itemReturned: true,
+      repaidBy: currentUser?.name || '',
+      photoCollectionHandover: collectionPhoto,
+      collectionNotes: collectionNotes.trim(),
+      ...(updatedItems ? { items: updatedItems } : {})
+    });
+  };
   return (
     <div>
       {/* ── Ref Number (eye-catching) ── */}
@@ -7513,7 +7613,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
           <div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div>
-          <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(tx.cashAdvance)}</strong></div>
+          <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(advanceToCollect)}</strong></div>
           <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
         </div>
       </div>
@@ -7558,7 +7658,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
       {/* ── Confirmation & Actions ── */}
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item returned</span></label>
       <div style={{ display: 'flex', gap: '12px' }}>
-        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: collectionDate, daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '', photoCollectionHandover: collectionPhoto, collectionNotes: collectionNotes.trim() })}>✅ Confirm</button>
+        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={handleConfirm}>✅ Confirm</button>
         <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
       </div>
     </div>
