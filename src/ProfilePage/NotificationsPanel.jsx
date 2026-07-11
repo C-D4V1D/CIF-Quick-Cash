@@ -24,6 +24,8 @@ function parseUTC(d) {
 }
 
 const fmtMoney = (n) => '₦' + Number(n || 0).toLocaleString();
+// A withdrawal row stores a positive `amount` but represents capital leaving the business.
+const capSignedAmount = (c) => (c.type === 'withdrawal' ? -(c.amount || 0) : (c.amount || 0));
 
 function fmtDateFull(d) {
   const dt = parseUTC(d);
@@ -67,12 +69,15 @@ export function buildNotifications({ currentUser, capital, distributions, activi
       c.user_id === currentUser.id || c.name === currentUser.name
     );
     myCapital.forEach(entry => {
+      const isWithdrawal = entry.type === 'withdrawal';
       notifs.push({
         id: `cap_${entry.id}`,
-        icon: '💰',
-        title: 'Capital Entry Recorded',
-        short: `${fmtMoney(entry.amount)} added to your capital via ${entry.method}`,
-        full: `A capital contribution of ${fmtMoney(entry.amount)} was recorded for you on ${fmtDateFull(entry.date)} via ${entry.method}. Your total capital in the business has been updated.${entry.receipt ? ' A receipt was attached.' : ''}`,
+        icon: isWithdrawal ? '💸' : '💰',
+        title: isWithdrawal ? 'Capital Withdrawal Recorded' : 'Capital Entry Recorded',
+        short: `${fmtMoney(entry.amount)} ${isWithdrawal ? 'withdrawn from' : 'added to'} your capital via ${entry.method}`,
+        full: isWithdrawal
+          ? `A capital withdrawal of ${fmtMoney(entry.amount)} was recorded for you on ${fmtDateFull(entry.date)} via ${entry.method}. Your total capital in the business has been updated.${entry.receipt ? ' A receipt was attached.' : ''}`
+          : `A capital contribution of ${fmtMoney(entry.amount)} was recorded for you on ${fmtDateFull(entry.date)} via ${entry.method}. Your total capital in the business has been updated.${entry.receipt ? ' A receipt was attached.' : ''}`,
         createdAt: entry.date,
         priority: 'high',
         link: '/capital',
@@ -154,7 +159,7 @@ export function buildNotifications({ currentUser, capital, distributions, activi
   // ── Capital Alert SMS conditions (staff / admin) ──
   // These match the 4 Capital Alert SMS templates configured in Admin Settings.
   if (isStaff) {
-    const totalCapital = capital.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const totalCapital = capital.reduce((s, c) => s + capSignedAmount(c), 0);
     const activeStatuses = ['active', 'overdue', 'ownership_transferred'];
     const deployed = transactions
       .filter(t => activeStatuses.includes(t.status) && t.type !== 'outright')
@@ -240,7 +245,7 @@ export function buildNotifications({ currentUser, capital, distributions, activi
   // Shown to stakeholders regardless of whether SMS sending is enabled.
   if (isStakeholder && stakeholderCapitalData) {
     const { myExpected, myWithdraw, streakMet, safeWithdrawal } = stakeholderCapitalData;
-    const totalCapital = capital.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const totalCapital = capital.reduce((s, c) => s + capSignedAmount(c), 0);
     const activeStatuses = ['active', 'overdue', 'ownership_transferred'];
     const deployed = transactions
       .filter(t => activeStatuses.includes(t.status) && t.type !== 'outright')

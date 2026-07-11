@@ -73,16 +73,19 @@ CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (date DESC);
 CREATE TABLE IF NOT EXISTS capital (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   name    TEXT    NOT NULL,
-  amount  REAL    NOT NULL,
+  amount  REAL    NOT NULL,  -- always stored positive; sign is determined by `type`
   date    TEXT    NOT NULL,
   method  TEXT    NOT NULL,
   receipt TEXT,
-  user_id TEXT    REFERENCES users(id)
+  user_id TEXT    REFERENCES users(id),
+  type    TEXT    NOT NULL DEFAULT 'contribution'  -- 'contribution' or 'withdrawal'
 );
 
 -- Migrations for existing databases (run once against live D1):
 -- ALTER TABLE capital ADD COLUMN receipt TEXT;
 -- ALTER TABLE capital ADD COLUMN user_id TEXT REFERENCES users(id);
+-- ALTER TABLE capital ADD COLUMN type TEXT NOT NULL DEFAULT 'contribution';
+-- (the backend also self-heals this column automatically on startup — see ensureCapitalTypeColumn in functions/api/[[route]].mjs)
 
 CREATE TABLE IF NOT EXISTS declined_log (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
