@@ -635,6 +635,19 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
   const newInterestOwed = Math.max(0, Math.round((interestOwed - interestApplied) * 100) / 100);
   const rolledOver = bucket === 'interest_first' && interestOwed > 0 && newInterestOwed <= 0;
 
+  // Past the max tenure, an interest payment buys days, not just a binary "renewed or
+  // not". Fully clearing the owed interest buys the full loanDays term (a normal
+  // renewal); a partial interest-first payment still buys a proportional number of
+  // days (amount ÷ current daily rate), rounded down. Either way the extension is
+  // measured from the CURRENT deadline — not the payment date — so paying late
+  // doesn't earn extra slack, and paying exactly on time doesn't lose any.
+  let newDeadlineDate = null;
+  if (bucket === 'interest_first' && interestApplied > 0 && dailyFee > 0) {
+    const currentDeadline = balance.deadlineDate || addDaysToDate(cycleStart, loanDays);
+    const daysBought = rolledOver ? loanDays : Math.floor(interestApplied / dailyFee);
+    if (daysBought > 0) newDeadlineDate = addDaysToDate(currentDeadline, daysBought);
+  }
+
   return {
     outcome: 'partial',
     bucket,
@@ -653,7 +666,7 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
     // whatever's left unpaid carries forward, future accrual starts fresh from here.
     newPrincipalSince: date,
     newCarriedInterestOwed: newInterestOwed,
-    newDeadlineDate: rolledOver ? addDaysToDate(date, loanDays) : null,
+    newDeadlineDate,
   };
 }
 
@@ -2247,6 +2260,7 @@ export async function onRequest(context) {
           principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
           loanDays: loanCfg.maxLoanDays,
           carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+          deadlineDate: it.deadlineDate || tx.deadlineDate,
         });
 
         // Past the company's max tenure, the payment engine settles interest before
@@ -2295,7 +2309,7 @@ export async function onRequest(context) {
             interestNotes.push(`${labelOf(s.it, s.i)} fully redeemed (₦${fmtNP(r.principalApplied)} principal + ₦${fmtNP(r.interestApplied)} interest)`);
             continue;
           }
-          s.balance = { ...s.balance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart };
+          s.balance = { ...s.balance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || s.balance.deadlineDate };
           s.interestCleared = r.newCarriedInterestOwed <= 0;
           const entry = {
             date, amount: r.interestApplied, method: paymentMethod,
@@ -2306,7 +2320,7 @@ export async function onRequest(context) {
           updatedItems[s.i] = { ...updatedItems[s.i], carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || updatedItems[s.i].deadlineDate || tx.deadlineDate, payments: [...(updatedItems[s.i].payments || []), entry] };
           totalInterestApplied += r.interestApplied;
           remaining -= r.interestApplied;
-          interestNotes.push(`${labelOf(s.it, s.i)}: ₦${fmtNP(r.interestApplied)} interest cleared${r.rolledOver ? ' — renewed' : ` (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed)`}`);
+          interestNotes.push(`${labelOf(s.it, s.i)}: ₦${fmtNP(r.interestApplied)} interest cleared${r.rolledOver ? ` — renewed, new deadline ${r.newDeadlineDate}` : r.newDeadlineDate ? ` — deadline extended to ${r.newDeadlineDate} (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed beyond that)` : ` (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed)`}`);
         }
 
         // Pass 2 — apply whatever remains to principal, in order. Overdue items whose
@@ -2454,6 +2468,7 @@ export async function onRequest(context) {
             // Company max loan tenure policy, not the customer's own agreed return date.
             loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(targetItem.carriedInterestOwed) || 0,
+            deadlineDate: targetItem.deadlineDate || tx.deadlineDate,
           }
         : {
             cashAdvance: Number(tx.cashAdvance) || 0,
@@ -2462,6 +2477,7 @@ export async function onRequest(context) {
             principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
             loanDays: loanCfg.maxLoanDays,
             carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
+            deadlineDate: tx.deadlineDate,
           };
 
       // No backdating before the last accrual checkpoint — principalSince already
@@ -2572,7 +2588,9 @@ export async function onRequest(context) {
         breakdown = `Payment received ${bucketLabel}: ₦${fmtNP(result.principalApplied)} applied to principal, ₦${fmtNP(result.interestApplied)} applied to interest.` +
           (result.rolledOver
             ? ` Interest fully cleared — loan renewed, new deadline ${result.newDeadlineDate}.`
-            : ` Remaining interest owed this cycle: ₦${fmtNP(result.newInterestOwed)}.`) +
+            : result.newDeadlineDate
+              ? ` Interest payment bought extra time — deadline extended to ${result.newDeadlineDate}. Remaining interest owed beyond that: ₦${fmtNP(result.newInterestOwed)}.`
+              : ` Remaining interest owed this cycle: ₦${fmtNP(result.newInterestOwed)}.`) +
           (wasRescued ? ' Item pulled back from the sale pipeline.' : '');
       }
 
