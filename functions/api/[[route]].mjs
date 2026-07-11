@@ -675,6 +675,43 @@ function computeLoanPayment(balance, payment, graceDays = 3, options = {}) {
   };
 }
 
+// Current outstanding principal + checkpointed interest owed as of today — the
+// backend mirror of the frontend's computeCurrentLoanState, used anywhere a
+// customer-facing figure ("what do you owe right now") is generated (SMS
+// reminders). tx.cashAdvance never changes after a partial payment (it stays the
+// original historical total — see getItemCashAdvance), so a naive
+// `cashAdvance + elapsedDays * dailyFee` calculation silently ignores any payment
+// already made and any per-item checkpoint, overstating what's actually owed.
+function computeCurrentOwed(tx, cfg) {
+  if (!tx || tx.type !== 'advance') return { principal: 0, interestOwed: 0, dailyFee: 0, total: 0 };
+  const rate = Number(tx.appliedInterestRate) || Number(cfg.interestRate) || 1;
+  const loanDays = Math.max(1, Number(cfg.maxLoanDays) || 30);
+  const graceDays = Math.max(0, Number(cfg.graceDays) || 3);
+  const today = todayNigeria();
+  const evaluate = (cashAdvance, cycleStart, principalSince, carriedInterestOwed) => {
+    const balance = { cashAdvance, appliedInterestRate: rate, cycleStart, principalSince: principalSince || cycleStart, loanDays, carriedInterestOwed: Number(carriedInterestOwed) || 0 };
+    const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+    return payoff.error ? { principal: cashAdvance, interestOwed: 0, dailyFee: 0 } : { principal: cashAdvance, interestOwed: payoff.interestApplied, dailyFee: payoff.dailyFee };
+  };
+  let principal = 0, interestOwed = 0, dailyFee = 0;
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    for (const item of tx.items) {
+      if (item.redeemed) continue;
+      const itemAdvance = getItemCashAdvance(tx, item);
+      const r = evaluate(itemAdvance, item.cycleStart || tx.dateGiven, item.principalSince, item.carriedInterestOwed);
+      principal += r.principal;
+      interestOwed += r.interestOwed;
+      dailyFee += r.dailyFee;
+    }
+  } else {
+    const r = evaluate(Number(tx.cashAdvance) || 0, tx.cycleStart || tx.dateGiven, tx.principalSince, tx.carriedInterestOwed);
+    principal = r.principal;
+    interestOwed = r.interestOwed;
+    dailyFee = r.dailyFee;
+  }
+  return { principal, interestOwed, dailyFee, total: principal + interestOwed };
+}
+
 // ── Auto schema initialisation ───────────────────────────────────────────────
 // Runs at most once per Worker isolate. On a brand-new database (cifcash-prod-db)
 // all tables are created automatically so no manual migration step is needed.
@@ -3704,8 +3741,7 @@ export async function onRequest(context) {
         // Ownership-transferred receipt: fires the day AFTER the internal deadline (ownership day + 1)
         const dayAfterDeadline = addDaysToDate(internalDeadline, 1);
         if (dayAfterDeadline === today && smsCfg.ownTransferredEnabled) {
-          const dailyFee = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
-          const settlementAmount = (txData.cashAdvance || 0) + smsCfg.maxLoanDays * dailyFee;
+          const settlementAmount = computeCurrentOwed(txData, smsCfg).total;
           triggers.push({
             triggerType: 'ownership_transferred',
             message: fillSmsTemplate(smsCfg.tmplOwnTransferred, {
@@ -3721,9 +3757,7 @@ export async function onRequest(context) {
 
         // Shared balance calculation for overdue and mid-loan triggers.
         // Computed once per transaction to avoid duplication.
-        const dailyFeeAmt = Math.floor((txData.cashAdvance || 0) * smsCfg.interestRate / 100);
-        const elapsedDays = effectiveElapsedDaysSince(txData, { maxLoanDays: smsCfg.maxLoanDays, graceDays: smsCfg.graceDays });
-        const currentBalance = (txData.cashAdvance || 0) + elapsedDays * dailyFeeAmt;
+        const currentBalance = computeCurrentOwed(txData, smsCfg).total;
 
         // Overdue reminders: fired N days AFTER the customer due date while still
         // within the internal deadline. Gives daysOverdue and the current balance.

@@ -509,14 +509,27 @@ const computeCurrentLoanState = (tx, settings) => {
   };
 
   let currentPrincipal = 0, interestOwed = 0, dailyInterestTotal = 0;
+  // Per-item breakdown — each item is evaluated against its OWN checkpoint (it may
+  // have rolled over or been paid on a different date than its siblings), so this is
+  // the only way to explain the combined total that's actually accurate once there's
+  // more than one item. A single blended "combined daily rate × days since last
+  // payment" formula looks plausible but is WRONG the moment items have diverged
+  // checkpoints (different last-payment dates, different rollover states).
+  const itemBreakdown = [];
   if (hasItems) {
     for (const item of tx.items) {
       if (item.redeemed) continue;
       const itemAdvance = getItemCashAdvance(tx, item);
-      const r = evaluate(itemAdvance, item.cycleStart || tx.dateGiven, item.principalSince, item.carriedInterestOwed);
+      const itemCycleStart = item.cycleStart || tx.dateGiven;
+      const r = evaluate(itemAdvance, itemCycleStart, item.principalSince, item.carriedInterestOwed);
       currentPrincipal += r.principal;
       interestOwed += r.interestOwed;
       dailyInterestTotal += r.dailyFee;
+      const daysSinceCheckpoint = Math.max(0, daysBetweenDates(item.principalSince || itemCycleStart, today));
+      itemBreakdown.push({
+        label: item.aiItemType || item.captureItemType || 'Item',
+        currentPrincipal: r.principal, interestOwed: r.interestOwed, dailyFee: r.dailyFee, daysSinceCheckpoint,
+      });
     }
   } else {
     const r = evaluate(Number(tx.cashAdvance) || 0, tx.cycleStart || tx.dateGiven, tx.principalSince, tx.carriedInterestOwed);
@@ -524,14 +537,22 @@ const computeCurrentLoanState = (tx, settings) => {
     interestOwed = r.interestOwed;
     dailyInterestTotal = r.dailyFee;
   }
+  // The wizard always populates tx.items, even for a single-item loan (see
+  // getItemCashAdvance's note) — so "more than one item" is what actually matters
+  // for choosing which breakdown is safe to show, not hasItems itself. With exactly
+  // one unredeemed item there's only one checkpoint, so the blended formula below is
+  // exact and reads more naturally than a one-row "per item" list.
+  const multiItem = itemBreakdown.length > 1;
 
   // Break the total interest owed into what accrued BEFORE the most recent principal
   // payment (frozen at the old, higher balance) vs. what has accrued SINCE it (at the
   // new, lower balance) — this is the same carriedInterestOwed/newAccrual split
-  // computeLoanPayment uses internally, derived here for display purposes. Skipped
-  // when no payment has been recorded yet, since there's nothing to split.
+  // computeLoanPayment uses internally, derived here for display purposes. Only exact
+  // for a single checkpoint, so it's skipped once there's more than one item, in
+  // favor of itemBreakdown, which stays accurate regardless of how items have
+  // diverged (paid on different dates, some rolled over and some not).
   let interestBreakdown = null;
-  if (allPayments.length > 0) {
+  if (!multiItem && allPayments.length > 0) {
     const anchor = tx.cycleStart || tx.dateGiven;
     const lastPaymentDate = allPayments[0].date;
     const daysBeforePayment = Math.max(0, daysBetweenDates(anchor, lastPaymentDate));
@@ -552,6 +573,7 @@ const computeCurrentLoanState = (tx, settings) => {
     amountDueToday: currentPrincipal + interestOwed,
     payments: allPayments,
     interestBreakdown,
+    itemBreakdown: multiItem ? itemBreakdown : null,
   };
 };
 
@@ -4331,7 +4353,10 @@ function CustomerPortal({ onBack, settings }) {
                   You successfully repaid your loan on <strong>{formatDateLong(tx.dateRepaid) || 'the agreed date'}</strong> and collected your item.<br /><br />
                   <strong>Summary:</strong><br />
                   &bull; Cash advance: <strong>{fmtMoney(tx.cashAdvance)}</strong><br />
-                  &bull; Daily fee ({tx.daysCharged ?? 0} day{(tx.daysCharged ?? 0) !== 1 ? 's' : ''} × {fmtMoney(tx.dailyFee ?? 0)}): <strong>{fmtMoney(tx.totalFees ?? 0)}</strong><br />
+                  {/* Not shown as "days × daily fee" — with multiple items, each accrues
+                      from its own checkpoint, so a single multiplication wouldn't
+                      reconcile with the correctly-computed total below it. */}
+                  &bull; Holding fees ({tx.daysCharged ?? 0} day{(tx.daysCharged ?? 0) !== 1 ? 's' : ''} outstanding): <strong>{fmtMoney(tx.totalFees ?? 0)}</strong><br />
                   &bull; Total repaid: <strong>{fmtMoney(tx.amountRepaid)}</strong><br /><br />
                   Thank you for your business! We&apos;re here whenever you need cash again.<br />
                   <span style={{ opacity: 0.65, fontSize: '12px' }}>Agreement Ref: {tx.ref}</span>
@@ -7591,6 +7616,13 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   let dailyFee = 0;
   let totalFees = 0;
   let advanceToCollect = 0;
+  // Per-item fee breakdown — each item accrues from its OWN checkpoint (it may have
+  // rolled over or been paid on a different date than its siblings), so "days ×
+  // dailyFee = totalFees" is only a real equation per item, never for the blended
+  // totals above once items have diverged checkpoints. Used to show an accurate
+  // "Holding Fees" breakdown instead of a combined multiplication that wouldn't
+  // reconcile with the correctly-computed totalFees.
+  const itemFeeBreakdown = [];
 
   const calculateItemPayoff = (tx, it, settings, collectionDate, graceDays) => {
     const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
@@ -7615,11 +7647,15 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
     tx.items.forEach(it => {
       if (it.redeemed) return;
       const { itemAdvance, itemDays, itemFees, itemDailyFee } = calculateItemPayoff(tx, it, settings, collectionDate, graceDays);
-      
+
       days = Math.max(days, itemDays);
       dailyFee += itemDailyFee;
       totalFees += itemFees;
       advanceToCollect += itemAdvance;
+      itemFeeBreakdown.push({
+        label: it.aiItemType || it.captureItemType || 'Item',
+        days: itemDays, dailyFee: itemDailyFee, fees: itemFees,
+      });
     });
   } else {
     const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
@@ -7629,6 +7665,10 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
     advanceToCollect = tx.cashAdvance || 0;
   }
   const totalDue = advanceToCollect + totalFees;
+  // Same "more than one item" distinction as computeCurrentLoanState: with exactly
+  // one item there's only one checkpoint, so days × dailyFee = totalFees is exact and
+  // reads more naturally than a one-row breakdown list.
+  const multiItemFees = itemFeeBreakdown.length > 1;
 
   const [confirmed, setConfirmed] = useState(false);
   const [collectionPhoto, setCollectionPhoto] = useState(tx.photoCollectionHandover || null);
@@ -7719,8 +7759,23 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
           <div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div>
           <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(advanceToCollect)}</strong></div>
-          <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
+          {!multiItemFees && (
+            <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
+          )}
         </div>
+        {multiItemFees && (
+          <div style={{ marginTop: '12px' }}>
+            <span style={S.statLabel}>Holding Fees — each item has its own checkpoint, so this is per item</span>
+            <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {itemFeeBreakdown.map((it, i) => (
+                <div key={i} style={{ fontSize: '13px' }}>
+                  <strong>{it.label}</strong>: {it.days} days × {fmtMoney(it.dailyFee)} = <strong style={{ color: COLORS.warning }}>{fmtMoney(it.fees)}</strong>
+                </div>
+              ))}
+              <div style={{ fontSize: '14px', marginTop: '4px', paddingTop: '4px', borderTop: `1px solid ${COLORS.border}` }}>Total: <strong style={{ color: COLORS.warning }}>{fmtMoney(totalFees)}</strong></div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── Date Collected ── */}
@@ -8902,19 +8957,32 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         <div style={{ marginTop: '10px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', border: `1px dashed ${COLORS.border}` }}>
           <div style={{ fontWeight: 700, color: COLORS.text, marginBottom: '6px' }}>🧮 How ₦{Math.round(loanState.amountDueToday).toLocaleString()} due today is made up</div>
           <div style={{ color: COLORS.textMuted, lineHeight: 1.9 }}>
-            <div>Current principal: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.currentPrincipal)}</strong></div>
-            {loanState.interestBreakdown ? (<>
-              <div>
-                + Interest before the last payment: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestBeforePayment)}</strong>
-                {loanState.interestBreakdown.daysBeforePayment > 0 && <span> ({fmtMoney(loanState.interestBreakdown.priorDailyInterest)}/day × {loanState.interestBreakdown.daysBeforePayment} day{loanState.interestBreakdown.daysBeforePayment !== 1 ? 's' : ''}, on the original balance)</span>}
-              </div>
-              <div>
-                + Interest since the last payment ({fmtDate(loanState.interestBreakdown.lastPaymentDate)}): <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestAfterPayment)}</strong>
-                {loanState.interestBreakdown.daysSincePayment > 0 && <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.interestBreakdown.daysSincePayment} day{loanState.interestBreakdown.daysSincePayment !== 1 ? 's' : ''}, on the current balance)</span>}
-              </div>
-            </>) : (
-              <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> ({fmtMoney(loanState.dailyInterestTotal)}/day × {daysOut} day{daysOut !== 1 ? 's' : ''})</div>
-            )}
+            {loanState.itemBreakdown ? (<>
+              {/* Multi-item: each item has its own checkpoint (may have rolled over or
+                  been paid on a different date than its siblings), so a single blended
+                  "combined rate × days" formula would not reconcile with the real total —
+                  only a per-item breakdown adds up correctly here. */}
+              {loanState.itemBreakdown.map((it, i) => (
+                <div key={i}>
+                  <strong style={{ color: COLORS.text }}>{it.label}</strong>: {fmtMoney(it.currentPrincipal)} principal + {fmtMoney(it.interestOwed)} interest
+                  {it.dailyFee > 0 && <span> ({fmtMoney(it.dailyFee)}/day × {it.daysSinceCheckpoint} day{it.daysSinceCheckpoint !== 1 ? 's' : ''} since its last payment or loan start)</span>}
+                </div>
+              ))}
+            </>) : (<>
+              <div>Current principal: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.currentPrincipal)}</strong></div>
+              {loanState.interestBreakdown ? (<>
+                <div>
+                  + Interest before the last payment: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestBeforePayment)}</strong>
+                  {loanState.interestBreakdown.daysBeforePayment > 0 && <span> ({fmtMoney(loanState.interestBreakdown.priorDailyInterest)}/day × {loanState.interestBreakdown.daysBeforePayment} day{loanState.interestBreakdown.daysBeforePayment !== 1 ? 's' : ''}, on the original balance)</span>}
+                </div>
+                <div>
+                  + Interest since the last payment ({fmtDate(loanState.interestBreakdown.lastPaymentDate)}): <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestAfterPayment)}</strong>
+                  {loanState.interestBreakdown.daysSincePayment > 0 && <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.interestBreakdown.daysSincePayment} day{loanState.interestBreakdown.daysSincePayment !== 1 ? 's' : ''}, on the current balance)</span>}
+                </div>
+              </>) : (
+                <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> ({fmtMoney(loanState.dailyInterestTotal)}/day × {daysOut} day{daysOut !== 1 ? 's' : ''})</div>
+              )}
+            </>)}
             <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '4px', paddingTop: '4px' }}>= Amount due today: <strong style={{ color: COLORS.danger }}>{fmtMoney(loanState.amountDueToday)}</strong></div>
           </div>
         </div>
