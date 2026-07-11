@@ -9995,7 +9995,7 @@ export default function App() {
 
   // Redirect authenticated users from unknown paths to dashboard
   const knownAuthPaths = Object.values(PAGE_PATHS);
-  const txSubUrlMatch = location.pathname.match(/^\/transactions\/(?!new$)([^/]+)(\/collect(?:\/item\/\d+)?|\/sell)?$/);
+  const txSubUrlMatch = location.pathname.match(/^\/transactions\/(?!new$)([^/]+)(\/collect(?:\/item\/\d+)?|\/sell|\/pay)?$/);
   const isTxSubPageUrl = !!txSubUrlMatch;
   if (!knownAuthPaths.includes(location.pathname) && !isTxSubPageUrl) {
     return <Navigate to="/dashboard" replace />;
