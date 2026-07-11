@@ -503,12 +503,33 @@ const computeCurrentLoanState = (tx, settings) => {
     dailyInterestTotal = r.dailyFee;
   }
 
+  // Break the total interest owed into what accrued BEFORE the most recent principal
+  // payment (frozen at the old, higher balance) vs. what has accrued SINCE it (at the
+  // new, lower balance) — this is the same carriedInterestOwed/newAccrual split
+  // computeLoanPayment uses internally, derived here for display purposes. Skipped
+  // when no payment has been recorded yet, since there's nothing to split.
+  let interestBreakdown = null;
+  if (allPayments.length > 0) {
+    const anchor = tx.cycleStart || tx.dateGiven;
+    const lastPaymentDate = allPayments[0].date;
+    const daysBeforePayment = Math.max(0, daysBetweenDates(anchor, lastPaymentDate));
+    const daysSincePayment = Math.max(0, daysBetweenDates(lastPaymentDate, today));
+    const interestAfterPayment = Math.round(dailyInterestTotal * daysSincePayment);
+    const interestBeforePayment = Math.max(0, Math.round(interestOwed) - interestAfterPayment);
+    interestBreakdown = {
+      lastPaymentDate, daysBeforePayment, daysSincePayment,
+      interestBeforePayment, interestAfterPayment,
+      priorDailyInterest: daysBeforePayment > 0 ? Math.round(interestBeforePayment / daysBeforePayment) : 0,
+    };
+  }
+
   return {
     isSettled: false,
     originalAdvance: tx.cashAdvance || 0,
     currentPrincipal, interestOwed, dailyInterestTotal,
     amountDueToday: currentPrincipal + interestOwed,
     payments: allPayments,
+    interestBreakdown,
   };
 };
 
@@ -7863,7 +7884,10 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
       }, null)
     : null;
 
-  const [selectedIdx, setSelectedIdx] = useState(defaultItemIdx);
+  // 'combined' treats every unredeemed item as one loan for this payment; a numeric
+  // index targets a single item. Defaults to combined on multi-item loans since
+  // that's what staff usually mean by "the customer paid ₦X" — no need to pick.
+  const [selectedIdx, setSelectedIdx] = useState(unredeemedItems.length > 1 ? 'combined' : defaultItemIdx);
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(localISODate());
   const [method, setMethod] = useState('');
@@ -7872,9 +7896,11 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   const [result, setResult] = useState(null); // server response after submit
   const [submitError, setSubmitError] = useState('');
 
-  const item = hasItems ? tx.items[selectedIdx] : null;
+  const isCombined = selectedIdx === 'combined';
+  const item = (hasItems && !isCombined) ? tx.items[selectedIdx] : null;
   const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const loanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const balance = hasItems
     ? {
         cashAdvance: getItemCashAdvance(tx, item),
@@ -7882,7 +7908,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         cycleStart: item?.cycleStart || tx.dateGiven,
         principalSince: item?.principalSince || item?.cycleStart || tx.dateGiven,
         // Company max loan tenure policy, not the customer's own agreed return date.
-        loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
+        loanDays,
         carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
       }
     : {
@@ -7890,12 +7916,45 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         appliedInterestRate: rate,
         cycleStart: tx.cycleStart || tx.dateGiven,
         principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
-        loanDays: Math.max(1, Number(settings.maxLoanDays) || 30),
+        loanDays,
         carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
       };
 
   const amountNum = Number(amount) || 0;
-  const preview = amountNum > 0 && date ? computeLoanPayment(balance, { amount: amountNum, date }, graceDays) : null;
+  const preview = (!isCombined && amountNum > 0 && date) ? computeLoanPayment(balance, { amount: amountNum, date }, graceDays) : null;
+
+  // Soonest-deadline-first — same waterfall order the backend applies a combined payment in.
+  const orderedUnredeemed = hasItems
+    ? [...unredeemedItems].sort((a, b) => (a.deadlineDate || tx.deadlineDate || '').localeCompare(b.deadlineDate || tx.deadlineDate || ''))
+    : [];
+  const combinedTotalAdvance = orderedUnredeemed.reduce((s, it) => s + getItemCashAdvance(tx, it), 0);
+  const combinedDailyInterest = orderedUnredeemed.reduce((s, it) => s + Math.floor(getItemCashAdvance(tx, it) * rate / 100), 0);
+
+  // Client-side mirror of the backend's waterfall so staff see the same per-item
+  // split (and any overpayment) before they submit.
+  const combinedPreview = (isCombined && amountNum > 0 && date) ? (() => {
+    let remaining = amountNum;
+    const steps = [];
+    for (const it of orderedUnredeemed) {
+      if (remaining <= 0) break;
+      const itemBalance = {
+        cashAdvance: getItemCashAdvance(tx, it),
+        appliedInterestRate: rate,
+        cycleStart: it.cycleStart || tx.dateGiven,
+        principalSince: it.principalSince || it.cycleStart || tx.dateGiven,
+        loanDays,
+        carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+      };
+      const r = computeLoanPayment(itemBalance, { amount: remaining, date }, graceDays);
+      if (r.error) continue;
+      steps.push({ item: it, r });
+      remaining = r.outcome === 'full_payoff' ? (r.overpayment || 0) : 0;
+    }
+    const totalPrincipal = steps.reduce((s, st) => s + st.r.principalApplied, 0);
+    const totalInterest = steps.reduce((s, st) => s + st.r.interestApplied, 0);
+    const allPaid = orderedUnredeemed.length > 0 && orderedUnredeemed.every(it => steps.find(st => st.item === it)?.r.outcome === 'full_payoff');
+    return { steps, totalPrincipal, totalInterest, overpayment: remaining, allPaid };
+  })() : null;
 
   const itemLabel = (it) => it ? (it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}${it.aiModel ? ' ' + it.aiModel : ''}` : (it.captureItemType || 'Item')) : '';
 
@@ -7913,7 +7972,9 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   };
 
   const fmtN = (n) => fmtMoney(n);
-  const paymentsHistory = hasItems ? (item?.payments || []) : (tx.payments || []);
+  const paymentsHistory = isCombined
+    ? orderedUnredeemed.flatMap(it => it.payments || [])
+    : (hasItems ? (item?.payments || []) : (tx.payments || []));
 
   if (result) {
     return (
@@ -7941,16 +8002,21 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: COLORS.primaryDark }}>{tx.fullName}</div>
         {hasItems && unredeemedItems.length > 1 && (
           <Field label="Which item is this payment for?">
-            <select style={S.select} value={selectedIdx} onChange={e => setSelectedIdx(Number(e.target.value))}>
+            <select style={S.select} value={selectedIdx} onChange={e => setSelectedIdx(e.target.value === 'combined' ? 'combined' : Number(e.target.value))}>
+              <option value="combined">🔗 All {orderedUnredeemed.length} items together — {fmtMoney(combinedTotalAdvance)} total</option>
               {unredeemedItems.map(it => <option key={it.idx} value={it.idx}>{itemLabel(it)} — {fmtMoney(getItemCashAdvance(tx, it))}</option>)}
             </select>
-            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>Defaulted to the item closest to its deadline. Change it if this payment is for a different item.</div>
+            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>
+              {isCombined
+                ? 'Treats every unredeemed item as one loan — the payment is applied across them, item closest to its deadline first.'
+                : 'Applies only to this item. Switch to "All items together" to split one payment across every item.'}
+            </div>
           </Field>
         )}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginTop: '8px' }}>
-          <div><span style={S.statLabel}>{hasItems ? 'Item Advance' : 'Advance Given'}</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(balance.cashAdvance)}</strong></div>
-          <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
-          <div><span style={S.statLabel}>Max Loan Tenure</span><br /><strong>{balance.loanDays} days</strong></div>
+          <div><span style={S.statLabel}>{isCombined ? 'Combined Items Advance' : hasItems ? 'Item Advance' : 'Advance Given'}</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(isCombined ? combinedTotalAdvance : balance.cashAdvance)}</strong></div>
+          <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(isCombined ? combinedDailyInterest : Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
+          <div><span style={S.statLabel}>Max Loan Tenure</span><br /><strong>{loanDays} days</strong></div>
         </div>
       </div>
 
@@ -7965,11 +8031,42 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         <Field label="Note (optional)"><input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Any extra context" /></Field>
       </div>
 
+      {/* ── Live Preview (combined) ── */}
+      {isCombined && combinedPreview && (
+        <div style={{ ...S.card, background: combinedPreview.allPaid ? COLORS.primaryLight : '#f8fafc', border: `2px solid ${combinedPreview.allPaid ? COLORS.primary : COLORS.border}` }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>What will happen — {orderedUnredeemed.length} items</div>
+          {combinedPreview.steps.length === 0 ? (
+            <div style={{ fontSize: '14px', color: COLORS.textMuted }}>Enter an amount to see how it splits across items.</div>
+          ) : (
+            <div style={{ fontSize: '13.5px', lineHeight: 1.6 }}>
+              {combinedPreview.steps.map(({ item: it, r }, i) => (
+                <div key={it.idx} style={{ padding: '8px 10px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}`, marginBottom: i < combinedPreview.steps.length - 1 ? '8px' : 0 }}>
+                  <strong>{itemLabel(it)}</strong>: {r.outcome === 'full_payoff' ? (
+                    <>✅ fully redeemed — {fmtN(r.principalApplied)} principal + {fmtN(r.interestApplied)} interest</>
+                  ) : (
+                    <>{fmtN(r.principalApplied)} to principal, {fmtN(r.interestApplied)} to interest{r.rolledOver ? ' — 🔄 renewed' : ` (${fmtN(r.newCashAdvance)} still owed)`}</>
+                  )}
+                </div>
+              ))}
+              {orderedUnredeemed.some(it => !combinedPreview.steps.find(st => st.item === it)) && (
+                <div style={{ color: COLORS.textMuted, marginTop: '4px' }}>Remaining item(s) untouched — amount ran out before reaching them.</div>
+              )}
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${COLORS.border}`, display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                <div>Total principal: <strong style={{ color: COLORS.primary }}>{fmtN(combinedPreview.totalPrincipal)}</strong></div>
+                <div>Total interest: <strong style={{ color: COLORS.warning }}>{fmtN(combinedPreview.totalInterest)}</strong></div>
+              </div>
+              {combinedPreview.overpayment > 0 && <div style={{ color: COLORS.warning, marginTop: '6px' }}>⚠ Overpayment of {fmtN(combinedPreview.overpayment)} — confirm with the customer before proceeding.</div>}
+              {combinedPreview.allPaid && <div style={{ marginTop: '6px', fontWeight: 700 }}>All items will be fully redeemed and the loan closed.</div>}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Live Preview ── */}
-      {preview && preview.error && (
+      {!isCombined && preview && preview.error && (
         <div style={S.alert('danger')}>⛔ {preview.error}</div>
       )}
-      {preview && !preview.error && (
+      {!isCombined && preview && !preview.error && (
         <div style={{ ...S.card, background: preview.outcome === 'full_payoff' ? COLORS.primaryLight : '#f8fafc', border: `2px solid ${preview.outcome === 'full_payoff' ? COLORS.primary : COLORS.border}` }}>
           <div style={{ fontSize: '13px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>What will happen</div>
           {preview.outcome === 'full_payoff' ? (
@@ -8009,13 +8106,14 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
       {/* ── Payment History ── */}
       {paymentsHistory.length > 0 && (
         <div style={S.card}>
-          <div style={S.cardTitle}>📜 Payment History{hasItems ? ' — this item' : ''}</div>
+          <div style={S.cardTitle}>📜 Payment History{isCombined ? ' — all items' : hasItems ? ' — this item' : ''}</div>
           <table style={S.table}>
-            <thead><tr><th style={S.th}>Date</th><th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th></tr></thead>
+            <thead><tr><th style={S.th}>Date</th>{isCombined && <th style={S.th}>Item</th>}<th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th></tr></thead>
             <tbody>
-              {[...paymentsHistory].reverse().map((p, i) => (
+              {[...paymentsHistory].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).map((p, i) => (
                 <tr key={i}>
                   <td style={S.td}>{fmtDate(p.date)}</td>
+                  {isCombined && <td style={S.td}>{itemLabel(orderedUnredeemed.find(it => (it.payments || []).includes(p)) || tx.items?.find(it => (it.payments || []).includes(p)))}</td>}
                   <td style={S.td}>{fmtMoney(p.amount)}</td>
                   <td style={S.td}>{fmtMoney(p.principalApplied)}</td>
                   <td style={S.td}>{fmtMoney(p.interestApplied)}</td>
@@ -8697,6 +8795,27 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       {tx.type === 'advance' && (
         <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
           Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({tx.appliedInterestRate ?? settings.interestRate ?? 1}% of {hasBeenPaidDown ? 'current balance' : 'principal'}){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
+        </div>
+      )}
+      {tx.type === 'advance' && loanState && !loanState.isSettled && loanState.amountDueToday > 0 && (
+        <div style={{ marginTop: '10px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', border: `1px dashed ${COLORS.border}` }}>
+          <div style={{ fontWeight: 700, color: COLORS.text, marginBottom: '6px' }}>🧮 How ₦{Math.round(loanState.amountDueToday).toLocaleString()} due today is made up</div>
+          <div style={{ color: COLORS.textMuted, lineHeight: 1.9 }}>
+            <div>Current principal: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.currentPrincipal)}</strong></div>
+            {loanState.interestBreakdown ? (<>
+              <div>
+                + Interest before the last payment: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestBeforePayment)}</strong>
+                {loanState.interestBreakdown.daysBeforePayment > 0 && <span> ({fmtMoney(loanState.interestBreakdown.priorDailyInterest)}/day × {loanState.interestBreakdown.daysBeforePayment} day{loanState.interestBreakdown.daysBeforePayment !== 1 ? 's' : ''}, on the original balance)</span>}
+              </div>
+              <div>
+                + Interest since the last payment ({fmtDate(loanState.interestBreakdown.lastPaymentDate)}): <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestAfterPayment)}</strong>
+                {loanState.interestBreakdown.daysSincePayment > 0 && <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.interestBreakdown.daysSincePayment} day{loanState.interestBreakdown.daysSincePayment !== 1 ? 's' : ''}, on the current balance)</span>}
+              </div>
+            </>) : (
+              <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> ({fmtMoney(loanState.dailyInterestTotal)}/day × {daysOut} day{daysOut !== 1 ? 's' : ''})</div>
+            )}
+            <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '4px', paddingTop: '4px' }}>= Amount due today: <strong style={{ color: COLORS.danger }}>{fmtMoney(loanState.amountDueToday)}</strong></div>
+          </div>
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)} · Profit: <strong>{fmtMoney((tx.totalFees || 0) + (tx.serviceFeeAmount || 0))}</strong>{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
