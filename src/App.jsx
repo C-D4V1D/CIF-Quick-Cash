@@ -391,6 +391,20 @@ const getItemCashAdvance = (tx, item) => {
   return Math.round(total / items.length);
 };
 
+// Cheap, date-math-free variant for dashboard-style aggregates that only need the
+// current outstanding PRINCIPAL (not interest) across possibly many transactions —
+// e.g. "capital currently deployed". tx.cashAdvance itself never changes after a
+// partial payment (it stays the original historical total for monthly/origination
+// reporting — see getItemCashAdvance above), so anything computing "money out
+// right now" must sum unredeemed items' current advance instead of reading it raw.
+const getCurrentOutstandingPrincipal = (tx) => {
+  if (!tx || tx.type !== 'advance') return 0;
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    return tx.items.reduce((s, it) => s + (it.redeemed ? 0 : getItemCashAdvance(tx, it)), 0);
+  }
+  return Number(tx.cashAdvance) || 0;
+};
+
 const computeLoanPayment = (balance, payment, graceDays = 3) => {
   const cashAdvance = Math.max(0, Number(balance.cashAdvance) || 0);
   const rate = Number(balance.appliedInterestRate) || 0;
@@ -443,6 +457,58 @@ const computeLoanPayment = (balance, payment, graceDays = 3) => {
     newPrincipalSince: date,
     newCarriedInterestOwed: newInterestOwed,
     newDeadlineDate: rolledOver ? addDays(date, loanDays) : null,
+  };
+};
+
+// Computes the TRUE current state of an advance loan, accounting for any partial
+// payments already recorded. Unlike tx.cashAdvance (which intentionally stays at
+// the original total for historical/monthly reporting — see getItemCashAdvance),
+// this reflects what's actually still outstanding right now: current principal,
+// checkpointed interest owed, and a correct "amount due today". Returns null for
+// non-advance transactions.
+const computeCurrentLoanState = (tx, settings) => {
+  if (!tx || tx.type !== 'advance') return null;
+  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const loanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const today = localISODate();
+  const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
+  const allPayments = hasItems ? tx.items.flatMap((it, idx) => (it.payments || []).map(p => ({ ...p, itemIndex: idx, itemLabel: it.aiItemType || it.captureItemType || `Item ${idx + 1}` }))) : (tx.payments || []);
+  allPayments.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  if (tx.status === 'closed' || tx.status === 'sold' || tx.status === 'declined') {
+    return { isSettled: true, originalAdvance: tx.cashAdvance || 0, currentPrincipal: 0, interestOwed: 0, dailyInterestTotal: 0, amountDueToday: 0, payments: allPayments };
+  }
+
+  const evaluate = (cashAdvance, cycleStart, principalSince, carriedInterestOwed) => {
+    const balance = { cashAdvance, appliedInterestRate: rate, cycleStart, principalSince: principalSince || cycleStart, loanDays, carriedInterestOwed: Number(carriedInterestOwed) || 0 };
+    const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+    return payoff.error ? { principal: cashAdvance, interestOwed: 0, dailyFee: 0 } : { principal: cashAdvance, interestOwed: payoff.interestApplied, dailyFee: payoff.dailyFee };
+  };
+
+  let currentPrincipal = 0, interestOwed = 0, dailyInterestTotal = 0;
+  if (hasItems) {
+    for (const item of tx.items) {
+      if (item.redeemed) continue;
+      const itemAdvance = getItemCashAdvance(tx, item);
+      const r = evaluate(itemAdvance, item.cycleStart || tx.dateGiven, item.principalSince, item.carriedInterestOwed);
+      currentPrincipal += r.principal;
+      interestOwed += r.interestOwed;
+      dailyInterestTotal += r.dailyFee;
+    }
+  } else {
+    const r = evaluate(Number(tx.cashAdvance) || 0, tx.cycleStart || tx.dateGiven, tx.principalSince, tx.carriedInterestOwed);
+    currentPrincipal = r.principal;
+    interestOwed = r.interestOwed;
+    dailyInterestTotal = r.dailyFee;
+  }
+
+  return {
+    isSettled: false,
+    originalAdvance: tx.cashAdvance || 0,
+    currentPrincipal, interestOwed, dailyInterestTotal,
+    amountDueToday: currentPrincipal + interestOwed,
+    payments: allPayments,
   };
 };
 
@@ -888,8 +954,8 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
   const closedTxs = transactions.filter(t => t.status === 'closed');
   const soldTxs = transactions.filter(t => t.status === 'sold');
-  const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
-  const totalCapitalInForSale = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const totalCapitalOut = activeTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
+  const totalCapitalInForSale = forSaleTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
@@ -8333,9 +8399,14 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const navigate = useNavigate();
   const timeline = tx.type === 'advance' ? getLoanTimeline(tx, settings) : null;
   const customerDaysLeft = tx.type === 'advance' ? getCustomerDaysLeft(tx) : null;
-  const dailyInterest = tx.cashAdvance ? Math.floor((tx.cashAdvance * (tx.appliedInterestRate ?? settings.interestRate ?? 1)) / 100) : 0;
+  // Reflects any partial payments already recorded — current outstanding principal,
+  // correctly checkpointed interest owed, and a true "amount due today". Do NOT read
+  // tx.cashAdvance directly here: it intentionally stays at the original total.
+  const loanState = tx.type === 'advance' ? computeCurrentLoanState(tx, settings) : null;
+  const dailyInterest = loanState?.dailyInterestTotal || 0;
   const daysOut = timeline ? timeline.elapsedDays : 0;
-  const amountDueToday = tx.cashAdvance ? tx.cashAdvance + effectiveElapsedDays(tx, settings) * dailyInterest : 0;
+  const amountDueToday = loanState?.amountDueToday || 0;
+  const hasBeenPaidDown = !!loanState && !loanState.isSettled && loanState.currentPrincipal < loanState.originalAdvance;
   const [smsLogs, setSmsLogs] = useState(null);
   const [smsLogsLoading, setSmsLogsLoading] = useState(false);
   const [sendingSms, setSendingSms] = useState(false);
@@ -8605,18 +8676,27 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       <div style={S.cardTitle}>💰 Financial Summary</div>
       <div style={S.grid4}>
         <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Estimated Value<InfoIcon tip="What the AI estimates this item would sell for second-hand. The max we can give is a percentage of this number." /></div><div style={S.statValue}>{fmtMoney(tx.estimatedValue)}</div></div>
-        <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Cash Advanced<InfoIcon tip="The cash we handed to the customer when they left the item with us." /></div><div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div></div>
+        <div style={S.stat}>
+          <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>{hasBeenPaidDown ? 'Original Advance' : 'Cash Advanced'}<InfoIcon tip="The cash we handed to the customer when they left the item with us. This never changes, even after payments." /></div>
+          <div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div>
+        </div>
         {tx.type === 'advance' && <>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money. A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div>{dailyInterest > 0 && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px', fontWeight: 600 }}>{fmtMoney(amountDueToday - (tx.cashAdvance || 0))} accrued</div>}</div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money (or since the loan last renewed). A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div>{loanState && !loanState.isSettled && loanState.interestOwed > 0 && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px', fontWeight: 600 }}>{fmtMoney(loanState.interestOwed)} interest owed</div>}</div>
           <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
-            <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="The full amount the customer owes us today — the cash we gave them plus all the daily fees added up so far. It grows bigger every day." /></div>
+            <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="What the customer owes us right now — current outstanding balance plus interest owed so far. Falls after a payment; grows a little every day after that." /></div>
             <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
           </div>
         </>}
       </div>
+      {hasBeenPaidDown && (
+        <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span style={{ color: COLORS.primary, fontWeight: 700 }}>💵 Current Balance: {fmtMoney(loanState.currentPrincipal)}</span>
+          <span style={{ color: COLORS.textMuted }}>— down from {fmtMoney(loanState.originalAdvance)} after {loanState.payments.length} payment{loanState.payments.length !== 1 ? 's' : ''}</span>
+        </div>
+      )}
       {tx.type === 'advance' && (
         <div style={{ marginTop: '12px', padding: '10px 12px', background: COLORS.bg, borderRadius: '8px', fontSize: '12.5px', color: COLORS.textMuted }}>
-          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({tx.appliedInterestRate ?? settings.interestRate ?? 1}% of principal){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
+          Daily interest: <strong>{fmtMoney(dailyInterest)}/day</strong> ({tx.appliedInterestRate ?? settings.interestRate ?? 1}% of {hasBeenPaidDown ? 'current balance' : 'principal'}){Number(getServiceFeeForAdvance(settings, tx.cashAdvance)) > 0 && <> · Service fee: <strong>{fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))}</strong></>}
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)} · Profit: <strong>{fmtMoney((tx.totalFees || 0) + (tx.serviceFeeAmount || 0))}</strong>{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
@@ -8639,6 +8719,29 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
         </div>
       )}
     </div>
+
+    {/* ── Payment History (advance only, any payment ever recorded) ── */}
+    {tx.type === 'advance' && loanState && loanState.payments.length > 0 && (
+      <div style={S.card}>
+        <div style={S.cardTitle}>📜 Payment History</div>
+        <table style={S.table}>
+          <thead><tr><th style={S.th}>Date</th>{Array.isArray(tx.items) && tx.items.length > 1 && <th style={S.th}>Item</th>}<th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th><th style={S.th}>By</th></tr></thead>
+          <tbody>
+            {loanState.payments.map((p, i) => (
+              <tr key={i}>
+                <td style={S.td}>{fmtDate(p.date)}</td>
+                {Array.isArray(tx.items) && tx.items.length > 1 && <td style={S.td}>{p.itemLabel}</td>}
+                <td style={S.td}>{fmtMoney(p.amount)}</td>
+                <td style={S.td}>{fmtMoney(p.principalApplied)}</td>
+                <td style={S.td}>{fmtMoney(p.interestApplied)}</td>
+                <td style={S.td}>{p.outcome === 'full_payoff' ? '✅ Closed' : p.rolledOver ? '🔄 Renewed' : 'Partial'}</td>
+                <td style={S.td}>{p.recordedBy || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
 
     {/* ── Loan Timeline (advance only) ── */}
     {tx.type === 'advance' && timeline && (
@@ -9843,8 +9946,8 @@ export default function App() {
   const readyToSell = [...activeTxs.filter(t => t.isEligibleForSale), ...surrenderedTxs];
   const dueTodayLoans = activeTxs.filter(t => getCustomerDaysLeft(t) === 0);
   const overdueLoans = activeTxs.filter(t => { const dl = getCustomerDaysLeft(t); return dl !== null && dl < 0; });
-  const totalCapitalOut = activeTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
-  const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+  const totalCapitalOut = activeTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
+  const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
   const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
@@ -10458,7 +10561,7 @@ export default function App() {
           <div style={{ ...S.stat, background: inGracePeriod.length > 0 ? '#f3e8ff' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>In Grace Period<InfoIcon tip="Customers who are overdue but we haven't listed their item for sale yet. We're giving them a little more time." /></div><div style={{ ...S.statValue, color: inGracePeriod.length > 0 ? '#7c3aed' : COLORS.primary }}>{inGracePeriod.length}</div></div>
           <div style={{ ...S.stat, background: readyToSell.length > 0 ? COLORS.dangerLight : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Ready to Sell<InfoIcon tip="Items where the customer ran out of time. We can now sell these to get our money back." /></div><div style={{ ...S.statValue, color: readyToSell.length > 0 ? COLORS.danger : COLORS.primary }}>{readyToSell.length}</div></div>
           <div style={{ ...S.stat, background: forSaleTxs.length > 0 ? '#ede9fe' : COLORS.primaryLight }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Listed for Sale<InfoIcon tip="Items already moved into listed inventory so the team can focus on selling them and recovering capital." /></div><div style={{ ...S.statValue, color: forSaleTxs.length > 0 ? '#6d28d9' : COLORS.primary }}>{forSaleTxs.length}</div></div>
-          {(() => { const overdueCapital = overdueLoans.reduce((s, t) => s + (t.cashAdvance || 0), 0); return overdueLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef2f2' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Overdue Capital<InfoIcon tip="Total cash advanced for loans where the customer has passed their agreed return date. This capital needs urgent recovery." /></div><div style={{ ...S.statValue, color: '#dc2626' }}>{fmtMoney(overdueCapital)}</div><div style={{ fontSize: '11px', color: '#991b1b', marginTop: '2px' }}>{overdueLoans.length} loan{overdueLoans.length !== 1 ? 's' : ''} overdue</div></div>) : null; })()}
+          {(() => { const overdueCapital = overdueLoans.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0); return overdueLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef2f2' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Overdue Capital<InfoIcon tip="Total cash advanced for loans where the customer has passed their agreed return date. This capital needs urgent recovery." /></div><div style={{ ...S.statValue, color: '#dc2626' }}>{fmtMoney(overdueCapital)}</div><div style={{ fontSize: '11px', color: '#991b1b', marginTop: '2px' }}>{overdueLoans.length} loan{overdueLoans.length !== 1 ? 's' : ''} overdue</div></div>) : null; })()}
           {dueTodayLoans.length > 0 ? (<div style={{ ...S.stat, background: '#fef3c7' }}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Due Today<InfoIcon tip="Loans where the customer agreed to return today. Follow up to ensure they come in." /></div><div style={{ ...S.statValue, color: '#92400e' }}>{dueTodayLoans.length}</div></div>) : null}
         </div>
         <div style={{ ...S.card, marginBottom: '12px' }}><div style={{ fontSize: '12px', color: dbStatus === 'connected' ? '#10b981' : COLORS.danger, fontWeight: 600 }}>● Database: {dbStatus === 'connected' ? 'System online' : 'System offline — check connection'}</div></div>
@@ -10628,18 +10731,18 @@ export default function App() {
 
         const dedupeByRef = (items) => Array.from(new Map(items.map(tx => [tx.ref, tx])).values());
         const allActionLoans = dedupeByRef([...forSaleTxs, ...readyToSell, ...graceLastDay, ...inGrace, ...lastDayOwnership, ...overdue, ...dueToday]);
-        const totalAtRisk = allActionLoans.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const totalAtRisk = allActionLoans.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
 
         const AlertGroup = ({ title, items, color, icon, infoTip, templateType, defaultExpanded }) => {
           const [expanded, setExpanded] = useState(defaultExpanded !== false);
           const [sortBy, setSortBy] = useState('deadline');
           if (items.length === 0) return null;
           const sorted = [...items].sort((a, b) => {
-            if (sortBy === 'amount') return (b.cashAdvance || 0) - (a.cashAdvance || 0);
+            if (sortBy === 'amount') return getCurrentOutstandingPrincipal(b) - getCurrentOutstandingPrincipal(a);
             if (sortBy === 'days') return daysBetween(b.dateGiven) - daysBetween(a.dateGiven);
             return new Date(a.deadlineDate || a.customer_due_date || a.internal_deadline || 0) - new Date(b.deadlineDate || b.customer_due_date || b.internal_deadline || 0);
           });
-          const groupTotal = items.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+          const groupTotal = items.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
           return (
             <div style={{ ...S.card, borderLeft: `4px solid ${color}`, marginBottom: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
@@ -10670,6 +10773,12 @@ export default function App() {
                             </div>
                             <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
                               {tx.aiBrand} {tx.aiModel} — Advanced: {fmtMoney(tx.cashAdvance)}
+                              {(() => {
+                                const currentOut = getCurrentOutstandingPrincipal(tx);
+                                return currentOut !== (tx.cashAdvance || 0) ? (
+                                  <span style={{ color: '#059669', fontWeight: 600 }}> (now {fmtMoney(currentOut)})</span>
+                                ) : null;
+                              })()}
                             </div>
                             <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '2px' }}>
                               Phone: {tx.phoneNumbers?.[0] || 'N/A'} | Due: {fmtDate(tx.deadlineDate || tx.customer_due_date)}
@@ -10818,9 +10927,9 @@ export default function App() {
         const pendingFollowUps = followUpCandidates.filter(item => !item.clearedToday).sort((a, b) => {
           const p = (a.triggers[0]?.priority || 999) - (b.triggers[0]?.priority || 999);
           if (p !== 0) return p;
-          return (b.tx.cashAdvance || 0) - (a.tx.cashAdvance || 0);
+          return getCurrentOutstandingPrincipal(b.tx) - getCurrentOutstandingPrincipal(a.tx);
         });
-        const pendingCapital = pendingFollowUps.reduce((s, item) => s + (item.tx.cashAdvance || 0), 0);
+        const pendingCapital = pendingFollowUps.reduce((s, item) => s + getCurrentOutstandingPrincipal(item.tx), 0);
         const overdueFollowUps = pendingFollowUps.filter(item => item.triggers.some(t => t.type === 'overdue_followup')).length;
 
         const getFollowUpWhatsAppLink = (tx, triggers) => {
@@ -11072,7 +11181,7 @@ export default function App() {
 
         // Stat calculations
         const totalAskingValue = forSaleTxs.reduce((s, t) => s + (t.salePrice || 0), 0);
-        const totalCapitalRisk = allSellable.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const totalCapitalRisk = allSellable.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
         // Potential margin = sale price minus what the business originally paid, for listed items only
         const totalListedMargin = forSaleTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
         const listedDaysArr = forSaleTxs.map(t => getForSaleDaysListed(t) || 0).filter(d => d > 0);

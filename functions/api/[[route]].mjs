@@ -549,6 +549,18 @@ const getItemCashAdvance = (tx, item) => {
   return Math.round(total / items.length);
 };
 
+// Cheap current-outstanding-principal aggregate — see the frontend mirror in App.jsx
+// for the full rationale. tx.cashAdvance never changes after a partial payment (it
+// stays the original historical total), so "capital currently deployed" style sums
+// (used here for surplus/shortfall detection) must sum unredeemed items instead.
+const getCurrentOutstandingPrincipal = (tx) => {
+  if (!tx || tx.type !== 'advance') return 0;
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    return tx.items.reduce((s, it) => s + (it.redeemed ? 0 : getItemCashAdvance(tx, it)), 0);
+  }
+  return Number(tx.cashAdvance) || 0;
+};
+
 // Pure function — no I/O. Given the current state of a principal balance and a
 // proposed payment, returns exactly what should change. Never trusts a client
 // to supply cashAdvance/interestOwed/etc — callers must pass values read from
@@ -4020,8 +4032,8 @@ export async function onRequest(context) {
         const totalCapital = capitalEntries.reduce((s, c) => s + capSigned(c), 0);
         const activeTx = allTx.filter(t => t.status === 'active');
         const forSaleTx = allTx.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
-        const totalOut = activeTx.reduce((s, t) => s + (t.cashAdvance || 0), 0);
-        const totalInForSale = forSaleTx.reduce((s, t) => s + (t.cashAdvance || 0), 0);
+        const totalOut = activeTx.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
+        const totalInForSale = forSaleTx.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
         const totalRevAll = allTx.filter(t => t.status === 'closed').reduce((s, t) => s + (t.totalFees || 0), 0)
           + allTx.filter(t => t.status === 'sold').reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0)
           + allTx.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((s, t) => s + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? serviceFee : 0)), 0);
