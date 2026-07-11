@@ -37,7 +37,7 @@ export const printStorageTag = (tx, settings = {}) => {
   const colour = escHtml(tx.aiColour || '');
   const imeiSerial = [tx.imei && `IMEI: ${escHtml(tx.imei)}`, tx.serialNumber && `S/N: ${escHtml(tx.serialNumber)}`].filter(Boolean).join(' &nbsp;/&nbsp; ');
   const cashGiven = fmtMoney(tx.cashAdvance);
-  const dailyFee = tx.type === 'advance' ? fmtMoney(tx.dailyFee ?? Math.round((tx.cashAdvance || 0) * (Number(settings.interestRate) || 1) / 100)) : '—';
+  const dailyFee = tx.type === 'advance' ? fmtMoney(tx.dailyFee ?? Math.floor((tx.cashAdvance || 0) * (Number(settings.interestRate) || 1) / 100)) : '—';
   const dateGiven = fmtDate(tx.dateGiven);
   const deadline = tx.type === 'advance' ? fmtDate(tx.deadlineDate) : '—';
   const { label: statusLabel, color: statusColor, bg: statusBg } = statusDisplay(tx);

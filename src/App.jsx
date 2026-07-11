@@ -3546,7 +3546,7 @@ function SalesPage({ onBack, settings }) {
 function ShopListingModal({ tx, settings, onClose, onSave }) {
   // Stable price reference values (computed from props, not state)
   const isOutright = tx.type === 'outright';
-  const dailyFee = Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
+  const dailyFee = Math.floor((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
   const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const outrightMinMarkupPct = settings.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct;
   const minPrice = isOutright
@@ -5994,7 +5994,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
   const totalEstimatedValueForOffer = allTxItems
     ? allTxItems.reduce((s, item) => s + (Number(item.estimatedValue) || 0), 0)
     : (tx.estimatedValue || 0);
-  const dailyFeeCalc = Math.round((tx.cashAdvance || 0) * getInterestRateForAdvance(settings, tx.cashAdvance) / 100);
+  const dailyFeeCalc = Math.floor((tx.cashAdvance || 0) * getInterestRateForAdvance(settings, tx.cashAdvance) / 100);
 
   useEffect(() => {
     const stepId = WIZARD_STEPS[step]?.id;
@@ -6005,7 +6005,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
     if (outrightOfferAutoFillRef.current || maxAdvance <= 0) return;
     if (!tx.cashAdvance) {
       upd('cashAdvance', maxAdvance);
-      upd('dailyFee', Math.round(maxAdvance * getInterestRateForAdvance(settings, maxAdvance) / 100));
+      upd('dailyFee', Math.floor(maxAdvance * getInterestRateForAdvance(settings, maxAdvance) / 100));
     }
     outrightOfferAutoFillRef.current = true;
   }, [step, tx.type, tx.cashAdvance, maxAdvance, settings.interestRate, upd]);
@@ -6919,7 +6919,7 @@ PRICE_RANGE: [lowest realistic price — highest realistic price] | VALUATION_CO
             </div>
           );
         })()}
-        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>{allTxItems && allTxItems.length > 1 ? 'Combined Resale Value' : 'Resale Value'}<InfoIcon tip={allTxItems && allTxItems.length > 1 ? 'Sum of all items\' estimated second-hand values. The max advance is based on this combined total.' : 'What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number.'} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalEstimatedValueForOffer)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max Advance{allTxItems && allTxItems.length <= 1 ? ` (${capPct}%)` : ''}<InfoIcon tip={allTxItems && allTxItems.length > 1 ? 'Sum of each item\'s maximum advance (40% or 50% of its value depending on receipt).' : (tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. Do not give more than this.`)} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({getInterestRateForAdvance(settings, tx.cashAdvance)}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${getInterestRateForAdvance(settings, tx.cashAdvance)}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.round(v * getInterestRateForAdvance(settings, v) / 100)); if (allTxItems && allTxItems.length > 0) { const totalEV = allTxItems.reduce((s, item) => s + (item.estimatedValue || 0), 0); upd('items', allTxItems.map(item => ({ ...item, itemCashAdvance: totalEV > 0 ? Math.round(v * (item.estimatedValue || 0) / totalEV) : Math.round(v / allTxItems.length) }))); } }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}{allTxItems && allTxItems.length > 1 && tx.cashAdvance > 0 && (<div style={{ marginTop: '12px', padding: '12px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>📦 Per-Item Advance Breakdown</div><div style={{ display: 'grid', gap: '6px' }}>{allTxItems.map((item, idx) => { const label = item.aiItemType ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}` : (item.captureItemType || `Item ${idx + 1}`); return (<div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', padding: '6px 8px', background: '#fff', borderRadius: '6px', border: `1px solid ${COLORS.border}` }}><span>{label}</span><strong>{fmtMoney(item.itemCashAdvance || 0)}</strong></div>); })}</div></div>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
+        <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '16px' }}>💰 {tx.type === 'outright' ? 'Purchase Offer' : 'Cash Advance Offer'}</h3><div style={S.alert('info')}>📋 The maximum {tx.type === 'outright' ? 'purchase amount' : 'advance'} is calculated automatically. <strong>Do not exceed it.</strong> Enter the amount agreed with the customer, then set today's date.</div><div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, padding: '20px' }}><div style={tx.type === 'outright' ? S.grid2 : S.grid3}><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>{allTxItems && allTxItems.length > 1 ? 'Combined Resale Value' : 'Resale Value'}<InfoIcon tip={allTxItems && allTxItems.length > 1 ? 'Sum of all items\' estimated second-hand values. The max advance is based on this combined total.' : 'What the AI thinks this item is worth second-hand. The max amount we can give the customer is based on this number.'} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalEstimatedValueForOffer)}</div></div><div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Max Advance{allTxItems && allTxItems.length <= 1 ? ` (${capPct}%)` : ''}<InfoIcon tip={allTxItems && allTxItems.length > 1 ? 'Sum of each item\'s maximum advance (40% or 50% of its value depending on receipt).' : (tx.type === 'outright' ? `The most you can pay is ${capPct}% of the resale value. Do not pay more than this.` : `The most you can give is ${capPct}% of the resale value. Do not give more than this.`)} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.accent }}>{fmtMoney(maxAdvance)}</div></div>{tx.type !== 'outright' && <div><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Daily Fee ({getInterestRateForAdvance(settings, tx.cashAdvance)}%)<InfoIcon tip={`Every day, this extra amount gets added to what the customer owes. It is ${getInterestRateForAdvance(settings, tx.cashAdvance)}% of the cash you gave them.`} /></div><div style={{ fontSize: '22px', fontWeight: 800, color: COLORS.warning }}>{fmtMoney(dailyFeeCalc)}/day</div></div>}</div></div><div style={S.grid2}><Field label={tx.type === 'outright' ? 'Purchase Amount (₦)' : 'Cash Advance (₦)'} required><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={tx.cashAdvance === 0 ? '' : tx.cashAdvance} onChange={e => { const raw = e.target.value; const val = raw === '' ? 0 : Number(raw); const v = Math.min(val, maxAdvance); upd('cashAdvance', v); upd('dailyFee', Math.floor(v * getInterestRateForAdvance(settings, v) / 100)); if (allTxItems && allTxItems.length > 0) { const totalEV = allTxItems.reduce((s, item) => s + (item.estimatedValue || 0), 0); upd('items', allTxItems.map(item => ({ ...item, itemCashAdvance: totalEV > 0 ? Math.floor(v * (item.estimatedValue || 0) / totalEV) : Math.floor(v / allTxItems.length) }))); } }} max={maxAdvance} /></Field><Field label={tx.type === 'outright' ? 'Purchase Date' : 'Date Given'} required><input style={S.input} type="date" value={tx.dateGiven} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => { upd('dateGiven', e.target.value); if (e.target.value) { upd('deadlineDate', addDays(e.target.value, Number(tx.loanDays) || maxLoanDays)); } }} /></Field></div>{tx.type === 'advance' && <div style={S.grid2}><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Loan Days<InfoIcon tip={`How many days the customer has to come back and pay. The limit is ${maxLoanDays} days. The return date is worked out from this.`} /></span>}><input style={S.input} type="number" min={1} max={maxLoanDays} value={tx.loanDays === '' ? '' : tx.loanDays} onChange={e => { const raw = e.target.value; const val = raw === '' ? '' : Number(raw); const v = raw === '' ? '' : Math.min(Math.max(val, 1), maxLoanDays); upd('loanDays', v); if (tx.dateGiven && raw !== '') { upd('deadlineDate', addDays(tx.dateGiven, Number(v))); } }} /></Field><Field label={<span style={{ display: 'inline-flex', alignItems: 'center' }}>Deadline<InfoIcon tip="The date the customer must come back to pay. It's worked out automatically from the date we gave the money plus the number of loan days." /></span>}><input style={S.input} type="date" value={tx.deadlineDate} readOnly /></Field></div>}{tx.type !== 'outright' && <div style={{ padding: '12px', background: COLORS.accentLight, borderRadius: '8px', fontSize: '13px', marginTop: '4px' }}><strong>Service Fee:</strong> {fmtMoney(getServiceFeeForAdvance(settings, tx.cashAdvance))} to collect. <InfoIcon tip="Collect this one-time fee from the customer today, based on the cash advance amount. Tick the box on the last step once you've collected it." /></div>}{allTxItems && allTxItems.length > 1 && tx.cashAdvance > 0 && (<div style={{ marginTop: '12px', padding: '12px', borderRadius: '8px', border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}><div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '8px' }}>📦 Per-Item Advance Breakdown</div><div style={{ display: 'grid', gap: '6px' }}>{allTxItems.map((item, idx) => { const label = item.aiItemType ? `${item.aiItemType}${item.aiBrand ? ' — ' + item.aiBrand : ''}` : (item.captureItemType || `Item ${idx + 1}`); return (<div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', padding: '6px 8px', background: '#fff', borderRadius: '6px', border: `1px solid ${COLORS.border}` }}><span>{label}</span><strong>{fmtMoney(item.itemCashAdvance || 0)}</strong></div>); })}</div></div>)}<div style={{ marginTop: '16px', paddingTop: '12px', borderTop: `1px solid ${COLORS.border}` }}><div style={{ fontSize: '12px', fontWeight: 600, color: COLORS.textMuted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>End transaction</div><div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep(tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral')}>{tx.type === 'outright' ? 'Item not acceptable for purchase' : 'Item not acceptable as collateral'}</button><button style={S.btnSm('muted')} onClick={() => handleDeclineFromStep('Other')}>Other</button></div></div></div>);
 
       case 'agreement': {
         return (
@@ -7474,14 +7474,106 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
     carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
   };
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
-  const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
-  const days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
-  const dailyFee = payoff.dailyFee ?? Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
-  const totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
-  const totalDue = (tx.cashAdvance || 0) + totalFees;
+  let days = 0;
+  let dailyFee = 0;
+  let totalFees = 0;
+  let advanceToCollect = 0;
+
+  const calculateItemPayoff = (tx, it, settings, collectionDate, graceDays) => {
+    const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+    const itemAdvance = getItemCashAdvance(tx, it);
+    const itemCycleStart = it.cycleStart || tx.dateGiven;
+    const itemBalance = {
+      cashAdvance: itemAdvance,
+      appliedInterestRate: rate,
+      cycleStart: itemCycleStart,
+      principalSince: it.principalSince || itemCycleStart,
+      loanDays: Number(it.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+      carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+    };
+    const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
+    const itemDays = itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings);
+    const itemFees = itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
+    const itemDailyFee = itemPayoff.dailyFee ?? Math.floor(itemAdvance * rate / 100);
+    return { itemAdvance, itemDays, itemFees, itemDailyFee };
+  };
+
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    tx.items.forEach(it => {
+      if (it.redeemed) return;
+      const { itemAdvance, itemDays, itemFees, itemDailyFee } = calculateItemPayoff(tx, it, settings, collectionDate, graceDays);
+      
+      days = Math.max(days, itemDays);
+      dailyFee += itemDailyFee;
+      totalFees += itemFees;
+      advanceToCollect += itemAdvance;
+    });
+  } else {
+    const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
+    days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
+    dailyFee = payoff.dailyFee ?? Math.floor((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
+    totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
+    advanceToCollect = tx.cashAdvance || 0;
+  }
+  const totalDue = advanceToCollect + totalFees;
+
   const [confirmed, setConfirmed] = useState(false);
   const [collectionPhoto, setCollectionPhoto] = useState(tx.photoCollectionHandover || null);
   const [collectionNotes, setCollectionNotes] = useState(tx.collectionNotes || '');
+
+  const handleConfirm = () => {
+    let updatedItems = tx.items;
+    let finalAmountRepaid = 0;
+    let finalTotalFees = 0;
+    let maxDays = 0;
+
+    if (Array.isArray(tx.items) && tx.items.length > 0) {
+      updatedItems = tx.items.map(it => {
+        if (it.redeemed) {
+          finalTotalFees += (it.feesCharged || 0);
+          finalAmountRepaid += (it.amountPaid || 0);
+          maxDays = Math.max(maxDays, it.daysCharged || 0);
+          return it;
+        }
+
+        const { itemAdvance, itemDays, itemFees } = calculateItemPayoff(tx, it, settings, collectionDate, graceDays);
+        const amountPaid = itemAdvance + itemFees;
+        finalTotalFees += itemFees;
+        finalAmountRepaid += amountPaid;
+        maxDays = Math.max(maxDays, itemDays);
+
+        return {
+          ...it,
+          redeemed: true,
+          dateRedeemed: collectionDate,
+          repaidBy: currentUser?.name || '',
+          amountPaid,
+          daysCharged: itemDays,
+          feesCharged: itemFees,
+          handoverPhoto: collectionPhoto,
+          collectionNotes: collectionNotes.trim()
+        };
+      });
+    } else {
+      finalAmountRepaid = totalDue;
+      finalTotalFees = totalFees;
+      maxDays = days;
+    }
+
+    onSave({
+      ...tx,
+      status: 'closed',
+      amountRepaid: finalAmountRepaid,
+      dateRepaid: collectionDate,
+      daysCharged: maxDays,
+      totalFees: finalTotalFees,
+      itemReturned: true,
+      repaidBy: currentUser?.name || '',
+      photoCollectionHandover: collectionPhoto,
+      collectionNotes: collectionNotes.trim(),
+      ...(updatedItems ? { items: updatedItems } : {})
+    });
+  };
   return (
     <div>
       {/* ── Ref Number (eye-catching) ── */}
@@ -7513,7 +7605,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
           <div><span style={S.statLabel}>Item</span><br /><strong>{tx.aiItemType} {tx.aiBrand} {tx.aiModel}</strong></div>
-          <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(tx.cashAdvance)}</strong></div>
+          <div><span style={S.statLabel}>Advance Given</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(advanceToCollect)}</strong></div>
           <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
         </div>
       </div>
@@ -7558,7 +7650,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
       {/* ── Confirmation & Actions ── */}
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item returned</span></label>
       <div style={{ display: 'flex', gap: '12px' }}>
-        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: collectionDate, daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '', photoCollectionHandover: collectionPhoto, collectionNotes: collectionNotes.trim() })}>✅ Confirm</button>
+        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={handleConfirm}>✅ Confirm</button>
         <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
       </div>
     </div>
@@ -7888,7 +7980,7 @@ const SALE_CONDITION_VALUES = new Set(SALE_CONDITIONS.map(c => c.value));
 function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const isOutright = tx.type === 'outright';
   const outrightMinMarkupPct = settings.outrightMinMarkupPct ?? DEFAULT_SETTINGS.outrightMinMarkupPct;
-  const dailyFee = Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
+  const dailyFee = Math.floor((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
   const maxHoldDays = Math.max(1, Number(settings.maxLoanDays) || 30) + Math.max(0, Number(settings.graceDays) || 3);
   const minPrice = isOutright
     ? roundToNice(Math.floor((tx.cashAdvance || 0) * (1 + outrightMinMarkupPct / 100)))
@@ -8238,7 +8330,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
   const navigate = useNavigate();
   const timeline = tx.type === 'advance' ? getLoanTimeline(tx, settings) : null;
   const customerDaysLeft = tx.type === 'advance' ? getCustomerDaysLeft(tx) : null;
-  const dailyInterest = tx.cashAdvance ? Math.round((tx.cashAdvance * (tx.appliedInterestRate ?? settings.interestRate ?? 1)) / 100) : 0;
+  const dailyInterest = tx.cashAdvance ? Math.floor((tx.cashAdvance * (tx.appliedInterestRate ?? settings.interestRate ?? 1)) / 100) : 0;
   const daysOut = timeline ? timeline.elapsedDays : 0;
   const amountDueToday = tx.cashAdvance ? tx.cashAdvance + effectiveElapsedDays(tx, settings) * dailyInterest : 0;
   const [smsLogs, setSmsLogs] = useState(null);
@@ -10329,7 +10421,7 @@ export default function App() {
             // Interest already accrued on active loans (what we'd collect if all repaid today)
             const accruedInterest = activeTxs.reduce((s, tx) => {
               const txRate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-              const fee = tx.dailyFee || Math.round((tx.cashAdvance || 0) * txRate / 100);
+              const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * txRate / 100);
               return s + effectiveElapsedDays(tx, settings) * fee;
             }, 0);
             // Projected interest per loan = agreed term days, but never less than days already elapsed.
@@ -10337,7 +10429,7 @@ export default function App() {
             // at or above the accrued amount — fees are already earned and won't shrink.
             const fullTermFees = activeTxs.reduce((s, tx) => {
               const txRate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-              const fee = tx.dailyFee || Math.round((tx.cashAdvance || 0) * txRate / 100);
+              const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * txRate / 100);
               const loanDays = Math.max(1, Number(tx.loanDays) || maxDays);
               const elapsed = effectiveElapsedDays(tx, settings);
               return s + Math.max(loanDays, elapsed) * fee;
