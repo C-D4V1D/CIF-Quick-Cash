@@ -8416,7 +8416,8 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
             {item.aiPriceRangeLow && item.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(item.aiPriceRangeLow))} — ${fmtMoney(Number(item.aiPriceRangeHigh))}`)}
             {item.aiValuationConfidence && row('Valuation Confidence', item.aiValuationConfidence)}
             {item.aiVisionUsed && row('Google Lens', 'Used for identification')}
-            {multi && item.itemCashAdvance > 0 && row('Advance Allocation', fmtMoney(item.itemCashAdvance))}
+            {multi && item.itemCashAdvance > 0 && row(item.payments?.length ? 'Current Balance' : 'Advance Allocation', fmtMoney(item.itemCashAdvance))}
+            {item.payments?.length > 0 && row('Payments Made', `${item.payments.length} payment${item.payments.length !== 1 ? 's' : ''} recorded`)}
             {item.redeemed && item.amountPaid > 0 && row('Amount Paid', <strong style={{ color: COLORS.primary }}>{fmtMoney(item.amountPaid)}</strong>)}
             {item.redeemed && item.daysCharged > 0 && row('Days Charged', `${item.daysCharged} day${item.daysCharged !== 1 ? 's' : ''}`)}
             {item.redeemed && item.collectionNotes && row('Collection Notes', item.collectionNotes)}
