@@ -7479,33 +7479,39 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   let totalFees = 0;
   let advanceToCollect = 0;
 
+  const calculateItemPayoff = (tx, it, settings, collectionDate, graceDays) => {
+    const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+    const itemAdvance = getItemCashAdvance(tx, it);
+    const itemCycleStart = it.cycleStart || tx.dateGiven;
+    const itemBalance = {
+      cashAdvance: itemAdvance,
+      appliedInterestRate: rate,
+      cycleStart: itemCycleStart,
+      principalSince: it.principalSince || itemCycleStart,
+      loanDays: Number(it.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+      carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
+    };
+    const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
+    const itemDays = itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings);
+    const itemFees = itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
+    const itemDailyFee = itemPayoff.dailyFee ?? Math.floor(itemAdvance * rate / 100);
+    return { itemAdvance, itemDays, itemFees, itemDailyFee };
+  };
+
   if (Array.isArray(tx.items) && tx.items.length > 0) {
     tx.items.forEach(it => {
       if (it.redeemed) return;
-      const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-      const itemAdvance = getItemCashAdvance(tx, it);
-      const itemCycleStart = it.cycleStart || tx.dateGiven;
-      const itemBalance = {
-        cashAdvance: itemAdvance,
-        appliedInterestRate: rate,
-        cycleStart: itemCycleStart,
-        principalSince: it.principalSince || itemCycleStart,
-        loanDays: Number(it.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
-        carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-      };
-      const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
-      const itemDays = itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings);
-      const itemFees = itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
+      const { itemAdvance, itemDays, itemFees, itemDailyFee } = calculateItemPayoff(tx, it, settings, collectionDate, graceDays);
       
       days = Math.max(days, itemDays);
-      dailyFee += (itemPayoff.dailyFee ?? Math.floor(itemAdvance * rate / 100));
+      dailyFee += itemDailyFee;
       totalFees += itemFees;
       advanceToCollect += itemAdvance;
     });
   } else {
     const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
     days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
-    dailyFee = payoff.dailyFee ?? Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
+    dailyFee = payoff.dailyFee ?? Math.floor((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
     totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
     advanceToCollect = tx.cashAdvance || 0;
   }
@@ -7530,21 +7536,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
           return it;
         }
 
-        const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-        const itemAdvance = getItemCashAdvance(tx, it);
-        const itemCycleStart = it.cycleStart || tx.dateGiven;
-        const itemBalance = {
-          cashAdvance: itemAdvance,
-          appliedInterestRate: rate,
-          cycleStart: itemCycleStart,
-          principalSince: it.principalSince || itemCycleStart,
-          loanDays: Number(it.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
-          carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-        };
-        const itemPayoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
-        const itemDays = itemPayoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, it, settings);
-        const itemFees = itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied);
-        
+        const { itemAdvance, itemDays, itemFees } = calculateItemPayoff(tx, it, settings, collectionDate, graceDays);
         const amountPaid = itemAdvance + itemFees;
         finalTotalFees += itemFees;
         finalAmountRepaid += amountPaid;
