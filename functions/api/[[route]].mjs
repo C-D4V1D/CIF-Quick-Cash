@@ -590,11 +590,12 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
   // paid same-day as cycleStart). "Day 30" here means what the rest of the app
   // already displays as "30 days" in the repayment screens.
   const dayOfCycle = daysBetweenDates(cycleStart, date);
-  // Freeze cap is measured from cycleStart (the term), not from principalSince —
-  // a principal change mid-cycle must not reset how many more days can accrue.
-  const checkpointElapsed = daysBetweenDates(cycleStart, principalSince);
-  const maxAdditionalDays = Math.max(0, (loanDays + graceDays) - checkpointElapsed);
-  const daysSinceCheckpoint = Math.min(daysBetweenDates(principalSince, date), maxAdditionalDays);
+  // Interest accrues for every day the item remains unredeemed and unsold — it does
+  // NOT freeze at the grace-period boundary. An item can sit unsold well past grace
+  // (e.g. 73 days), and if the customer eventually comes back to pay, what they owe
+  // must reflect the full outstanding period, not just the first loanDays+graceDays
+  // of it — otherwise the displayed day count and the interest total disagree.
+  const daysSinceCheckpoint = daysBetweenDates(principalSince, date);
   const newAccrual = daysSinceCheckpoint * dailyFee;
   const interestOwed = carriedInterestOwed + newAccrual;
   const totalOwed = cashAdvance + interestOwed;

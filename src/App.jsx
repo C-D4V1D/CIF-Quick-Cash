@@ -406,6 +406,10 @@ const getCurrentOutstandingPrincipal = (tx) => {
 };
 
 const computeLoanPayment = (balance, payment, graceDays = 3) => {
+  // graceDays is kept for call-site compatibility (every caller still passes the
+  // company's grace period) but no longer caps accrual — see the note by
+  // daysSinceCheckpoint below for why interest no longer freezes at the grace boundary.
+  void graceDays;
   const cashAdvance = Math.max(0, Number(balance.cashAdvance) || 0);
   const rate = Number(balance.appliedInterestRate) || 0;
   const loanDays = Math.max(1, Number(balance.loanDays) || 30);
@@ -417,11 +421,12 @@ const computeLoanPayment = (balance, payment, graceDays = 3) => {
 
   const dailyFee = Math.floor(cashAdvance * rate / 100);
   const dayOfCycle = daysBetweenDates(cycleStart, date);
-  // Freeze cap measured from cycleStart (the term), not principalSince — a
-  // principal change mid-cycle must not reset how many more days can accrue.
-  const checkpointElapsed = daysBetweenDates(cycleStart, principalSince);
-  const maxAdditionalDays = Math.max(0, (loanDays + graceDays) - checkpointElapsed);
-  const daysSinceCheckpoint = Math.min(daysBetweenDates(principalSince, date), maxAdditionalDays);
+  // Interest accrues for every day the item remains unredeemed and unsold — it does
+  // NOT freeze at the grace-period boundary. An item can sit unsold well past grace
+  // (e.g. 73 days), and if the customer eventually comes back to pay, what they owe
+  // must reflect the full outstanding period, not just the first loanDays+graceDays
+  // of it — otherwise the displayed day count and the interest total disagree.
+  const daysSinceCheckpoint = daysBetweenDates(principalSince, date);
   const newAccrual = daysSinceCheckpoint * dailyFee;
   const interestOwed = carriedInterestOwed + newAccrual;
   const totalOwed = cashAdvance + interestOwed;
@@ -3834,7 +3839,7 @@ Be honest and truthful. Do not invent specs. Respond with ONLY the rewritten tex
           <div style={{ fontWeight: 700, fontSize: '15px', color: '#111' }}>{tx.aiBrand} {tx.aiModel}</div>
           <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '2px' }}>{tx.aiItemType || tx.captureItemType} · Ref: {tx.ref}</div>
           {tx.cashAdvance > 0 && <div style={{ fontSize: '12px', color: '#374151', fontWeight: 600, marginTop: '2px' }}>Cash advance: {fmtMoney(tx.cashAdvance)}</div>}
-          {tx.type === 'advance' && tx.cashAdvance > 0 && (() => { const elapsed = effectiveElapsedDays(tx, settings); const amountDue = tx.cashAdvance + elapsed * dailyFee; return <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '2px' }}>Amount due: {fmtMoney(amountDue)}</div>; })()}
+          {tx.type === 'advance' && tx.cashAdvance > 0 && (() => { const state = computeCurrentLoanState(tx, settings); const amountDue = state ? state.amountDueToday : tx.cashAdvance; return <div style={{ fontSize: '12px', color: '#dc2626', fontWeight: 600, marginTop: '2px' }}>Amount due: {fmtMoney(amountDue)}</div>; })()}
           {tx.imei && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>IMEI: {tx.imei}</div>}
           {tx.serialNumber && <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>Serial: {tx.serialNumber}</div>}
         </div>
@@ -4157,8 +4162,11 @@ function CustomerPortal({ onBack, settings }) {
 
   const calcOwedToday = (tx) => {
     if (!tx || tx.type === 'outright') return tx?.cashAdvance || 0;
-    const elapsed = effectiveElapsedDays(tx, s);
-    return (tx.cashAdvance || 0) + elapsed * (tx.dailyFee || 0);
+    // Checkpoint-aware and uncapped — matches the Record Payment / Transaction
+    // Detail engine so customers see the same "amount due" staff do, including
+    // interest that kept accruing past grace on an item that hasn't sold yet.
+    const state = computeCurrentLoanState(tx, s);
+    return state ? state.amountDueToday : (tx.cashAdvance || 0);
   };
 
   const getDaysInfo = (tx) => {
@@ -10725,21 +10733,21 @@ export default function App() {
           <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Gross Profit<InfoIcon tip="All-time profit earned: interest from repaid loans, margins from sold items (sale price minus cost), and service fees." /></div><div style={S.statValue}>{fmtMoney(totalRevenue)}</div></div>
           {(() => {
             const maxDays = Math.max(1, Number(settings.maxLoanDays) || 30);
-            // Interest already accrued on active loans (what we'd collect if all repaid today)
+            // Interest already accrued on active loans (what we'd collect if all repaid
+            // today) — via the same checkpointed, uncapped engine as Record Payment /
+            // Transaction Detail, so this stays consistent with what staff see per-loan.
             const accruedInterest = activeTxs.reduce((s, tx) => {
-              const txRate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-              const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * txRate / 100);
-              return s + effectiveElapsedDays(tx, settings) * fee;
+              const state = computeCurrentLoanState(tx, settings);
+              return s + (state ? state.interestOwed : 0);
             }, 0);
-            // Projected interest per loan = agreed term days, but never less than days already elapsed.
-            // Overdue/grace-period loans (elapsed > loanDays) use elapsed so the projection stays
-            // at or above the accrued amount — fees are already earned and won't shrink.
+            // Projected interest per loan = agreed term days, but never less than the
+            // interest already accrued — fees already earned won't shrink.
             const fullTermFees = activeTxs.reduce((s, tx) => {
               const txRate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
               const fee = tx.dailyFee || Math.floor((tx.cashAdvance || 0) * txRate / 100);
               const loanDays = Math.max(1, Number(tx.loanDays) || maxDays);
-              const elapsed = effectiveElapsedDays(tx, settings);
-              return s + Math.max(loanDays, elapsed) * fee;
+              const state = computeCurrentLoanState(tx, settings);
+              return s + Math.max(loanDays * fee, state ? state.interestOwed : 0);
             }, 0);
             // Margin if every listed-for-sale item sells at its asking price
             const listedSaleMargins = forSaleTxs.reduce((s, tx) => s + Math.max(0, (tx.salePrice || 0) - (tx.cashAdvance || 0)), 0);
