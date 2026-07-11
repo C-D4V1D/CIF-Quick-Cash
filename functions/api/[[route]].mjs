@@ -2113,14 +2113,25 @@ export async function onRequest(context) {
         return json({ error: 'name, amount, date, and method are required' }, 400);
       }
       if (entryType === 'withdrawal') {
-        // A withdrawal can never exceed the stakeholder's current net capital balance.
+        // Withdrawals reduce another stakeholder's capital on record — admin only,
+        // matching the admin-only withdrawal UI and admin-only capital deletion.
+        if (auth.user.role !== 'admin') return json({ error: 'Admin access required to record a withdrawal' }, 403);
+        // Validate the stakeholder's running balance stays non-negative at every point
+        // in time (not just today) — otherwise a backdated withdrawal could use capital
+        // that, as of its own date, hadn't been contributed yet.
         const { results: existing } = await db
-          .prepare(`SELECT amount, type FROM capital WHERE lower(name) = lower(?)`)
+          .prepare(`SELECT amount, type, date FROM capital WHERE lower(name) = lower(?)`)
           .bind(name)
           .all();
-        const netBalance = (existing || []).reduce((s, c) => s + (c.type === 'withdrawal' ? -(c.amount || 0) : (c.amount || 0)), 0);
-        if (amountNum > netBalance) {
-          return json({ error: `Cannot withdraw ₦${amountNum.toLocaleString('en-NG')} — ${name}'s current net capital balance is only ₦${netBalance.toLocaleString('en-NG')}.` }, 400);
+        const timeline = [...(existing || []), { amount: amountNum, type: 'withdrawal', date }]
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+        let running = 0;
+        for (const c of timeline) {
+          running += c.type === 'withdrawal' ? -(c.amount || 0) : (c.amount || 0);
+          if (running < -0.005) {
+            const currentNet = (existing || []).reduce((s, c2) => s + (c2.type === 'withdrawal' ? -(c2.amount || 0) : (c2.amount || 0)), 0);
+            return json({ error: `Cannot withdraw ₦${amountNum.toLocaleString('en-NG')} on ${date} — this would make ${name}'s capital balance negative on that date given their other dated entries (current net balance: ₦${currentNet.toLocaleString('en-NG')}).` }, 400);
+          }
         }
       }
       const inserted = await db
