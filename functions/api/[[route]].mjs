@@ -409,9 +409,10 @@ const elapsedDaysSince = (dateStr) => {
 // the amount due stops growing after the business takes undisputed ownership.
 // For voluntary surrenders (ready_to_sell) it freezes at the surrender date.
 const effectiveElapsedDaysSince = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) => {
-  if (!txData?.dateGiven) return 0;
+  const anchor = txData?.cycleStart || txData?.dateGiven;
+  if (!anchor) return 0;
   const graceCap = maxLoanDays + graceDays;
-  const raw = elapsedDaysSince(txData.dateGiven);
+  const raw = elapsedDaysSince(anchor);
   if ((txData.status === 'ready_to_sell' || txData.status === 'for_sale') && txData.surrenderDate) {
     return Math.max(0, raw - elapsedDaysSince(txData.surrenderDate));
   }
@@ -435,7 +436,10 @@ const loadLoanConfig = async (db) => {
 // loanCfg  — { maxLoanDays, graceDays } from admin settings
 // Returns an object with computed dates and the derived loanStatus string.
 const computeLoanTimeline = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) => {
-  const baseDate = txData.dateGiven || null;
+  // cycleStart anchors the timeline instead of dateGiven once a payment has rolled the
+  // loan over into a fresh term — dateGiven itself never changes (it stays the true
+  // origination date used by historical/monthly reporting).
+  const baseDate = txData.cycleStart || txData.dateGiven || null;
   if (!baseDate) return null;
 
   // Rule 1: Fixed internal milestones measured from dateGiven
@@ -489,6 +493,133 @@ const withLoanTimeline = (r, loanCfg = {}) => {
   if (!timeline) return r;
   return { ...r, ...timeline };
 };
+
+// ============================================================
+// PARTIAL LOAN PAYMENT — calculation engine
+//
+// Business rule (applies to a single item/principal balance):
+//   1. If the payment covers everything currently owed (principal + interest
+//      accrued to date), it's a full payoff — not a partial payment.
+//   2. Otherwise, which bucket gets paid first depends on WHEN the payment
+//      lands within the loan's own agreed term (loanDays), counting from the
+//      start of the current cycle:
+//        - day 1 .. loanDays-1 ("on time")   → PRINCIPAL first, interest gets any leftover.
+//        - day loanDays onward ("due/overdue") → INTEREST first, principal gets any leftover.
+//   3. If the interest-first bucket fully clears the interest owed, the loan
+//      "rolls over": a fresh cycle starts today, extending the deadline by a
+//      full loanDays term, and carriedInterestOwed resets to 0. On-time
+//      (principal-first) payments never trigger a rollover — the existing
+//      deadline is untouched since the term hasn't elapsed yet.
+//   4. Reducing principal automatically lowers tomorrow's daily interest,
+//      since dailyFee is always recomputed live from the current principal.
+//
+// Interest accrual across a principal change (important):
+//   cycleStart anchors the TERM (day-of-cycle bucket decision + rollover),
+//   but interest must be charged at whatever principal was ACTUALLY
+//   outstanding on each day — it must not be silently rewritten once the
+//   principal drops. So every payment "checkpoints" accrual: whatever
+//   interest had accrued up to that payment (at the OLD principal) is
+//   folded into carriedInterestOwed, and principalSince resets to the
+//   payment date so future accrual only ever applies the CURRENT principal
+//   to days that elapse AFTER that checkpoint.
+// ============================================================
+
+const daysBetweenDates = (a, b) => {
+  if (!a || !b) return 0;
+  return Math.max(0, Math.floor((new Date(b) - new Date(a)) / 86400000));
+};
+
+// Pure function — no I/O. Given the current state of a principal balance and a
+// proposed payment, returns exactly what should change. Never trusts a client
+// to supply cashAdvance/interestOwed/etc — callers must pass values read from
+// the stored record.
+//
+// balance: { cashAdvance, appliedInterestRate, cycleStart, principalSince,
+//            dateGiven, loanDays, carriedInterestOwed }
+// payment: { amount, date }
+// graceDays: from admin settings, used only for the fee-accrual freeze cap.
+function computeLoanPayment(balance, payment, graceDays = 3) {
+  const cashAdvance = Math.max(0, Number(balance.cashAdvance) || 0);
+  const rate = Number(balance.appliedInterestRate) || 0;
+  const loanDays = Math.max(1, Number(balance.loanDays) || 30);
+  const cycleStart = balance.cycleStart || balance.dateGiven;
+  const principalSince = balance.principalSince || cycleStart;
+  const carriedInterestOwed = Math.max(0, Number(balance.carriedInterestOwed) || 0);
+  const amount = Math.max(0, Number(payment.amount) || 0);
+  const date = payment.date;
+
+  const dailyFee = Math.floor(cashAdvance * rate / 100);
+  // dayOfCycle uses the exact same convention as effectiveElapsedDays/daysBetween
+  // elsewhere in the app: the number of full calendar days since cycleStart (0 if
+  // paid same-day as cycleStart). "Day 30" here means what the rest of the app
+  // already displays as "30 days" in the repayment screens.
+  const dayOfCycle = daysBetweenDates(cycleStart, date);
+  // Freeze cap is measured from cycleStart (the term), not from principalSince —
+  // a principal change mid-cycle must not reset how many more days can accrue.
+  const checkpointElapsed = daysBetweenDates(cycleStart, principalSince);
+  const maxAdditionalDays = Math.max(0, (loanDays + graceDays) - checkpointElapsed);
+  const daysSinceCheckpoint = Math.min(daysBetweenDates(principalSince, date), maxAdditionalDays);
+  const newAccrual = daysSinceCheckpoint * dailyFee;
+  const interestOwed = carriedInterestOwed + newAccrual;
+  const totalOwed = cashAdvance + interestOwed;
+
+  if (amount <= 0) {
+    return { error: 'Payment amount must be greater than zero.' };
+  }
+  if (totalOwed <= 0) {
+    return { error: 'Nothing is currently owed on this loan.' };
+  }
+
+  if (amount >= totalOwed) {
+    return {
+      outcome: 'full_payoff',
+      principalApplied: cashAdvance,
+      interestApplied: interestOwed,
+      overpayment: Math.round((amount - totalOwed) * 100) / 100,
+      dayOfCycle,
+      interestOwedBefore: interestOwed,
+      dailyFee,
+    };
+  }
+
+  // Day 1..loanDays-1 of the cycle ("on time") → principal first.
+  // Day loanDays onward ("due/overdue") → interest first (may trigger a rollover below).
+  const bucket = dayOfCycle < loanDays ? 'principal_first' : 'interest_first';
+  let principalApplied = 0;
+  let interestApplied = 0;
+  if (bucket === 'principal_first') {
+    principalApplied = Math.min(amount, cashAdvance);
+    interestApplied = Math.min(amount - principalApplied, interestOwed);
+  } else {
+    interestApplied = Math.min(amount, interestOwed);
+    principalApplied = Math.min(amount - interestApplied, cashAdvance);
+  }
+
+  const newCashAdvance = Math.round((cashAdvance - principalApplied) * 100) / 100;
+  const newInterestOwed = Math.max(0, Math.round((interestOwed - interestApplied) * 100) / 100);
+  const rolledOver = bucket === 'interest_first' && interestOwed > 0 && newInterestOwed <= 0;
+
+  return {
+    outcome: 'partial',
+    bucket,
+    dayOfCycle,
+    loanDays,
+    dailyFee,
+    interestOwedBefore: interestOwed,
+    interestAccrued: newAccrual,
+    principalApplied,
+    interestApplied,
+    newCashAdvance,
+    newInterestOwed,
+    rolledOver,
+    newCycleStart: rolledOver ? date : cycleStart,
+    // Every payment checkpoints accrual at the payment date, regardless of outcome —
+    // whatever's left unpaid carries forward, future accrual starts fresh from here.
+    newPrincipalSince: date,
+    newCarriedInterestOwed: newInterestOwed,
+    newDeadlineDate: rolledOver ? addDaysToDate(date, loanDays) : null,
+  };
+}
 
 // ── Auto schema initialisation ───────────────────────────────────────────────
 // Runs at most once per Worker isolate. On a brand-new database (cifcash-prod-db)
@@ -1228,6 +1359,9 @@ export async function onRequest(context) {
         // ── New: Sale confirmation (receipt sent to the new buyer) ──
         saleConfirmationEnabled: cfg.smsSaleConfirmationEnabled !== false,
         tmplSaleConfirmation: cfg.smsSaleConfirmation || 'Dear {buyerName}, thank you for your purchase! You bought a {itemDesc} for {amount} (Shop Ref: {shopRef}) from {businessName}. Call {shopPhone} for any queries.',
+        // ── New: Partial loan payment receipt ──
+        loanPaymentConfirmationEnabled: cfg.smsLoanPaymentConfirmationEnabled !== false,
+        tmplLoanPayment: cfg.smsLoanPaymentConfirmation || 'Dear {customerName}, we received your payment of {amount} on {ref}. {breakdown} — {businessName}. Call {shopPhone} with any questions.',
         smsRetryEnabled: cfg.smsRetryEnabled !== false,
         smsRetryDays:    Math.max(1, Math.min(7, Number(cfg.smsRetryDays) || 3)),
         businessName:     cfg.businessName || 'CIF Quick Cash',
@@ -1260,7 +1394,8 @@ export async function onRequest(context) {
         .replace(/\{itemDesc\}/g,       vars.itemDesc || '')
         .replace(/\{shopRef\}/g,        vars.shopRef || '')
         .replace(/\{businessName\}/g,   vars.businessName || '')
-        .replace(/\{shopPhone\}/g,      vars.shopPhone || '');
+        .replace(/\{shopPhone\}/g,      vars.shopPhone || '')
+        .replace(/\{breakdown\}/g,      vars.breakdown || '');
 
     // Helper: send one SMS via Termii, returns { ok, messageId, response, usedFallback }
     const termiiSend = async (smsCfg, phone, message) => {
@@ -1667,6 +1802,11 @@ export async function onRequest(context) {
       // cashAdvance is read from the stored record, not the incoming payload, so it
       // cannot be downward-manipulated to reduce the expected fee.
       // appliedInterestRate is locked in at loan creation; fall back to current config for old records.
+      //
+      // Expected fees are computed via computeLoanPayment (forcing a full-payoff outcome
+      // with an unlimited payment amount) rather than a flat daysCharged*dailyFee formula,
+      // so an item that already had partial interest payments recorded through the payment
+      // endpoint gets proper credit instead of being double-charged at redemption.
       if (tx.type === 'advance' && (tx.status === 'closed' || tx.status === 'active')) {
         const appliedRate = Number(existingData?.appliedInterestRate || loanCfg.interestRate);
 
@@ -1678,14 +1818,23 @@ export async function onRequest(context) {
             const prevItem = existingItems[i];
             // Only validate items that are newly redeemed in this update
             if (!item.redeemed || prevItem?.redeemed) continue;
-            const itemAdvance = Number(item.itemCashAdvance || 0);
-            const expectedItemDailyFee = Math.floor(itemAdvance * appliedRate / 100);
-            const expectedItemFees = (Number(item.daysCharged) || 0) * expectedItemDailyFee;
+            const itemAdvance = Number(prevItem?.itemCashAdvance ?? item.itemCashAdvance ?? 0);
+            const redeemDate = item.dateRedeemed || todayNigeria();
+            const itemBalance = {
+              cashAdvance: itemAdvance,
+              appliedInterestRate: appliedRate,
+              cycleStart: prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+              principalSince: prevItem?.principalSince || prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+              loanDays: Number(prevItem?.loanDays || existingData?.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+              carriedInterestOwed: Number(prevItem?.carriedInterestOwed) || 0,
+            };
+            const check = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
+            const expectedItemFees = check.error ? 0 : Math.round(check.interestApplied);
             if (Number(item.feesCharged) !== expectedItemFees) {
               const label = item.aiItemType || item.captureItemType || `Item ${i + 1}`;
               return error(
                 `Fee mismatch for "${label}": submitted ₦${item.feesCharged} but expected ₦${expectedItemFees}` +
-                ` (${item.daysCharged} day(s) × ₦${expectedItemDailyFee}/day on ₦${itemAdvance} at ${appliedRate}%/day)`,
+                ` (₦${itemAdvance} advance at ${appliedRate}%/day, redeemed ${redeemDate})`,
                 422
               );
             }
@@ -1701,14 +1850,23 @@ export async function onRequest(context) {
             }
           }
         } else if (tx.status === 'closed') {
-          // Legacy single-item path
+          // Legacy single-item path (no items[] on the stored record)
           const cashAdvance = Number(existingData?.cashAdvance || 0);
-          const expectedDailyFee = Math.floor(cashAdvance * appliedRate / 100);
-          const expectedTotalFees = (Number(tx.daysCharged) || 0) * expectedDailyFee;
+          const redeemDate = tx.dateRepaid || todayNigeria();
+          const legacyBalance = {
+            cashAdvance,
+            appliedInterestRate: appliedRate,
+            cycleStart: existingData?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+            principalSince: existingData?.principalSince || existingData?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+            loanDays: Number(existingData?.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+            carriedInterestOwed: Number(existingData?.carriedInterestOwed) || 0,
+          };
+          const check = computeLoanPayment(legacyBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
+          const expectedTotalFees = check.error ? 0 : Math.round(check.interestApplied);
           if (Number(tx.totalFees) !== expectedTotalFees) {
             return error(
               `Fee mismatch: submitted ₦${tx.totalFees} but expected ₦${expectedTotalFees}` +
-              ` (${tx.daysCharged} day(s) × ₦${expectedDailyFee}/day on ₦${cashAdvance} advance at ${appliedRate}%/day)`,
+              ` (₦${cashAdvance} advance at ${appliedRate}%/day, redeemed ${redeemDate})`,
               422
             );
           }
@@ -1968,6 +2126,241 @@ export async function onRequest(context) {
       }
 
       return json({ success: true });
+    }
+    // ============================================================
+    // POST /api/transactions/:ref/payment — record a flexible partial (or full)
+    // loan payment. Authoritative: the client sends only { amount, date, method,
+    // note, itemIndex? } — every financial field is recomputed here from the
+    // stored record so nothing can be tampered with client-side.
+    // ============================================================
+    if (/^transactions\/[^/]+\/payment$/.test(path) && method === 'POST') {
+      const auth = requireAuth(request);
+      if (auth.error) return auth.error;
+      const ref = decodeURIComponent(path.split('/')[1]);
+      const body = await request.json();
+      const amountNum = Number(body.amount);
+      const date = body.date;
+      const paymentMethod = (body.method || '').trim();
+      const note = (body.note || '').trim();
+      const itemIndex = Number.isInteger(body.itemIndex) ? body.itemIndex : null;
+
+      if (!(amountNum > 0)) return error('Payment amount must be greater than zero.', 400);
+      if (!date) return error('Payment date is required.', 400);
+      const today = todayNigeria();
+      if (date > today) return error('Payment date cannot be in the future.', 400);
+
+      const existing = await db.prepare('SELECT status, data FROM transactions WHERE ref = ?').bind(ref).first();
+      if (!existing) return error('Transaction not found.', 404);
+      const tx = existing.data ? JSON.parse(existing.data) : null;
+      if (!tx) return error('Transaction data is corrupt.', 500);
+      if (tx.type !== 'advance') return error('Only cash-advance loans support payments.', 400);
+      if (!['active', 'for_sale', 'ready_to_sell'].includes(tx.status)) {
+        return error(`Cannot record a payment on a loan with status "${tx.status}".`, 400);
+      }
+
+      const loanCfg = await loadLoanConfig(db);
+      const appliedRate = Number(tx.appliedInterestRate || loanCfg.interestRate);
+      const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
+
+      let targetIdx = -1, targetItem = null;
+      if (hasItems) {
+        if (itemIndex !== null && tx.items[itemIndex] && !tx.items[itemIndex].redeemed) {
+          targetIdx = itemIndex;
+        } else {
+          // Default selection: the unredeemed item whose current deadline is soonest.
+          let best = null;
+          tx.items.forEach((it, i) => {
+            if (it.redeemed) return;
+            const dl = it.deadlineDate || tx.deadlineDate || '';
+            if (!best || dl < best.dl) best = { i, dl };
+          });
+          if (!best) return error('All items on this loan are already redeemed.', 400);
+          targetIdx = best.i;
+        }
+        targetItem = tx.items[targetIdx];
+      }
+
+      const balance = hasItems
+        ? {
+            cashAdvance: Number(targetItem.itemCashAdvance) || 0,
+            appliedInterestRate: appliedRate,
+            cycleStart: targetItem.cycleStart || tx.dateGiven,
+            principalSince: targetItem.principalSince || targetItem.cycleStart || tx.dateGiven,
+            loanDays: Number(targetItem.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+            carriedInterestOwed: Number(targetItem.carriedInterestOwed) || 0,
+          }
+        : {
+            cashAdvance: Number(tx.cashAdvance) || 0,
+            appliedInterestRate: appliedRate,
+            cycleStart: tx.cycleStart || tx.dateGiven,
+            principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
+            loanDays: Number(tx.loanDays) || loanCfg.maxLoanDays,
+            carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
+          };
+
+      // No backdating before the last accrual checkpoint — principalSince already
+      // equals the most recent payment's date (or cycleStart/dateGiven if no
+      // payment has been made yet), so this alone is the correct lower bound.
+      if (date < balance.principalSince) {
+        return error(`Payment date cannot be before ${balance.principalSince} (the start of the current cycle or the last recorded payment).`, 400);
+      }
+
+      const result = computeLoanPayment(balance, { amount: amountNum, date }, loanCfg.graceDays);
+      if (result.error) return error(result.error, 400);
+
+      const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
+      const paymentEntry = {
+        date, amount: amountNum, method: paymentMethod, note: note || null,
+        principalApplied: result.principalApplied,
+        interestApplied: result.interestApplied,
+        outcome: result.outcome,
+        rolledOver: !!result.rolledOver,
+        recordedBy: auth.user.name || auth.user.username,
+        recordedAt: new Date().toISOString(),
+      };
+
+      // The wizard always populates tx.items (even for a single-item loan), so the
+      // hasItems branch below is the common path — not just true multi-item loans.
+      // Everything ELSE in the app (timeline/eligibility, dashboards, RepaymentModal)
+      // still reads the TOP-LEVEL tx.cycleStart/deadlineDate/principalSince, so after
+      // touching items[] we always mirror those fields back from whichever unredeemed
+      // item is most urgent (soonest deadline) — this keeps a single-item loan's
+      // rollover visible everywhere, and keeps a multi-item loan's overall timeline
+      // driven by its most-at-risk item.
+      const mirrorTopLevelFromItems = (items) => {
+        const unredeemed = items.filter(it => !it.redeemed);
+        if (unredeemed.length === 0) return;
+        const earliest = unredeemed.reduce((best, it) => {
+          const dl = it.deadlineDate || tx.deadlineDate || '';
+          const bestDl = best ? (best.deadlineDate || tx.deadlineDate || '') : null;
+          return (!best || dl < bestDl) ? it : best;
+        }, null);
+        tx.cycleStart = earliest.cycleStart || tx.dateGiven;
+        tx.principalSince = earliest.principalSince || earliest.cycleStart || tx.dateGiven;
+        tx.deadlineDate = earliest.deadlineDate || tx.deadlineDate;
+      };
+
+      let breakdown;
+      let wasRescued = tx.status === 'for_sale' || tx.status === 'ready_to_sell';
+
+      if (result.outcome === 'full_payoff') {
+        if (hasItems) {
+          const updatedItems = tx.items.map((it, i) => i === targetIdx
+            ? { ...it, redeemed: true, dateRedeemed: date, repaidBy: auth.user.name, amountPaid: result.principalApplied + result.interestApplied, daysCharged: result.dayOfCycle, feesCharged: result.interestApplied, payments: [...(it.payments || []), paymentEntry] }
+            : it);
+          tx.items = updatedItems;
+          const allRedeemed = updatedItems.every(it => it.redeemed);
+          tx.cashAdvance = updatedItems.reduce((s, it) => s + (it.redeemed ? 0 : (it.itemCashAdvance || 0)), 0);
+          if (allRedeemed) {
+            tx.status = 'closed';
+            tx.amountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
+            tx.dateRepaid = date;
+            tx.daysCharged = result.dayOfCycle;
+            tx.totalFees = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
+            tx.itemReturned = true;
+            tx.repaidBy = auth.user.name;
+          } else {
+            mirrorTopLevelFromItems(updatedItems);
+          }
+          breakdown = `Item fully redeemed — ₦${fmtNP(result.principalApplied)} principal + ₦${fmtNP(result.interestApplied)} interest = ₦${fmtNP(result.principalApplied + result.interestApplied)}.` + (allRedeemed ? ' All items now redeemed — loan closed.' : ` ${updatedItems.filter(it => !it.redeemed).length} item(s) remain.`);
+        } else {
+          tx.status = 'closed';
+          tx.amountRepaid = result.principalApplied + result.interestApplied;
+          tx.dateRepaid = date;
+          tx.daysCharged = result.dayOfCycle;
+          tx.totalFees = result.interestApplied;
+          tx.itemReturned = true;
+          tx.repaidBy = auth.user.name;
+          tx.payments = [...(tx.payments || []), paymentEntry];
+          breakdown = `Loan fully repaid — ₦${fmtNP(result.principalApplied)} principal + ₦${fmtNP(result.interestApplied)} interest = ₦${fmtNP(result.principalApplied + result.interestApplied)}. Item returned.`;
+        }
+      } else {
+        const bucketLabel = result.bucket === 'principal_first' ? 'on time (within the agreed term)' : 'after the agreed term (interest is settled first)';
+        if (hasItems) {
+          const updatedItems = tx.items.map((it, i) => i === targetIdx
+            ? {
+                ...it,
+                itemCashAdvance: result.newCashAdvance,
+                carriedInterestOwed: result.newCarriedInterestOwed,
+                principalSince: result.newPrincipalSince,
+                cycleStart: result.newCycleStart,
+                deadlineDate: result.newDeadlineDate || it.deadlineDate || tx.deadlineDate,
+                loanDays: balance.loanDays,
+                payments: [...(it.payments || []), paymentEntry],
+              }
+            : it);
+          tx.items = updatedItems;
+          tx.cashAdvance = updatedItems.reduce((s, it) => s + (it.redeemed ? 0 : (it.itemCashAdvance || 0)), 0);
+          mirrorTopLevelFromItems(updatedItems);
+        } else {
+          tx.cashAdvance = result.newCashAdvance;
+          tx.carriedInterestOwed = result.newCarriedInterestOwed;
+          tx.principalSince = result.newPrincipalSince;
+          tx.cycleStart = result.newCycleStart;
+          tx.deadlineDate = result.newDeadlineDate || tx.deadlineDate;
+          tx.payments = [...(tx.payments || []), paymentEntry];
+        }
+        if (wasRescued) tx.status = 'active';
+        breakdown = `Payment received ${bucketLabel}: ₦${fmtNP(result.principalApplied)} applied to principal, ₦${fmtNP(result.interestApplied)} applied to interest.` +
+          (result.rolledOver
+            ? ` Interest fully cleared — loan renewed, new deadline ${result.newDeadlineDate}.`
+            : ` Remaining interest owed this cycle: ₦${fmtNP(result.newInterestOwed)}.`) +
+          (wasRescued ? ' Item pulled back from the sale pipeline.' : '');
+      }
+
+      await db
+        .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
+        .bind(JSON.stringify(tx), tx.status || 'active', ref)
+        .run();
+
+      const actionLabel = result.outcome === 'full_payoff' ? 'repaid' : 'loan_payment';
+      await logActivity({
+        user: auth.user, action: actionLabel, entityType: 'transaction', entityId: ref,
+        description: `💵 Payment recorded — ${ref}: ${tx.fullName} paid ₦${fmtNP(amountNum)} on ${date}. ${breakdown}`,
+      });
+
+      try {
+        await awardStepPoints('tx:' + ref, [{ userId: auth.user.id, stepKey: 'repayment_collection' }]);
+      } catch (e) {
+        console.error('[staff_points payment] failed:', e?.message ?? e);
+      }
+
+      try {
+        const smsCfg = await loadSmsConfig();
+        if (smsCfg.enabled) {
+          const rawPhone = (tx.phoneNumbers && tx.phoneNumbers[0]) || tx.phone || '';
+          const phone = toIntlPhone(rawPhone);
+          if (phone) {
+            const fmtSms = (n) => '₦' + Number(n || 0).toLocaleString('en-NG');
+            if (result.outcome === 'full_payoff' && smsCfg.redemptionConfirmationEnabled) {
+              const message = fillSmsTemplate(smsCfg.tmplRedemptionConfirmation, {
+                customerName: tx.fullName, ref, amount: fmtSms(amountNum), dueDate: tx.deadlineDate || '',
+                businessName: smsCfg.businessName, shopPhone: smsCfg.shopPhone,
+              });
+              const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+              await insertSmsLog({ transactionRef: ref, triggerType: 'redemption_confirmation', message, recipient: phone, status: ok ? 'sent' : 'failed', termiiResponse: JSON.stringify(response), messageId });
+            } else if (result.outcome !== 'full_payoff' && smsCfg.loanPaymentConfirmationEnabled) {
+              const message = fillSmsTemplate(smsCfg.tmplLoanPayment, {
+                customerName: tx.fullName, ref, amount: fmtSms(amountNum), breakdown,
+                businessName: smsCfg.businessName, shopPhone: smsCfg.shopPhone,
+              });
+              const { ok, messageId, response } = await termiiSend(smsCfg, phone, message);
+              await insertSmsLog({ transactionRef: ref, triggerType: 'loan_payment', message, recipient: phone, status: ok ? 'sent' : 'failed', termiiResponse: JSON.stringify(response), messageId });
+            }
+          }
+        }
+      } catch (_smsErr) {
+        await logSmsRuntimeError({ user: auth.user, transactionRef: ref, triggerType: 'loan_payment', err: _smsErr });
+      }
+
+      await pushNotifyAll(env, db, {
+        title: result.outcome === 'full_payoff' ? '✅ Loan Redeemed' : '💵 Loan Payment Recorded',
+        body: `${ref}: ${tx.fullName} paid ₦${fmtNP(amountNum)}`,
+        url: '/transactions',
+        tag: 'loan-payment',
+      });
+
+      return json({ success: true, outcome: result.outcome, breakdown, result });
     }
     if (path.startsWith('transactions/') && method === 'DELETE') {
       const auth = requireAdmin(request);

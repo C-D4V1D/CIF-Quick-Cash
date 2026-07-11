@@ -201,12 +201,33 @@ const daysBetween = (dateStr) => {
 // the amount due stops growing after the business takes undisputed ownership.
 // For voluntary surrenders (ready_to_sell) it freezes at the surrender date.
 const effectiveElapsedDays = (tx, settings = {}) => {
-  if (!tx?.dateGiven) return 0;
+  // cycleStart anchors this instead of dateGiven once a payment has rolled the loan
+  // over into a fresh term — dateGiven itself never changes (it stays the true
+  // origination date used by historical/monthly reporting).
+  const anchor = tx?.cycleStart || tx?.dateGiven;
+  if (!anchor) return 0;
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays   = Math.max(0, Number(settings.graceDays)   || 3);
   const graceCap    = maxLoanDays + graceDays;
-  const raw         = daysBetween(tx.dateGiven);
+  const raw         = daysBetween(anchor);
   if ((tx.status === 'ready_to_sell' || tx.status === 'for_sale') && tx.surrenderDate) {
+    return Math.max(0, raw - daysBetween(tx.surrenderDate));
+  }
+  return Math.min(raw, graceCap);
+};
+
+// Per-item variant for multi-item loans — an item that has received its own partial
+// payment(s) tracks its own cycleStart independently of the rest of the loan; items
+// that never received a payment fall back to the loan-level dateGiven (identical to
+// effectiveElapsedDays), preserving existing behaviour exactly.
+const effectiveElapsedDaysForItem = (tx, item, settings = {}) => {
+  const anchor = item?.cycleStart || tx?.dateGiven;
+  if (!anchor) return 0;
+  const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
+  const graceDays   = Math.max(0, Number(settings.graceDays)   || 3);
+  const graceCap    = maxLoanDays + graceDays;
+  const raw         = daysBetween(anchor);
+  if ((tx?.status === 'ready_to_sell' || tx?.status === 'for_sale') && tx?.surrenderDate) {
     return Math.max(0, raw - daysBetween(tx.surrenderDate));
   }
   return Math.min(raw, graceCap);
@@ -293,11 +314,13 @@ const relativeDateLabel = (dateStr) => {
 const getLoanTimeline = (tx, settings = {}) => {
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays   = Math.max(0, Number(settings.graceDays)   || 3);
-  const elapsedDays = daysBetween(tx?.dateGiven);
-  const customerDueDate = tx?.deadlineDate || addDays(tx?.dateGiven, Number(tx?.loanDays) || maxLoanDays);
-  const internalDeadline = addDays(tx?.dateGiven, maxLoanDays);
-  const graceEndDate     = addDays(tx?.dateGiven, maxLoanDays + graceDays);
-  const saleAllowedDate  = addDays(tx?.dateGiven, maxLoanDays + graceDays + 1);
+  // cycleStart anchors the whole timeline after a rollover — see effectiveElapsedDays.
+  const anchor = tx?.cycleStart || tx?.dateGiven;
+  const elapsedDays = daysBetween(anchor);
+  const customerDueDate = tx?.deadlineDate || addDays(anchor, Number(tx?.loanDays) || maxLoanDays);
+  const internalDeadline = addDays(anchor, maxLoanDays);
+  const graceEndDate     = addDays(anchor, maxLoanDays + graceDays);
+  const saleAllowedDate  = addDays(anchor, maxLoanDays + graceDays + 1);
   const isOverdueToCustomerAgreement = !!customerDueDate && daysBetween(customerDueDate) > 0;
   const isOwnedByBusiness = elapsedDays >= maxLoanDays;
   const isInFinalGrace    = elapsedDays >= maxLoanDays + 1 && elapsedDays <= maxLoanDays + graceDays;
@@ -321,6 +344,92 @@ const withLoanTimeline = (tx, settings = {}) => {
 };
 
 const withLoanTimelines = (items = [], settings = {}) => items.map(tx => withLoanTimeline(tx, settings));
+
+// ============================================================
+// PARTIAL LOAN PAYMENT — calculation engine (client-side mirror)
+//
+// This is a PREVIEW-ONLY mirror of the authoritative computeLoanPayment() in
+// functions/api/[[route]].mjs — used purely to show staff a live "what will
+// happen" breakdown before they submit. The server always recomputes this
+// itself from the stored record; nothing computed here is trusted as input.
+//
+// Business rule for a single item/principal balance:
+//   1. If the payment covers everything currently owed (principal + interest
+//      accrued to date), it's a full payoff, not a partial payment.
+//   2. Otherwise, which bucket gets paid first depends on the day-of-cycle
+//      (same "days" convention as effectiveElapsedDays elsewhere in the app):
+//        - day 1 .. loanDays-1 ("on time")     → PRINCIPAL first.
+//        - day loanDays onward ("due/overdue") → INTEREST first.
+//   3. If the interest-first bucket fully clears interest owed, the loan
+//      rolls over: a fresh cycle starts today, deadline extends by a full
+//      loanDays term, carriedInterestOwed resets to 0.
+//
+// Interest accrual across a principal change (important): cycleStart anchors
+// the TERM (bucket decision + rollover), but interest must be charged at
+// whatever principal was ACTUALLY outstanding on each day. Every payment
+// "checkpoints" accrual — interest owed at the OLD principal is folded into
+// carriedInterestOwed, and principalSince resets to the payment date so
+// future accrual only applies the CURRENT principal to days after that.
+// ============================================================
+const daysBetweenDates = (a, b) => {
+  if (!a || !b) return 0;
+  return Math.max(0, Math.floor((new Date(b) - new Date(a)) / 86400000));
+};
+
+const computeLoanPayment = (balance, payment, graceDays = 3) => {
+  const cashAdvance = Math.max(0, Number(balance.cashAdvance) || 0);
+  const rate = Number(balance.appliedInterestRate) || 0;
+  const loanDays = Math.max(1, Number(balance.loanDays) || 30);
+  const cycleStart = balance.cycleStart || balance.dateGiven;
+  const principalSince = balance.principalSince || cycleStart;
+  const carriedInterestOwed = Math.max(0, Number(balance.carriedInterestOwed) || 0);
+  const amount = Math.max(0, Number(payment.amount) || 0);
+  const date = payment.date;
+
+  const dailyFee = Math.floor(cashAdvance * rate / 100);
+  const dayOfCycle = daysBetweenDates(cycleStart, date);
+  // Freeze cap measured from cycleStart (the term), not principalSince — a
+  // principal change mid-cycle must not reset how many more days can accrue.
+  const checkpointElapsed = daysBetweenDates(cycleStart, principalSince);
+  const maxAdditionalDays = Math.max(0, (loanDays + graceDays) - checkpointElapsed);
+  const daysSinceCheckpoint = Math.min(daysBetweenDates(principalSince, date), maxAdditionalDays);
+  const newAccrual = daysSinceCheckpoint * dailyFee;
+  const interestOwed = carriedInterestOwed + newAccrual;
+  const totalOwed = cashAdvance + interestOwed;
+
+  if (amount <= 0) return { error: 'Payment amount must be greater than zero.' };
+  if (totalOwed <= 0) return { error: 'Nothing is currently owed on this loan.' };
+
+  if (amount >= totalOwed) {
+    return {
+      outcome: 'full_payoff', principalApplied: cashAdvance, interestApplied: interestOwed,
+      overpayment: Math.round((amount - totalOwed) * 100) / 100, dayOfCycle, interestOwedBefore: interestOwed, dailyFee,
+    };
+  }
+
+  const bucket = dayOfCycle < loanDays ? 'principal_first' : 'interest_first';
+  let principalApplied = 0, interestApplied = 0;
+  if (bucket === 'principal_first') {
+    principalApplied = Math.min(amount, cashAdvance);
+    interestApplied = Math.min(amount - principalApplied, interestOwed);
+  } else {
+    interestApplied = Math.min(amount, interestOwed);
+    principalApplied = Math.min(amount - interestApplied, cashAdvance);
+  }
+
+  const newCashAdvance = Math.round((cashAdvance - principalApplied) * 100) / 100;
+  const newInterestOwed = Math.max(0, Math.round((interestOwed - interestApplied) * 100) / 100);
+  const rolledOver = bucket === 'interest_first' && interestOwed > 0 && newInterestOwed <= 0;
+
+  return {
+    outcome: 'partial', bucket, dayOfCycle, loanDays, dailyFee, interestOwedBefore: interestOwed, interestAccrued: newAccrual,
+    principalApplied, interestApplied, newCashAdvance, newInterestOwed, rolledOver,
+    newCycleStart: rolledOver ? date : cycleStart,
+    newPrincipalSince: date,
+    newCarriedInterestOwed: newInterestOwed,
+    newDeadlineDate: rolledOver ? addDays(date, loanDays) : null,
+  };
+};
 
 const getCustomerDaysLeft = (tx) => {
   const dueDate = tx?.deadlineDate || tx?.customer_due_date;
@@ -1140,6 +1249,7 @@ const PAGE_FROM_PATH = {
 const txDetailPath = (ref) => `/transactions/${encodeURIComponent(ref)}`;
 const txRepayPath = (ref) => `/transactions/${encodeURIComponent(ref)}/collect`;
 const txSellPath  = (ref) => `/transactions/${encodeURIComponent(ref)}/sell`;
+const txPayPath   = (ref) => `/transactions/${encodeURIComponent(ref)}/pay`;
 
 const ACTIVITY_PAGE_SIZE = 50;
 
@@ -7330,10 +7440,24 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
 // REPAYMENT & SALE MODALS
 // ============================================================
 function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
-  const days = effectiveElapsedDays(tx, settings);
   const today = localISODate();
-  const dailyFee = Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
-  const totalFees = days * dailyFee;
+  // Full payoff = force computeLoanPayment's full_payoff branch (unlimited amount) so the
+  // interest owed correctly accounts for any prior partial payments and principal changes
+  // (see computeLoanPayment's checkpointed accrual — a flat days*dailyFee formula would
+  // either double-charge or erase interest already accrued at a different principal).
+  const balance = {
+    cashAdvance: tx.cashAdvance || 0,
+    appliedInterestRate: tx.appliedInterestRate ?? settings.interestRate ?? 1,
+    cycleStart: tx.cycleStart || tx.dateGiven,
+    principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
+    loanDays: Number(tx.loanDays) || settings.maxLoanDays || 30,
+    carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
+  };
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+  const days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
+  const dailyFee = payoff.dailyFee ?? Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
+  const totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
   const totalDue = (tx.cashAdvance || 0) + totalFees;
   const [confirmed, setConfirmed] = useState(false);
   const [collectionPhoto, setCollectionPhoto] = useState(tx.photoCollectionHandover || null);
@@ -7377,9 +7501,9 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
       {/* ── Date Breakdown ── */}
       <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
         <div style={{ fontSize: '14px', fontWeight: 700 }}>
-          Date Given: {fmtDate(tx.dateGiven)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}
+          {balance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(balance.cycleStart)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}
         </div>
-        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Today is counted as a full day.</div>
+        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Today is counted as a full day.{balance.cycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
       </div>
 
       {/* ── Total Due ── */}
@@ -7422,12 +7546,24 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
 // ============================================================
 function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser }) {
   const item = tx.items[itemIndex];
-  const days = effectiveElapsedDays(tx, settings);
   const today = localISODate();
   const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
   const itemAdvance = Number(item?.itemCashAdvance) || 0;
-  const dailyFee = Math.floor(itemAdvance * rate / 100);
-  const totalFees = days * dailyFee;
+  // Full payoff = force computeLoanPayment's full_payoff branch so interest owed correctly
+  // accounts for any prior partial payments and principal changes on this item.
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const itemBalance = {
+    cashAdvance: itemAdvance,
+    appliedInterestRate: rate,
+    cycleStart: item?.cycleStart || tx.dateGiven,
+    principalSince: item?.principalSince || item?.cycleStart || tx.dateGiven,
+    loanDays: Number(item?.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+    carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
+  };
+  const payoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+  const days = payoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, item, settings);
+  const dailyFee = payoff.dailyFee ?? Math.floor(itemAdvance * rate / 100);
+  const totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
   const totalDue = itemAdvance + totalFees;
   const [confirmed, setConfirmed] = useState(false);
   const [handoverPhoto, setHandoverPhoto] = useState(item?.handoverPhoto || null);
@@ -7443,9 +7579,27 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
     const allRedeemed = updatedItems.every(it => it.redeemed);
     const totalAmountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
     const totalFeesAll = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
+    // Mirror the top-level timeline from whichever unredeemed item is now soonest
+    // due, in case the just-redeemed item was the one driving it (see the same
+    // mirroring done by the partial-payment endpoint).
+    let timelineMirror = {};
+    if (!allRedeemed) {
+      const unredeemed = updatedItems.filter(it => !it.redeemed);
+      const earliest = unredeemed.reduce((best, it) => {
+        const dl = it.deadlineDate || tx.deadlineDate || '';
+        const bestDl = best ? (best.deadlineDate || tx.deadlineDate || '') : null;
+        return (!best || dl < bestDl) ? it : best;
+      }, null);
+      timelineMirror = {
+        cycleStart: earliest.cycleStart || tx.dateGiven,
+        principalSince: earliest.principalSince || earliest.cycleStart || tx.dateGiven,
+        deadlineDate: earliest.deadlineDate || tx.deadlineDate,
+      };
+    }
     onSave({
       ...tx,
       items: updatedItems,
+      ...timelineMirror,
       status: allRedeemed ? 'closed' : 'active',
       ...(allRedeemed ? {
         amountRepaid: totalAmountRepaid,
@@ -7466,13 +7620,13 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
         <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '12px', color: COLORS.primaryDark }}>{tx.fullName}</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
           <div><span style={S.statLabel}>Item Advance</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(itemAdvance)}</strong></div>
-          <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{days} days × {fmtMoney(dailyFee)} = {fmtMoney(totalFees)}</strong></div>
+          <div><span style={S.statLabel}>Holding Fees</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(totalFees)}</strong>{Number(item?.carriedInterestOwed) > 0 && <div style={{ fontSize: '11px', color: COLORS.textMuted }}>(includes ₦{Number(item.carriedInterestOwed).toLocaleString()} carried over from before the last partial payment, at {fmtMoney(dailyFee)}/day since)</div>}</div>
           <div><span style={S.statLabel}>Item {itemIndex + 1} of {tx.items.length}</span><br /><strong>{tx.items.filter(i => !i.redeemed).length - 1} other item{tx.items.filter(i => !i.redeemed).length - 1 !== 1 ? 's' : ''} remain</strong></div>
         </div>
       </div>
       <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
-        <div style={{ fontSize: '14px', fontWeight: 700 }}>Date Given: {fmtDate(tx.dateGiven)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}</div>
-        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Interest rate: {rate}%/day on this item's advance of {fmtMoney(itemAdvance)}.</div>
+        <div style={{ fontSize: '14px', fontWeight: 700 }}>{itemBalance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(itemBalance.cycleStart)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}</div>
+        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Interest rate: {rate}%/day on this item's advance of {fmtMoney(itemAdvance)}.{itemBalance.cycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
       </div>
       <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Amount Due for This Item</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
       <div style={{ ...S.card, border: `2px dashed ${COLORS.accent}`, background: '#fffbeb' }}>
@@ -7493,6 +7647,198 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
       </label>
       <div style={{ display: 'flex', gap: '12px' }}>
         <button style={{ ...S.btn('primary'), opacity: (!confirmed || !handoverPhoto) ? 0.5 : 1 }} disabled={!confirmed || !handoverPhoto} onClick={handleConfirm}>✅ Confirm Redemption</button>
+        <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PARTIAL PAYMENT MODAL — flexible loan payment recording
+//
+// Staff enter only an amount and a date; the app works out how the payment
+// is applied (principal vs interest), whether the loan renews, and shows a
+// plain-English explanation that can be read straight to the customer.
+// ============================================================
+function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
+  const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
+  const unredeemedItems = hasItems ? tx.items.map((it, idx) => ({ ...it, idx })).filter(it => !it.redeemed) : [];
+  const defaultItemIdx = hasItems
+    ? unredeemedItems.reduce((best, it) => {
+        const dl = it.deadlineDate || tx.deadlineDate || '';
+        if (best === null) return it.idx;
+        const bestDl = tx.items[best].deadlineDate || tx.deadlineDate || '';
+        return dl < bestDl ? it.idx : best;
+      }, null)
+    : null;
+
+  const [selectedIdx, setSelectedIdx] = useState(defaultItemIdx);
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(localISODate());
+  const [method, setMethod] = useState('');
+  const [note, setNote] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null); // server response after submit
+  const [submitError, setSubmitError] = useState('');
+
+  const item = hasItems ? tx.items[selectedIdx] : null;
+  const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
+  const graceDays = Math.max(0, Number(settings.graceDays) || 3);
+  const balance = hasItems
+    ? {
+        cashAdvance: Number(item?.itemCashAdvance) || 0,
+        appliedInterestRate: rate,
+        cycleStart: item?.cycleStart || tx.dateGiven,
+        principalSince: item?.principalSince || item?.cycleStart || tx.dateGiven,
+        loanDays: Number(item?.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+        carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
+      }
+    : {
+        cashAdvance: Number(tx.cashAdvance) || 0,
+        appliedInterestRate: rate,
+        cycleStart: tx.cycleStart || tx.dateGiven,
+        principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
+        loanDays: Number(tx.loanDays) || settings.maxLoanDays || 30,
+        carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
+      };
+
+  const amountNum = Number(amount) || 0;
+  const preview = amountNum > 0 && date ? computeLoanPayment(balance, { amount: amountNum, date }, graceDays) : null;
+
+  const itemLabel = (it) => it ? (it.aiItemType ? `${it.aiItemType}${it.aiBrand ? ' — ' + it.aiBrand : ''}${it.aiModel ? ' ' + it.aiModel : ''}` : (it.captureItemType || 'Item')) : '';
+
+  const handleSubmit = async () => {
+    if (!(amountNum > 0) || !date || submitting) return;
+    setSubmitting(true);
+    setSubmitError('');
+    const res = await API.post(`transactions/${encodeURIComponent(tx.ref)}/payment`, {
+      amount: amountNum, date, method: method.trim(), note: note.trim(),
+      itemIndex: hasItems ? selectedIdx : undefined,
+    });
+    setSubmitting(false);
+    if (res?.error) { setSubmitError(res.error); return; }
+    setResult(res);
+  };
+
+  const fmtN = (n) => fmtMoney(n);
+  const paymentsHistory = hasItems ? (item?.payments || []) : (tx.payments || []);
+
+  if (result) {
+    return (
+      <div>
+        <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}` }}>
+          <div style={{ fontSize: '18px', fontWeight: 800, color: COLORS.primaryDark, marginBottom: '8px' }}>
+            {result.outcome === 'full_payoff' ? '✅ Loan Fully Repaid' : '💵 Payment Recorded'}
+          </div>
+          <div style={{ fontSize: '14px', color: COLORS.text, lineHeight: 1.6 }}>{result.breakdown}</div>
+        </div>
+        <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+          <button style={S.btn('primary')} onClick={onSaved}>Done</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px' }}>
+        <span style={{ display: 'inline-block', padding: '8px 20px', borderRadius: '8px', background: '#fff7ed', border: '2px solid #f59e0b', color: '#b45309', fontSize: '18px', fontWeight: 800, letterSpacing: '1px' }}>🏷 Ref: {tx.ref}</span>
+      </div>
+
+      <div style={{ ...S.card, background: COLORS.bg }}>
+        <div style={{ fontSize: '18px', fontWeight: 700, marginBottom: '8px', color: COLORS.primaryDark }}>{tx.fullName}</div>
+        {hasItems && unredeemedItems.length > 1 && (
+          <Field label="Which item is this payment for?">
+            <select style={S.select} value={selectedIdx} onChange={e => setSelectedIdx(Number(e.target.value))}>
+              {unredeemedItems.map(it => <option key={it.idx} value={it.idx}>{itemLabel(it)} — {fmtMoney(it.itemCashAdvance)}</option>)}
+            </select>
+            <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>Defaulted to the item closest to its deadline. Change it if this payment is for a different item.</div>
+          </Field>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginTop: '8px' }}>
+          <div><span style={S.statLabel}>{hasItems ? 'Item Advance' : 'Advance Given'}</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(balance.cashAdvance)}</strong></div>
+          <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
+          <div><span style={S.statLabel}>Loan Term</span><br /><strong>{balance.loanDays} days</strong></div>
+        </div>
+      </div>
+
+      <div style={S.grid2}>
+        <Field label="Amount Received (₦)" required>
+          <input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={amount} placeholder="0" onChange={e => setAmount(e.target.value)} />
+        </Field>
+        <Field label="Date Paid" required>
+          <input style={S.input} type="date" value={date} max={localISODate()} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setDate(e.target.value)} />
+        </Field>
+        <Field label="Method"><input style={S.input} value={method} onChange={e => setMethod(e.target.value)} placeholder="e.g. Cash, Bank Transfer" /></Field>
+        <Field label="Note (optional)"><input style={S.input} value={note} onChange={e => setNote(e.target.value)} placeholder="Any extra context" /></Field>
+      </div>
+
+      {/* ── Live Preview ── */}
+      {preview && preview.error && (
+        <div style={S.alert('danger')}>⛔ {preview.error}</div>
+      )}
+      {preview && !preview.error && (
+        <div style={{ ...S.card, background: preview.outcome === 'full_payoff' ? COLORS.primaryLight : '#f8fafc', border: `2px solid ${preview.outcome === 'full_payoff' ? COLORS.primary : COLORS.border}` }}>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>What will happen</div>
+          {preview.outcome === 'full_payoff' ? (
+            <div style={{ fontSize: '14px', lineHeight: 1.7 }}>
+              ✅ This payment covers everything owed — <strong>{fmtN(preview.principalApplied)}</strong> principal + <strong>{fmtN(preview.interestApplied)}</strong> interest = <strong>{fmtN(preview.principalApplied + preview.interestApplied)}</strong>.
+              {preview.overpayment > 0 && <div style={{ color: COLORS.warning, marginTop: '4px' }}>⚠ Overpayment of {fmtN(preview.overpayment)} — confirm with the customer before proceeding.</div>}
+              <div style={{ marginTop: '6px', fontWeight: 700 }}>The loan will close and the item can be handed back.</div>
+            </div>
+          ) : (
+            <div style={{ fontSize: '14px', lineHeight: 1.7 }}>
+              <div>Day <strong>{preview.dayOfCycle}</strong> of a {preview.loanDays}-day term — {preview.bucket === 'principal_first' ? 'within the agreed term, so this payment reduces principal first' : 'on/after the agreed term, so this payment settles interest first'}.</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '10px' }}>
+                <div style={{ padding: '8px 10px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontSize: '11px', color: COLORS.textMuted }}>Applied to Principal</div>
+                  <div style={{ fontSize: '16px', fontWeight: 800, color: COLORS.primary }}>{fmtN(preview.principalApplied)}</div>
+                </div>
+                <div style={{ padding: '8px 10px', background: '#fff', borderRadius: '8px', border: `1px solid ${COLORS.border}` }}>
+                  <div style={{ fontSize: '11px', color: COLORS.textMuted }}>Applied to Interest</div>
+                  <div style={{ fontSize: '16px', fontWeight: 800, color: COLORS.warning }}>{fmtN(preview.interestApplied)}</div>
+                </div>
+              </div>
+              <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: `1px solid ${COLORS.border}` }}>
+                <div>New balance owed: <strong>{fmtN(preview.newCashAdvance)}</strong> {preview.newCashAdvance !== balance.cashAdvance && <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>(was {fmtN(balance.cashAdvance)})</span>}</div>
+                {preview.rolledOver ? (
+                  <div style={{ color: COLORS.primary, fontWeight: 700, marginTop: '4px' }}>🔄 Interest fully cleared — loan renewed. New deadline: {fmtDate(preview.newDeadlineDate)}.</div>
+                ) : (
+                  <div style={{ color: COLORS.textMuted, marginTop: '4px' }}>Interest still owed this cycle: {fmtN(preview.newInterestOwed)}. Deadline unchanged.</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {submitError && <div style={S.alert('danger')}>⛔ {submitError}</div>}
+
+      {/* ── Payment History ── */}
+      {paymentsHistory.length > 0 && (
+        <div style={S.card}>
+          <div style={S.cardTitle}>📜 Payment History{hasItems ? ' — this item' : ''}</div>
+          <table style={S.table}>
+            <thead><tr><th style={S.th}>Date</th><th style={S.th}>Amount</th><th style={S.th}>Principal</th><th style={S.th}>Interest</th><th style={S.th}>Result</th></tr></thead>
+            <tbody>
+              {[...paymentsHistory].reverse().map((p, i) => (
+                <tr key={i}>
+                  <td style={S.td}>{fmtDate(p.date)}</td>
+                  <td style={S.td}>{fmtMoney(p.amount)}</td>
+                  <td style={S.td}>{fmtMoney(p.principalApplied)}</td>
+                  <td style={S.td}>{fmtMoney(p.interestApplied)}</td>
+                  <td style={S.td}>{p.outcome === 'full_payoff' ? '✅ Closed loan' : p.rolledOver ? '🔄 Renewed' : 'Partial'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+        <button style={{ ...S.btn('primary'), opacity: (!(amountNum > 0) || !date || submitting || preview?.error) ? 0.5 : 1 }} disabled={!(amountNum > 0) || !date || submitting || !!preview?.error} onClick={handleSubmit}>
+          {submitting ? <><Spinner /> Recording…</> : '✅ Record Payment'}
+        </button>
         <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
       </div>
     </div>
@@ -8293,6 +8639,9 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
       <button style={S.btn('outline')} onClick={() => printStorageTag(tx, settings)}>🏷 Print Storage Tag</button>
       {tx.status === 'active' && isStaff && (
         <button style={S.btn('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>💰 Collect Repayment</button>
+      )}
+      {tx.type === 'advance' && ['active', 'for_sale', 'ready_to_sell'].includes(tx.status) && isStaff && (
+        <button style={S.btn('primary')} onClick={() => navigate(txPayPath(tx.ref))}>💵 Record Payment</button>
       )}
       {tx.status === 'active' && isStaff && (
         <button style={S.btn('outline')} onClick={async () => {
@@ -9775,9 +10124,16 @@ export default function App() {
                 {normTx.items.map((item, idx) => {
                   if (item.redeemed) return (<div key={idx} style={{ ...S.card, opacity: 0.6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}</span><span style={{ color: COLORS.primary, fontWeight: 700 }}>✅ Redeemed</span></div>);
                   const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-                  const days = effectiveElapsedDays(tx, settings);
-                  const fee = Math.floor((item.itemCashAdvance || 0) * rate / 100);
-                  const due = (item.itemCashAdvance || 0) + days * fee;
+                  const itemGraceDays = Math.max(0, Number(settings.graceDays) || 3);
+                  const itemPayoff = computeLoanPayment({
+                    cashAdvance: item.itemCashAdvance || 0,
+                    appliedInterestRate: rate,
+                    cycleStart: item.cycleStart || tx.dateGiven,
+                    principalSince: item.principalSince || item.cycleStart || tx.dateGiven,
+                    loanDays: Number(item.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
+                    carriedInterestOwed: Number(item.carriedInterestOwed) || 0,
+                  }, { amount: Number.MAX_SAFE_INTEGER, date: localISODate() }, itemGraceDays);
+                  const due = (item.itemCashAdvance || 0) + (itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied));
                   return (<div key={idx} style={{ ...S.card, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                     <div><div style={{ fontWeight: 700 }}>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}{item.aiBrand ? ' — ' + item.aiBrand : ''}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>Amount due: {fmtMoney(due)}</div></div>
                     <button style={S.btnSm('accent')} onClick={() => navigate(`${txRepayPath(txRef)}/item/${idx}`)}>Redeem this item</button>
@@ -9799,6 +10155,19 @@ export default function App() {
               <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong> · Item: {tx.aiBrand} {tx.aiModel}</div>
             </div>
             <RepaymentModal tx={tx} settings={settings} currentUser={currentUser} onClose={() => navigate(txDetailPath(txRef))} onSave={collectSave} />
+          </div>
+        );
+      }
+      if (subPage === '/pay') {
+        if (!isStaff || tx.type !== 'advance' || !['active', 'for_sale', 'ready_to_sell'].includes(tx.status)) return <Navigate to={txDetailPath(txRef)} replace />;
+        return (
+          <div>
+            <div style={{ marginBottom: '20px' }}>
+              <button style={S.btn('outline')} onClick={() => navigate(txDetailPath(txRef))}>← Back to Transaction</button>
+              <h2 style={{ fontSize: '20px', fontWeight: 800, color: COLORS.primaryDark, marginTop: '12px' }}>💵 Record Payment</h2>
+              <div style={{ fontSize: '13px', color: COLORS.textMuted, marginTop: '4px' }}>Customer: <strong>{tx.fullName}</strong></div>
+            </div>
+            <PartialPaymentModal tx={tx} settings={settings} onClose={() => navigate(txDetailPath(txRef))} onSaved={async () => { await loadData(); navigate(txDetailPath(txRef)); }} />
           </div>
         );
       }
@@ -9830,7 +10199,7 @@ export default function App() {
       const pageBtnStyle = (disabled) => ({ padding: '5px 12px', borderRadius: '6px', border: `1.5px solid ${disabled ? COLORS.border : COLORS.primary}`, background: 'transparent', color: disabled ? COLORS.textMuted : COLORS.primary, fontWeight: 600, fontSize: '12px', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 });
       const setPage = (nextPage) => setTxPages(prev => ({ ...prev, [pageKey]: nextPage }));
       return (<>
-        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>{showDaysListed ? 'Type' : 'Customer'}</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; const daysUntilTarget = showDaysListed ? getDaysUntilTargetSale(tx, settings) : null; return (<tr key={tx.ref}><td style={S.td}>{showDaysListed && tx.shopId ? (<div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}><button style={{ background: 'none', border: 'none', color: '#7c3aed', fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '12px', textDecoration: 'underline' }} onClick={() => setShopListingTx(tx)} title="Edit shop listing">{tx.shopId}</button><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 600, cursor: 'pointer', padding: 0, fontSize: '12px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></div>) : (<button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button>)}</td><td style={S.td}>{showDaysListed ? (tx.aiItemType || tx.captureItemType || '—') : tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><span style={{ display: 'inline-block', width: 'fit-content', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span>{daysUntilTarget !== null && daysUntilTarget < 0 && <span style={{ fontSize: '11px', color: '#dc2626', fontWeight: 700 }}>⚠ {Math.abs(daysUntilTarget)}d past target</span>}{daysUntilTarget !== null && daysUntilTarget >= 0 && daysUntilTarget <= 7 && <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 700 }}>{daysUntilTarget}d to target</span>}</div> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}>{tx.status === 'for_sale' && (tx.shopId || tx.ref) ? (<a href={`/shop/${encodeURIComponent(tx.shopId || tx.ref)}`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}><span style={{ ...S.badge(statusColor(tx, settings)), cursor: 'pointer' }}>{statusLabel(tx, settings)}</span></a>) : (<span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span>)}</td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && showDaysListed && (() => { const shopUrl = `${window.location.origin}/shop/${encodeURIComponent(tx.shopId || tx.ref)}`; const itemType = tx.aiItemType || tx.captureItemType || ''; const shareText = `Check out this ${itemType} for sale at CIF Quick Cash!`; const handleShareItem = async () => { if (navigator.share) { try { await navigator.share({ title: shareText, text: shareText, url: shopUrl }); } catch { /* cancelled */ } } else { try { await navigator.clipboard.writeText(`${shareText} ${shopUrl}`); } catch { window.prompt('Copy to share:', shopUrl); } } }; return (<button onClick={handleShareItem} style={{ ...S.btnSm('primary'), background: '#7c3aed', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>🔗 Share</button>); })()}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to sellable inventory so it can be listed again later.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
+        <table style={S.table}><thead><tr><th style={S.th}>Ref</th><th style={S.th}>{showDaysListed ? 'Type' : 'Customer'}</th><th style={S.th}>Item</th><th style={S.th}>Amount</th><th style={S.th}>Date</th>{showDaysListed && <th style={S.th}>Days Listed</th>}<th style={S.th}>Status</th>{showActions && <th style={S.th}>Actions</th>}</tr></thead><tbody>{pageItems.map(tx => { const daysListed = showDaysListed ? getForSaleDaysListed(tx) : null; const daysListedStyle = showDaysListed ? getForSaleDaysBadgeStyle(daysListed) : null; const daysUntilTarget = showDaysListed ? getDaysUntilTargetSale(tx, settings) : null; return (<tr key={tx.ref}><td style={S.td}>{showDaysListed && tx.shopId ? (<div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}><button style={{ background: 'none', border: 'none', color: '#7c3aed', fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '12px', textDecoration: 'underline' }} onClick={() => setShopListingTx(tx)} title="Edit shop listing">{tx.shopId}</button><button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 600, cursor: 'pointer', padding: 0, fontSize: '12px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button></div>) : (<button style={{ background: 'none', border: 'none', color: COLORS.primary, fontWeight: 700, cursor: 'pointer', padding: 0, fontSize: '13px', textDecoration: 'underline' }} onClick={() => navigate(txDetailPath(tx.ref))}>{tx.ref}</button>)}</td><td style={S.td}>{showDaysListed ? (tx.aiItemType || tx.captureItemType || '—') : tx.fullName}</td><td style={S.td}>{tx.aiBrand} {tx.aiModel}</td><td style={S.td}>{fmtMoney(tx.cashAdvance)}</td><td style={S.td}>{fmtDate(tx.dateGiven)}</td>{showDaysListed && <td style={S.td}>{daysListedStyle ? <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}><span style={{ display: 'inline-block', width: 'fit-content', padding: '4px 8px', borderRadius: '999px', border: `1px solid ${daysListedStyle.border}`, background: daysListedStyle.bg, color: daysListedStyle.fg, fontSize: '12px', fontWeight: 700 }}>{daysListed} day{daysListed === 1 ? '' : 's'}</span>{daysUntilTarget !== null && daysUntilTarget < 0 && <span style={{ fontSize: '11px', color: '#dc2626', fontWeight: 700 }}>⚠ {Math.abs(daysUntilTarget)}d past target</span>}{daysUntilTarget !== null && daysUntilTarget >= 0 && daysUntilTarget <= 7 && <span style={{ fontSize: '11px', color: '#f59e0b', fontWeight: 700 }}>{daysUntilTarget}d to target</span>}</div> : <span style={{ color: COLORS.textMuted, fontSize: '12px' }}>—</span>}</td>}<td style={S.td}>{tx.status === 'for_sale' && (tx.shopId || tx.ref) ? (<a href={`/shop/${encodeURIComponent(tx.shopId || tx.ref)}`} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}><span style={{ ...S.badge(statusColor(tx, settings)), cursor: 'pointer' }}>{statusLabel(tx, settings)}</span></a>) : (<span style={S.badge(statusColor(tx, settings))}>{statusLabel(tx, settings)}</span>)}</td>{showActions && <td style={S.td}><div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}><button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>{tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}{tx.type === 'advance' && ['active', 'for_sale', 'ready_to_sell'].includes(tx.status) && isStaff && <button style={S.btnSm('primary')} onClick={() => navigate(txPayPath(tx.ref))}>Pay</button>}{(tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>List in Shop</button>}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('accent')} onClick={() => setShopListingTx(tx)}>Edit Listing</button>}{tx.status === 'for_sale' && showDaysListed && (() => { const shopUrl = `${window.location.origin}/shop/${encodeURIComponent(tx.shopId || tx.ref)}`; const itemType = tx.aiItemType || tx.captureItemType || ''; const shareText = `Check out this ${itemType} for sale at CIF Quick Cash!`; const handleShareItem = async () => { if (navigator.share) { try { await navigator.share({ title: shareText, text: shareText, url: shopUrl }); } catch { /* cancelled */ } } else { try { await navigator.clipboard.writeText(`${shareText} ${shopUrl}`); } catch { window.prompt('Copy to share:', shopUrl); } } }; return (<button onClick={handleShareItem} style={{ ...S.btnSm('primary'), background: '#7c3aed', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>🔗 Share</button>); })()}{tx.status === 'for_sale' && isStaff && <button style={S.btnSm('outline')} onClick={async () => { if (window.confirm(`Remove "${tx.aiBrand} ${tx.aiModel}" (${tx.ref}) from the public shop?\n\nIt will return to sellable inventory so it can be listed again later.`)) { const rts = tx.surrenderDate ? 'ready_to_sell' : 'active'; await saveTx({ ...tx, status: rts, listedForSaleDate: null }); loadData(); } }}>Unlist</button>}{(tx.status === 'for_sale' || tx.status === 'ready_to_sell' || (tx.status === 'active' && tx.isEligibleForSale)) && isStaff && <button style={S.btnSm('danger')} onClick={() => navigate(txSellPath(tx.ref))}>Sell</button>}{isAdmin && <button style={S.btnSm('danger')} onClick={async () => { if (window.confirm(`Delete transaction ${tx.ref}? This cannot be undone.`)) { setTransactions(prev => prev.filter(x => x.ref !== tx.ref)); await API.del(`transactions/${encodeURIComponent(tx.ref)}`); loadData(); } }}>Delete</button>}</div></td>}</tr>); })}{items.length === 0 && <tr><td style={S.td} colSpan={colSpan}>No records.</td></tr>}</tbody></table>
         {totalPages > 1 && (<div style={paginationStyle}>
           <div style={{ fontSize: '12px', color: COLORS.textMuted }}>Page {safePage} of {totalPages} · {items.length.toLocaleString()} records</div>
           <div style={{ display: 'flex', gap: '4px' }}>
@@ -10180,6 +10549,7 @@ export default function App() {
                             {tx.status === 'active' && isStaff && <button style={S.btnSm('accent')} onClick={() => setLoggingContactTx(tx)}>Log Contact</button>}
                             <button style={S.btnSm('primary')} onClick={() => navigate(txDetailPath(tx.ref))}>View</button>
                             {tx.status === 'active' && <button style={S.btnSm('accent')} onClick={() => navigate(txRepayPath(tx.ref))}>Collect</button>}
+                            {tx.type === 'advance' && ['active', 'for_sale', 'ready_to_sell'].includes(tx.status) && isStaff && <button style={S.btnSm('primary')} onClick={() => navigate(txPayPath(tx.ref))}>Pay</button>}
                           </div>
                         </div>
                       </div>
