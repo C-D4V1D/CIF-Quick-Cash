@@ -376,6 +376,21 @@ const daysBetweenDates = (a, b) => {
   return Math.max(0, Math.floor((new Date(b) - new Date(a)) / 86400000));
 };
 
+// The wizard's buildCurrentItem() (used to snapshot a single-item loan's tx.items[0]
+// at completion) only copies ITEM_FIELDS, which has never included cashAdvance/
+// itemCashAdvance — so the stored item.itemCashAdvance is undefined for the vast
+// majority of real single-item loans. Mirrors the same helper in
+// functions/api/[[route]].mjs — see that copy for the full explanation.
+const getItemCashAdvance = (tx, item) => {
+  if (item?.itemCashAdvance !== undefined && item?.itemCashAdvance !== null) {
+    return Number(item.itemCashAdvance) || 0;
+  }
+  const items = Array.isArray(tx?.items) ? tx.items : [];
+  const total = Number(tx?.cashAdvance) || 0;
+  if (items.length <= 1) return total;
+  return Math.round(total / items.length);
+};
+
 const computeLoanPayment = (balance, payment, graceDays = 3) => {
   const cashAdvance = Math.max(0, Number(balance.cashAdvance) || 0);
   const rate = Number(balance.appliedInterestRate) || 0;
@@ -7441,6 +7456,11 @@ function WizardDeclineLogModal({ prefill, onSave, onCancel }) {
 // ============================================================
 function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   const today = localISODate();
+  const balanceCycleStart = tx.cycleStart || tx.dateGiven;
+  // Defaults to today but staff can pick an earlier date when catching up on a
+  // collection that wasn't recorded the same day — fees are computed as of
+  // whichever date is chosen, not always "today".
+  const [collectionDate, setCollectionDate] = useState(today);
   // Full payoff = force computeLoanPayment's full_payoff branch (unlimited amount) so the
   // interest owed correctly accounts for any prior partial payments and principal changes
   // (see computeLoanPayment's checkpointed accrual — a flat days*dailyFee formula would
@@ -7448,13 +7468,13 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
   const balance = {
     cashAdvance: tx.cashAdvance || 0,
     appliedInterestRate: tx.appliedInterestRate ?? settings.interestRate ?? 1,
-    cycleStart: tx.cycleStart || tx.dateGiven,
-    principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
+    cycleStart: balanceCycleStart,
+    principalSince: tx.principalSince || balanceCycleStart,
     loanDays: Number(tx.loanDays) || settings.maxLoanDays || 30,
     carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
   };
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
-  const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+  const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
   const days = payoff.dayOfCycle ?? effectiveElapsedDays(tx, settings);
   const dailyFee = payoff.dailyFee ?? Math.round((tx.cashAdvance || 0) * (tx.appliedInterestRate ?? settings.interestRate ?? 1) / 100);
   const totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
@@ -7498,12 +7518,16 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
         </div>
       </div>
 
+      {/* ── Date Collected ── */}
+      <Field label="Date Collected"><input style={S.input} type="date" value={collectionDate} min={balanceCycleStart} max={today} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCollectionDate(e.target.value)} /></Field>
+      {collectionDate !== today && <div style={{ fontSize: '12px', color: COLORS.warning, marginTop: '-8px', marginBottom: '8px' }}>⚠ Backdated — fees are calculated as of {fmtDate(collectionDate)}, not today.</div>}
+
       {/* ── Date Breakdown ── */}
       <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
         <div style={{ fontSize: '14px', fontWeight: 700 }}>
-          {balance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(balance.cycleStart)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}
+          {balance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(balance.cycleStart)} → Collected: {fmtDate(collectionDate)} = {days} day{days === 1 ? '' : 's'}
         </div>
-        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Today is counted as a full day.{balance.cycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
+        <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>The collection date is counted as a full day.{balance.cycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
       </div>
 
       {/* ── Total Due ── */}
@@ -7534,7 +7558,7 @@ function RepaymentModal({ tx, settings, onClose, onSave, currentUser }) {
       {/* ── Confirmation & Actions ── */}
       <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: '16px' }}><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ width: '20px', height: '20px' }} /><span style={{ fontWeight: 600 }}>Day count confirmed and customer paid {fmtMoney(totalDue)}; item returned</span></label>
       <div style={{ display: 'flex', gap: '12px' }}>
-        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: localISODate(), daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '', photoCollectionHandover: collectionPhoto, collectionNotes: collectionNotes.trim() })}>✅ Confirm</button>
+        <button style={{ ...S.btn('primary'), opacity: (!confirmed || !collectionPhoto) ? 0.5 : 1 }} disabled={!confirmed || !collectionPhoto} onClick={() => onSave({ ...tx, status: 'closed', amountRepaid: totalDue, dateRepaid: collectionDate, daysCharged: days, totalFees, itemReturned: true, repaidBy: currentUser?.name || '', photoCollectionHandover: collectionPhoto, collectionNotes: collectionNotes.trim() })}>✅ Confirm</button>
         <button style={S.btn('outline')} onClick={onClose}>Cancel</button>
       </div>
     </div>
@@ -7548,19 +7572,24 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
   const item = tx.items[itemIndex];
   const today = localISODate();
   const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
-  const itemAdvance = Number(item?.itemCashAdvance) || 0;
+  const itemAdvance = getItemCashAdvance(tx, item);
+  const itemCycleStart = item?.cycleStart || tx.dateGiven;
+  // Defaults to today but staff can pick an earlier date when catching up on a
+  // collection that wasn't recorded the same day — fees are computed as of
+  // whichever date is chosen, not always "today".
+  const [collectionDate, setCollectionDate] = useState(today);
   // Full payoff = force computeLoanPayment's full_payoff branch so interest owed correctly
   // accounts for any prior partial payments and principal changes on this item.
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
   const itemBalance = {
     cashAdvance: itemAdvance,
     appliedInterestRate: rate,
-    cycleStart: item?.cycleStart || tx.dateGiven,
-    principalSince: item?.principalSince || item?.cycleStart || tx.dateGiven,
+    cycleStart: itemCycleStart,
+    principalSince: item?.principalSince || itemCycleStart,
     loanDays: Number(item?.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
     carriedInterestOwed: Number(item?.carriedInterestOwed) || 0,
   };
-  const payoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+  const payoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: collectionDate }, graceDays);
   const days = payoff.dayOfCycle ?? effectiveElapsedDaysForItem(tx, item, settings);
   const dailyFee = payoff.dailyFee ?? Math.floor(itemAdvance * rate / 100);
   const totalFees = payoff.error ? 0 : Math.round(payoff.interestApplied);
@@ -7573,7 +7602,7 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
   const handleConfirm = () => {
     const updatedItems = tx.items.map((it, idx) =>
       idx === itemIndex
-        ? { ...it, redeemed: true, dateRedeemed: today, repaidBy: currentUser?.name || '', amountPaid: totalDue, daysCharged: days, feesCharged: totalFees, handoverPhoto, collectionNotes: collectionNotes.trim() }
+        ? { ...it, redeemed: true, dateRedeemed: collectionDate, repaidBy: currentUser?.name || '', amountPaid: totalDue, daysCharged: days, feesCharged: totalFees, handoverPhoto, collectionNotes: collectionNotes.trim() }
         : it
     );
     const allRedeemed = updatedItems.every(it => it.redeemed);
@@ -7603,7 +7632,7 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
       status: allRedeemed ? 'closed' : 'active',
       ...(allRedeemed ? {
         amountRepaid: totalAmountRepaid,
-        dateRepaid: today,
+        dateRepaid: collectionDate,
         daysCharged: days,
         totalFees: totalFeesAll,
         itemReturned: true,
@@ -7624,8 +7653,10 @@ function RedeemItemModal({ tx, itemIndex, settings, onClose, onSave, currentUser
           <div><span style={S.statLabel}>Item {itemIndex + 1} of {tx.items.length}</span><br /><strong>{tx.items.filter(i => !i.redeemed).length - 1} other item{tx.items.filter(i => !i.redeemed).length - 1 !== 1 ? 's' : ''} remain</strong></div>
         </div>
       </div>
+      <Field label="Date Collected"><input style={S.input} type="date" value={collectionDate} min={itemCycleStart} max={today} onClick={e => e.target.showPicker && e.target.showPicker()} onChange={e => setCollectionDate(e.target.value)} /></Field>
+      {collectionDate !== today && <div style={{ fontSize: '12px', color: COLORS.warning, marginTop: '-8px', marginBottom: '8px' }}>⚠ Backdated — fees are calculated as of {fmtDate(collectionDate)}, not today.</div>}
       <div style={{ ...S.card, background: '#f8fafc', border: `1px solid ${COLORS.border}`, marginTop: '-8px' }}>
-        <div style={{ fontSize: '14px', fontWeight: 700 }}>{itemBalance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(itemBalance.cycleStart)} → Today: {fmtDate(today)} = {days} day{days === 1 ? '' : 's'}</div>
+        <div style={{ fontSize: '14px', fontWeight: 700 }}>{itemBalance.cycleStart !== tx.dateGiven ? 'Renewed' : 'Date Given'}: {fmtDate(itemBalance.cycleStart)} → Collected: {fmtDate(collectionDate)} = {days} day{days === 1 ? '' : 's'}</div>
         <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px' }}>Interest rate: {rate}%/day on this item's advance of {fmtMoney(itemAdvance)}.{itemBalance.cycleStart !== tx.dateGiven && ` Originally given ${fmtDate(tx.dateGiven)}.`}</div>
       </div>
       <div style={{ ...S.card, background: COLORS.primaryLight, border: `2px solid ${COLORS.primary}`, textAlign: 'center' }}><div style={S.statLabel}>Amount Due for This Item</div><div style={{ fontSize: '32px', fontWeight: 800, color: COLORS.primary }}>{fmtMoney(totalDue)}</div></div>
@@ -7686,7 +7717,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
   const balance = hasItems
     ? {
-        cashAdvance: Number(item?.itemCashAdvance) || 0,
+        cashAdvance: getItemCashAdvance(tx, item),
         appliedInterestRate: rate,
         cycleStart: item?.cycleStart || tx.dateGiven,
         principalSince: item?.principalSince || item?.cycleStart || tx.dateGiven,
@@ -7750,7 +7781,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
         {hasItems && unredeemedItems.length > 1 && (
           <Field label="Which item is this payment for?">
             <select style={S.select} value={selectedIdx} onChange={e => setSelectedIdx(Number(e.target.value))}>
-              {unredeemedItems.map(it => <option key={it.idx} value={it.idx}>{itemLabel(it)} — {fmtMoney(it.itemCashAdvance)}</option>)}
+              {unredeemedItems.map(it => <option key={it.idx} value={it.idx}>{itemLabel(it)} — {fmtMoney(getItemCashAdvance(tx, it))}</option>)}
             </select>
             <div style={{ fontSize: '11px', color: COLORS.textMuted, marginTop: '4px' }}>Defaulted to the item closest to its deadline. Change it if this payment is for a different item.</div>
           </Field>
@@ -7868,6 +7899,10 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
   const [saleDate, setSaleDate] = useState(localISODate());
   const [saleBuyer, setSaleBuyer] = useState('');
   const [saleBuyerPhone, setSaleBuyerPhone] = useState('');
+  const isAdmin = hasRole(currentUser, 'admin');
+  const isBelowMin = salePrice < minPrice;
+  const [belowMinOverride, setBelowMinOverride] = useState(false);
+  const [belowMinReason, setBelowMinReason] = useState('');
 
   // Pre-fill condition from existing intake data if it matches a dropdown option
   const intakeCondition = tx.shopCondition || tx.aiCondition || tx.conditionDescription || '';
@@ -7904,12 +7939,31 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
     setSalePhotos(prev => prev.filter((_, i) => i !== idx));
   };
 
-  const canConfirm = salePrice >= minPrice && !!saleCondition && !!saleBuyer.trim() && saleBuyerPhone.length === 11;
+  const priceOk = salePrice >= minPrice || (isAdmin && belowMinOverride && belowMinReason.trim().length > 0);
+  const canConfirm = priceOk && !!saleCondition && !!saleBuyer.trim() && saleBuyerPhone.length === 11;
 
   return (
     <div>
       <div style={S.grid3}><div style={S.stat}><div style={S.statLabel}>Minimum</div><div style={{ ...S.statValue, color: COLORS.danger }}>{fmtMoney(minPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Target (75%)</div><div style={S.statValue}>{fmtMoney(targetPrice)}</div></div><div style={S.stat}><div style={S.statLabel}>Listed</div><div style={{ ...S.statValue, color: COLORS.accent }}>{fmtMoney(listedPrice)}</div></div></div>
-      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} />{salePrice < minPrice && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum</div>}</Field>
+      <Field label="Sale Price (₦)" required style={{ marginTop: '16px' }}><input style={{ ...S.input, fontSize: '18px', fontWeight: 700 }} type="number" value={salePrice || ''} onChange={e => setSalePrice(Number(e.target.value))} />{isBelowMin && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Below minimum ({fmtMoney(minPrice)})</div>}</Field>
+      {isBelowMin && (
+        isAdmin ? (
+          <div style={{ ...S.card, background: '#fef2f2', border: `2px solid ${COLORS.danger}`, marginTop: '-8px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', marginBottom: belowMinOverride ? '10px' : 0 }}>
+              <input type="checkbox" checked={belowMinOverride} onChange={e => setBelowMinOverride(e.target.checked)} style={{ width: '20px', height: '20px' }} />
+              <span style={{ fontWeight: 700, color: COLORS.danger }}>Override — confirm sale below the ₦{fmtMoney(minPrice)} minimum</span>
+            </label>
+            {belowMinOverride && (
+              <Field label="Reason for selling below minimum" required>
+                <input style={S.input} value={belowMinReason} onChange={e => setBelowMinReason(e.target.value)} placeholder="e.g. Item condition worse than assessed, needs urgent liquidation" />
+                {!belowMinReason.trim() && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ A reason is required to override the minimum price</div>}
+              </Field>
+            )}
+          </div>
+        ) : (
+          <div style={S.alert('danger')}>⛔ This sale is below the minimum price. Only an admin can override and confirm it.</div>
+        )
+      )}
       <Field label="Buyer Name" required><input style={S.input} value={saleBuyer} onChange={e => setSaleBuyer(e.target.value)} />{!saleBuyer.trim() && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer name is required</div>}</Field>
       <Field label="Buyer Phone" required><input style={S.input} inputMode="numeric" maxLength={11} value={saleBuyerPhone} onChange={e => setSaleBuyerPhone(e.target.value.replace(/\D/g, '').slice(0, 11))} placeholder="e.g. 08012345678" />{saleBuyerPhone && saleBuyerPhone.length !== 11 && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⚠ Phone must be exactly 11 digits ({saleBuyerPhone.length}/11)</div>}{!saleBuyerPhone && <div style={{ color: COLORS.danger, fontSize: '12px', marginTop: '4px' }}>⛔ Buyer phone is required</div>}</Field>
       <Field label="Condition at Sale" required>
@@ -7954,7 +8008,7 @@ function SaleModal({ tx, settings, onClose, onSave, currentUser }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, saleBuyerPhone, saleCondition, salePhotos, salePhotoNote, soldBy: currentUser?.name || '' })} disabled={!canConfirm}>✓ Confirm Sale</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
+      <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}><button style={S.btn('primary')} onClick={() => onSave({ ...tx, status: 'sold', salePrice, saleDate, saleBuyer, saleBuyerPhone, saleCondition, salePhotos, salePhotoNote, soldBy: currentUser?.name || '', ...(isBelowMin ? { belowMinimumOverride: true, belowMinimumReason: belowMinReason.trim(), belowMinimumApprovedBy: currentUser?.name || '' } : {}) })} disabled={!canConfirm}>✓ Confirm Sale{isBelowMin ? ' (Below Minimum)' : ''}</button><button style={S.btn('outline')} onClick={onClose}>Cancel</button></div>
     </div>
   );
 }
@@ -8416,7 +8470,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
             {item.aiPriceRangeLow && item.aiPriceRangeHigh && row('Price Range', `${fmtMoney(Number(item.aiPriceRangeLow))} — ${fmtMoney(Number(item.aiPriceRangeHigh))}`)}
             {item.aiValuationConfidence && row('Valuation Confidence', item.aiValuationConfidence)}
             {item.aiVisionUsed && row('Google Lens', 'Used for identification')}
-            {multi && item.itemCashAdvance > 0 && row(item.payments?.length ? 'Current Balance' : 'Advance Allocation', fmtMoney(item.itemCashAdvance))}
+            {multi && getItemCashAdvance(tx, item) > 0 && row(item.payments?.length ? 'Current Balance' : 'Advance Allocation', fmtMoney(getItemCashAdvance(tx, item)))}
             {item.payments?.length > 0 && row('Payments Made', `${item.payments.length} payment${item.payments.length !== 1 ? 's' : ''} recorded`)}
             {item.redeemed && item.amountPaid > 0 && row('Amount Paid', <strong style={{ color: COLORS.primary }}>{fmtMoney(item.amountPaid)}</strong>)}
             {item.redeemed && item.daysCharged > 0 && row('Days Charged', `${item.daysCharged} day${item.daysCharged !== 1 ? 's' : ''}`)}
@@ -10126,15 +10180,16 @@ export default function App() {
                   if (item.redeemed) return (<div key={idx} style={{ ...S.card, opacity: 0.6, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}</span><span style={{ color: COLORS.primary, fontWeight: 700 }}>✅ Redeemed</span></div>);
                   const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
                   const itemGraceDays = Math.max(0, Number(settings.graceDays) || 3);
+                  const itemCashAdvance = getItemCashAdvance(tx, item);
                   const itemPayoff = computeLoanPayment({
-                    cashAdvance: item.itemCashAdvance || 0,
+                    cashAdvance: itemCashAdvance,
                     appliedInterestRate: rate,
                     cycleStart: item.cycleStart || tx.dateGiven,
                     principalSince: item.principalSince || item.cycleStart || tx.dateGiven,
                     loanDays: Number(item.loanDays || tx.loanDays) || settings.maxLoanDays || 30,
                     carriedInterestOwed: Number(item.carriedInterestOwed) || 0,
                   }, { amount: Number.MAX_SAFE_INTEGER, date: localISODate() }, itemGraceDays);
-                  const due = (item.itemCashAdvance || 0) + (itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied));
+                  const due = itemCashAdvance + (itemPayoff.error ? 0 : Math.round(itemPayoff.interestApplied));
                   return (<div key={idx} style={{ ...S.card, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                     <div><div style={{ fontWeight: 700 }}>{item.aiItemType || item.captureItemType || `Item ${idx + 1}`}{item.aiBrand ? ' — ' + item.aiBrand : ''}</div><div style={{ fontSize: '12px', color: COLORS.textMuted }}>Amount due: {fmtMoney(due)}</div></div>
                     <button style={S.btnSm('accent')} onClick={() => navigate(`${txRepayPath(txRef)}/item/${idx}`)}>Redeem this item</button>
