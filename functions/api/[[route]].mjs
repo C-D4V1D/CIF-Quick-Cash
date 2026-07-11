@@ -507,21 +507,26 @@ const withLoanTimeline = (r, loanCfg = {}) => {
 //        - day loanDays onward ("due/overdue") → INTEREST first, principal gets any leftover.
 //   3. If the interest-first bucket fully clears the interest owed, the loan
 //      "rolls over": a fresh cycle starts today, extending the deadline by a
-//      full loanDays term, and interestPaidThisCycle resets to 0. On-time
+//      full loanDays term, and carriedInterestOwed resets to 0. On-time
 //      (principal-first) payments never trigger a rollover — the existing
 //      deadline is untouched since the term hasn't elapsed yet.
 //   4. Reducing principal automatically lowers tomorrow's daily interest,
 //      since dailyFee is always recomputed live from the current principal.
+//
+// Interest accrual across a principal change (important):
+//   cycleStart anchors the TERM (day-of-cycle bucket decision + rollover),
+//   but interest must be charged at whatever principal was ACTUALLY
+//   outstanding on each day — it must not be silently rewritten once the
+//   principal drops. So every payment "checkpoints" accrual: whatever
+//   interest had accrued up to that payment (at the OLD principal) is
+//   folded into carriedInterestOwed, and principalSince resets to the
+//   payment date so future accrual only ever applies the CURRENT principal
+//   to days that elapse AFTER that checkpoint.
 // ============================================================
 
-// Same freeze-cap convention as effectiveElapsedDaysSince, but anchored at an
-// explicit date rather than always reading txData.dateGiven — used to compute
-// elapsed days from a per-item or per-loan cycle start.
-const elapsedDaysFromAnchor = (anchorDate, { maxLoanDays = 30, graceDays = 3 } = {}) => {
-  if (!anchorDate) return 0;
-  const graceCap = maxLoanDays + graceDays;
-  const raw = elapsedDaysSince(anchorDate);
-  return Math.min(raw, graceCap);
+const daysBetweenDates = (a, b) => {
+  if (!a || !b) return 0;
+  return Math.max(0, Math.floor((new Date(b) - new Date(a)) / 86400000));
 };
 
 // Pure function — no I/O. Given the current state of a principal balance and a
@@ -529,8 +534,8 @@ const elapsedDaysFromAnchor = (anchorDate, { maxLoanDays = 30, graceDays = 3 } =
 // to supply cashAdvance/interestOwed/etc — callers must pass values read from
 // the stored record.
 //
-// balance: { cashAdvance, appliedInterestRate, cycleStart, dateGiven, loanDays,
-//            interestPaidThisCycle }
+// balance: { cashAdvance, appliedInterestRate, cycleStart, principalSince,
+//            dateGiven, loanDays, carriedInterestOwed }
 // payment: { amount, date }
 // graceDays: from admin settings, used only for the fee-accrual freeze cap.
 function computeLoanPayment(balance, payment, graceDays = 3) {
@@ -538,7 +543,8 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
   const rate = Number(balance.appliedInterestRate) || 0;
   const loanDays = Math.max(1, Number(balance.loanDays) || 30);
   const cycleStart = balance.cycleStart || balance.dateGiven;
-  const interestPaidThisCycle = Math.max(0, Number(balance.interestPaidThisCycle) || 0);
+  const principalSince = balance.principalSince || cycleStart;
+  const carriedInterestOwed = Math.max(0, Number(balance.carriedInterestOwed) || 0);
   const amount = Math.max(0, Number(payment.amount) || 0);
   const date = payment.date;
 
@@ -547,10 +553,14 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
   // elsewhere in the app: the number of full calendar days since cycleStart (0 if
   // paid same-day as cycleStart). "Day 30" here means what the rest of the app
   // already displays as "30 days" in the repayment screens.
-  const dayOfCycle = Math.max(0, Math.floor((new Date(date) - new Date(cycleStart)) / 86400000));
-  const elapsedForFee = Math.min(dayOfCycle, loanDays + graceDays);
-  const interestAccrued = elapsedForFee * dailyFee;
-  const interestOwed = Math.max(0, interestAccrued - interestPaidThisCycle);
+  const dayOfCycle = daysBetweenDates(cycleStart, date);
+  // Freeze cap is measured from cycleStart (the term), not from principalSince —
+  // a principal change mid-cycle must not reset how many more days can accrue.
+  const checkpointElapsed = daysBetweenDates(cycleStart, principalSince);
+  const maxAdditionalDays = Math.max(0, (loanDays + graceDays) - checkpointElapsed);
+  const daysSinceCheckpoint = Math.min(daysBetweenDates(principalSince, date), maxAdditionalDays);
+  const newAccrual = daysSinceCheckpoint * dailyFee;
+  const interestOwed = carriedInterestOwed + newAccrual;
   const totalOwed = cashAdvance + interestOwed;
 
   if (amount <= 0) {
@@ -596,14 +606,17 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
     loanDays,
     dailyFee,
     interestOwedBefore: interestOwed,
-    interestAccrued,
+    interestAccrued: newAccrual,
     principalApplied,
     interestApplied,
     newCashAdvance,
     newInterestOwed,
     rolledOver,
     newCycleStart: rolledOver ? date : cycleStart,
-    newInterestPaidThisCycle: rolledOver ? 0 : Math.round((interestPaidThisCycle + interestApplied) * 100) / 100,
+    // Every payment checkpoints accrual at the payment date, regardless of outcome —
+    // whatever's left unpaid carries forward, future accrual starts fresh from here.
+    newPrincipalSince: date,
+    newCarriedInterestOwed: newInterestOwed,
     newDeadlineDate: rolledOver ? addDaysToDate(date, loanDays) : null,
   };
 }
@@ -1789,6 +1802,11 @@ export async function onRequest(context) {
       // cashAdvance is read from the stored record, not the incoming payload, so it
       // cannot be downward-manipulated to reduce the expected fee.
       // appliedInterestRate is locked in at loan creation; fall back to current config for old records.
+      //
+      // Expected fees are computed via computeLoanPayment (forcing a full-payoff outcome
+      // with an unlimited payment amount) rather than a flat daysCharged*dailyFee formula,
+      // so an item that already had partial interest payments recorded through the payment
+      // endpoint gets proper credit instead of being double-charged at redemption.
       if (tx.type === 'advance' && (tx.status === 'closed' || tx.status === 'active')) {
         const appliedRate = Number(existingData?.appliedInterestRate || loanCfg.interestRate);
 
@@ -1800,14 +1818,23 @@ export async function onRequest(context) {
             const prevItem = existingItems[i];
             // Only validate items that are newly redeemed in this update
             if (!item.redeemed || prevItem?.redeemed) continue;
-            const itemAdvance = Number(item.itemCashAdvance || 0);
-            const expectedItemDailyFee = Math.floor(itemAdvance * appliedRate / 100);
-            const expectedItemFees = (Number(item.daysCharged) || 0) * expectedItemDailyFee;
+            const itemAdvance = Number(prevItem?.itemCashAdvance ?? item.itemCashAdvance ?? 0);
+            const redeemDate = item.dateRedeemed || todayNigeria();
+            const itemBalance = {
+              cashAdvance: itemAdvance,
+              appliedInterestRate: appliedRate,
+              cycleStart: prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+              principalSince: prevItem?.principalSince || prevItem?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+              loanDays: Number(prevItem?.loanDays || existingData?.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+              carriedInterestOwed: Number(prevItem?.carriedInterestOwed) || 0,
+            };
+            const check = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
+            const expectedItemFees = check.error ? 0 : Math.round(check.interestApplied);
             if (Number(item.feesCharged) !== expectedItemFees) {
               const label = item.aiItemType || item.captureItemType || `Item ${i + 1}`;
               return error(
                 `Fee mismatch for "${label}": submitted ₦${item.feesCharged} but expected ₦${expectedItemFees}` +
-                ` (${item.daysCharged} day(s) × ₦${expectedItemDailyFee}/day on ₦${itemAdvance} at ${appliedRate}%/day)`,
+                ` (₦${itemAdvance} advance at ${appliedRate}%/day, redeemed ${redeemDate})`,
                 422
               );
             }
@@ -1823,14 +1850,23 @@ export async function onRequest(context) {
             }
           }
         } else if (tx.status === 'closed') {
-          // Legacy single-item path
+          // Legacy single-item path (no items[] on the stored record)
           const cashAdvance = Number(existingData?.cashAdvance || 0);
-          const expectedDailyFee = Math.floor(cashAdvance * appliedRate / 100);
-          const expectedTotalFees = (Number(tx.daysCharged) || 0) * expectedDailyFee;
+          const redeemDate = tx.dateRepaid || todayNigeria();
+          const legacyBalance = {
+            cashAdvance,
+            appliedInterestRate: appliedRate,
+            cycleStart: existingData?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+            principalSince: existingData?.principalSince || existingData?.cycleStart || existingData?.dateGiven || tx.dateGiven,
+            loanDays: Number(existingData?.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
+            carriedInterestOwed: Number(existingData?.carriedInterestOwed) || 0,
+          };
+          const check = computeLoanPayment(legacyBalance, { amount: Number.MAX_SAFE_INTEGER, date: redeemDate }, loanCfg.graceDays);
+          const expectedTotalFees = check.error ? 0 : Math.round(check.interestApplied);
           if (Number(tx.totalFees) !== expectedTotalFees) {
             return error(
               `Fee mismatch: submitted ₦${tx.totalFees} but expected ₦${expectedTotalFees}` +
-              ` (${tx.daysCharged} day(s) × ₦${expectedDailyFee}/day on ₦${cashAdvance} advance at ${appliedRate}%/day)`,
+              ` (₦${cashAdvance} advance at ${appliedRate}%/day, redeemed ${redeemDate})`,
               422
             );
           }
@@ -2149,24 +2185,24 @@ export async function onRequest(context) {
             cashAdvance: Number(targetItem.itemCashAdvance) || 0,
             appliedInterestRate: appliedRate,
             cycleStart: targetItem.cycleStart || tx.dateGiven,
+            principalSince: targetItem.principalSince || targetItem.cycleStart || tx.dateGiven,
             loanDays: Number(targetItem.loanDays || tx.loanDays) || loanCfg.maxLoanDays,
-            interestPaidThisCycle: Number(targetItem.interestPaidThisCycle) || 0,
+            carriedInterestOwed: Number(targetItem.carriedInterestOwed) || 0,
           }
         : {
             cashAdvance: Number(tx.cashAdvance) || 0,
             appliedInterestRate: appliedRate,
             cycleStart: tx.cycleStart || tx.dateGiven,
+            principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven,
             loanDays: Number(tx.loanDays) || loanCfg.maxLoanDays,
-            interestPaidThisCycle: Number(tx.interestPaidThisCycle) || 0,
+            carriedInterestOwed: Number(tx.carriedInterestOwed) || 0,
           };
 
-      // No backdating before the current cycle started or before the most recent
-      // payment already on record — same anti-tamper principle as elsewhere in the app.
-      const existingPayments = hasItems ? (targetItem.payments || []) : (tx.payments || []);
-      const lastPaymentDate = existingPayments.length ? existingPayments[existingPayments.length - 1].date : null;
-      const earliestAllowed = lastPaymentDate && lastPaymentDate > balance.cycleStart ? lastPaymentDate : balance.cycleStart;
-      if (date < earliestAllowed) {
-        return error(`Payment date cannot be before ${earliestAllowed} (the start of the current cycle or the last recorded payment).`, 400);
+      // No backdating before the last accrual checkpoint — principalSince already
+      // equals the most recent payment's date (or cycleStart/dateGiven if no
+      // payment has been made yet), so this alone is the correct lower bound.
+      if (date < balance.principalSince) {
+        return error(`Payment date cannot be before ${balance.principalSince} (the start of the current cycle or the last recorded payment).`, 400);
       }
 
       const result = computeLoanPayment(balance, { amount: amountNum, date }, loanCfg.graceDays);
@@ -2181,6 +2217,27 @@ export async function onRequest(context) {
         rolledOver: !!result.rolledOver,
         recordedBy: auth.user.name || auth.user.username,
         recordedAt: new Date().toISOString(),
+      };
+
+      // The wizard always populates tx.items (even for a single-item loan), so the
+      // hasItems branch below is the common path — not just true multi-item loans.
+      // Everything ELSE in the app (timeline/eligibility, dashboards, RepaymentModal)
+      // still reads the TOP-LEVEL tx.cycleStart/deadlineDate/principalSince, so after
+      // touching items[] we always mirror those fields back from whichever unredeemed
+      // item is most urgent (soonest deadline) — this keeps a single-item loan's
+      // rollover visible everywhere, and keeps a multi-item loan's overall timeline
+      // driven by its most-at-risk item.
+      const mirrorTopLevelFromItems = (items) => {
+        const unredeemed = items.filter(it => !it.redeemed);
+        if (unredeemed.length === 0) return;
+        const earliest = unredeemed.reduce((best, it) => {
+          const dl = it.deadlineDate || tx.deadlineDate || '';
+          const bestDl = best ? (best.deadlineDate || tx.deadlineDate || '') : null;
+          return (!best || dl < bestDl) ? it : best;
+        }, null);
+        tx.cycleStart = earliest.cycleStart || tx.dateGiven;
+        tx.principalSince = earliest.principalSince || earliest.cycleStart || tx.dateGiven;
+        tx.deadlineDate = earliest.deadlineDate || tx.deadlineDate;
       };
 
       let breakdown;
@@ -2202,6 +2259,8 @@ export async function onRequest(context) {
             tx.totalFees = updatedItems.reduce((s, it) => s + (it.feesCharged || 0), 0);
             tx.itemReturned = true;
             tx.repaidBy = auth.user.name;
+          } else {
+            mirrorTopLevelFromItems(updatedItems);
           }
           breakdown = `Item fully redeemed — ₦${fmtNP(result.principalApplied)} principal + ₦${fmtNP(result.interestApplied)} interest = ₦${fmtNP(result.principalApplied + result.interestApplied)}.` + (allRedeemed ? ' All items now redeemed — loan closed.' : ` ${updatedItems.filter(it => !it.redeemed).length} item(s) remain.`);
         } else {
@@ -2222,7 +2281,8 @@ export async function onRequest(context) {
             ? {
                 ...it,
                 itemCashAdvance: result.newCashAdvance,
-                interestPaidThisCycle: result.newInterestPaidThisCycle,
+                carriedInterestOwed: result.newCarriedInterestOwed,
+                principalSince: result.newPrincipalSince,
                 cycleStart: result.newCycleStart,
                 deadlineDate: result.newDeadlineDate || it.deadlineDate || tx.deadlineDate,
                 loanDays: balance.loanDays,
@@ -2231,9 +2291,11 @@ export async function onRequest(context) {
             : it);
           tx.items = updatedItems;
           tx.cashAdvance = updatedItems.reduce((s, it) => s + (it.redeemed ? 0 : (it.itemCashAdvance || 0)), 0);
+          mirrorTopLevelFromItems(updatedItems);
         } else {
           tx.cashAdvance = result.newCashAdvance;
-          tx.interestPaidThisCycle = result.newInterestPaidThisCycle;
+          tx.carriedInterestOwed = result.newCarriedInterestOwed;
+          tx.principalSince = result.newPrincipalSince;
           tx.cycleStart = result.newCycleStart;
           tx.deadlineDate = result.newDeadlineDate || tx.deadlineDate;
           tx.payments = [...(tx.payments || []), paymentEntry];
