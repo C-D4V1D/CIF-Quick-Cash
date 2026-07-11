@@ -561,6 +561,33 @@ const getCurrentOutstandingPrincipal = (tx) => {
   return Number(tx.cashAdvance) || 0;
 };
 
+const getLoanPaymentEntries = (tx) => {
+  if (!tx || tx.type !== 'advance') return [];
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    return tx.items.flatMap(it => it?.payments || []);
+  }
+  return tx.payments || [];
+};
+
+const getRecognizedInterest = (tx, options = {}) => {
+  if (!tx || tx.type !== 'advance') return 0;
+  const { paymentDateFilter, legacyClosedDateFilter } = options;
+  const payments = getLoanPaymentEntries(tx);
+  if (payments.length > 0) {
+    return payments.reduce((sum, p) => {
+      const paymentDate = p?.date || p?.recordedAt || null;
+      if (paymentDateFilter && !paymentDateFilter(paymentDate, p)) return sum;
+      return sum + (Number(p?.interestApplied) || 0);
+    }, 0);
+  }
+  if (tx.status === 'closed') {
+    const closedDate = tx.dateRepaid || tx.updated_at || tx.created_at || null;
+    if (legacyClosedDateFilter && !legacyClosedDateFilter(closedDate, tx)) return 0;
+    return Math.max(0, Number(tx.totalFees) || 0);
+  }
+  return 0;
+};
+
 // Pure function — no I/O. Given the current state of a principal balance and a
 // proposed payment, returns exactly what should change. Never trusts a client
 // to supply cashAdvance/interestOwed/etc — callers must pass values read from
@@ -4250,7 +4277,6 @@ export async function onRequest(context) {
           const d = new Date(ds.replace(' ', 'T'));
           return d.getFullYear() === prevYear && d.getMonth() + 1 === prevMonth;
         };
-        const periodClosed = allTx.filter(t => t.status === 'closed' && inPeriod(t.dateRepaid || t.updated_at));
         const periodSold = allTx.filter(t => t.status === 'sold' && inPeriod(t.saleDate || t.updated_at));
         const periodNewLoans = allTx.filter(t => t.type !== 'outright' && t.status !== 'declined' && inPeriod(t.created_at));
         const serviceFee = Number(cfg.serviceFee) || 1000;
@@ -4258,7 +4284,10 @@ export async function onRequest(context) {
         // Revenue = interest fees + sale margins (not full sale price) + service fees.
         // Using sale margin (salePrice − cashAdvance) keeps consistency with loan accounting
         // where only interest is counted, not the principal return.
-        const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0)
+        const rev = allTx.reduce((s, t) => s + getRecognizedInterest(t, {
+          paymentDateFilter: (paymentDate) => inPeriod(paymentDate),
+          legacyClosedDateFilter: (closedDate) => inPeriod(closedDate),
+        }), 0)
           + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0)
           + periodNewLoans.reduce((s, t) => s + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? serviceFee : 0)), 0);
 
@@ -4285,7 +4314,7 @@ export async function onRequest(context) {
         const forSaleTx = allTx.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
         const totalOut = activeTx.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
         const totalInForSale = forSaleTx.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
-        const totalRevAll = allTx.filter(t => t.status === 'closed').reduce((s, t) => s + (t.totalFees || 0), 0)
+        const totalRevAll = allTx.reduce((s, t) => s + getRecognizedInterest(t), 0)
           + allTx.filter(t => t.status === 'sold').reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0)
           + allTx.filter(t => t.type !== 'outright' && t.status !== 'declined').reduce((s, t) => s + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? serviceFee : 0)), 0);
         const totalExpAll = (expRes.results || []).reduce((s, e) => s + (e.amount || 0), 0);

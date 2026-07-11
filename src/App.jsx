@@ -405,6 +405,33 @@ const getCurrentOutstandingPrincipal = (tx) => {
   return Number(tx.cashAdvance) || 0;
 };
 
+const getLoanPaymentEntries = (tx) => {
+  if (!tx || tx.type !== 'advance') return [];
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    return tx.items.flatMap(it => it?.payments || []);
+  }
+  return tx.payments || [];
+};
+
+const getRecognizedInterest = (tx, options = {}) => {
+  if (!tx || tx.type !== 'advance') return 0;
+  const { paymentDateFilter, legacyClosedDateFilter } = options;
+  const payments = getLoanPaymentEntries(tx);
+  if (payments.length > 0) {
+    return payments.reduce((sum, p) => {
+      const paymentDate = p?.date || p?.recordedAt || null;
+      if (paymentDateFilter && !paymentDateFilter(paymentDate, p)) return sum;
+      return sum + (Number(p?.interestApplied) || 0);
+    }, 0);
+  }
+  if (tx.status === 'closed') {
+    const closedDate = tx.dateRepaid || tx.updated_at || tx.created_at || null;
+    if (legacyClosedDateFilter && !legacyClosedDateFilter(closedDate, tx)) return 0;
+    return Math.max(0, Number(tx.totalFees) || 0);
+  }
+  return 0;
+};
+
 const computeLoanPayment = (balance, payment, graceDays = 3, options = {}) => {
   // graceDays is kept for call-site compatibility (every caller still passes the
   // company's grace period) but no longer caps accrual — see the note by
@@ -995,11 +1022,10 @@ const computeCapitalPrediction = (transactions, expenses, distributions, capital
   const totalCapital = capitalEntries.reduce((s, c) => s + capSignedAmount(c), 0);
   const activeTxs = transactions.filter(t => t.status === 'active');
   const forSaleTxs = transactions.filter(t => t.status === 'for_sale' || t.status === 'ready_to_sell');
-  const closedTxs = transactions.filter(t => t.status === 'closed');
   const soldTxs = transactions.filter(t => t.status === 'sold');
   const totalCapitalOut = activeTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
   const totalCapitalInForSale = forSaleTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
-  const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
+  const totalInterestEarned = transactions.reduce((s, t) => s + getRecognizedInterest(t), 0);
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
@@ -10168,7 +10194,7 @@ export default function App() {
   const overdueLoans = activeTxs.filter(t => { const dl = getCustomerDaysLeft(t); return dl !== null && dl < 0; });
   const totalCapitalOut = activeTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
   const totalCapitalInForSaleInventory = forSaleTxs.reduce((s, t) => s + getCurrentOutstandingPrincipal(t), 0);
-  const totalInterestEarned = closedTxs.reduce((s, t) => s + (t.totalFees || 0), 0);
+  const totalInterestEarned = transactions.reduce((s, t) => s + getRecognizedInterest(t), 0);
   // Sales revenue = margin only (salePrice − cashAdvance), not the full sale price.
   // The cashAdvance was already deployed capital; counting it as revenue would double-count it.
   const totalSalesRevenue = soldTxs.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
@@ -11526,7 +11552,10 @@ export default function App() {
         const rNewTxs = transactions.filter(t => t.status !== 'declined' && inPeriod(t.created_at));
         const rNewLoans = rNewTxs.filter(t => t.type !== 'outright');
         const rExpenses = expenses.filter(e => inPeriod(e.date));
-        const rRepaymentFees = rClosed.reduce((s, t) => s + (t.totalFees || 0), 0);
+        const rRepaymentFees = transactions.reduce((s, t) => s + getRecognizedInterest(t, {
+          paymentDateFilter: (paymentDate) => inPeriod(paymentDate),
+          legacyClosedDateFilter: (closedDate) => inPeriod(closedDate),
+        }), 0);
         // Sales revenue = margin (salePrice − cashAdvance). The principal was deployed capital, not profit.
         const rSalesRevenue = rSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0);
         const rServiceFees = rNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
@@ -11613,20 +11642,22 @@ export default function App() {
         // (possessorUserId === 'customer' or unset/historical) redirect their
         // share to the Staff Pool.
         const revContribOfTx = (tx) => {
-          if (tx.status === 'closed') return Math.max(0, Number(tx.totalFees) || 0);
-          if (tx.status === 'sold') return Math.max(0, (tx.salePrice || 0) - (tx.cashAdvance || 0));
-          if (tx.type !== 'outright') {
-            const fee = tx.serviceFeeAmount ?? (tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0);
-            return Math.max(0, Number(fee) || 0);
-          }
-          return 0;
+          const repaymentInterest = getRecognizedInterest(tx, {
+            paymentDateFilter: (paymentDate) => inPeriod(paymentDate),
+            legacyClosedDateFilter: (closedDate) => inPeriod(closedDate),
+          });
+          const soldMargin = tx.status === 'sold' && inPeriod(tx.saleDate || tx.updated_at)
+            ? Math.max(0, (tx.salePrice || 0) - (tx.cashAdvance || 0))
+            : 0;
+          const serviceFee = tx.type !== 'outright' && tx.status !== 'declined' && inPeriod(tx.created_at)
+            ? Math.max(0, Number(tx.serviceFeeAmount ?? (tx.serviceFeeCollected ? getServiceFeeForAdvance(settings, tx.cashAdvance) : 0)) || 0)
+            : 0;
+          return repaymentInterest + soldMargin + serviceFee;
         };
         const revByPossessor = {}; // user_id → revenue
         let revCustomerHeld = 0;
         let revTotalForPossessor = 0;
-        const inPeriodAny = (tx) => inPeriod(tx.dateRepaid || tx.saleDate || tx.created_at || tx.updated_at);
         transactions.forEach(tx => {
-          if (!inPeriodAny(tx)) return;
           const rev = revContribOfTx(tx);
           if (rev <= 0) return;
           revTotalForPossessor += rev;
@@ -12543,11 +12574,13 @@ export default function App() {
                     if (totalCD <= 0) { alert('No net capital-days for this period (contributions and withdrawals may have netted to zero). Ensure capital entries exist.'); return; }
                     // Calculate stakeholder profit for the period
                     const periodTxs = transactions.filter(t => { if (!t.created_at) return false; const d = new Date(t.created_at.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
-                    const periodClosed = closedTxs.filter(t => { const ds = t.dateRepaid || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
                     const periodSold = soldTxs.filter(t => { const ds = t.saleDate || t.updated_at; if (!ds) return false; const d = new Date(ds.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
                     const periodNewLoans = periodTxs.filter(t => t.type !== 'outright' && t.status !== 'declined');
                     const periodExp = expenses.filter(e => { if (!e.date) return false; const d = new Date(e.date.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; });
-                    const rev = periodClosed.reduce((s, t) => s + (t.totalFees || 0), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
+                    const rev = transactions.reduce((s, t) => s + getRecognizedInterest(t, {
+                      paymentDateFilter: (paymentDate) => { if (!paymentDate) return false; const d = new Date(paymentDate.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; },
+                      legacyClosedDateFilter: (closedDate) => { if (!closedDate) return false; const d = new Date(closedDate.replace(' ','T')); const v = d.getFullYear() * 12 + d.getMonth() + 1; return v === pYear * 12 + pMonth; },
+                    }), 0) + periodSold.reduce((s, t) => s + Math.max(0, (t.salePrice || 0) - (t.cashAdvance || 0)), 0) + periodNewLoans.reduce((sum, t) => sum + (t.serviceFeeAmount ?? (t.serviceFeeCollected ? getServiceFeeForAdvance(settings, t.cashAdvance) : 0)), 0);
                     const expT = periodExp.reduce((s, e) => s + (e.amount || 0), 0);
                     const profit = rev - expT;
                     if (profit <= 0) { alert(`No profit for ${distDecisionPeriod} (profit: ${fmtMoney(profit)}). Cannot generate decisions.`); return; }
