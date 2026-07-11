@@ -405,7 +405,7 @@ const getCurrentOutstandingPrincipal = (tx) => {
   return Number(tx.cashAdvance) || 0;
 };
 
-const computeLoanPayment = (balance, payment, graceDays = 3) => {
+const computeLoanPayment = (balance, payment, graceDays = 3, options = {}) => {
   // graceDays is kept for call-site compatibility (every caller still passes the
   // company's grace period) but no longer caps accrual — see the note by
   // daysSinceCheckpoint below for why interest no longer freezes at the grace boundary.
@@ -441,7 +441,11 @@ const computeLoanPayment = (balance, payment, graceDays = 3) => {
     };
   }
 
-  const bucket = dayOfCycle < loanDays ? 'principal_first' : 'interest_first';
+  // options.forceBucket lets a caller override this — used by the combined multi-item
+  // payment, which decides "is this loan overdue" once for the whole basket (so an
+  // item that individually rolled over recently doesn't skip the interest queue just
+  // because ITS OWN post-rollover cycle looks fresh).
+  const bucket = options.forceBucket || (dayOfCycle < loanDays ? 'principal_first' : 'interest_first');
   let principalApplied = 0, interestApplied = 0;
   if (bucket === 'principal_first') {
     principalApplied = Math.min(amount, cashAdvance);
@@ -7953,10 +7957,13 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   const combinedTotalAdvance = orderedUnredeemed.reduce((s, it) => s + getItemCashAdvance(tx, it), 0);
   const combinedDailyInterest = orderedUnredeemed.reduce((s, it) => s + Math.floor(getItemCashAdvance(tx, it) * rate / 100), 0);
 
-  // Accumulated interest owed as of today (independent of whatever the staff member
-  // has typed into the amount field yet) — evaluated via the same checkpointed
+  // Accumulated interest owed as of the entered Date Paid (independent of whatever
+  // amount the staff member has typed in yet) — evaluated via the same checkpointed
   // computeLoanPayment engine used everywhere else, not a flat days*dailyFee guess.
-  const today = localISODate();
+  // Uses the entered date, not always "today", so backdating a payment (e.g.
+  // reconstructing payment history on its real date) shows the correct figure for
+  // THAT date instead of silently substituting today's larger accrued total.
+  const asOfDate = date || localISODate();
   const accumulatedInterest = isCombined
     ? orderedUnredeemed.reduce((s, it) => {
         const itemBalance = {
@@ -7967,22 +7974,26 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
           loanDays,
           carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
         };
-        const full = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+        const full = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: asOfDate }, graceDays);
         return s + (full.error ? 0 : full.interestOwedBefore);
       }, 0)
     : (() => {
-        const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
+        const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: asOfDate }, graceDays);
         return full.error ? 0 : full.interestOwedBefore;
       })();
   const totalAmountDue = (isCombined ? combinedTotalAdvance : balance.cashAdvance) + accumulatedInterest;
 
   // Client-side mirror of the backend's waterfall so staff see the same per-item
   // split (and any overpayment) before they submit.
-  // Mirrors the backend's two-pass waterfall: clear interest on every overdue
-  // ("interest_first") item first, in order, before anything goes to principal —
-  // matching the single-loan policy of settling interest before principal past the
-  // company's max tenure, applied across the whole combined basket instead of
-  // letting the first item in line consume the entire payment on its own principal.
+  //
+  // Whether the BASKET is overdue is decided ONCE, from the earliest-deadline
+  // unredeemed item's cycleStart (tx.cycleStart) — not per item. An item can look
+  // "fresh" on its own (it rolled over recently after an earlier interest-only
+  // payment cleared its own small balance) while the loan as a whole is still badly
+  // overdue on its other items; that item must not jump the queue for principal
+  // just because its own post-rollover clock resets to day 0. So when the basket is
+  // overdue, pass 1 force-clears interest on EVERY item that owes any before pass 2
+  // lets anything reach principal.
   const combinedPreview = (isCombined && amountNum > 0 && date) ? (() => {
     const mkBalance = (it) => ({
       cashAdvance: getItemCashAdvance(tx, it),
@@ -7993,21 +8004,22 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
       carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
       deadlineDate: it.deadlineDate || tx.deadlineDate,
     });
+    const overallAnchor = tx.cycleStart || tx.dateGiven;
+    const overallOverdue = daysBetweenDates(overallAnchor, date) >= loanDays;
     const states = orderedUnredeemed.map(it => {
       const balance = mkBalance(it);
-      const dayOfCycle = daysBetweenDates(balance.cycleStart, date);
-      const bucket = dayOfCycle < loanDays ? 'principal_first' : 'interest_first';
       const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date }, graceDays);
-      return { item: it, balance, bucket, interestOwed: full.error ? 0 : full.interestOwedBefore, owesAnything: !full.error };
+      const interestOwed = full.error ? 0 : full.interestOwedBefore;
+      return { item: it, balance, interestOwed, owesAnything: !full.error, interestCleared: interestOwed <= 0 };
     }).filter(s => s.owesAnything);
 
     let remaining = amountNum;
     const steps = [];
 
     for (const s of states) {
-      if (s.bucket !== 'interest_first' || remaining <= 0 || s.interestOwed <= 0) continue;
+      if (!overallOverdue || remaining <= 0 || s.interestOwed <= 0) continue;
       const pay = Math.min(remaining, s.interestOwed);
-      const r = computeLoanPayment(s.balance, { amount: pay, date }, graceDays);
+      const r = computeLoanPayment(s.balance, { amount: pay, date }, graceDays, { forceBucket: 'interest_first' });
       if (r.error) continue;
       if (r.outcome === 'full_payoff') {
         steps.push({ item: s.item, r, phase: 'redeemed' });
@@ -8023,7 +8035,7 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
     for (const s of states) {
       if (remaining <= 0) break;
       if (steps.find(st => st.item === s.item && st.phase === 'redeemed')) continue;
-      if (s.bucket === 'interest_first' && !s.interestCleared) continue;
+      if (overallOverdue && !s.interestCleared) continue;
       const r = computeLoanPayment(s.balance, { amount: remaining, date }, graceDays);
       if (r.error) continue;
       steps.push({ item: s.item, r, phase: r.outcome === 'full_payoff' ? 'redeemed' : 'principal' });
@@ -8097,10 +8109,10 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
           <div><span style={S.statLabel}>{isCombined ? 'Combined Items Advance' : hasItems ? 'Item Advance' : 'Advance Given'}</span><br /><strong style={{ fontSize: '18px' }}>{fmtMoney(isCombined ? combinedTotalAdvance : balance.cashAdvance)}</strong></div>
           <div><span style={S.statLabel}>Daily Interest</span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(isCombined ? combinedDailyInterest : Math.floor(balance.cashAdvance * rate / 100))}/day</strong></div>
           <div><span style={S.statLabel}>Max Loan Tenure</span><br /><strong>{loanDays} days</strong></div>
-          <div><span style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Accumulated Interest<InfoIcon tip="Interest owed as of today at the current daily rate, checkpointed from the last payment (or loan start if none)." /></span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(accumulatedInterest)}</strong></div>
+          <div><span style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Accumulated Interest{asOfDate !== localISODate() ? ` (as of ${fmtDate(asOfDate)})` : ''}<InfoIcon tip="Interest owed as of the entered Date Paid, at the current daily rate, checkpointed from the last payment (or loan start if none)." /></span><br /><strong style={{ fontSize: '18px', color: COLORS.warning }}>{fmtMoney(accumulatedInterest)}</strong></div>
         </div>
         <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.dangerLight, borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-          <span style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Total Amount Due Today<InfoIcon tip="Everything owed right now — advance plus accumulated interest — as of today's date, before this payment is applied." /></span>
+          <span style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Total Amount Due{asOfDate !== localISODate() ? ` (as of ${fmtDate(asOfDate)})` : ' Today'}<InfoIcon tip="Everything owed — advance plus accumulated interest — as of the entered Date Paid, before this payment is applied." /></span>
           <strong style={{ fontSize: '22px', color: COLORS.danger }}>{fmtMoney(totalAmountDue)}</strong>
         </div>
       </div>

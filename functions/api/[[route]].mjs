@@ -574,7 +574,7 @@ const getCurrentOutstandingPrincipal = (tx) => {
 //   app and has no bearing on which balance a payment pays down first.
 // payment: { amount, date }
 // graceDays: from admin settings, used only for the fee-accrual freeze cap.
-function computeLoanPayment(balance, payment, graceDays = 3) {
+function computeLoanPayment(balance, payment, graceDays = 3, options = {}) {
   const cashAdvance = Math.max(0, Number(balance.cashAdvance) || 0);
   const rate = Number(balance.appliedInterestRate) || 0;
   const loanDays = Math.max(1, Number(balance.loanDays) || 30);
@@ -621,7 +621,11 @@ function computeLoanPayment(balance, payment, graceDays = 3) {
 
   // Day 1..loanDays-1 of the cycle ("on time") → principal first.
   // Day loanDays onward ("due/overdue") → interest first (may trigger a rollover below).
-  const bucket = dayOfCycle < loanDays ? 'principal_first' : 'interest_first';
+  // options.forceBucket lets a caller override this — used by the combined multi-item
+  // payment, which decides "is this loan overdue" once for the whole basket (so an
+  // item that individually rolled over recently doesn't skip the interest queue just
+  // because ITS OWN post-rollover cycle looks fresh).
+  const bucket = options.forceBucket || (dayOfCycle < loanDays ? 'principal_first' : 'interest_first');
   let principalApplied = 0;
   let interestApplied = 0;
   if (bucket === 'principal_first') {
@@ -2267,29 +2271,39 @@ export async function onRequest(context) {
         // Past the company's max tenure, the payment engine settles interest before
         // principal on a SINGLE loan (see computeLoanPayment's bucket logic). Combining
         // several items into one payment must honor the same policy across the whole
-        // basket — not just within whichever item happens to be processed first. So this
-        // runs two passes: first clear interest on every overdue ("interest_first")
-        // item, in deadline order; only once that's done does anything go to principal.
-        // Items still within tenure ("principal_first") are unaffected by pass 1 and are
-        // simply paid in their own normal principal-then-interest order in pass 2.
+        // basket — not just within whichever item happens to be processed first.
+        //
+        // Whether the BASKET is overdue is decided ONCE, from the earliest-deadline
+        // unredeemed item's cycleStart (tx.cycleStart, kept in sync by
+        // mirrorTopLevelFromItems — the same anchor getLoanTimeline/effectiveElapsedDays
+        // use elsewhere). It is NOT decided per item: an item can look "fresh" on its
+        // own (it rolled over recently after an earlier interest-only payment cleared
+        // its own small balance) while the loan as a whole is still badly overdue on
+        // its other items — that item must not jump the queue for principal just
+        // because its own post-rollover clock resets to day 0. So when the basket is
+        // overdue, pass 1 force-clears interest on EVERY item that owes any (via
+        // forceBucket, bypassing what would otherwise be that item's own fresh-cycle
+        // "principal first" bucket) before pass 2 lets anything reach principal.
         let remaining = amountNum;
         const updatedItems = [...tx.items];
         let totalPrincipalApplied = 0, totalInterestApplied = 0;
         const interestNotes = [], principalNotes = [];
 
+        const overallAnchor = tx.cycleStart || tx.dateGiven;
+        const overallOverdue = daysBetweenDates(overallAnchor, date) >= loanCfg.maxLoanDays;
+
         const states = unredeemed.map(({ it, i }) => {
           const balance = mkBalance(it);
-          const dayOfCycle = daysBetweenDates(balance.cycleStart, date);
-          const bucket = dayOfCycle < balance.loanDays ? 'principal_first' : 'interest_first';
           const full = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date }, loanCfg.graceDays);
-          return { it, i, balance, bucket, interestOwed: full.error ? 0 : full.interestOwedBefore, owesAnything: !full.error };
+          const interestOwed = full.error ? 0 : full.interestOwedBefore;
+          return { it, i, balance, interestOwed, owesAnything: !full.error, interestCleared: interestOwed <= 0 };
         }).filter(s => s.owesAnything);
 
-        // Pass 1 — clear interest on overdue items, in order, before any principal moves.
+        // Pass 1 — clear interest on every item, in order, before any principal moves.
         for (const s of states) {
-          if (s.bucket !== 'interest_first' || remaining <= 0 || s.interestOwed <= 0) continue;
+          if (!overallOverdue || remaining <= 0 || s.interestOwed <= 0) continue;
           const pay = Math.min(remaining, s.interestOwed);
-          const r = computeLoanPayment(s.balance, { amount: pay, date }, loanCfg.graceDays);
+          const r = computeLoanPayment(s.balance, { amount: pay, date }, loanCfg.graceDays, { forceBucket: 'interest_first' });
           if (r.error) continue;
           // A zero-principal item (fully paid down previously, only interest left
           // outstanding) can hit full_payoff here since pay may equal its entire
@@ -2324,13 +2338,15 @@ export async function onRequest(context) {
           interestNotes.push(`${labelOf(s.it, s.i)}: ₦${fmtNP(r.interestApplied)} interest cleared${r.rolledOver ? ` — renewed, new deadline ${r.newDeadlineDate}` : r.newDeadlineDate ? ` — deadline extended to ${r.newDeadlineDate} (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed beyond that)` : ` (₦${fmtNP(s.interestOwed - r.interestApplied)} interest still owed)`}`);
         }
 
-        // Pass 2 — apply whatever remains to principal, in order. Overdue items whose
-        // interest wasn't fully cleared above are skipped (still waiting on interest);
-        // items that started principal_first go through their normal single-call flow.
+        // Pass 2 — apply whatever remains to principal, in order. If the basket is
+        // overdue, items whose interest wasn't fully cleared above are skipped (still
+        // waiting on interest); if the basket isn't overdue, every item goes through
+        // its own normal principal-then-interest single-call flow, unaffected by pass 1
+        // (which never ran).
         for (const s of states) {
           if (remaining <= 0) break;
           if (updatedItems[s.i].redeemed) continue;
-          if (s.bucket === 'interest_first' && !s.interestCleared) continue;
+          if (overallOverdue && !s.interestCleared) continue;
           const r = computeLoanPayment(s.balance, { amount: remaining, date }, loanCfg.graceDays);
           if (r.error) continue;
           const subAmount = r.outcome === 'full_payoff' ? (r.principalApplied + r.interestApplied) : remaining;
