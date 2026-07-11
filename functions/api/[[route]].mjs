@@ -2250,7 +2250,11 @@ export async function onRequest(context) {
             : it);
           tx.items = updatedItems;
           const allRedeemed = updatedItems.every(it => it.redeemed);
-          tx.cashAdvance = updatedItems.reduce((s, it) => s + (it.redeemed ? 0 : (it.itemCashAdvance || 0)), 0);
+          // tx.cashAdvance is left untouched here — for items-based loans it has always
+          // been the original total given (set once at creation), never reduced as items
+          // are redeemed (see RedeemItemModal, which never writes it either). Monthly/
+          // historical reporting keyed by dateGiven relies on it staying immutable;
+          // "currently outstanding" is item.itemCashAdvance summed over unredeemed items.
           if (allRedeemed) {
             tx.status = 'closed';
             tx.amountRepaid = updatedItems.reduce((s, it) => s + (it.amountPaid || 0), 0);
@@ -2290,7 +2294,7 @@ export async function onRequest(context) {
               }
             : it);
           tx.items = updatedItems;
-          tx.cashAdvance = updatedItems.reduce((s, it) => s + (it.redeemed ? 0 : (it.itemCashAdvance || 0)), 0);
+          // tx.cashAdvance intentionally left untouched — see note above.
           mirrorTopLevelFromItems(updatedItems);
         } else {
           tx.cashAdvance = result.newCashAdvance;
