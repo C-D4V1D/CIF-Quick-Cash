@@ -1952,7 +1952,7 @@ export async function onRequest(context) {
 
       return json({ success: true });
     }
-    if (path.startsWith('transactions/') && method === 'PUT') {
+    if (path.startsWith('transactions/') && !path.endsWith('/consolidate') && method === 'PUT') {
       const auth = requireAuth(request);
       if (auth.error) return auth.error;
       const ref = decodeURIComponent(path.split('/')[1]);
