@@ -315,7 +315,12 @@ const getLoanTimeline = (tx, settings = {}) => {
   const maxLoanDays = Math.max(1, Number(settings.maxLoanDays) || 30);
   const graceDays   = Math.max(0, Number(settings.graceDays)   || 3);
   // cycleStart anchors the whole timeline after a rollover — see effectiveElapsedDays.
-  const anchor = tx?.cycleStart || tx?.dateGiven;
+  // A multi-item loan that still has legacy per-item state (hasn't been folded into
+  // the shared balance yet) never had a real whole-loan rollover — any per-item
+  // "cycleStart" from the old model was a fragment, not a genuine renewal — so
+  // tx.cycleStart itself is stale here and the only honest anchor is dateGiven.
+  const hasLegacyItems = Array.isArray(tx?.items) && tx.items.length > 0 && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
+  const anchor = hasLegacyItems ? tx?.dateGiven : (tx?.cycleStart || tx?.dateGiven);
   const elapsedDays = daysBetween(anchor);
   const customerDueDate = tx?.deadlineDate || addDays(anchor, Number(tx?.loanDays) || maxLoanDays);
   const internalDeadline = addDays(anchor, maxLoanDays);
@@ -600,6 +605,7 @@ const computeCurrentLoanState = (tx, settings) => {
     amountDueToday: currentPrincipal + interestOwed,
     payments: allPayments,
     interestBreakdown,
+    hasLegacyItemState,
   };
 };
 
@@ -8437,6 +8443,38 @@ function ContactLogModal({ tx, onClose, onSave, currentUser }) {
 // TXDETAIL — defined outside App so React never remounts it
 // when unrelated App state changes, which would cause flicker.
 // ============================================================
+// Admin-only control shown on a multi-item loan that still has leftover
+// per-item balances from before the shared-balance model. Runs the same fold-
+// into-one-balance step that would otherwise wait for the loan's next payment,
+// so the Financial Summary (Days Outstanding, Interest Owed, Amount Due Today,
+// Deadline) becomes accurate immediately instead of staying stuck on stale,
+// inconsistent per-item numbers. Every historical payment is kept — this only
+// repairs the current balance, it doesn't touch payment history.
+function ConsolidateLoanButton({ tx, loadData }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const handleClick = async () => {
+    if (!window.confirm(`Fix ${tx.ref}'s balance now?\n\nThis merges its ${tx.items.filter(it => !it.redeemed).length} items' separate balances and deadlines into one accurate shared balance, as of today. All existing payment history is kept exactly as-is — this only corrects the current balance and deadline shown.`)) return;
+    setBusy(true);
+    setErr('');
+    const res = await API.put(`transactions/${encodeURIComponent(tx.ref)}/consolidate`, {});
+    setBusy(false);
+    if (res?.error) { setErr(res.error); return; }
+    loadData();
+  };
+  return (
+    <div style={{ marginTop: '10px' }}>
+      <button style={S.btnSm('primary')} disabled={busy} onClick={handleClick}>
+        {busy ? 'Fixing…' : '🔧 Fix This Loan\'s Balance'}
+      </button>
+      <div style={{ fontSize: '11.5px', color: COLORS.textMuted, marginTop: '4px' }}>
+        Merges this loan's per-item balances into one accurate shared balance and deadline. History is preserved — nothing is deleted.
+      </div>
+      {err && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>{err}</div>}
+    </div>
+  );
+}
+
 function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggingContactTx, saveTx, loadData, setShopListingTx }) {
   const navigate = useNavigate();
   const timeline = tx.type === 'advance' ? getLoanTimeline(tx, settings) : null;
@@ -8755,11 +8793,21 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
                 + Interest since the last payment ({fmtDate(loanState.interestBreakdown.lastPaymentDate)}): <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestAfterPayment)}</strong>
                 {loanState.interestBreakdown.daysSincePayment > 0 && <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.interestBreakdown.daysSincePayment} day{loanState.interestBreakdown.daysSincePayment !== 1 ? 's' : ''}, on the current balance)</span>}
               </div>
-            </>) : (
+            </>) : loanState.hasLegacyItemState ? (
+              // A not-yet-consolidated multi-item loan sums interest across items with
+              // different accrual histories — there's no single valid "rate × days" for
+              // the basket, so showing one would just be a fabricated number that
+              // doesn't multiply out (the exact bug this card exists to avoid). State
+              // the true total plainly instead, and point at the real fix.
+              <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> <span>(summed across {tx.items.filter(it => !it.redeemed).length} items with different payment histories — no single daily rate applies until this loan is consolidated)</span></div>
+            ) : (
               <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> ({fmtMoney(loanState.dailyInterestTotal)}/day × {daysOut} day{daysOut !== 1 ? 's' : ''})</div>
             )}
             <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '4px', paddingTop: '4px' }}>= Amount due today: <strong style={{ color: COLORS.danger }}>{fmtMoney(loanState.amountDueToday)}</strong></div>
           </div>
+          {loanState.hasLegacyItemState && currentUser?.role === 'admin' && (
+            <ConsolidateLoanButton tx={tx} loadData={loadData} />
+          )}
         </div>
       )}
       {tx.status === 'closed' && <div style={{ marginTop: '12px', padding: '12px 14px', background: COLORS.primaryLight, borderRadius: '8px', fontSize: '13px' }}>✅ <strong>Repaid:</strong> {fmtMoney(tx.amountRepaid)} on {fmtDate(tx.dateRepaid)} · Profit: <strong>{fmtMoney((tx.totalFees || 0) + (tx.serviceFeeAmount || 0))}</strong>{tx.collectionNotes ? <div style={{ marginTop: '6px', padding: '8px 10px', background: '#f0fdf4', borderRadius: '6px', fontSize: '12px', color: COLORS.text }}>📝 <strong>Collection notes:</strong> {tx.collectionNotes}</div> : null}</div>}
