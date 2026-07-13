@@ -791,11 +791,13 @@ const statusLabel = (tx, settings = {}) => {
   const elapsed = daysBetween(tx?.dateGiven);
   const customerDaysLeft = getCustomerDaysLeft(tx);
   // Grace/sale windows gated by the LATER of the current deadline and the
-  // company's max-tenure day — see getLoanTimeline. Days past that anchor drives
-  // the badge; days past the customer's own agreed deadline drives overdue text.
+  // company's max-tenure day — see getLoanTimeline. Days past the LATER anchor =
+  // Math.min of the two "days past" numbers (whichever is less-past is the later
+  // anchor — using max would flip the semantic and let a still-in-term extended
+  // loan read as "Ready to Sell" the moment elapsed passes maxLoanDays+grace).
   const daysPastCustomerDeadline = customerDaysLeft !== null ? -customerDaysLeft : (elapsed - (Number(tx?.loanDays) || maxLoanDays));
   const daysPastMaxTenure = elapsed - maxLoanDays;
-  const daysPastAnchor = Math.max(daysPastCustomerDeadline, daysPastMaxTenure);
+  const daysPastAnchor = Math.min(daysPastCustomerDeadline, daysPastMaxTenure);
   if (daysPastAnchor >= graceDays + 1) return '🏷 Ready to Sell';
   if (graceDays > 0 && daysPastAnchor === graceDays) return '🔴 Last Day of Grace';
   if (daysPastAnchor > 0 && daysPastAnchor < graceDays) return '💜 Grace Period';
