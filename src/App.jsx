@@ -571,6 +571,26 @@ const computeLoanPayment = (balance, payment, graceDays = 3, options = {}) => {
 // model shipped may still have legacy per-item state — summed here as a read-only
 // display fallback until its next payment folds it into the shared balance for
 // real (see the payment endpoint). Returns null for non-advance transactions.
+// Replays a loan's combined payments on its original advance to reconstruct the
+// true current balance — the frontend mirror of the backend rebuild. Used for a
+// legacy multi-item loan that hasn't been consolidated yet, so its Financial
+// Summary is accurate on screen before an admin ever clicks "Fix This Loan's
+// Balance" (the stored fields catch up when they do). Returns the live balance.
+const replayLoanBalance = (tx, rate, loanDays, graceDays, originalAdvance, mergedPaymentsAsc) => {
+  let bal = {
+    cashAdvance: Number(originalAdvance) || 0, appliedInterestRate: rate,
+    cycleStart: tx.dateGiven, principalSince: tx.dateGiven, loanDays,
+    carriedInterestOwed: 0, deadlineDate: addDays(tx.dateGiven, loanDays),
+  };
+  for (const p of mergedPaymentsAsc) {
+    const r = computeLoanPayment(bal, { amount: Number(p.amount) || 0, date: p.date }, graceDays);
+    if (r.error) continue;
+    if (r.outcome === 'full_payoff') { bal = { ...bal, cashAdvance: 0, carriedInterestOwed: 0, principalSince: p.date }; break; }
+    bal = { ...bal, cashAdvance: r.newCashAdvance, carriedInterestOwed: r.newCarriedInterestOwed, principalSince: r.newPrincipalSince, cycleStart: r.newCycleStart, deadlineDate: r.newDeadlineDate || bal.deadlineDate };
+  }
+  return bal;
+};
+
 const computeCurrentLoanState = (tx, settings) => {
   if (!tx || tx.type !== 'advance') return null;
   const rate = tx.appliedInterestRate ?? settings.interestRate ?? 1;
@@ -580,78 +600,72 @@ const computeCurrentLoanState = (tx, settings) => {
   const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
   const hasLegacyItemState = hasItems && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
 
+  // Raw ledger (legacy loans still spread it across items[]) collapsed into the
+  // real combined payments the customer made, newest-first for display.
+  const rawEntries = hasLegacyItemState ? tx.items.flatMap(it => it.payments || []) : (tx.payments || []);
+  const rawPaymentCount = rawEntries.length;
+  const grouped = groupCombinedPayments(rawEntries);
+  const paymentsDesc = [...grouped].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const hasPaymentFragments = grouped.length < rawPaymentCount;
+
   if (tx.status === 'closed' || tx.status === 'sold' || tx.status === 'declined') {
-    return { isSettled: true, originalAdvance: tx.cashAdvance || 0, currentPrincipal: 0, interestOwed: 0, dailyInterestTotal: 0, amountDueToday: 0, payments: tx.payments || [] };
+    const interestPaid = grouped.reduce((s, p) => s + (Number(p.interestApplied) || 0), 0);
+    return { isSettled: true, originalAdvance: tx.cashAdvance || 0, currentPrincipal: 0, interestOwed: 0, interestPaid, dailyInterestTotal: 0, amountDueToday: 0, payments: paymentsDesc, hasLegacyItemState, hasPaymentFragments };
   }
 
-  const evaluate = (cashAdvance, cycleStart, principalSince, carriedInterestOwed) => {
-    const balance = { cashAdvance, appliedInterestRate: rate, cycleStart, principalSince: principalSince || cycleStart, loanDays, carriedInterestOwed: Number(carriedInterestOwed) || 0 };
+  const evaluateAsOfToday = (balance) => {
     const payoff = computeLoanPayment(balance, { amount: Number.MAX_SAFE_INTEGER, date: today }, graceDays);
-    return payoff.error ? { principal: cashAdvance, interestOwed: 0, dailyFee: 0 } : { principal: cashAdvance, interestOwed: payoff.interestApplied, dailyFee: payoff.dailyFee };
+    return payoff.error
+      ? { principal: balance.cashAdvance, interestOwed: 0, dailyFee: Math.floor((Number(balance.cashAdvance) || 0) * rate / 100) }
+      : { principal: balance.cashAdvance, interestOwed: payoff.interestApplied, dailyFee: payoff.dailyFee };
   };
 
-  let currentPrincipal, interestOwed, dailyInterestTotal, allPayments;
+  // Derive the live balance. A legacy loan is replayed from its original advance
+  // (top-level cashAdvance, untouched by the old per-item model); a consolidated
+  // loan just reads its stored shared balance. Either way we end at one balance.
+  let liveBalance, cycleStart, deadlineDate;
   if (hasLegacyItemState) {
-    currentPrincipal = 0; interestOwed = 0; dailyInterestTotal = 0;
-    allPayments = tx.items.flatMap((it, idx) => (it.payments || []).map(p => ({ ...p, itemIndex: idx, itemLabel: it.aiItemType || it.captureItemType || `Item ${idx + 1}` })));
-    for (const item of tx.items) {
-      if (item.redeemed) continue;
-      const itemAdvance = getItemCashAdvance(tx, item);
-      const itemCycleStart = item.cycleStart || tx.dateGiven;
-      const r = evaluate(itemAdvance, itemCycleStart, item.principalSince, item.carriedInterestOwed);
-      currentPrincipal += r.principal;
-      interestOwed += r.interestOwed;
-      dailyInterestTotal += r.dailyFee;
-    }
+    const mergedAsc = [...grouped].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    liveBalance = replayLoanBalance(tx, rate, loanDays, graceDays, Number(tx.cashAdvance) || 0, mergedAsc);
   } else {
-    const r = evaluate(Number(tx.cashAdvance) || 0, tx.cycleStart || tx.dateGiven, tx.principalSince, tx.carriedInterestOwed);
-    currentPrincipal = r.principal;
-    interestOwed = r.interestOwed;
-    dailyInterestTotal = r.dailyFee;
-    allPayments = tx.payments || [];
+    liveBalance = { cashAdvance: Number(tx.cashAdvance) || 0, appliedInterestRate: rate, cycleStart: tx.cycleStart || tx.dateGiven, principalSince: tx.principalSince || tx.cycleStart || tx.dateGiven, loanDays, carriedInterestOwed: Number(tx.carriedInterestOwed) || 0, deadlineDate: tx.deadlineDate };
   }
-  // Collapse any per-item fragments of a single combined payment into one entry
-  // (see groupCombinedPayments) BEFORE sorting, so history shows — and counts —
-  // the real payments the customer made, not the internal per-item splits.
-  const rawPaymentCount = allPayments.length;
-  allPayments = groupCombinedPayments(allPayments);
-  allPayments = [...allPayments].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-  // True when the STORED ledger still holds split fragments (grouping reduced the
-  // count) — the loan will display correctly regardless, but an admin can permanently
-  // clean the stored records with the "Fix This Loan's Balance" action.
-  const hasPaymentFragments = allPayments.length < rawPaymentCount;
+  cycleStart = liveBalance.cycleStart || tx.dateGiven;
+  deadlineDate = liveBalance.deadlineDate || tx.deadlineDate;
+  const r = evaluateAsOfToday(liveBalance);
+  const currentPrincipal = r.principal;
+  const interestOwed = r.interestOwed;
+  const dailyInterestTotal = r.dailyFee;
 
-  // Break the total interest owed into what accrued BEFORE the most recent payment
-  // (frozen at the old, higher balance) vs. what has accrued SINCE it (at the new,
-  // lower balance) — the same carriedInterestOwed/newAccrual split computeLoanPayment
-  // uses internally, derived here for display. Only exact for a single checkpoint,
-  // so it's skipped for a not-yet-consolidated legacy multi-item loan (its items can
-  // have diverged checkpoints); that display catches up automatically once its next
-  // payment consolidates it into the shared balance.
-  let interestBreakdown = null;
-  if (!hasLegacyItemState && allPayments.length > 0) {
-    const anchor = tx.cycleStart || tx.dateGiven;
-    const lastPaymentDate = allPayments[0].date;
-    const daysBeforePayment = Math.max(0, daysBetweenDates(anchor, lastPaymentDate));
-    const daysSincePayment = Math.max(0, daysBetweenDates(lastPaymentDate, today));
-    const interestAfterPayment = Math.round(dailyInterestTotal * daysSincePayment);
-    const interestBeforePayment = Math.max(0, Math.round(interestOwed) - interestAfterPayment);
-    interestBreakdown = {
-      lastPaymentDate, daysBeforePayment, daysSincePayment,
-      interestBeforePayment, interestAfterPayment,
-      priorDailyInterest: daysBeforePayment > 0 ? Math.round(interestBeforePayment / daysBeforePayment) : 0,
-    };
-  }
+  // Clean, always-reconciling breakdown staff can follow:
+  //   interest accrued this cycle  =  interest still owed  +  interest already paid
+  // (paid counts only what was applied to interest on/after the current cycle
+  // start, so a renewal that reset the cycle doesn't double-count old interest).
+  const daysOutstanding = Math.max(0, daysBetweenDates(cycleStart, today));
+  const interestPaid = grouped.reduce((s, p) => s + (p.date >= cycleStart ? (Number(p.interestApplied) || 0) : 0), 0);
+  const interestAccrued = Math.round(interestOwed) + interestPaid;
+  // Show the "rate × days" line only when it multiplies out exactly (principal
+  // unchanged all cycle) — otherwise state the accrued total plainly, never a
+  // fabricated formula that doesn't reconcile.
+  const rateFormulaExact = dailyInterestTotal > 0 && dailyInterestTotal * daysOutstanding === interestAccrued;
 
   return {
     isSettled: false,
     originalAdvance: tx.cashAdvance || 0,
     currentPrincipal, interestOwed, dailyInterestTotal,
     amountDueToday: currentPrincipal + interestOwed,
-    payments: allPayments,
-    interestBreakdown,
+    payments: paymentsDesc,
     hasLegacyItemState,
     hasPaymentFragments,
+    // clean breakdown
+    daysOutstanding,
+    interestPaid,
+    interestAccrued,
+    rateFormulaExact,
+    cycleStart,
+    deadlineDate,
+    deadlineExtended: !!deadlineDate && deadlineDate > addDays(cycleStart, loanDays),
+    baseDeadline: addDays(cycleStart, loanDays),
   };
 };
 
@@ -8816,7 +8830,7 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           <div style={S.statValue}>{fmtMoney(tx.cashAdvance)}</div>
         </div>
         {tx.type === 'advance' && <>
-          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money (or since the loan last renewed). A small fee is added for every single day." /></div><div style={S.statValue}>{daysOut}d</div>{loanState && !loanState.isSettled && loanState.interestOwed > 0 && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px', fontWeight: 600 }}>{fmtMoney(loanState.interestOwed)} interest owed</div>}</div>
+          <div style={S.stat}><div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Days Outstanding<InfoIcon tip="How many days have passed since we gave the customer money (or since the loan last renewed). A small fee is added for every single day." /></div><div style={S.statValue}>{loanState && !loanState.isSettled ? loanState.daysOutstanding : daysOut}d</div>{loanState && !loanState.isSettled && loanState.interestOwed > 0 && <div style={{ fontSize: '12px', color: COLORS.textMuted, marginTop: '4px', fontWeight: 600 }}>{fmtMoney(loanState.interestOwed)} interest owed</div>}</div>
           <div style={{ ...S.stat, background: tx.status === 'active' ? COLORS.dangerLight : COLORS.primaryLight }}>
             <div style={{ ...S.statLabel, display: 'flex', alignItems: 'center' }}>Amount Due Today<InfoIcon tip="What the customer owes us right now — current outstanding balance plus interest owed so far. Falls after a payment; grows a little every day after that." /></div>
             <div style={{ ...S.statValue, color: tx.status === 'active' ? COLORS.danger : COLORS.primary }}>{fmtMoney(amountDueToday)}</div>
@@ -8839,26 +8853,23 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
           <div style={{ fontWeight: 700, color: COLORS.text, marginBottom: '6px' }}>🧮 How ₦{Math.round(loanState.amountDueToday).toLocaleString()} due today is made up</div>
           <div style={{ color: COLORS.textMuted, lineHeight: 1.9 }}>
             <div>Current principal: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.currentPrincipal)}</strong></div>
-            {loanState.interestBreakdown ? (<>
+            {loanState.interestPaid > 0 ? (<>
+              {/* Clean, always-reconciling model: accrued − paid = owed. */}
               <div>
-                + Interest before the last payment: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestBeforePayment)}</strong>
-                {loanState.interestBreakdown.daysBeforePayment > 0 && <span> ({fmtMoney(loanState.interestBreakdown.priorDailyInterest)}/day × {loanState.interestBreakdown.daysBeforePayment} day{loanState.interestBreakdown.daysBeforePayment !== 1 ? 's' : ''}, on the original balance)</span>}
+                + Interest accrued so far: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestAccrued)}</strong>
+                {loanState.rateFormulaExact
+                  ? <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.daysOutstanding} day{loanState.daysOutstanding !== 1 ? 's' : ''})</span>
+                  : <span> (over {loanState.daysOutstanding} day{loanState.daysOutstanding !== 1 ? 's' : ''})</span>}
               </div>
-              <div>
-                + Interest since the last payment ({fmtDate(loanState.interestBreakdown.lastPaymentDate)}): <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestBreakdown.interestAfterPayment)}</strong>
-                {loanState.interestBreakdown.daysSincePayment > 0 && <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.interestBreakdown.daysSincePayment} day{loanState.interestBreakdown.daysSincePayment !== 1 ? 's' : ''}, on the current balance)</span>}
-              </div>
-            </>) : loanState.hasLegacyItemState ? (
-              // A not-yet-consolidated multi-item loan sums interest across items with
-              // different accrual histories — there's no single valid "rate × days" for
-              // the basket, so showing one would just be a fabricated number that
-              // doesn't multiply out (the exact bug this card exists to avoid). State
-              // the true total plainly instead, and point at the real fix.
-              <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> <span>(summed across {tx.items.filter(it => !it.redeemed).length} items with different payment histories — no single daily rate applies until this loan is consolidated)</span></div>
-            ) : (
-              <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong> ({fmtMoney(loanState.dailyInterestTotal)}/day × {daysOut} day{daysOut !== 1 ? 's' : ''})</div>
+              <div>− Interest already paid: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestPaid)}</strong></div>
+              <div>= Interest still owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong></div>
+            </>) : (
+              <div>+ Interest owed: <strong style={{ color: COLORS.text }}>{fmtMoney(loanState.interestOwed)}</strong>{loanState.rateFormulaExact && <span> ({fmtMoney(loanState.dailyInterestTotal)}/day × {loanState.daysOutstanding} day{loanState.daysOutstanding !== 1 ? 's' : ''})</span>}</div>
             )}
             <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '4px', paddingTop: '4px' }}>= Amount due today: <strong style={{ color: COLORS.danger }}>{fmtMoney(loanState.amountDueToday)}</strong></div>
+            {loanState.deadlineExtended && (
+              <div style={{ marginTop: '6px', color: COLORS.primary }}>⏩ Deadline extended by interest payments to <strong>{fmtDate(loanState.deadlineDate)}</strong> (originally {fmtDate(loanState.baseDeadline)}).</div>
+            )}
           </div>
           {currentUser?.role === 'admin' && (loanState.hasLegacyItemState || loanState.hasPaymentFragments) && (
             <ConsolidateLoanButton tx={tx} loadData={loadData} mode={loanState.hasLegacyItemState ? 'balance' : 'payments'} />
