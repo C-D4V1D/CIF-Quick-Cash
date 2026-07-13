@@ -556,51 +556,135 @@ const needsLegacyConsolidation = (tx) => Array.isArray(tx?.items) && tx.items.le
   it.itemCashAdvance !== undefined || it.principalSince !== undefined || it.carriedInterestOwed !== undefined
 ));
 
-// Folds every unredeemed item's legacy per-item balance into the shared
-// tx-level balance, as of `asOfDate`, and strips the per-item fields so this
-// only ever runs once per loan. Mutates `tx` in place. Used both inline (as
-// part of recording a real payment, where `asOfDate` is the payment date) and
-// standalone (the admin "fix this loan's balance" action, where `asOfDate` is
-// today — no payment is applied, this only repairs the stored balance).
-const consolidateLegacyItems = (tx, loanCfg, appliedRate, asOfDate) => {
-  // Preserve every item's historical payment ledger by folding it into the
-  // shared tx.payments list before stripping items[] down to identity-only
-  // fields below — this is a display/audit record, not "current state", and
-  // must not be silently discarded.
+// The old per-item payment model split ONE combined payment into a separate
+// ledger fragment per item, all written in the same instant (identical
+// recordedAt). This collapses those fragments back into the single payment the
+// customer actually made — summing amount/principal/interest — so the stored
+// ledger holds one ₦72,000 entry, not three. A payment under the current
+// shared-balance model is already a single entry and groups to itself. First-
+// seen recordedAt order is preserved; summed totals are identical, so interest
+// recognition is unchanged.
+const mergeCombinedPaymentFragments = (payments) => {
+  if (!Array.isArray(payments) || payments.length <= 1) return payments || [];
+  const groups = new Map();
+  const order = [];
+  for (const p of payments) {
+    const key = p?.recordedAt || `${p?.date || ''}|${p?.recordedBy || ''}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(p);
+  }
+  return order.map(key => {
+    const frags = groups.get(key);
+    if (frags.length === 1) return frags[0];
+    const sum = (f) => frags.reduce((s, x) => s + (Number(x[f]) || 0), 0);
+    return {
+      ...frags[0],
+      amount: sum('amount'),
+      principalApplied: sum('principalApplied'),
+      interestApplied: sum('interestApplied'),
+      rolledOver: frags.some(f => f.rolledOver),
+      note: `Combined payment across ${frags.length} items`,
+    };
+  });
+};
+
+// True when the stored ledger still holds per-item fragments of a combined
+// payment (two entries sharing one recordedAt) that mergeCombinedPaymentFragments
+// would collapse — used to offer consolidation on a loan whose balance was
+// already folded but whose payment rows are still split.
+const hasCombinedPaymentFragments = (tx) => {
+  const ps = Array.isArray(tx?.payments) ? tx.payments : [];
+  const seen = new Set();
+  for (const p of ps) {
+    const key = p?.recordedAt || `${p?.date || ''}|${p?.recordedBy || ''}`;
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+};
+
+// Reconstructs a loan's shared balance from scratch by REPLAYING its payment
+// history on the original advance — exactly as if the loan had been a single
+// shared balance from day one. This is the only way to get numbers that fully
+// reconcile: interest owed = daily rate × days − interest paid, and the deadline
+// correctly extended by every interest payment. Summing leftover per-item state
+// instead (the old approach) lost the disbursement rounding and never re-applied
+// the deadline extensions, so principal, interest, deadline and status all drifted.
+//
+// Mutates tx in place: sets cashAdvance/cycleStart/principalSince/
+// carriedInterestOwed/deadlineDate and rewrites tx.payments to the combined
+// payments actually made (one entry each, with replay-derived splits). Returns
+// { closed, closeDate } so the caller can settle a loan that the replay pays off.
+const rebuildLoanBalanceFromPayments = (tx, loanCfg, appliedRate, originalAdvance) => {
+  const loanDays = loanCfg.maxLoanDays;
+  // Collapse per-item fragments into the real combined payments, oldest first.
+  const merged = mergeCombinedPaymentFragments(tx.payments || [])
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  let bal = {
+    cashAdvance: Number(originalAdvance) || 0,
+    appliedInterestRate: appliedRate,
+    cycleStart: tx.dateGiven,
+    principalSince: tx.dateGiven,
+    loanDays,
+    carriedInterestOwed: 0,
+    deadlineDate: addDaysToDate(tx.dateGiven, loanDays),
+  };
+
+  const rebuilt = [];
+  let closed = false, closeDate = null;
+  for (const p of merged) {
+    const r = computeLoanPayment(bal, { amount: Number(p.amount) || 0, date: p.date }, loanCfg.graceDays);
+    if (r.error) { rebuilt.push(p); continue; }
+    rebuilt.push({
+      ...p,
+      principalApplied: r.principalApplied,
+      interestApplied: r.interestApplied,
+      outcome: r.outcome,
+      rolledOver: !!r.rolledOver,
+    });
+    if (r.outcome === 'full_payoff') {
+      closed = true; closeDate = p.date;
+      bal = { ...bal, cashAdvance: 0, carriedInterestOwed: 0, principalSince: p.date };
+      break;
+    }
+    bal = {
+      ...bal,
+      cashAdvance: r.newCashAdvance,
+      carriedInterestOwed: r.newCarriedInterestOwed,
+      principalSince: r.newPrincipalSince,
+      cycleStart: r.newCycleStart,
+      deadlineDate: r.newDeadlineDate || bal.deadlineDate,
+    };
+  }
+
+  tx.payments = rebuilt;
+  tx.cashAdvance = bal.cashAdvance;
+  tx.carriedInterestOwed = bal.carriedInterestOwed;
+  tx.principalSince = bal.principalSince;
+  tx.cycleStart = bal.cycleStart;
+  tx.deadlineDate = bal.deadlineDate;
+  return { closed, closeDate };
+};
+
+// Folds a legacy multi-item loan into one shared balance and strips the per-item
+// fields, then rebuilds the balance from the payment history (see
+// rebuildLoanBalanceFromPayments). The top-level tx.cashAdvance is still the
+// true original advance here — the old per-item payment model only ever touched
+// item.itemCashAdvance, never the top-level figure — so it is the correct,
+// lossless base to replay from. Mutates tx in place; returns { closed, closeDate }.
+const consolidateLegacyItems = (tx, loanCfg, appliedRate) => {
+  const originalAdvance = Number(tx.cashAdvance) || 0;
   const legacyPayments = tx.items.flatMap(it => it.payments || []);
   if (legacyPayments.length > 0) {
-    tx.payments = [...(tx.payments || []), ...legacyPayments].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    tx.payments = [...(tx.payments || []), ...legacyPayments];
   }
-  let consolidatedPrincipal = 0, consolidatedInterest = 0, earliestDeadline = null;
-  for (const it of tx.items) {
-    if (it.redeemed) continue;
-    const itemAdvance = getItemCashAdvance(tx, it);
-    const itemCycleStart = it.cycleStart || tx.dateGiven;
-    const itemBalance = {
-      cashAdvance: itemAdvance, appliedInterestRate: appliedRate, cycleStart: itemCycleStart,
-      principalSince: it.principalSince || itemCycleStart, loanDays: loanCfg.maxLoanDays,
-      carriedInterestOwed: Number(it.carriedInterestOwed) || 0,
-    };
-    const payoff = computeLoanPayment(itemBalance, { amount: Number.MAX_SAFE_INTEGER, date: asOfDate }, loanCfg.graceDays);
-    consolidatedPrincipal += itemAdvance;
-    consolidatedInterest += payoff.error ? 0 : payoff.interestApplied;
-    const dl = it.deadlineDate || tx.deadlineDate || '';
-    if (!earliestDeadline || dl < earliestDeadline) earliestDeadline = dl;
-  }
-  tx.cashAdvance = consolidatedPrincipal;
-  tx.carriedInterestOwed = consolidatedInterest;
-  tx.principalSince = asOfDate;
-  // cycleStart drives "Days Outstanding" (days since disbursement or since the
-  // loan last fully renewed). None of the items' individual mini-rollovers under
-  // the old per-item model were a real whole-loan renewal, so the only honest
-  // anchor for the merged loan is the original disbursement date — not whatever
-  // stale value tx.cycleStart happened to be left at before fragmentation.
-  tx.cycleStart = tx.dateGiven;
-  tx.deadlineDate = earliestDeadline || tx.deadlineDate;
   tx.items = tx.items.map(it => {
     const { itemCashAdvance, cycleStart, principalSince, carriedInterestOwed, payments, ...rest } = it;
     return rest;
   });
+  return rebuildLoanBalanceFromPayments(tx, loanCfg, appliedRate, originalAdvance);
 };
 
 // Cheap current-outstanding-principal aggregate — see the frontend mirror in App.jsx
@@ -2352,7 +2436,7 @@ export async function onRequest(context) {
       const hasItems = Array.isArray(tx.items) && tx.items.length > 0;
       const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
 
-      if (needsLegacyConsolidation(tx)) consolidateLegacyItems(tx, loanCfg, appliedRate, date);
+      if (needsLegacyConsolidation(tx)) consolidateLegacyItems(tx, loanCfg, appliedRate);
 
       // No backdating before the last accrual checkpoint — principalSince already
       // equals the most recent payment's date (or cycleStart/dateGiven if no
@@ -2492,26 +2576,51 @@ export async function onRequest(context) {
       const tx = existing.data ? JSON.parse(existing.data) : null;
       if (!tx) return error('Transaction data is corrupt.', 500);
       if (tx.type !== 'advance') return error('Only cash-advance loans can be consolidated.', 400);
-      if (!needsLegacyConsolidation(tx)) return error('This loan has no leftover per-item balances to consolidate.', 400);
+      const needsBalance = needsLegacyConsolidation(tx);
+      const needsPayments = hasCombinedPaymentFragments(tx);
+      if (!needsBalance && !needsPayments) return error('This loan is already fully consolidated — nothing to fix.', 400);
 
       const loanCfg = await loadLoanConfig(db);
       const appliedRate = Number(tx.appliedInterestRate || loanCfg.interestRate);
       const today = todayNigeria();
       const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
-      const beforeItems = tx.items.map(it => ({ name: it.captureItemType || it.aiItemType || 'item', principal: getItemCashAdvance(tx, it), interest: Number(it.carriedInterestOwed) || 0 }));
+      const beforePrincipal = getCurrentOutstandingPrincipal(tx);
 
-      consolidateLegacyItems(tx, loanCfg, appliedRate, today);
+      let rebuild;
+      if (needsBalance) {
+        // Legacy per-item state present: fold items in, then replay. The top-level
+        // cashAdvance is still the untouched original advance to replay from.
+        rebuild = consolidateLegacyItems(tx, loanCfg, appliedRate);
+      } else {
+        // Balance already folded but the ledger is still split (or was built by the
+        // earlier sum-based consolidation): rebuild by replaying the payments on the
+        // recovered original advance (current principal + principal already repaid).
+        const principalRepaid = (tx.payments || []).reduce((s, p) => s + (Number(p.principalApplied) || 0), 0);
+        const originalAdvance = (Number(tx.cashAdvance) || 0) + principalRepaid;
+        rebuild = rebuildLoanBalanceFromPayments(tx, loanCfg, appliedRate, originalAdvance);
+      }
+
+      // The replay may pay the loan off, or free a loan that had drifted into the
+      // sale pipeline behind a wrong (past) deadline — reconcile status to match.
+      if (rebuild.closed) {
+        tx.status = 'closed';
+        tx.dateRepaid = tx.dateRepaid || rebuild.closeDate;
+        tx.itemReturned = true;
+        if (Array.isArray(tx.items)) tx.items = tx.items.map(it => it.redeemed ? it : { ...it, redeemed: true, dateRedeemed: rebuild.closeDate, repaidBy: auth.user.name });
+      } else if (['for_sale', 'ready_to_sell'].includes(tx.status) && addDaysToDate(tx.deadlineDate, loanCfg.graceDays) >= today) {
+        tx.status = 'active';
+        delete tx.listedForSaleDate;
+      }
 
       await db
-        .prepare("UPDATE transactions SET data = ?, updated_at = datetime('now') WHERE ref = ?")
-        .bind(JSON.stringify(tx), ref)
+        .prepare("UPDATE transactions SET data = ?, status = ?, updated_at = datetime('now') WHERE ref = ?")
+        .bind(JSON.stringify(tx), tx.status || 'active', ref)
         .run();
 
-      const itemsSummary = beforeItems.map(b => `${b.name}: ₦${fmtNP(b.principal)} principal + ₦${fmtNP(b.interest)} interest`).join('; ');
-      await logActivity({
-        user: auth.user, action: 'loan_consolidated', entityType: 'transaction', entityId: ref,
-        description: `🔧 Loan balance consolidated — ${ref}: ${tx.fullName}. Merged ${beforeItems.length} per-item balances (${itemsSummary}) into one shared balance of ₦${fmtNP(tx.cashAdvance)} principal + ₦${fmtNP(tx.carriedInterestOwed)} interest, single deadline ${tx.deadlineDate}.`,
-      });
+      const description = `🔧 Loan rebuilt from payment history — ${ref}: ${tx.fullName}. ` +
+        `Principal ₦${fmtNP(beforePrincipal)} → ₦${fmtNP(tx.cashAdvance)}, interest owed ₦${fmtNP(tx.carriedInterestOwed)}, ` +
+        `${(tx.payments || []).length} combined payment${(tx.payments || []).length !== 1 ? 's' : ''}, deadline ${tx.deadlineDate}, status ${tx.status}.`;
+      await logActivity({ user: auth.user, action: 'loan_consolidated', entityType: 'transaction', entityId: ref, description });
 
       return json({ success: true, tx });
     }
