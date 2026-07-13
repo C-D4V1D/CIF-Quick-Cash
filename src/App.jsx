@@ -322,14 +322,20 @@ const getLoanTimeline = (tx, settings = {}) => {
   const hasLegacyItems = Array.isArray(tx?.items) && tx.items.length > 0 && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
   const anchor = hasLegacyItems ? tx?.dateGiven : (tx?.cycleStart || tx?.dateGiven);
   const elapsedDays = daysBetween(anchor);
+  // Grace period and sale window follow the CURRENT deadline (which shifts every
+  // time an interest payment buys more days) — not a fixed offset from disbursement.
+  // Otherwise a customer who paid interest to extend to 22 Jul would still see
+  // their item go "Ready to Sell" on the original 2 Jun date, and the extension
+  // would be meaningless. Fall back to anchor+loanDays only if no deadline is set.
   const customerDueDate = tx?.deadlineDate || addDays(anchor, Number(tx?.loanDays) || maxLoanDays);
-  const internalDeadline = addDays(anchor, maxLoanDays);
-  const graceEndDate     = addDays(anchor, maxLoanDays + graceDays);
-  const saleAllowedDate  = addDays(anchor, maxLoanDays + graceDays + 1);
-  const isOverdueToCustomerAgreement = !!customerDueDate && daysBetween(customerDueDate) > 0;
-  const isOwnedByBusiness = elapsedDays >= maxLoanDays;
-  const isInFinalGrace    = elapsedDays >= maxLoanDays + 1 && elapsedDays <= maxLoanDays + graceDays;
-  const isEligibleForSale = elapsedDays >= maxLoanDays + graceDays + 1;
+  const internalDeadline = customerDueDate;
+  const graceEndDate     = addDays(customerDueDate, graceDays);
+  const saleAllowedDate  = addDays(customerDueDate, graceDays + 1);
+  const daysPastDeadline = customerDueDate ? daysBetween(customerDueDate) : 0;
+  const isOverdueToCustomerAgreement = daysPastDeadline > 0;
+  const isOwnedByBusiness = daysPastDeadline >= 1;
+  const isInFinalGrace    = daysPastDeadline >= 1 && daysPastDeadline <= graceDays;
+  const isEligibleForSale = daysPastDeadline >= graceDays + 1;
   return {
     elapsedDays,
     customer_due_date: customerDueDate,
@@ -781,10 +787,13 @@ const statusLabel = (tx, settings = {}) => {
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
   const elapsed = daysBetween(tx?.dateGiven);
   const customerDaysLeft = getCustomerDaysLeft(tx);
-  if (elapsed >= maxLoanDays + graceDays + 1) return '🏷 Ready to Sell';
-  if (graceDays > 0 && elapsed === maxLoanDays + graceDays) return '🔴 Last Day of Grace';
-  if (elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays) return '💜 Grace Period';
-  if (elapsed === maxLoanDays) return '🔴 Last Day of Ownership';
+  // All grace/sale windows follow the current deadline (extended by interest
+  // payments), not a fixed offset from disbursement — see getLoanTimeline.
+  const daysPastDeadline = customerDaysLeft !== null ? -customerDaysLeft : (elapsed - maxLoanDays);
+  if (daysPastDeadline >= graceDays + 1) return '🏷 Ready to Sell';
+  if (graceDays > 0 && daysPastDeadline === graceDays) return '🔴 Last Day of Grace';
+  if (daysPastDeadline > 0 && daysPastDeadline < graceDays) return '💜 Grace Period';
+  if (daysPastDeadline === 0) return '🔴 Last Day of Ownership';
   if (customerDaysLeft !== null && customerDaysLeft < 0) return `⚠️ ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue`;
   if (customerDaysLeft !== null && customerDaysLeft === 0) return '🔴 Due Today';
   if (customerDaysLeft !== null && customerDaysLeft <= 7) return `⚠ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} left`;
@@ -4292,27 +4301,25 @@ function CustomerPortal({ onBack, settings }) {
     const graceDays    = Math.max(0, Number(s.graceDays)   || 3);
     const elapsed = daysBetween(tx.dateGiven);
     const agreedDueDay = Math.max(0, Number(tx.loanDays) || maxLoanDays);
-    const saleEligibleDay = maxLoanDays + graceDays + 1;
     const today = new Date(localISODate()); // Nigeria calendar date, parsed as UTC midnight
     const agreedDueDate = tx.deadlineDate ? new Date(tx.deadlineDate) : null;
-    const saleEligibleDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
-    if (saleEligibleDate) {
-      saleEligibleDate.setUTCDate(saleEligibleDate.getUTCDate() + saleEligibleDay);
-    }
 
-    // Key business milestone dates
-    const maxLoanDayDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
-    if (maxLoanDayDate) {
-      maxLoanDayDate.setUTCDate(maxLoanDayDate.getUTCDate() + maxLoanDays);
-    }
-    const graceEndDate = tx.dateGiven ? new Date(tx.dateGiven) : null;
-    if (graceEndDate) {
-      graceEndDate.setUTCDate(graceEndDate.getUTCDate() + maxLoanDays + graceDays);
-    }
+    // Grace and sale-eligible dates follow the CURRENT deadline (extended by
+    // interest payments), so paying interest to push the deadline out actually
+    // pushes the sale window out too — otherwise the extension is meaningless.
+    // Fall back to dateGiven+30+3 only when no deadline is set on the record.
+    const deadlineAnchor = agreedDueDate ? new Date(agreedDueDate) : (tx.dateGiven ? new Date(tx.dateGiven) : null);
+    if (!agreedDueDate && deadlineAnchor) deadlineAnchor.setUTCDate(deadlineAnchor.getUTCDate() + maxLoanDays);
+    const graceEndDate = deadlineAnchor ? new Date(deadlineAnchor) : null;
+    if (graceEndDate) graceEndDate.setUTCDate(graceEndDate.getUTCDate() + graceDays);
+    const saleEligibleDate = deadlineAnchor ? new Date(deadlineAnchor) : null;
+    if (saleEligibleDate) saleEligibleDate.setUTCDate(saleEligibleDate.getUTCDate() + graceDays + 1);
+    const maxLoanDayDate = deadlineAnchor;
 
     const daysUntilAgreedDue = agreedDueDate ? Math.ceil((agreedDueDate - today) / 86400000) : null;
     const daysUntilSaleEligible = saleEligibleDate ? Math.ceil((saleEligibleDate - today) / 86400000) : null;
     const daysOverdue = daysUntilAgreedDue !== null && daysUntilAgreedDue < 0 ? Math.abs(daysUntilAgreedDue) : 0;
+    const saleEligibleDay = maxLoanDays + graceDays + 1; // kept for tip strings that reference the base offset
 
     return {
       elapsed,
@@ -4328,11 +4335,11 @@ function CustomerPortal({ onBack, settings }) {
       isBeforeAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue > 0 : elapsed < agreedDueDay,
       isAfterAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue < 0 : elapsed > agreedDueDay,
       isOnAgreedDueDate: daysUntilAgreedDue === 0,
-      isOnMaxLoanDay: elapsed === maxLoanDays,
-      isInGracePeriod: elapsed > maxLoanDays && elapsed < maxLoanDays + graceDays,
-      isLastDayOfGrace: graceDays > 0 && elapsed === maxLoanDays + graceDays,
-      isGraceWindow: elapsed >= maxLoanDays + 1 && elapsed <= maxLoanDays + graceDays,
-      isSaleEligible: elapsed >= saleEligibleDay,
+      isOnMaxLoanDay: daysUntilAgreedDue === 0,
+      isInGracePeriod: daysOverdue > 0 && daysOverdue < graceDays,
+      isLastDayOfGrace: graceDays > 0 && daysOverdue === graceDays,
+      isGraceWindow: daysOverdue >= 1 && daysOverdue <= graceDays,
+      isSaleEligible: daysUntilSaleEligible !== null && daysUntilSaleEligible <= 0,
     };
   };
 
