@@ -446,26 +446,31 @@ const computeLoanTimeline = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) =
   // payment). Fall back to base+loanDays only if no deadline is stored yet.
   const loanDays = Number(txData.loanDays) || maxLoanDays;
   const customer_due_date = txData.deadlineDate || addDaysToDate(baseDate, loanDays);
-  // Grace and sale windows follow the CURRENT deadline — otherwise a customer
-  // whose deadline was extended to 22 Jul would still be marked "eligible for
-  // sale" on the original 2 Jun date, making the extension meaningless.
-  const internal_deadline  = customer_due_date;
-  const grace_end_date     = addDaysToDate(customer_due_date, graceDays);
-  const sale_allowed_date  = addDaysToDate(customer_due_date, graceDays + 1);
+  // The sale window is gated by BOTH the customer's current deadline (extended
+  // by interest payments) AND the company's max-tenure day — whichever is later.
+  // Anchoring only on the customer deadline would let a 7-day loan become sale-
+  // eligible on day 11 even though company policy holds items until day maxLoanDays.
+  // The interest payment always keeps the deadline dominant once past max-tenure,
+  // so extensions still work.
+  const company_earliest_ownership = addDaysToDate(baseDate, maxLoanDays);
+  const effective_sale_anchor = (customer_due_date > company_earliest_ownership ? customer_due_date : company_earliest_ownership);
+  const internal_deadline  = effective_sale_anchor;
+  const grace_end_date     = addDaysToDate(effective_sale_anchor, graceDays);
+  const sale_allowed_date  = addDaysToDate(effective_sale_anchor, graceDays + 1);
 
   // Elapsed calendar days since the loan was given
   const elapsedDays = elapsedDaysSince(baseDate);
   const today = todayNigeria();
-  const daysPastDeadline = customer_due_date ? Math.max(0, elapsedDaysSince(customer_due_date)) : 0;
+  const daysPastAnchor = Math.max(0, elapsedDaysSince(effective_sale_anchor));
 
-  // Rule 3: Status transitions — driven by the (extendable) deadline, not a
-  // fixed offset from disbursement.
+  // Rule 3: Status transitions — driven by the LATER of the (extendable) deadline
+  // and the company max-tenure day.
   let loanStatus;
-  if (daysPastDeadline >= graceDays + 1) {
+  if (daysPastAnchor >= graceDays + 1) {
     loanStatus = 'ELIGIBLE_FOR_SALE';   // past grace end — ready for sale
-  } else if (daysPastDeadline >= 1) {
+  } else if (daysPastAnchor >= 1) {
     loanStatus = 'GRACE_PERIOD';        // within grace window
-  } else if (customer_due_date && today === customer_due_date) {
+  } else if (today === effective_sale_anchor) {
     loanStatus = 'OWNED_BY_BUSINESS';   // last day before grace
   } else {
     loanStatus = 'ACTIVE';              // within customer's current term

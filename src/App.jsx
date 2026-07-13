@@ -322,20 +322,23 @@ const getLoanTimeline = (tx, settings = {}) => {
   const hasLegacyItems = Array.isArray(tx?.items) && tx.items.length > 0 && tx.items.some(it => !it.redeemed && it.itemCashAdvance !== undefined);
   const anchor = hasLegacyItems ? tx?.dateGiven : (tx?.cycleStart || tx?.dateGiven);
   const elapsedDays = daysBetween(anchor);
-  // Grace period and sale window follow the CURRENT deadline (which shifts every
-  // time an interest payment buys more days) — not a fixed offset from disbursement.
-  // Otherwise a customer who paid interest to extend to 22 Jul would still see
-  // their item go "Ready to Sell" on the original 2 Jun date, and the extension
-  // would be meaningless. Fall back to anchor+loanDays only if no deadline is set.
+  // Grace/sale windows are gated by the LATER of the current deadline (extended
+  // by interest payments) and the company's max-tenure day — a 7-day loan can't
+  // become sale-eligible on day 11 just because its shorter deadline passed,
+  // company policy holds items until at least maxLoanDays. Interest payments
+  // keep the deadline dominant once past max-tenure, so extensions still work.
   const customerDueDate = tx?.deadlineDate || addDays(anchor, Number(tx?.loanDays) || maxLoanDays);
-  const internalDeadline = customerDueDate;
-  const graceEndDate     = addDays(customerDueDate, graceDays);
-  const saleAllowedDate  = addDays(customerDueDate, graceDays + 1);
+  const companyEarliestOwnership = addDays(anchor, maxLoanDays);
+  const effectiveSaleAnchor = customerDueDate && customerDueDate > companyEarliestOwnership ? customerDueDate : companyEarliestOwnership;
+  const internalDeadline = effectiveSaleAnchor;
+  const graceEndDate     = addDays(effectiveSaleAnchor, graceDays);
+  const saleAllowedDate  = addDays(effectiveSaleAnchor, graceDays + 1);
   const daysPastDeadline = customerDueDate ? daysBetween(customerDueDate) : 0;
+  const daysPastAnchor   = daysBetween(effectiveSaleAnchor);
   const isOverdueToCustomerAgreement = daysPastDeadline > 0;
-  const isOwnedByBusiness = daysPastDeadline >= 1;
-  const isInFinalGrace    = daysPastDeadline >= 1 && daysPastDeadline <= graceDays;
-  const isEligibleForSale = daysPastDeadline >= graceDays + 1;
+  const isOwnedByBusiness = daysPastAnchor >= 1;
+  const isInFinalGrace    = daysPastAnchor >= 1 && daysPastAnchor <= graceDays;
+  const isEligibleForSale = daysPastAnchor >= graceDays + 1;
   return {
     elapsedDays,
     customer_due_date: customerDueDate,
@@ -787,13 +790,16 @@ const statusLabel = (tx, settings = {}) => {
   const graceDays = Math.max(0, Number(settings.graceDays) || 3);
   const elapsed = daysBetween(tx?.dateGiven);
   const customerDaysLeft = getCustomerDaysLeft(tx);
-  // All grace/sale windows follow the current deadline (extended by interest
-  // payments), not a fixed offset from disbursement — see getLoanTimeline.
-  const daysPastDeadline = customerDaysLeft !== null ? -customerDaysLeft : (elapsed - maxLoanDays);
-  if (daysPastDeadline >= graceDays + 1) return '🏷 Ready to Sell';
-  if (graceDays > 0 && daysPastDeadline === graceDays) return '🔴 Last Day of Grace';
-  if (daysPastDeadline > 0 && daysPastDeadline < graceDays) return '💜 Grace Period';
-  if (daysPastDeadline === 0) return '🔴 Last Day of Ownership';
+  // Grace/sale windows gated by the LATER of the current deadline and the
+  // company's max-tenure day — see getLoanTimeline. Days past that anchor drives
+  // the badge; days past the customer's own agreed deadline drives overdue text.
+  const daysPastCustomerDeadline = customerDaysLeft !== null ? -customerDaysLeft : (elapsed - (Number(tx?.loanDays) || maxLoanDays));
+  const daysPastMaxTenure = elapsed - maxLoanDays;
+  const daysPastAnchor = Math.max(daysPastCustomerDeadline, daysPastMaxTenure);
+  if (daysPastAnchor >= graceDays + 1) return '🏷 Ready to Sell';
+  if (graceDays > 0 && daysPastAnchor === graceDays) return '🔴 Last Day of Grace';
+  if (daysPastAnchor > 0 && daysPastAnchor < graceDays) return '💜 Grace Period';
+  if (daysPastAnchor === 0) return '🔴 Last Day of Ownership';
   if (customerDaysLeft !== null && customerDaysLeft < 0) return `⚠️ ${Math.abs(customerDaysLeft)} day${Math.abs(customerDaysLeft) !== 1 ? 's' : ''} overdue`;
   if (customerDaysLeft !== null && customerDaysLeft === 0) return '🔴 Due Today';
   if (customerDaysLeft !== null && customerDaysLeft <= 7) return `⚠ ${customerDaysLeft} day${customerDaysLeft !== 1 ? 's' : ''} left`;
@@ -4302,23 +4308,28 @@ function CustomerPortal({ onBack, settings }) {
     const elapsed = daysBetween(tx.dateGiven);
     const agreedDueDay = Math.max(0, Number(tx.loanDays) || maxLoanDays);
     const today = new Date(localISODate()); // Nigeria calendar date, parsed as UTC midnight
-    const agreedDueDate = tx.deadlineDate ? new Date(tx.deadlineDate) : null;
-
-    // Grace and sale-eligible dates follow the CURRENT deadline (extended by
-    // interest payments), so paying interest to push the deadline out actually
-    // pushes the sale window out too — otherwise the extension is meaningless.
-    // Fall back to dateGiven+30+3 only when no deadline is set on the record.
-    const deadlineAnchor = agreedDueDate ? new Date(agreedDueDate) : (tx.dateGiven ? new Date(tx.dateGiven) : null);
-    if (!agreedDueDate && deadlineAnchor) deadlineAnchor.setUTCDate(deadlineAnchor.getUTCDate() + maxLoanDays);
-    const graceEndDate = deadlineAnchor ? new Date(deadlineAnchor) : null;
-    if (graceEndDate) graceEndDate.setUTCDate(graceEndDate.getUTCDate() + graceDays);
-    const saleEligibleDate = deadlineAnchor ? new Date(deadlineAnchor) : null;
-    if (saleEligibleDate) saleEligibleDate.setUTCDate(saleEligibleDate.getUTCDate() + graceDays + 1);
-    const maxLoanDayDate = deadlineAnchor;
+    // Customer's agreed deadline — prefer the stored deadlineDate (extended by
+    // interest payments); fall back to dateGiven + loanDays if the record predates
+    // deadline storage. This is what drives "you promised to return by X" text.
+    const agreedDueDate = tx.deadlineDate
+      ? new Date(tx.deadlineDate)
+      : (tx.dateGiven ? new Date(new Date(tx.dateGiven).getTime() + agreedDueDay * 86400000) : null);
+    // Sale-eligibility anchor = LATER of the customer's agreed date and the
+    // company's max-tenure day, so a short customer term can't shorten the
+    // company hold below policy, but interest-extension always pushes it out.
+    const companyOwnershipDate = tx.dateGiven ? new Date(new Date(tx.dateGiven).getTime() + maxLoanDays * 86400000) : null;
+    const saleAnchor = (agreedDueDate && companyOwnershipDate)
+      ? (agreedDueDate > companyOwnershipDate ? agreedDueDate : companyOwnershipDate)
+      : (agreedDueDate || companyOwnershipDate);
+    const graceEndDate = saleAnchor ? new Date(saleAnchor.getTime() + graceDays * 86400000) : null;
+    const saleEligibleDate = saleAnchor ? new Date(saleAnchor.getTime() + (graceDays + 1) * 86400000) : null;
+    const maxLoanDayDate = saleAnchor;
 
     const daysUntilAgreedDue = agreedDueDate ? Math.ceil((agreedDueDate - today) / 86400000) : null;
     const daysUntilSaleEligible = saleEligibleDate ? Math.ceil((saleEligibleDate - today) / 86400000) : null;
     const daysOverdue = daysUntilAgreedDue !== null && daysUntilAgreedDue < 0 ? Math.abs(daysUntilAgreedDue) : 0;
+    // "Past the sale anchor" — used for grace/last-day-of-ownership predicates.
+    const daysPastAnchor = saleAnchor ? Math.max(0, Math.floor((today - saleAnchor) / 86400000)) : 0;
     const saleEligibleDay = maxLoanDays + graceDays + 1; // kept for tip strings that reference the base offset
 
     return {
@@ -4335,10 +4346,10 @@ function CustomerPortal({ onBack, settings }) {
       isBeforeAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue > 0 : elapsed < agreedDueDay,
       isAfterAgreedDue: daysUntilAgreedDue !== null ? daysUntilAgreedDue < 0 : elapsed > agreedDueDay,
       isOnAgreedDueDate: daysUntilAgreedDue === 0,
-      isOnMaxLoanDay: daysUntilAgreedDue === 0,
-      isInGracePeriod: daysOverdue > 0 && daysOverdue < graceDays,
-      isLastDayOfGrace: graceDays > 0 && daysOverdue === graceDays,
-      isGraceWindow: daysOverdue >= 1 && daysOverdue <= graceDays,
+      isOnMaxLoanDay: daysPastAnchor === 0 && saleAnchor && today.getTime() === saleAnchor.getTime(),
+      isInGracePeriod: daysPastAnchor > 0 && daysPastAnchor < graceDays,
+      isLastDayOfGrace: graceDays > 0 && daysPastAnchor === graceDays,
+      isGraceWindow: daysPastAnchor >= 1 && daysPastAnchor <= graceDays,
       isSaleEligible: daysUntilSaleEligible !== null && daysUntilSaleEligible <= 0,
     };
   };
