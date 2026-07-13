@@ -360,8 +360,8 @@ const pushNotifyAll = async (env, db, notification) => {
 // LOAN TIMELINE HELPERS
 // Rules (using admin-configured maxLoanDays and graceDays):
 //   internal_deadline  = dateGiven + maxLoanDays          (business takes ownership)
-//   grace_end_date     = dateGiven + maxLoanDays + graceDays
-//   sale_allowed_date  = dateGiven + maxLoanDays + graceDays + 1 (first day of sale eligibility)
+//   grace_end_date     = deadlineDate + graceDays  (deadlineDate extends when interest is paid)
+//   sale_allowed_date  = deadlineDate + graceDays + 1 (first day of sale eligibility)
 //   customer_due_date  = deadlineDate, or dateGiven + loanDays
 //
 // Status transitions (advance loans only):
@@ -442,36 +442,38 @@ const computeLoanTimeline = (txData, { maxLoanDays = 30, graceDays = 3 } = {}) =
   const baseDate = txData.cycleStart || txData.dateGiven || null;
   if (!baseDate) return null;
 
-  // Rule 1: Fixed internal milestones measured from dateGiven
-  const internal_deadline  = addDaysToDate(baseDate, maxLoanDays);                   // business ownership begins
-  const grace_end_date     = addDaysToDate(baseDate, maxLoanDays + graceDays);        // grace period ends
-  const sale_allowed_date  = addDaysToDate(baseDate, maxLoanDays + graceDays + 1);   // earliest allowed sale date
-
-  // Rule 2: Customer due date = dateGiven + agreed loan duration (loanDays).
-  // Use the stored deadlineDate if available (already computed at entry time),
-  // otherwise derive it from loanDays.
+  // Rule 1: Customer due date is the current deadline (extended by every interest
+  // payment). Fall back to base+loanDays only if no deadline is stored yet.
   const loanDays = Number(txData.loanDays) || maxLoanDays;
   const customer_due_date = txData.deadlineDate || addDaysToDate(baseDate, loanDays);
+  // The sale window is gated by BOTH the customer's current deadline (extended
+  // by interest payments) AND the company's max-tenure day — whichever is later.
+  // Anchoring only on the customer deadline would let a 7-day loan become sale-
+  // eligible on day 11 even though company policy holds items until day maxLoanDays.
+  // The interest payment always keeps the deadline dominant once past max-tenure,
+  // so extensions still work.
+  const company_earliest_ownership = addDaysToDate(baseDate, maxLoanDays);
+  const effective_sale_anchor = (customer_due_date > company_earliest_ownership ? customer_due_date : company_earliest_ownership);
+  const internal_deadline  = effective_sale_anchor;
+  const grace_end_date     = addDaysToDate(effective_sale_anchor, graceDays);
+  const sale_allowed_date  = addDaysToDate(effective_sale_anchor, graceDays + 1);
 
   // Elapsed calendar days since the loan was given
   const elapsedDays = elapsedDaysSince(baseDate);
+  const today = todayNigeria();
+  const daysPastAnchor = Math.max(0, elapsedDaysSince(effective_sale_anchor));
 
-  // Rule 3: Status transitions
+  // Rule 3: Status transitions — driven by the LATER of the (extendable) deadline
+  // and the company max-tenure day.
   let loanStatus;
-  if (elapsedDays >= maxLoanDays + graceDays + 1) {
+  if (daysPastAnchor >= graceDays + 1) {
     loanStatus = 'ELIGIBLE_FOR_SALE';   // past grace end — ready for sale
-  } else if (elapsedDays >= maxLoanDays + 1) {
+  } else if (daysPastAnchor >= 1) {
     loanStatus = 'GRACE_PERIOD';        // within grace window
-  } else if (elapsedDays >= maxLoanDays) {
-    loanStatus = 'OWNED_BY_BUSINESS';   // ownership day
+  } else if (today === effective_sale_anchor) {
+    loanStatus = 'OWNED_BY_BUSINESS';   // last day before grace
   } else {
-    // Before ownership: check whether the customer's agreed due date has passed
-    const today = todayNigeria();
-    if (customer_due_date && today > customer_due_date) {
-      loanStatus = 'OVERDUE';           // past customer deadline, not yet owned
-    } else {
-      loanStatus = 'ACTIVE';            // within customer's agreed term
-    }
+    loanStatus = 'ACTIVE';              // within customer's current term
   }
 
   return {
