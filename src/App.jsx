@@ -429,6 +429,42 @@ const getLoanPaymentEntries = (tx) => {
   return [];
 };
 
+// The old per-item payment model split ONE combined payment into a separate
+// ledger fragment for each item, all written in the same instant — so they share
+// an identical recordedAt. This collapses those fragments back into the single
+// payment the customer actually made (summing amount/principal/interest), so the
+// Payment History shows one ₦72,000 row instead of three (₦10,857 + ₦38,835 +
+// ₦22,308). A payment under the current shared-balance model is already a single
+// entry, so it groups to itself and is left untouched. Order is preserved by
+// first-seen recordedAt. Non-destructive — only affects display; the summed
+// totals are identical, so interest-recognition totals are unchanged.
+const groupCombinedPayments = (payments) => {
+  if (!Array.isArray(payments) || payments.length <= 1) return payments || [];
+  const groups = new Map();
+  const order = [];
+  for (const p of payments) {
+    const key = p?.recordedAt || `${p?.date || ''}|${p?.recordedBy || ''}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(p);
+  }
+  return order.map(key => {
+    const frags = groups.get(key);
+    if (frags.length === 1) return frags[0];
+    const sum = (f) => frags.reduce((s, x) => s + (Number(x[f]) || 0), 0);
+    return {
+      ...frags[0],
+      amount: sum('amount'),
+      principalApplied: sum('principalApplied'),
+      interestApplied: sum('interestApplied'),
+      rolledOver: frags.some(f => f.rolledOver),
+      itemIndex: undefined,
+      itemLabel: undefined,
+      note: `Combined payment across ${frags.length} items`,
+      _fragmentCount: frags.length,
+    };
+  });
+};
+
 const getRecognizedInterest = (tx, options = {}) => {
   if (!tx || tx.type !== 'advance') return 0;
   const { paymentDateFilter, legacyClosedDateFilter } = options;
@@ -574,7 +610,16 @@ const computeCurrentLoanState = (tx, settings) => {
     dailyInterestTotal = r.dailyFee;
     allPayments = tx.payments || [];
   }
+  // Collapse any per-item fragments of a single combined payment into one entry
+  // (see groupCombinedPayments) BEFORE sorting, so history shows — and counts —
+  // the real payments the customer made, not the internal per-item splits.
+  const rawPaymentCount = allPayments.length;
+  allPayments = groupCombinedPayments(allPayments);
   allPayments = [...allPayments].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  // True when the STORED ledger still holds split fragments (grouping reduced the
+  // count) — the loan will display correctly regardless, but an admin can permanently
+  // clean the stored records with the "Fix This Loan's Balance" action.
+  const hasPaymentFragments = allPayments.length < rawPaymentCount;
 
   // Break the total interest owed into what accrued BEFORE the most recent payment
   // (frozen at the old, higher balance) vs. what has accrued SINCE it (at the new,
@@ -606,6 +651,7 @@ const computeCurrentLoanState = (tx, settings) => {
     payments: allPayments,
     interestBreakdown,
     hasLegacyItemState,
+    hasPaymentFragments,
   };
 };
 
@@ -7959,9 +8005,11 @@ function PartialPaymentModal({ tx, settings, onClose, onSaved }) {
   const fmtN = (n) => fmtMoney(n);
   // A not-yet-consolidated legacy loan still has its payment history spread across
   // items[]; once consolidated (its next payment), history lives on tx.payments.
-  const paymentsHistory = hasLegacyItemState
+  // Either way, collapse per-item fragments of a single combined payment into the
+  // one payment the customer actually made (see groupCombinedPayments).
+  const paymentsHistory = groupCombinedPayments(hasLegacyItemState
     ? tx.items.flatMap(it => it.payments || [])
-    : (tx.payments || []);
+    : (tx.payments || []));
 
   if (result) {
     return (
@@ -8450,11 +8498,16 @@ function ContactLogModal({ tx, onClose, onSave, currentUser }) {
 // Deadline) becomes accurate immediately instead of staying stuck on stale,
 // inconsistent per-item numbers. Every historical payment is kept — this only
 // repairs the current balance, it doesn't touch payment history.
-function ConsolidateLoanButton({ tx, loadData }) {
+function ConsolidateLoanButton({ tx, loadData, mode }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // 'balance' = items still carry separate balances/deadlines; 'payments' = balance
+  // already merged but the ledger still shows one combined payment as several rows.
+  const confirmText = mode === 'payments'
+    ? `Tidy ${tx.ref}'s payment history now?\n\nEach combined payment the customer made is currently stored as several per-item rows. This merges them back into one row per payment. No money changes — the totals are identical, nothing is deleted.`
+    : `Fix ${tx.ref}'s balance now?\n\nThis merges its ${(tx.items || []).filter(it => !it.redeemed).length} items' separate balances and deadlines into one accurate shared balance, as of today, and combines each split payment into one row. Totals are unchanged — nothing is deleted.`;
   const handleClick = async () => {
-    if (!window.confirm(`Fix ${tx.ref}'s balance now?\n\nThis merges its ${tx.items.filter(it => !it.redeemed).length} items' separate balances and deadlines into one accurate shared balance, as of today. All existing payment history is kept exactly as-is — this only corrects the current balance and deadline shown.`)) return;
+    if (!window.confirm(confirmText)) return;
     setBusy(true);
     setErr('');
     const res = await API.put(`transactions/${encodeURIComponent(tx.ref)}/consolidate`, {});
@@ -8465,10 +8518,12 @@ function ConsolidateLoanButton({ tx, loadData }) {
   return (
     <div style={{ marginTop: '10px' }}>
       <button style={S.btnSm('primary')} disabled={busy} onClick={handleClick}>
-        {busy ? 'Fixing…' : '🔧 Fix This Loan\'s Balance'}
+        {busy ? 'Fixing…' : (mode === 'payments' ? '🔧 Combine Split Payment Rows' : '🔧 Fix This Loan\'s Balance')}
       </button>
       <div style={{ fontSize: '11.5px', color: COLORS.textMuted, marginTop: '4px' }}>
-        Merges this loan's per-item balances into one accurate shared balance and deadline. History is preserved — nothing is deleted.
+        {mode === 'payments'
+          ? 'Merges each combined payment’s per-item rows back into one row. Totals unchanged — nothing is deleted.'
+          : 'Merges this loan’s per-item balances into one accurate shared balance and deadline, and combines split payment rows. Nothing is deleted.'}
       </div>
       {err && <div style={{ fontSize: '12px', color: COLORS.danger, marginTop: '4px' }}>{err}</div>}
     </div>
@@ -8805,8 +8860,8 @@ function TxDetail({ tx, settings, isStaff, currentUser, setZoomedPhoto, setLoggi
             )}
             <div style={{ borderTop: `1px solid ${COLORS.border}`, marginTop: '4px', paddingTop: '4px' }}>= Amount due today: <strong style={{ color: COLORS.danger }}>{fmtMoney(loanState.amountDueToday)}</strong></div>
           </div>
-          {loanState.hasLegacyItemState && currentUser?.role === 'admin' && (
-            <ConsolidateLoanButton tx={tx} loadData={loadData} />
+          {currentUser?.role === 'admin' && (loanState.hasLegacyItemState || loanState.hasPaymentFragments) && (
+            <ConsolidateLoanButton tx={tx} loadData={loadData} mode={loanState.hasLegacyItemState ? 'balance' : 'payments'} />
           )}
         </div>
       )}

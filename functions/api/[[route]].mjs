@@ -556,6 +556,53 @@ const needsLegacyConsolidation = (tx) => Array.isArray(tx?.items) && tx.items.le
   it.itemCashAdvance !== undefined || it.principalSince !== undefined || it.carriedInterestOwed !== undefined
 ));
 
+// The old per-item payment model split ONE combined payment into a separate
+// ledger fragment per item, all written in the same instant (identical
+// recordedAt). This collapses those fragments back into the single payment the
+// customer actually made — summing amount/principal/interest — so the stored
+// ledger holds one ₦72,000 entry, not three. A payment under the current
+// shared-balance model is already a single entry and groups to itself. First-
+// seen recordedAt order is preserved; summed totals are identical, so interest
+// recognition is unchanged.
+const mergeCombinedPaymentFragments = (payments) => {
+  if (!Array.isArray(payments) || payments.length <= 1) return payments || [];
+  const groups = new Map();
+  const order = [];
+  for (const p of payments) {
+    const key = p?.recordedAt || `${p?.date || ''}|${p?.recordedBy || ''}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(p);
+  }
+  return order.map(key => {
+    const frags = groups.get(key);
+    if (frags.length === 1) return frags[0];
+    const sum = (f) => frags.reduce((s, x) => s + (Number(x[f]) || 0), 0);
+    return {
+      ...frags[0],
+      amount: sum('amount'),
+      principalApplied: sum('principalApplied'),
+      interestApplied: sum('interestApplied'),
+      rolledOver: frags.some(f => f.rolledOver),
+      note: `Combined payment across ${frags.length} items`,
+    };
+  });
+};
+
+// True when the stored ledger still holds per-item fragments of a combined
+// payment (two entries sharing one recordedAt) that mergeCombinedPaymentFragments
+// would collapse — used to offer consolidation on a loan whose balance was
+// already folded but whose payment rows are still split.
+const hasCombinedPaymentFragments = (tx) => {
+  const ps = Array.isArray(tx?.payments) ? tx.payments : [];
+  const seen = new Set();
+  for (const p of ps) {
+    const key = p?.recordedAt || `${p?.date || ''}|${p?.recordedBy || ''}`;
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+};
+
 // Folds every unredeemed item's legacy per-item balance into the shared
 // tx-level balance, as of `asOfDate`, and strips the per-item fields so this
 // only ever runs once per loan. Mutates `tx` in place. Used both inline (as
@@ -601,6 +648,9 @@ const consolidateLegacyItems = (tx, loanCfg, appliedRate, asOfDate) => {
     const { itemCashAdvance, cycleStart, principalSince, carriedInterestOwed, payments, ...rest } = it;
     return rest;
   });
+  // Collapse the per-item fragments we just folded in into the single combined
+  // payments the customer actually made, so the stored ledger is clean too.
+  tx.payments = mergeCombinedPaymentFragments(tx.payments);
 };
 
 // Cheap current-outstanding-principal aggregate — see the frontend mirror in App.jsx
@@ -2492,26 +2542,35 @@ export async function onRequest(context) {
       const tx = existing.data ? JSON.parse(existing.data) : null;
       if (!tx) return error('Transaction data is corrupt.', 500);
       if (tx.type !== 'advance') return error('Only cash-advance loans can be consolidated.', 400);
-      if (!needsLegacyConsolidation(tx)) return error('This loan has no leftover per-item balances to consolidate.', 400);
+      const needsBalance = needsLegacyConsolidation(tx);
+      const needsPayments = hasCombinedPaymentFragments(tx);
+      if (!needsBalance && !needsPayments) return error('This loan is already fully consolidated — nothing to fix.', 400);
 
       const loanCfg = await loadLoanConfig(db);
       const appliedRate = Number(tx.appliedInterestRate || loanCfg.interestRate);
       const today = todayNigeria();
       const fmtNP = (n) => Number(n || 0).toLocaleString('en-NG');
-      const beforeItems = tx.items.map(it => ({ name: it.captureItemType || it.aiItemType || 'item', principal: getItemCashAdvance(tx, it), interest: Number(it.carriedInterestOwed) || 0 }));
 
-      consolidateLegacyItems(tx, loanCfg, appliedRate, today);
+      let description;
+      if (needsBalance) {
+        const beforeItems = tx.items.map(it => ({ name: it.captureItemType || it.aiItemType || 'item', principal: getItemCashAdvance(tx, it), interest: Number(it.carriedInterestOwed) || 0 }));
+        consolidateLegacyItems(tx, loanCfg, appliedRate, today);
+        const itemsSummary = beforeItems.map(b => `${b.name}: ₦${fmtNP(b.principal)} principal + ₦${fmtNP(b.interest)} interest`).join('; ');
+        description = `🔧 Loan balance consolidated — ${ref}: ${tx.fullName}. Merged ${beforeItems.length} per-item balances (${itemsSummary}) into one shared balance of ₦${fmtNP(tx.cashAdvance)} principal + ₦${fmtNP(tx.carriedInterestOwed)} interest, single deadline ${tx.deadlineDate}.`;
+      } else {
+        // Balance was already folded; only the payment ledger is still split into
+        // per-item fragments. Merge those into the combined payments actually made.
+        const before = tx.payments.length;
+        tx.payments = mergeCombinedPaymentFragments(tx.payments);
+        description = `🔧 Payment history consolidated — ${ref}: ${tx.fullName}. Merged ${before} per-item payment fragments into ${tx.payments.length} combined payment${tx.payments.length !== 1 ? 's' : ''}.`;
+      }
 
       await db
         .prepare("UPDATE transactions SET data = ?, updated_at = datetime('now') WHERE ref = ?")
         .bind(JSON.stringify(tx), ref)
         .run();
 
-      const itemsSummary = beforeItems.map(b => `${b.name}: ₦${fmtNP(b.principal)} principal + ₦${fmtNP(b.interest)} interest`).join('; ');
-      await logActivity({
-        user: auth.user, action: 'loan_consolidated', entityType: 'transaction', entityId: ref,
-        description: `🔧 Loan balance consolidated — ${ref}: ${tx.fullName}. Merged ${beforeItems.length} per-item balances (${itemsSummary}) into one shared balance of ₦${fmtNP(tx.cashAdvance)} principal + ₦${fmtNP(tx.carriedInterestOwed)} interest, single deadline ${tx.deadlineDate}.`,
-      });
+      await logActivity({ user: auth.user, action: 'loan_consolidated', entityType: 'transaction', entityId: ref, description });
 
       return json({ success: true, tx });
     }
