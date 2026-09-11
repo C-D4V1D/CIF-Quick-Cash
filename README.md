@@ -473,17 +473,38 @@ npm install
 
 # Frontend only (public pages; API calls will fail)
 npm run dev
+```
 
-# Full stack against a local D1 + R2 (recommended)
+For the full stack against a local D1 + R2, just build and serve — **do not run
+`schema.sql`**:
+
+```bash
 npm run build
 npx wrangler pages dev dist \
   --d1 DB=cifcash-local-db \
   --r2 PHOTOS \
   --persist-to .wrangler-local
-
-# Apply the schema to the local database
-npx wrangler d1 execute cifcash-local-db --local --file=schema.sql
 ```
+
+The API initialises its own schema on first request, creating all 16 tables and seeding
+the default administrator. Hit any endpoint (`curl localhost:8788/api/health`) and the
+database is ready.
+
+> **Do not pre-apply `schema.sql` to a local database.** It is the reference schema for
+> provisioning a *remote* D1 instance, and it predates the Web Push feature, so it does
+> not create `push_subscriptions`. The runtime initialiser (`ensureSchema`) builds the
+> full table set only on a database where `users` does not yet exist — once `schema.sql`
+> has run, `users` exists, so it takes its fast path and applies only the `staff_points`
+> and `capital` migrations. `push_subscriptions` is then never created, and
+> `POST /api/push/subscribe` fails with a database error the first time a staff member
+> enables notifications.
+>
+> If you have already applied `schema.sql` to a local or remote database, apply the
+> missing migration once:
+>
+> ```bash
+> npx wrangler d1 execute <DB_NAME> --file=migrate-push-subscriptions.sql   # add --remote for a deployed DB
+> ```
 
 The default seeded administrator is `cifadmin` / `CifAdmin@1` — **change it immediately** on any real deployment.
 
