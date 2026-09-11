@@ -34,8 +34,6 @@ It is not a demo or a course project. It is the live system the business trades 
 13. [Running it locally](#13-running-it-locally)
 14. [Repository map](#14-repository-map)
 
-> 📄 **[docs/PORTFOLIO.md](docs/PORTFOLIO.md)** — the skills, decisions and business outcomes behind this build, written up as CV and interview evidence.
-
 ---
 
 ## 1. The business
@@ -546,4 +544,4 @@ npx wrangler deploy cron-worker.js --name cifcash-cron --compatibility-date 2024
 
 ## Credits
 
-Built and operated by **[C-D4V1D](https://github.com/C-D4V1D)** for Christ-in-Fabian Quick Cash — a joint venture between Vido Hub and FATK Enterprises. The business requirements, operating model, financial rules, risk policy and product design are original work; implementation was carried out with AI pair-programming assistance (Claude Code and GitHub Copilot), reviewed and integrated across 106 pull requests.
+Built and operated by **[C-D4V1D](https://github.com/C-D4V1D)** for Christ-in-Fabian Quick Cash — a joint venture between Vido Hub and FATK Enterprises. The business requirements, operating model, financial rules, risk policy and product design are original work; implementation was carried out with AI pair-programming assistance (Claude Code, GitHub Copilot and OpenAI Codex), reviewed and integrated across 106 pull requests.
